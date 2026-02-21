@@ -219,7 +219,8 @@ export function transformToDisplaySessions(
         latestMessage: getLatestTextMessage(s.messages),
         aiMetadata: s.aiMetadata,
         pendingRepoSelection: s.pendingRepoSelection,
-        planMode: s.planMode
+        planMode: s.planMode,
+        noteMode: s.noteMode
       };
     })
   ];

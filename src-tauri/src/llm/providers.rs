@@ -139,16 +139,6 @@ impl LlmClient {
         }
     }
 
-    /// Internal method for structured generation (returns data only, for backwards compatibility)
-    pub(super) async fn generate_structured<T: DeserializeOwned>(
-        &self,
-        prompt: &str,
-        schema: Option<serde_json::Value>,
-    ) -> Result<T, String> {
-        let result = self.generate_structured_with_usage(prompt, schema).await?;
-        Ok(result.data)
-    }
-
     /// Internal method for structured generation with usage tracking
     pub(super) async fn generate_structured_with_usage<T: DeserializeOwned>(
         &self,
@@ -228,16 +218,7 @@ impl LlmClient {
         Ok((text, usage))
     }
 
-    pub(super) async fn generate_gemini(
-        &self,
-        prompt: &str,
-        schema: Option<serde_json::Value>,
-    ) -> Result<String, String> {
-        let (text, _usage) = self.generate_gemini_with_usage(prompt, schema).await?;
-        Ok(text)
-    }
-
-    pub(super) async fn generate_gemini_with_usage(
+    async fn generate_gemini_with_usage(
         &self,
         prompt: &str,
         schema: Option<serde_json::Value>,
@@ -270,12 +251,7 @@ impl LlmClient {
         self.try_gemini_model(&self.model, prompt, &schema).await
     }
 
-    pub(super) async fn generate_openai(&self, prompt: &str) -> Result<String, String> {
-        let (text, _usage) = self.generate_openai_with_usage(prompt).await?;
-        Ok(text)
-    }
-
-    pub(super) async fn generate_openai_with_usage(&self, prompt: &str) -> Result<(String, LlmUsage), String> {
+    async fn generate_openai_with_usage(&self, prompt: &str) -> Result<(String, LlmUsage), String> {
         let request = OpenAIRequest {
             model: self.model.clone(),
             messages: vec![

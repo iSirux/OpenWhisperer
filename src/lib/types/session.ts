@@ -1,6 +1,6 @@
 // Shared session types used across SessionList and SessionCard components
 
-import type { SessionAiMetadata, PlanModeState } from '$lib/stores/sdkSessions';
+import type { SessionAiMetadata, PlanModeState, NoteModeState } from '$lib/stores/sdkSessions';
 
 /**
  * Unified session type for display in the session list and grid views.
@@ -43,4 +43,7 @@ export interface DisplaySession {
 
   // Plan mode state
   planMode?: PlanModeState;
+
+  // Note mode state
+  noteMode?: NoteModeState;
 }

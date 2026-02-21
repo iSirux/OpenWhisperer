@@ -368,7 +368,14 @@ export async function recommendModel(
   }
 
   try {
-    const result = await invoke<ModelRecommendation>('recommend_model', { prompt });
+    // Get enabled models from settings
+    const currentSettings = get(settings);
+    const enabledModels = currentSettings.enabled_models || [];
+
+    const result = await invoke<ModelRecommendation>('recommend_model', {
+      prompt,
+      enabledModels: enabledModels.length > 0 ? enabledModels : null
+    });
     console.log('[llm] Model recommendation:', result);
 
     const modelId = MODEL_ID_MAP[result.recommended_model] || MODEL_ID_MAP.sonnet;

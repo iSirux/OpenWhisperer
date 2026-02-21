@@ -128,6 +128,12 @@ export interface PlanModeState {
   isComplete: boolean;
 }
 
+export interface NoteModeState {
+  isActive: boolean;
+  /** Track if the initial note was created */
+  noteCreated: boolean;
+}
+
 export type ThinkingLevel = null | 'on';
 export type SettingsThinkingLevel = 'off' | 'on';
 
@@ -202,8 +208,11 @@ export interface SdkSession {
   pendingApprovalPrompt?: string;
   pendingTranscription?: PendingTranscriptionInfo;
   planMode?: PlanModeState;
+  noteMode?: NoteModeState;
   draftPrompt?: string;
   draftImages?: SdkImageContent[];
+  /** SDK session ID for proper resume after app restart (persisted) */
+  sdkSessionId?: string;
 }
 
 export type HistoryMessage =
@@ -636,6 +645,17 @@ function createSdkSessionsStore() {
       })
     );
 
+    // SDK session ID events - capture for proper resume after app restart
+    unlisteners.push(
+      await listen<string>(`sdk-session-id-${id}`, (e) => {
+        console.log(`[sdkSessions] Captured SDK session ID for ${id}: ${e.payload}`);
+        update(sessions =>
+          sessions.map(s => s.id === id ? { ...s, sdkSessionId: e.payload } : s)
+        );
+        debouncedSave();
+      })
+    );
+
     return unlisteners;
   }
 
@@ -650,22 +670,37 @@ function createSdkSessionsStore() {
     thinkingLevel: ThinkingLevel,
     systemPrompt?: string | null,
     historyMessages?: HistoryMessage[] | null,
-    planMode?: boolean
+    sdkSessionId?: string | null, // SDK session ID for proper resume (preferred over historyMessages)
+    planMode?: boolean,
+    noteMode?: boolean
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
 
     // Determine which MCP servers to use
-    // 1. Check if the current repo has specific MCP servers configured
-    // 2. Otherwise, use all enabled global servers
+    // For note mode: use note_mcp_servers from repo config
+    // For regular mode: use mcp_servers from repo config or all enabled global servers
     let mcpServers = null;
     console.log('[MCP Debug] Total MCP servers in settings:', currentSettings.mcp?.servers?.length ?? 0);
     if (currentSettings.mcp?.servers?.length > 0) {
       const repo = currentSettings.repos.find((r) => r.path === cwd);
       console.log('[MCP Debug] Session cwd:', cwd);
-      console.log('[MCP Debug] Found repo:', repo?.name, 'with mcp_servers:', repo?.mcp_servers);
+      console.log('[MCP Debug] Found repo:', repo?.name, 'with mcp_servers:', repo?.mcp_servers, 'note_mcp_servers:', repo?.note_mcp_servers);
       let servers;
-      if (repo?.mcp_servers?.length) {
+
+      if (noteMode) {
+        // Note mode: only use note_mcp_servers from repo config
+        if (repo?.note_mcp_servers?.length) {
+          servers = currentSettings.mcp.servers.filter(
+            (s) => s.enabled && repo.note_mcp_servers!.includes(s.id)
+          );
+          console.log('[MCP Debug] Note mode: using repo note_mcp_servers:', servers.length);
+        } else {
+          // No note MCP servers configured - note mode won't have MCP tools
+          servers = [];
+          console.log('[MCP Debug] Note mode: no note_mcp_servers configured');
+        }
+      } else if (repo?.mcp_servers?.length) {
         // Use repo-specific servers
         servers = currentSettings.mcp.servers.filter(
           (s) => s.enabled && repo.mcp_servers!.includes(s.id)
@@ -718,13 +753,25 @@ function createSdkSessionsStore() {
 
     console.log('[MCP Debug] Final mcpServers to send:', mcpServers?.length ?? 0, mcpServers);
 
+    // Prefer SDK session ID for proper resume, fall back to history messages
+    // The SDK session ID allows proper conversation continuation without re-sending all history
+    const usesSdkSessionId = sdkSessionId && sdkSessionId.length > 0;
+    if (usesSdkSessionId) {
+      console.log(`[sdkSessions] Using SDK session ID for resume: ${sdkSessionId}`);
+    } else if (historyMessages && historyMessages.length > 0) {
+      console.log(`[sdkSessions] Using legacy history messages: ${historyMessages.length} messages`);
+    }
+
     await invoke('create_sdk_session', {
       id,
       cwd,
       model: resolvedModel,
       systemPrompt: systemPrompt ?? null,
-      messages: historyMessages && historyMessages.length > 0 ? historyMessages : null,
+      // Only send history messages if we don't have an SDK session ID (legacy fallback)
+      messages: !usesSdkSessionId && historyMessages && historyMessages.length > 0 ? historyMessages : null,
+      sdkSessionId: usesSdkSessionId ? sdkSessionId : null,
       planMode: planMode ?? null,
+      noteMode: noteMode ?? null,
       mcpServers: mcpServers && mcpServers.length > 0 ? mcpServers : null,
     });
 
@@ -773,7 +820,7 @@ function createSdkSessionsStore() {
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
-      await registerSessionWithBackend(id, cwd, model, thinkingLevel, systemPrompt, null, planMode);
+      await registerSessionWithBackend(id, cwd, model, thinkingLevel, systemPrompt, null, null, planMode);
 
       const currentSettings = get(settings);
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -795,8 +842,10 @@ function createSdkSessionsStore() {
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
-      const historyMessages = convertToHistoryMessages(session.messages);
-      await registerSessionWithBackend(id, session.cwd, session.model, session.thinkingLevel, null, historyMessages);
+      // Prefer SDK session ID for proper resume (avoids context bloat from prepending history)
+      // Fall back to history messages only if no SDK session ID is available (legacy sessions)
+      const historyMessages = session.sdkSessionId ? null : convertToHistoryMessages(session.messages);
+      await registerSessionWithBackend(id, session.cwd, session.model, session.thinkingLevel, null, historyMessages, session.sdkSessionId);
     },
 
     async sendPrompt(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
@@ -960,7 +1009,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; model: string; thinkingLevel: ThinkingLevel; planMode: boolean; systemPrompt?: string }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; model: string; thinkingLevel: ThinkingLevel; planMode: boolean; noteMode?: boolean; systemPrompt?: string }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -970,10 +1019,11 @@ function createSdkSessionsStore() {
             ? {
                 ...s,
                 cwd: config.cwd,
-                model: config.model,
-                thinkingLevel: config.thinkingLevel,
+                model: config.noteMode ? 'claude-haiku-4-5-20251001' : config.model, // Note mode always uses Haiku
+                thinkingLevel: config.noteMode ? null : config.thinkingLevel, // Note mode doesn't use thinking
                 status: 'initializing' as const,
                 planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
+                noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
               }
             : s
         )
@@ -981,7 +1031,10 @@ function createSdkSessionsStore() {
 
       try {
         let finalSystemPrompt = config.systemPrompt;
-        if (config.planMode) {
+        if (config.noteMode) {
+          const { getNoteModeSystemPrompt } = await import('$lib/prompts/noteMode');
+          finalSystemPrompt = getNoteModeSystemPrompt();
+        } else if (config.planMode) {
           const { getPlanModeSystemPrompt } = await import('$lib/prompts/planMode');
           finalSystemPrompt = getPlanModeSystemPrompt();
         }
@@ -991,10 +1044,14 @@ function createSdkSessionsStore() {
         const unlisteners = await setupEventListeners(id);
         listeners.set(id, unlisteners);
 
-        await registerSessionWithBackend(id, config.cwd, config.model, config.thinkingLevel, finalSystemPrompt, null, config.planMode);
+        // Note mode uses Haiku and no thinking
+        const finalModel = config.noteMode ? 'claude-haiku-4-5-20251001' : config.model;
+        const finalThinking = config.noteMode ? null : config.thinkingLevel;
+
+        await registerSessionWithBackend(id, config.cwd, finalModel, finalThinking, finalSystemPrompt, null, null, config.planMode, config.noteMode);
 
         const currentSettings = get(settings);
-        const resolvedModel = resolveModelForApi(config.model, currentSettings.enabled_models);
+        const resolvedModel = resolveModelForApi(finalModel, currentSettings.enabled_models);
         usageStats.trackSession('sdk', resolvedModel, config.cwd);
 
         update(sessions => sessions.map(s => s.id === id ? { ...s, status: 'idle' as const } : s));
@@ -1283,6 +1340,144 @@ function createSdkSessionsStore() {
       );
 
       return id;
+    },
+
+    /**
+     * Create a note-taking mode session.
+     * Note mode sessions:
+     * - Always use Haiku for speed and cost efficiency
+     * - Have read-only codebase access (Read, Glob, Grep)
+     * - Use note_mcp_servers from repo config for note-taking tools
+     * - No thinking level (null)
+     */
+    async createNoteModeSession(cwd: string): Promise<string> {
+      await this.ensureSidecarStarted();
+
+      const { getNoteModeSystemPrompt } = await import('$lib/prompts/noteMode');
+      const systemPrompt = getNoteModeSystemPrompt();
+
+      const id = crypto.randomUUID();
+      // Note mode always uses Haiku for speed and cost efficiency
+      const model = 'claude-haiku-4-5-20251001';
+
+      const session: SdkSession = {
+        id,
+        cwd,
+        model,
+        thinkingLevel: null,
+        messages: [],
+        status: 'idle',
+        createdAt: Date.now(),
+        accumulatedDurationMs: 0,
+        noteMode: { isActive: true, noteCreated: false },
+      };
+
+      update(sessions => [...sessions, session]);
+
+      const unlisteners = await setupEventListeners(id);
+      listeners.set(id, unlisteners);
+
+      await registerSessionWithBackend(id, cwd, model, null, systemPrompt, null, null, false, true);
+
+      usageStats.trackSession('sdk', model, cwd);
+
+      // Set initial metadata
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? { ...s, aiMetadata: { ...s.aiMetadata, name: 'New Note', category: 'note' } }
+            : s
+        )
+      );
+
+      return id;
+    },
+
+    /**
+     * Create a pending transcription session for note mode.
+     * Similar to createPendingTranscriptionSession but with noteMode flag.
+     */
+    createPendingNoteSession(): string {
+      const id = crypto.randomUUID();
+      // Note mode always uses Haiku
+      const model = 'claude-haiku-4-5-20251001';
+
+      const session: SdkSession = {
+        id,
+        cwd: '',
+        model,
+        thinkingLevel: null,
+        messages: [],
+        status: 'pending_transcription',
+        createdAt: Date.now(),
+        accumulatedDurationMs: 0,
+        noteMode: { isActive: true, noteCreated: false },
+        pendingTranscription: { status: 'recording', audioVisualizationHistory: [], recordingStartedAt: Date.now() },
+      };
+
+      update(sessions => [...sessions, session]);
+      return id;
+    },
+
+    /**
+     * Complete a pending note session and send the transcribed note.
+     */
+    async completePendingNoteSession(id: string, cwd: string, transcript: string): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
+
+      if (!session || session.status !== 'pending_transcription' || !session.noteMode?.isActive) return;
+
+      const { getNoteModeSystemPrompt } = await import('$lib/prompts/noteMode');
+      const systemPrompt = getNoteModeSystemPrompt();
+
+      update(sessions =>
+        sessions.map(s => s.id === id ? { ...s, cwd, status: 'initializing' as const, pendingPrompt: transcript } : s)
+      );
+
+      try {
+        await this.ensureSidecarStarted();
+
+        const unlisteners = await setupEventListeners(id);
+        listeners.set(id, unlisteners);
+
+        await registerSessionWithBackend(id, cwd, session.model, null, systemPrompt, null, null, false, true);
+
+        usageStats.trackSession('sdk', session.model, cwd);
+
+        // Send the transcript as the initial prompt
+        await this.sendPrompt(id, transcript);
+
+        // Update metadata
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, aiMetadata: { ...s.aiMetadata, name: 'New Note', category: 'note' } }
+              : s
+          )
+        );
+      } catch (error) {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, status: 'error' as const, messages: [...s.messages, { type: 'error' as const, content: error instanceof Error ? error.message : 'Failed to initialize note session', timestamp: Date.now() }] }
+              : s
+          )
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Mark a note session as having created the note.
+     */
+    markNoteCreated(id: string): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.noteMode) return s;
+          return { ...s, noteMode: { ...s.noteMode, noteCreated: true } };
+        })
+      );
     },
 
     updatePlanModeQuestions(id: string, questions: PlanningQuestion[]): void {

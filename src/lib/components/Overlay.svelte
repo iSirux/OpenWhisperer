@@ -128,6 +128,12 @@
     overlay.hide();
     overlay.clearSessionInfo();
   }
+
+  function handleGo(event: MouseEvent) {
+    event.stopPropagation();
+    // Emit event to send recording in main window
+    emit("send-recording");
+  }
 </script>
 
 <div class="overlay-window px-3 pt-3 pb-2">
@@ -151,14 +157,24 @@
     {/if}
   {/if}
 
-  <div class="flex items-center justify-between gap-4">
-    <div class="flex items-center gap-2">
+  <div class="flex items-center gap-3">
+    <!-- Left section: Model badge / Status indicator (fixed width) -->
+    <div class="flex items-center gap-2 flex-shrink-0">
       {#if isRecordingActive}
         {#if $overlay.mode === "paste"}
           <span
             class="text-xs text-text-muted px-1.5 py-0.5 bg-surface rounded"
           >
             Transcription
+          </span>
+        {:else if $overlay.mode === "note"}
+          <span
+            class="text-xs font-medium px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 flex items-center gap-1"
+          >
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+            Note Mode
           </span>
         {:else if $overlay.mode === "inline"}
           {#if $overlay.inlineSessionInfo?.model}
@@ -199,30 +215,31 @@
       {/if}
     </div>
 
-    <div class="flex items-center gap-3">
+    <!-- Middle section: Repo info (can shrink/truncate) -->
+    <div class="flex-1 min-w-0 overflow-hidden">
       {#if $overlay.mode === "inline" && $overlay.inlineSessionInfo}
-        <div class="flex items-center gap-2 text-xs">
+        <div class="flex items-center gap-2 text-xs justify-end">
           {#if $overlay.inlineSessionInfo.repoName}
-            <span class="text-text-secondary truncate max-w-32"
+            <span class="text-text-secondary truncate"
               >{$overlay.inlineSessionInfo.repoName}</span
             >
           {/if}
           {#if $overlay.inlineSessionInfo.branch}
-            <span class="text-text-muted">·</span>
+            <span class="text-text-muted flex-shrink-0">·</span>
             <span class="font-mono text-primary truncate max-w-24"
               >{$overlay.inlineSessionInfo.branch}</span
             >
           {/if}
         </div>
-      {:else if $overlay.mode !== "paste"}
-        <div class="flex items-center gap-2 text-xs">
+      {:else if $overlay.mode !== "paste" && $overlay.mode !== "note"}
+        <div class="flex items-center gap-2 text-xs justify-end">
           {#if $isAutoRepoSelected && isRepoAutoSelectEnabled()}
             <span
-              class="px-2 py-0.5 rounded bg-gradient-to-r from-purple-500 to-amber-500 text-white font-medium shadow-sm"
+              class="px-2 py-0.5 rounded bg-gradient-to-r from-purple-500 to-amber-500 text-white font-medium shadow-sm flex-shrink-0"
               >Auto</span
             >
           {:else if $activeRepo}
-            <span class="text-text-secondary truncate max-w-32"
+            <span class="text-text-secondary truncate"
               >{$activeRepo.name}</span
             >
           {/if}
@@ -234,8 +251,18 @@
           {/if}
         </div>
       {/if}
+    </div>
 
-      {#if isRecordingActive}
+    <!-- Right section: Action buttons (fixed width) -->
+    {#if isRecordingActive}
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <button
+          class="go-btn px-2 py-1 text-xs font-medium bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30 rounded transition-colors"
+          onclick={handleGo}
+          title="Stop and send"
+        >
+          Go
+        </button>
         <button
           class="discard-btn px-2 py-1 text-xs font-medium bg-error/20 hover:bg-error/30 text-error border border-error/30 rounded transition-colors"
           onclick={handleDiscard}
@@ -243,8 +270,8 @@
         >
           Discard
         </button>
-      {/if}
-    </div>
+      </div>
+    {/if}
   </div>
 
   <!-- Show SDK session info when available (only show branch here, model is shown inline when recording) -->

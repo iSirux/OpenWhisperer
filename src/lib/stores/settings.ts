@@ -52,6 +52,8 @@ export interface HotkeyConfig {
   transcribe_to_input: string;
   cycle_repo: string;
   cycle_model: string;
+  /** Hotkey to start recording in note-taking mode */
+  note_mode: string;
 }
 
 export interface OverlayConfig {
@@ -70,6 +72,8 @@ export interface VoiceCommandConfig {
   transcribe_commands: string[];
   /** List of active voice commands that will cancel/discard the recording */
   cancel_commands: string[];
+  /** List of voice commands that will trigger note-taking mode */
+  note_commands: string[];
 }
 
 /** Default voice command presets for sending prompts */
@@ -98,6 +102,15 @@ export const CANCEL_COMMAND_PRESETS = [
   "discard recording",
   "scratch that",
   "abort abort",
+] as const;
+
+/** Default voice command presets for note-taking mode */
+export const NOTE_COMMAND_PRESETS = [
+  "take a note",
+  "new note",
+  "note this",
+  "make a note",
+  "jot this down",
 ] as const;
 
 /** Open mic configuration for passive voice listening */
@@ -162,6 +175,8 @@ export interface RepoConfig {
   vocabulary?: string[];
   /** List of MCP server IDs to use for this repository (overrides global servers) */
   mcp_servers?: string[];
+  /** List of MCP server IDs to use for note-taking mode in this repository */
+  note_mcp_servers?: string[];
 }
 
 // Import and re-export MCP types
@@ -183,6 +198,9 @@ export type SessionSortOrder = "Chronological" | "StatusThenChronological";
 // Sessions view layout options
 export type SessionsViewLayout = "list" | "grid";
 export type SessionsGridSize = "small" | "medium" | "large";
+
+// Tool call display mode in SDK view
+export type ToolDisplayMode = "list" | "grid";
 
 export interface SessionsViewConfig {
   layout: SessionsViewLayout;
@@ -210,6 +228,12 @@ export type GeminiModelPriority = LlmModelPriority;
 // low: Auto-select for any confidence level
 export type RepoAutoSelectConfidence = "high" | "medium" | "low";
 
+// Controls how thinking level is determined when using smart model selection
+// off: Always disable thinking
+// on: Always enable thinking
+// dynamic: Let the LLM decide based on prompt complexity
+export type AutoModelThinking = "off" | "on" | "dynamic";
+
 export interface LlmFeaturesConfig {
   auto_name_sessions: boolean;
   detect_interaction_needed: boolean;
@@ -219,6 +243,8 @@ export interface LlmFeaturesConfig {
   /** Use both Vosk and Whisper transcriptions for cleanup (requires both to be enabled) */
   use_dual_transcription: boolean;
   recommend_model: boolean;
+  /** Controls thinking level behavior when smart model selection is enabled */
+  auto_model_thinking: AutoModelThinking;
   /** Auto-select repository based on prompt content */
   auto_select_repo: boolean;
 }
@@ -271,6 +297,7 @@ export interface AppConfig {
   session_response_rows: number;
   sidebar_width: number;
   sessions_view: SessionsViewConfig;
+  tool_display_mode: ToolDisplayMode;
   llm: LlmConfig;
   /** @deprecated Use llm instead */
   gemini?: LlmConfig;
@@ -314,6 +341,7 @@ const defaultConfig: AppConfig = {
     transcribe_to_input: "CommandOrControl+Shift+T",
     cycle_repo: "CommandOrControl+Shift+R",
     cycle_model: "CommandOrControl+Shift+M",
+    note_mode: "CommandOrControl+Shift+N",
   },
   overlay: {
     show_when_focused: true,
@@ -335,6 +363,7 @@ const defaultConfig: AppConfig = {
       active_commands: ["go go"],
       transcribe_commands: [],
       cancel_commands: [],
+      note_commands: ["take a note", "new note"],
     },
     open_mic: {
       enabled: false,
@@ -374,10 +403,11 @@ const defaultConfig: AppConfig = {
   session_response_rows: 2,
   sidebar_width: 256,
   sessions_view: {
-    layout: "list",
+    layout: "grid",
     grid_columns: 3,
     card_size: "medium",
   },
+  tool_display_mode: "list",
   llm: {
     enabled: false,
     provider: "Gemini",
@@ -392,6 +422,7 @@ const defaultConfig: AppConfig = {
       clean_transcription: false,
       use_dual_transcription: false,
       recommend_model: false,
+      auto_model_thinking: "dynamic",
       auto_select_repo: false,
     },
     confirm_repo_selection: false,

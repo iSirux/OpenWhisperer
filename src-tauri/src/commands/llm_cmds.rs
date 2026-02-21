@@ -303,6 +303,7 @@ pub async fn recommend_model(
     config: State<'_, Mutex<AppConfig>>,
     stats: State<'_, UsageStatsState>,
     prompt: String,
+    enabled_models: Option<Vec<String>>,
 ) -> Result<ModelRecommendation, String> {
     let cfg = config.lock().clone();
 
@@ -315,7 +316,10 @@ pub async fn recommend_model(
     }
 
     let client = create_client(&app, &cfg)?;
-    let result = client.recommend_model_with_usage(&prompt).await?;
+
+    // Use provided enabled_models or fall back to config
+    let models_to_consider = enabled_models.as_ref().unwrap_or(&cfg.enabled_models);
+    let result = client.recommend_model_with_usage(&prompt, models_to_consider).await?;
 
     // Track usage
     track_usage(&stats, "model_recommendation", result.usage.input_tokens, result.usage.output_tokens);

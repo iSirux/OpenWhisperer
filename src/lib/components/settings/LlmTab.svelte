@@ -882,6 +882,86 @@
                 </div>
               </button>
 
+              <!-- Sub-options for Smart Model Selection -->
+              {#if $settings.llm.features.recommend_model}
+                <div class="mt-3 ml-8 pl-3 border-l-2 border-border space-y-2">
+                  <div>
+                    <label
+                      class="block text-xs font-medium text-text-secondary mb-1.5"
+                      >Thinking Mode</label
+                    >
+                    <div class="flex gap-1">
+                      <button
+                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
+                          .llm.features.auto_model_thinking === 'off'
+                          ? 'bg-accent text-white'
+                          : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
+                        onclick={() =>
+                          settings.update((s) => ({
+                            ...s,
+                            llm: {
+                              ...s.llm,
+                              features: {
+                                ...s.llm.features,
+                                auto_model_thinking: "off",
+                              },
+                            },
+                          }))}
+                      >
+                        Off
+                      </button>
+                      <button
+                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
+                          .llm.features.auto_model_thinking === 'on'
+                          ? 'bg-accent text-white'
+                          : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
+                        onclick={() =>
+                          settings.update((s) => ({
+                            ...s,
+                            llm: {
+                              ...s.llm,
+                              features: {
+                                ...s.llm.features,
+                                auto_model_thinking: "on",
+                              },
+                            },
+                          }))}
+                      >
+                        On
+                      </button>
+                      <button
+                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
+                          .llm.features.auto_model_thinking === 'dynamic'
+                          ? 'bg-accent text-white'
+                          : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
+                        onclick={() =>
+                          settings.update((s) => ({
+                            ...s,
+                            llm: {
+                              ...s.llm,
+                              features: {
+                                ...s.llm.features,
+                                auto_model_thinking: "dynamic",
+                              },
+                            },
+                          }))}
+                      >
+                        Dynamic
+                      </button>
+                    </div>
+                    <p class="text-xs text-text-muted mt-1">
+                      {#if $settings.llm.features.auto_model_thinking === 'off'}
+                        Thinking is always disabled when using auto model
+                      {:else if $settings.llm.features.auto_model_thinking === 'on'}
+                        Thinking is always enabled when using auto model
+                      {:else}
+                        LLM decides whether to use thinking based on prompt complexity
+                      {/if}
+                    </p>
+                  </div>
+                </div>
+              {/if}
+
               <!-- Auto-select Repository -->
               <button
                 class="w-full flex items-center justify-between p-3 rounded border-2 transition-all text-left {$settings

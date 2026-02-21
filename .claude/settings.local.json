@@ -21,7 +21,9 @@
       "Bash(powershell.exe -Command \"cd ''C:\\Developer\\Personal\\ClaudeWhisperer''; npm run check 2>&1\")",
       "Bash(powershell.exe -Command \"cd ''C:\\Developer\\Personal\\ClaudeWhisperer\\src-tauri''; cargo check 2>&1\")",
       "Bash(powershell.exe -Command \"rustup update stable 2>&1\")",
-      "Bash(powershell.exe -Command \"cd ''C:\\Developer\\Personal\\ClaudeWhisperer\\src-tauri\\sidecar''; npm install 2>&1\")"
+      "Bash(powershell.exe -Command \"cd ''C:\\Developer\\Personal\\ClaudeWhisperer\\src-tauri\\sidecar''; npm install 2>&1\")",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:openai.github.io)"
     ],
     "deny": [],
     "ask": []

@@ -82,6 +82,12 @@ pub fn run() {
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_denylist(&["overlay"])
+                // Use separate window state files for dev and production to allow different layouts
+                .with_filename(if cfg!(debug_assertions) {
+                    ".window-state-dev.json"
+                } else {
+                    ".window-state.json"
+                })
                 .build(),
         )
         .manage(Mutex::new(config))

@@ -216,9 +216,11 @@ interface CreateMessage {
   cwd: string;
   model?: string;
   system_prompt?: string;
-  messages?: HistoryMessage[]; // Conversation history for restored sessions
+  messages?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED - use sdk_session_id instead)
+  sdk_session_id?: string; // SDK session ID for proper resume (preferred over messages)
   options?: Partial<Options>;
   plan_mode?: boolean; // Whether this is a plan mode session (enables planning tools)
+  note_mode?: boolean; // Whether this is a note-taking mode session (read-only + note MCP tools)
   mcp_servers?: McpServerConfig[]; // External MCP servers to register
 }
 
@@ -281,10 +283,12 @@ interface Session {
   abortController?: AbortController;
   queryIterator?: Query; // The active query iterator for interrupt()
   sdkSessionId?: string; // Track the SDK's internal session ID for resume
-  conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions
+  passedSdkSessionId?: string; // SDK session ID passed from frontend for restored sessions
+  conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED)
   maxThinkingTokens?: number; // Extended thinking budget (null/undefined = off)
   currentQueryId?: string; // Unique ID for the current query (to detect stale done events)
   planMode?: boolean; // Whether this is a plan mode session
+  noteMode?: boolean; // Whether this is a note-taking mode session
 }
 
 const sessions = new Map<string, Session>();
@@ -386,6 +390,10 @@ function sendSubagentStop(
   transcriptPath: string
 ): void {
   send({ type: "subagent_stop", id, agentId, transcriptPath });
+}
+
+function sendSdkSessionId(id: string, sdkSessionId: string): void {
+  send({ type: "sdk_session_id", id, sdkSessionId });
 }
 
 // Planning mode specific events
@@ -605,6 +613,28 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     ];
   }
 
+  // Configure note mode with read-only tools + MCP note tools
+  if (msg.note_mode) {
+    send({
+      type: "debug",
+      id: msg.id,
+      message: "Note mode: configuring read-only access with note MCP tools",
+    });
+
+    // Don't load user/project/local settings for note mode - this prevents Claude
+    // from seeing all the tool descriptions in its system prompt. We only want
+    // Claude to see the read-only tools and MCP tools that are actually allowed.
+    options.settingSources = [];
+
+    // Start with read-only codebase tools only
+    // MCP tool patterns will be added below when MCP servers are registered
+    options.allowedTools = [
+      "Read",
+      "Glob",
+      "Grep",
+    ];
+  }
+
   // Register external MCP servers if provided
   // Also add a wildcard pattern to allowedTools to permit all tools from registered MCP servers
   if (msg.mcp_servers && msg.mcp_servers.length > 0) {
@@ -733,15 +763,23 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   sessions.set(msg.id, {
     cwd: msg.cwd,
     options,
-    conversationHistory: msg.messages, // Store conversation history for restored sessions
+    passedSdkSessionId: msg.sdk_session_id, // SDK session ID for proper resume
+    conversationHistory: msg.messages, // Store conversation history for restored sessions (DEPRECATED)
     planMode: msg.plan_mode,
+    noteMode: msg.note_mode,
   });
 
-  if (msg.messages && msg.messages.length > 0) {
+  if (msg.sdk_session_id) {
     send({
       type: "debug",
       id: msg.id,
-      message: `Session created with ${msg.messages.length} history messages`,
+      message: `Session created with SDK session ID for resume: ${msg.sdk_session_id}`,
+    });
+  } else if (msg.messages && msg.messages.length > 0) {
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Session created with ${msg.messages.length} history messages (DEPRECATED - use sdk_session_id)`,
     });
   }
 
@@ -750,6 +788,14 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       type: "debug",
       id: msg.id,
       message: "Session created in PLAN MODE - planning tools enabled",
+    });
+  }
+
+  if (msg.note_mode) {
+    send({
+      type: "debug",
+      id: msg.id,
+      message: "Session created in NOTE MODE - read-only tools + note MCP enabled",
     });
   }
 
@@ -923,19 +969,28 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
   session.currentQueryId = queryId;
 
   const hasImages = msg.images && msg.images.length > 0;
+
+  // Determine the SDK session ID to use for resume:
+  // 1. If we have a captured sdkSessionId from a previous query, use that
+  // 2. If we have a passedSdkSessionId from the frontend (restored session), use that
+  // 3. Otherwise, no resume
+  const resumeSessionId = session.sdkSessionId || session.passedSdkSessionId;
+
+  // Only prepend history if we have NO SDK session ID to resume from (legacy fallback)
   const hasHistory =
     session.conversationHistory &&
     session.conversationHistory.length > 0 &&
-    !session.sdkSessionId;
+    !resumeSessionId;
+
   send({
     type: "debug",
     id: msg.id,
     message: `Starting query ${queryId} with prompt: ${msg.prompt.slice(
       0,
       100
-    )}... (images: ${msg.images?.length ?? 0}, history: ${
-      session.conversationHistory?.length ?? 0
-    })`,
+    )}... (images: ${msg.images?.length ?? 0}, resumeId: ${
+      resumeSessionId || "none"
+    }, legacyHistory: ${hasHistory ? session.conversationHistory?.length : 0})`,
   });
 
   try {
@@ -946,9 +1001,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     send({
       type: "debug",
       id: msg.id,
-      message: `Calling SDK query()... resume=${
-        session.sdkSessionId || "none"
-      }`,
+      message: `Calling SDK query()... resume=${resumeSessionId || "none"}`,
     });
     send({
       type: "debug",
@@ -957,7 +1010,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     });
 
     // If this is a restored session without an SDK session ID, prepend conversation history
-    // (After first query, we'll have an sdkSessionId and can use the SDK's built-in resume)
+    // This is a LEGACY fallback - proper sessions should use passedSdkSessionId for resume
     let promptToSend = msg.prompt;
     if (hasHistory) {
       const historyContext = formatConversationHistory(
@@ -967,9 +1020,9 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
       send({
         type: "debug",
         id: msg.id,
-        message: `Prepended ${
+        message: `[LEGACY] Prepended ${
           session.conversationHistory!.length
-        } history messages to prompt`,
+        } history messages to prompt (consider persisting SDK session ID instead)`,
       });
     }
 
@@ -999,8 +1052,8 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     const queryOptions: Options & { abortController: AbortController } = {
       ...session.options,
       abortController,
-      // Resume from previous session if we have one
-      resume: session.sdkSessionId,
+      // Resume from previous session if we have one (either captured or passed from frontend)
+      resume: resumeSessionId,
       // Capture stderr for debugging
       stderr: (data: string) => {
         send({ type: "debug", id: msg.id, message: `[stderr] ${data}` });
@@ -1090,6 +1143,8 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
             id: msg.id,
             message: `Captured SDK session ID: ${message.session_id}`,
           });
+          // Send SDK session ID to frontend so it can be persisted for proper resume
+          sendSdkSessionId(msg.id, message.session_id);
         }
         handleSdkMessage(msg.id, message);
       } catch (err) {

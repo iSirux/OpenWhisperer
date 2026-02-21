@@ -8,7 +8,7 @@
     type ThinkingLevel,
     type PlanningAnswer,
   } from "$lib/stores/sdkSessions";
-  import { recording, isRecording, isProcessing } from "$lib/stores/recording";
+  import { recording, isRecording, isTranscribing } from "$lib/stores/recording";
   import { settings, isAutoRepoSelected } from "$lib/stores/settings";
   import { overlay } from "$lib/stores/overlay";
   import { invoke } from "@tauri-apps/api/core";
@@ -20,6 +20,7 @@
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
   import PlanningWizard from "./sdk/PlanningWizard.svelte";
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
+  import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import ThinkingToggle from "./ThinkingToggle.svelte";
   import RepoSelector from "./RepoSelector.svelte";
@@ -149,6 +150,49 @@
     }
 
     return result;
+  });
+
+  // Group messages for rendering based on tool_display_mode setting
+  // Returns an array of render items: either single messages or tool groups
+  type RenderItem =
+    | { type: 'message'; message: SdkMessage }
+    | { type: 'tool_group'; tools: SdkMessage[] };
+
+  let renderItems = $derived(() => {
+    // Filter out subagent_stop messages - they shouldn't be rendered
+    const msgs = processedMessages().filter(msg => msg.type !== 'subagent_stop');
+    const isGridMode = $settings.tool_display_mode === 'grid';
+
+    if (!isGridMode) {
+      // List mode: each message is its own render item
+      return msgs.map(msg => ({ type: 'message' as const, message: msg }));
+    }
+
+    // Grid mode: group consecutive tool messages together
+    const items: RenderItem[] = [];
+    let currentToolGroup: SdkMessage[] = [];
+
+    for (const msg of msgs) {
+      const isToolMessage = msg.type === 'tool_start' || msg.type === 'tool_result' || msg.type === 'thinking';
+
+      if (isToolMessage) {
+        currentToolGroup.push(msg);
+      } else {
+        // Flush any pending tool group
+        if (currentToolGroup.length > 0) {
+          items.push({ type: 'tool_group', tools: [...currentToolGroup] });
+          currentToolGroup = [];
+        }
+        items.push({ type: 'message', message: msg });
+      }
+    }
+
+    // Flush remaining tool group
+    if (currentToolGroup.length > 0) {
+      items.push({ type: 'tool_group', tools: currentToolGroup });
+    }
+
+    return items;
   });
 
   let status = $derived(session?.status ?? "idle");
@@ -312,7 +356,13 @@
                             found?.usage?.totalOutputTokens !== session?.usage?.totalOutputTokens;
         const pendingChanged = found?.pendingTranscription?.status !== session?.pendingTranscription?.status ||
                               found?.pendingTranscription?.transcript !== session?.pendingTranscription?.transcript;
-        const planModeChanged = found?.planMode?.isActive !== session?.planMode?.isActive;
+        const planModeChanged = found?.planMode?.isActive !== session?.planMode?.isActive ||
+                              found?.planMode?.questions.length !== session?.planMode?.questions.length ||
+                              found?.planMode?.answers.length !== session?.planMode?.answers.length ||
+                              found?.planMode?.currentQuestionIndex !== session?.planMode?.currentQuestionIndex ||
+                              found?.planMode?.isComplete !== session?.planMode?.isComplete ||
+                              // Deep check for answer changes (selectedOptions)
+                              JSON.stringify(found?.planMode?.answers) !== JSON.stringify(session?.planMode?.answers);
 
         if (!session || statusChanged || messagesChanged || cwdChanged || modelChanged ||
             usageChanged || pendingChanged || planModeChanged) {
@@ -577,7 +627,8 @@
         try {
           const recommendation = await recommendModel(prompt);
           if (recommendation) {
-            // Only use recommendation if the model is enabled
+            // Backend filters by enabled_models, but double-check for safety
+            // This also handles edge case where settings changed between recommendation and now
             if ($settings.enabled_models.includes(recommendation.modelId)) {
               await sdkSessions.updateSessionModel(
                 sessionId,
@@ -596,11 +647,12 @@
                 thinkingLevel: recommendation.thinkingLevel ?? undefined,
               };
             } else {
-              console.log(
-                "[SdkView] Recommended model not enabled, keeping current"
+              console.warn(
+                "[SdkView] Recommended model not in enabled_models (settings may have changed), keeping current:",
+                recommendation.modelId
               );
             }
-            // Apply thinking level recommendation if provided
+            // Apply thinking level recommendation if provided (regardless of model)
             if (recommendation.thinkingLevel) {
               await sdkSessions.updateSessionThinking(
                 sessionId,
@@ -846,6 +898,7 @@
         {sessionId}
         onRetry={handleRetryTranscription}
         onCancel={handleCancelPendingTranscription}
+        autoModelThinking={$settings.llm?.features?.auto_model_thinking}
       />
     {/if}
 
@@ -859,6 +912,7 @@
         {repoName}
         onApprove={handleApprove}
         onCancelApproval={handleCancelApproval}
+        autoModelThinking={$settings.llm?.features?.auto_model_thinking}
       />
     {/if}
 
@@ -868,17 +922,22 @@
         {pendingTranscription}
         {sessionId}
         completed={true}
+        autoModelThinking={$settings.llm?.features?.auto_model_thinking}
       />
     {/if}
 
-    {#each processedMessages() as msg (msg.timestamp)}
-      <SdkMessageComponent
-        message={msg}
-        {copiedMessageId}
-        onCopy={copyMessage}
-        sessionCwd={cwd}
-        {sessionModel}
-      />
+    {#each renderItems() as item, index (item.type === 'message' ? item.message.timestamp : `tool-group-${index}`)}
+      {#if item.type === 'message'}
+        <SdkMessageComponent
+          message={item.message}
+          {copiedMessageId}
+          onCopy={copyMessage}
+          sessionCwd={cwd}
+          {sessionModel}
+        />
+      {:else if item.type === 'tool_group'}
+        <SdkToolGrid tools={item.tools} />
+      {/if}
     {/each}
 
     {#if isLoading}
@@ -928,7 +987,7 @@
     {sessionId}
     {isQuerying}
     isRecording={$isRecording}
-    isTranscribing={$isProcessing && isRecordingForCurrentSession}
+    isTranscribing={$isTranscribing && isRecordingForCurrentSession}
     {isRecordingForCurrentSession}
     {draftPrompt}
     {draftImages}

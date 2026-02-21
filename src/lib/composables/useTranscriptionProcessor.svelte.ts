@@ -17,7 +17,7 @@ import {
   buildRepoContextForCleanup,
   buildAllReposContextForCleanup,
 } from '$lib/utils/llm';
-import { processVoiceCommand } from '$lib/utils/voiceCommands';
+import { processVoiceCommand, type VoiceCommandType } from '$lib/utils/voiceCommands';
 import { isAutoModel } from '$lib/utils/models';
 import { get } from 'svelte/store';
 
@@ -36,6 +36,8 @@ export interface ProcessedTranscript {
   commandDetected: boolean;
   /** The detected command (if any) */
   detectedCommand?: string;
+  /** The type of command detected */
+  commandType: VoiceCommandType;
   /** Whether the transcript is empty after processing */
   isEmpty: boolean;
 }
@@ -87,7 +89,7 @@ export function processVoiceCommands(
   }
 
   if (result.commandDetected) {
-    console.log('[voice-command] Detected:', result.detectedCommand);
+    console.log('[voice-command] Detected:', result.detectedCommand, 'type:', result.commandType);
     console.log('[voice-command] Original:', whisperTranscript);
     console.log('[voice-command] Cleaned:', result.cleanedTranscript);
   }
@@ -97,6 +99,7 @@ export function processVoiceCommands(
     voskTranscript: processedVosk,
     commandDetected: result.commandDetected,
     detectedCommand: result.detectedCommand ?? undefined,
+    commandType: result.commandType,
     isEmpty: !result.cleanedTranscript.trim(),
   };
 }
@@ -146,10 +149,20 @@ export async function getModelRecommendation(
   const currentSettings = get(settings);
   let model = currentSettings.default_model;
   let thinkingLevel = settingsToStoreThinking(currentSettings.default_thinking_level);
+  const autoModelThinking = currentSettings.llm.features.auto_model_thinking;
 
   if (!isAutoModel(model)) {
     return { model, thinkingLevel };
   }
+
+  // Apply auto model thinking setting when using auto model
+  // This applies even if model recommendation is disabled
+  if (autoModelThinking === 'off') {
+    thinkingLevel = null;
+  } else if (autoModelThinking === 'on') {
+    thinkingLevel = 'on';
+  }
+  // 'dynamic' will let the LLM decide if recommendation is enabled
 
   if (!isModelRecommendationEnabled()) {
     // Auto selected but recommendation not enabled - fall back to first enabled model
@@ -171,10 +184,14 @@ export async function getModelRecommendation(
         console.log('[llm] Recommended model not enabled, falling back to:', model);
       }
 
-      // Apply thinking level if provided
-      if (recommendation.thinkingLevel) {
+      // Apply thinking level based on auto_model_thinking setting
+      if (autoModelThinking === 'dynamic' && recommendation.thinkingLevel) {
+        // Dynamic mode: use LLM recommendation
         thinkingLevel = recommendation.thinkingLevel as ThinkingLevel;
         console.log('[llm] Using recommended thinking level:', thinkingLevel);
+      } else {
+        // off/on mode: thinking level already set above
+        console.log('[llm] Using auto_model_thinking setting:', autoModelThinking, '-> thinking:', thinkingLevel);
       }
 
       return {

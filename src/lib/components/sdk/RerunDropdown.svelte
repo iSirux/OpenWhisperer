@@ -33,12 +33,6 @@
   const effectiveRepoIndex = $derived(selectedRepoIndex ?? currentRepoIndex);
   const effectiveModel = $derived(selectedModel ?? currentModel);
 
-  // Check if anything has changed
-  const hasChanges = $derived(
-    (selectedRepoIndex !== null && selectedRepoIndex !== currentRepoIndex) ||
-    (selectedModel !== null && selectedModel !== currentModel)
-  );
-
   function toggleDropdown(e: MouseEvent) {
     e.stopPropagation();
     isOpen = !isOpen;
@@ -64,8 +58,6 @@
   }
 
   async function handleRerun() {
-    if (!hasChanges) return;
-
     const repo = repos[effectiveRepoIndex];
     if (!repo) return;
 
@@ -132,71 +124,71 @@
 
   {#if isOpen}
     <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-      <div class="dropdown-header">
-        <span class="dropdown-title">Rerun with</span>
-      </div>
-
-      <!-- Model Selection -->
-      <div class="dropdown-section">
-        <div class="section-label">Model</div>
-        <div class="model-grid">
-          {#each models as model}
-            <button
-              class={getModelButtonClass(model.id, effectiveModel === model.id)}
-              onclick={() => handleModelSelect(model.id)}
-              title={model.title}
-            >
-              {getModelLabel(model)}
-              {#if model.id === currentModel && selectedModel === null}
-                <span class="current-badge">current</span>
-              {/if}
-            </button>
-          {/each}
+      <div class="dropdown-inner">
+        <div class="dropdown-header">
+          <span class="dropdown-title">Rerun with</span>
         </div>
-      </div>
 
-      <!-- Repo Selection -->
-      {#if repos.length > 1}
+        <!-- Model Selection -->
         <div class="dropdown-section">
-          <div class="section-label">Repository</div>
-          <div class="repo-list">
-            {#each repos as repo, index}
+          <div class="section-label">Model</div>
+          <div class="model-grid">
+            {#each models as model}
               <button
-                class="repo-option"
-                class:selected={effectiveRepoIndex === index}
-                onclick={() => handleRepoSelect(index)}
+                class={getModelButtonClass(model.id, effectiveModel === model.id)}
+                onclick={() => handleModelSelect(model.id)}
+                title={model.title}
               >
-                <svg class="repo-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-                <span class="repo-name">{getRepoDisplayName(repo)}</span>
-                {#if index === currentRepoIndex && selectedRepoIndex === null}
+                {getModelLabel(model)}
+                {#if model.id === currentModel && selectedModel === null}
                   <span class="current-badge">current</span>
-                {/if}
-                {#if effectiveRepoIndex === index}
-                  <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                  </svg>
                 {/if}
               </button>
             {/each}
           </div>
         </div>
-      {/if}
 
-      <!-- Rerun Button -->
-      <div class="dropdown-footer">
-        <button
-          class="rerun-action"
-          class:disabled={!hasChanges}
-          onclick={handleRerun}
-          disabled={!hasChanges}
-        >
-          <svg viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
-            <path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-9.182a.75.75 0 00-.75.75v2.43l-.31-.31A7 7 0 003.77 8.25a.75.75 0 001.449.39 5.5 5.5 0 019.201-2.466l.312.311h-2.433a.75.75 0 000 1.5h4.243a.75.75 0 00.75-.75V2.992a.75.75 0 00-.75-.75z" clip-rule="evenodd" />
-          </svg>
-          Rerun
-        </button>
+        <!-- Repo Selection -->
+        {#if repos.length > 0}
+          <div class="dropdown-section">
+            <div class="section-label">Repository</div>
+            <div class="repo-list">
+              {#each repos as repo, index}
+                <button
+                  class="repo-option"
+                  class:selected={effectiveRepoIndex === index}
+                  onclick={() => handleRepoSelect(index)}
+                >
+                  <svg class="repo-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                  <span class="repo-name">{getRepoDisplayName(repo)}</span>
+                  {#if index === currentRepoIndex && selectedRepoIndex === null}
+                    <span class="current-badge">current</span>
+                  {/if}
+                  {#if effectiveRepoIndex === index}
+                    <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                    </svg>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Rerun Button -->
+        <div class="dropdown-footer">
+          <button
+            class="rerun-action"
+            onclick={handleRerun}
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+              <path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-9.182a.75.75 0 00-.75.75v2.43l-.31-.31A7 7 0 003.77 8.25a.75.75 0 001.449.39 5.5 5.5 0 019.201-2.466l.312.311h-2.433a.75.75 0 000 1.5h4.243a.75.75 0 00.75-.75V2.992a.75.75 0 00-.75-.75z" clip-rule="evenodd" />
+            </svg>
+            Rerun
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -231,14 +223,14 @@
     bottom: 100%;
     right: 0;
     margin-bottom: 0.5rem;
-    min-width: 220px;
-    max-width: 280px;
+    min-width: 240px;
+    max-width: 320px;
     background: var(--color-surface-elevated);
     border: 1px solid var(--color-border);
     border-radius: 8px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     z-index: 100;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .dropdown-header {
@@ -255,10 +247,17 @@
   .dropdown-section {
     padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--color-border);
+    overflow: visible;
   }
 
   .dropdown-section:last-of-type {
     border-bottom: none;
+  }
+
+  .dropdown-inner {
+    background: var(--color-surface-elevated);
+    border-radius: 8px;
+    overflow: hidden;
   }
 
   .section-label {
@@ -288,7 +287,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-    max-height: 150px;
+    max-height: 200px;
     overflow-y: auto;
   }
 
@@ -361,13 +360,7 @@
     transition: all 0.15s;
   }
 
-  .rerun-action:hover:not(.disabled) {
+  .rerun-action:hover {
     filter: brightness(1.1);
-  }
-
-  .rerun-action.disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    background: var(--color-text-muted);
   }
 </style>

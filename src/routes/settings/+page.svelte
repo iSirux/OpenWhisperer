@@ -7,6 +7,7 @@
     ClaudeTab,
     ThemesTab,
     SystemTab,
+    MicrophoneTab,
     AudioTab,
     WhisperTab,
     VoskTab,
@@ -101,6 +102,7 @@
     { id: "sessions", label: "Sessions" },
     { id: "themes", label: "Themes" },
     { id: "system", label: "System" },
+    { id: "microphone", label: "Microphone" },
     { id: "audio", label: "Audio" },
     { id: "whisper", label: "Transcription (Whisper)" },
     { id: "vosk", label: "Real-time Transcription (Vosk)" },
@@ -168,6 +170,8 @@
         <ThemesTab />
       {:else if activeTab === "system"}
         <SystemTab />
+      {:else if activeTab === "microphone"}
+        <MicrophoneTab />
       {:else if activeTab === "audio"}
         <AudioTab />
       {:else if activeTab === "whisper"}

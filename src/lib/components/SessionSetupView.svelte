@@ -2,7 +2,7 @@
   import type { ThinkingLevel, SdkImageContent } from '$lib/stores/sdkSessions';
   import type { RepoConfig } from '$lib/stores/settings';
   import { settings } from '$lib/stores/settings';
-  import { isRecording } from '$lib/stores/recording';
+  import { isRecording, isTranscribing } from '$lib/stores/recording';
   import {
     getModelBgColor,
     getModelRingColor,
@@ -24,6 +24,7 @@
     initialThinkingLevel?: ThinkingLevel;
     initialCwd?: string;
     initialPlanMode?: boolean;
+    initialNoteMode?: boolean;
     isRecordingForSetup?: boolean;
     onStart: (config: {
       prompt: string;
@@ -32,9 +33,10 @@
       thinkingLevel: ThinkingLevel;
       cwd: string;
       planMode: boolean;
+      noteMode: boolean;
     }) => void;
     onStartRecording: () => void;
-    onStopRecording: () => void;
+    onStopRecording: () => Promise<string | null>;
     onCancel?: () => void;
   }
 
@@ -43,6 +45,7 @@
     initialThinkingLevel = null,
     initialCwd = '',
     initialPlanMode = false,
+    initialNoteMode = false,
     isRecordingForSetup = false,
     onStart,
     onStartRecording,
@@ -56,10 +59,12 @@
   let thinkingLevel = $state<ThinkingLevel>(initialThinkingLevel);
   let cwd = $state(initialCwd);
   let planMode = $state(initialPlanMode);
+  let noteMode = $state(initialNoteMode);
   let pendingImages = $state<ImageData[]>([]);
   let isProcessingImages = $state(false);
   let showRepoDropdown = $state(false);
   let isStarting = $state(false);
+  let isAwaitingTranscript = $state(false);
   let textareaEl: HTMLTextAreaElement;
 
   // Derived state
@@ -124,6 +129,7 @@
         thinkingLevel,
         cwd,
         planMode,
+        noteMode,
       });
     } finally {
       isStarting = false;
@@ -174,6 +180,21 @@
 
   function removeImage(index: number) {
     pendingImages = pendingImages.filter((_, i) => i !== index);
+  }
+
+  // Recording handling
+  async function handleStopRecording() {
+    isAwaitingTranscript = true;
+    try {
+      const transcript = await onStopRecording();
+      if (transcript) {
+        // Append to existing prompt with a space separator
+        prompt = prompt ? `${prompt} ${transcript}` : transcript;
+        autoResize();
+      }
+    } finally {
+      isAwaitingTranscript = false;
+    }
   }
 
   // Model handling
@@ -237,8 +258,12 @@
   <div class="setup-content">
     <!-- Header -->
     <div class="setup-header">
-      <div class="header-icon">
-        {#if planMode}
+      <div class="header-icon" class:note={noteMode}>
+        {#if noteMode}
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+        {:else if planMode}
           <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
           </svg>
@@ -250,24 +275,26 @@
       </div>
       <div class="header-content">
         <h3 class="header-title">
-          {planMode ? 'Start Planning Session' : 'New Session'}
+          {noteMode ? 'New Note' : planMode ? 'Start Planning Session' : 'New Session'}
         </h3>
         <p class="header-description">
-          {planMode
-            ? 'Describe the feature you want to plan. Claude will help you flesh out the requirements.'
-            : 'Enter your prompt to start a new Claude session'}
+          {noteMode
+            ? 'Capture a voice note. Claude will create a note using your configured note-taking tools.'
+            : planMode
+              ? 'Describe the feature you want to plan. Claude will help you flesh out the requirements.'
+              : 'Enter your prompt to start a new Claude session'}
         </p>
       </div>
     </div>
 
-    <!-- Plan Mode Toggle -->
+    <!-- Mode Toggle -->
     <div class="option-row">
       <label class="option-label">Mode</label>
       <div class="mode-toggle">
         <button
           class="mode-btn"
-          class:active={!planMode}
-          onclick={() => planMode = false}
+          class:active={!planMode && !noteMode}
+          onclick={() => { planMode = false; noteMode = false; }}
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -277,12 +304,22 @@
         <button
           class="mode-btn plan"
           class:active={planMode}
-          onclick={() => planMode = true}
+          onclick={() => { planMode = true; noteMode = false; }}
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
           </svg>
           Plan
+        </button>
+        <button
+          class="mode-btn note"
+          class:active={noteMode}
+          onclick={() => { noteMode = true; planMode = false; }}
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          Note
         </button>
       </div>
     </div>
@@ -409,7 +446,7 @@
     <!-- Prompt Input -->
     <div class="prompt-section">
       <label class="option-label">
-        {planMode ? 'What do you want to plan?' : 'Your prompt'}
+        {noteMode ? 'Your note' : planMode ? 'What do you want to plan?' : 'Your prompt'}
       </label>
 
       {#if pendingImages.length > 0 || isProcessingImages}
@@ -443,9 +480,11 @@
         oninput={autoResize}
         onkeydown={handleKeydown}
         onpaste={handlePaste}
-        placeholder={planMode
-          ? 'Describe the feature you want to plan...'
-          : 'Enter your prompt... (Ctrl+V to paste images)'}
+        placeholder={noteMode
+          ? 'Enter your note content or use the Record button...'
+          : planMode
+            ? 'Describe the feature you want to plan...'
+            : 'Enter your prompt... (Ctrl+V to paste images)'}
         rows="3"
       ></textarea>
 
@@ -456,8 +495,16 @@
 
     <!-- Action Buttons -->
     <div class="action-row">
-      {#if $isRecording && isRecordingForSetup}
-        <button class="record-btn recording" onclick={onStopRecording}>
+      {#if isAwaitingTranscript || $isTranscribing}
+        <button class="record-btn transcribing" disabled>
+          <div class="transcribing-spinner"></div>
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+          </svg>
+          Transcribing...
+        </button>
+      {:else if $isRecording && isRecordingForSetup}
+        <button class="record-btn recording" onclick={handleStopRecording}>
           <div class="recording-pulse"></div>
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
@@ -476,13 +523,19 @@
       <button
         class="start-btn"
         class:plan={planMode}
+        class:note={noteMode}
         class:loading={isStarting}
         disabled={!canStart || isStarting}
         onclick={handleStart}
       >
         {#if isStarting}
           <div class="start-spinner"></div>
-          {planMode ? 'Starting Planning...' : 'Starting Session...'}
+          {noteMode ? 'Creating Note...' : planMode ? 'Starting Planning...' : 'Starting Session...'}
+        {:else if noteMode}
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          Create Note
         {:else if planMode}
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -544,6 +597,11 @@
     padding: 0.5rem;
     background: color-mix(in srgb, var(--color-accent) 10%, transparent);
     border-radius: 0.5rem;
+  }
+
+  .header-icon.note {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.1);
   }
 
   .header-content {
@@ -610,6 +668,10 @@
 
   .mode-btn.plan.active {
     background: #06b6d4;
+  }
+
+  .mode-btn.note.active {
+    background: #f59e0b;
   }
 
   /* Model Selector */
@@ -912,6 +974,26 @@
     border-color: var(--color-error);
   }
 
+  .record-btn.transcribing {
+    background: var(--color-warning, #f59e0b);
+    color: white;
+    border-color: var(--color-warning, #f59e0b);
+    cursor: wait;
+  }
+
+  .record-btn.transcribing:disabled {
+    opacity: 1;
+  }
+
+  .transcribing-spinner {
+    position: absolute;
+    inset: 4px;
+    border: 2px solid transparent;
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
   .recording-pulse {
     position: absolute;
     inset: 0;
@@ -963,6 +1045,14 @@
 
   .start-btn.plan:hover:not(:disabled) {
     background: #06b6d4;
+  }
+
+  .start-btn.note {
+    background: #d97706;
+  }
+
+  .start-btn.note:hover:not(:disabled) {
+    background: #f59e0b;
   }
 
   .start-btn.loading {

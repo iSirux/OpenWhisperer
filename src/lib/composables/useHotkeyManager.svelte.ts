@@ -18,6 +18,8 @@ export interface HotkeyCallbacks {
   onStopAndSend: () => Promise<void>;
   /** Called when recording should stop and paste to input */
   onStopAndPaste: () => Promise<void>;
+  /** Called when recording should start in note mode */
+  onStartNoteRecording: () => Promise<void>;
 }
 
 export function useHotkeyManager() {
@@ -25,20 +27,23 @@ export function useHotkeyManager() {
   let transcribeHotkeyRegistered = false;
   let cycleRepoHotkeyRegistered = false;
   let cycleModelHotkeyRegistered = false;
+  let noteModeHotkeyRegistered = false;
   let registeredCycleRepoHotkey: string | null = null;
   let registeredCycleModelHotkey: string | null = null;
   let registeredToggleRecordingHotkey: string | null = null;
+  let registeredNoteModeHotkey: string | null = null;
 
   // Debounce flags
   let isTogglingRecording = false;
   let isCyclingRepo = false;
   let isCyclingModel = false;
+  let isStartingNoteMode = false;
 
   // Callbacks stored from setup
   let callbacks: HotkeyCallbacks | null = null;
 
   /**
-   * Setup the main toggle_recording hotkey
+   * Setup the main toggle_recording and note_mode hotkeys
    * @param cb Callbacks for recording actions
    */
   async function setup(cb: HotkeyCallbacks) {
@@ -50,9 +55,11 @@ export function useHotkeyManager() {
       transcribeHotkeyRegistered = false;
       cycleRepoHotkeyRegistered = false;
       cycleModelHotkeyRegistered = false;
+      noteModeHotkeyRegistered = false;
       registeredCycleRepoHotkey = null;
       registeredCycleModelHotkey = null;
       registeredToggleRecordingHotkey = null;
+      registeredNoteModeHotkey = null;
 
       const currentSettings = get(settings);
       console.log('[Hotkey] Registering toggle_recording:', currentSettings.hotkeys.toggle_recording);
@@ -76,6 +83,28 @@ export function useHotkeyManager() {
 
       registeredToggleRecordingHotkey = currentSettings.hotkeys.toggle_recording;
       console.log('[Hotkey] Successfully registered toggle_recording:', registeredToggleRecordingHotkey);
+
+      // Register note mode hotkey
+      const noteModeHotkey = currentSettings.hotkeys.note_mode;
+      if (noteModeHotkey && noteModeHotkey !== currentSettings.hotkeys.toggle_recording) {
+        console.log('[Hotkey] Registering note_mode:', noteModeHotkey);
+        await register(noteModeHotkey, async () => {
+          if (isStartingNoteMode || get(isRecording)) return;
+          isStartingNoteMode = true;
+
+          try {
+            await callbacks?.onStartNoteRecording();
+          } finally {
+            setTimeout(() => {
+              isStartingNoteMode = false;
+            }, 200);
+          }
+        });
+
+        registeredNoteModeHotkey = noteModeHotkey;
+        noteModeHotkeyRegistered = true;
+        console.log('[Hotkey] Successfully registered note_mode:', noteModeHotkey);
+      }
     } catch (error) {
       console.error('Failed to register hotkeys:', error);
     }
@@ -359,9 +388,11 @@ export function useHotkeyManager() {
       transcribeHotkeyRegistered = false;
       cycleRepoHotkeyRegistered = false;
       cycleModelHotkeyRegistered = false;
+      noteModeHotkeyRegistered = false;
       registeredCycleRepoHotkey = null;
       registeredCycleModelHotkey = null;
       registeredToggleRecordingHotkey = null;
+      registeredNoteModeHotkey = null;
       callbacks = null;
       console.log('[Hotkey] Cleanup complete');
     } catch (error) {

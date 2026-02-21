@@ -18,14 +18,16 @@ pub fn create_sdk_session(
     cwd: String,
     model: String, // Per-session model (required)
     system_prompt: Option<String>, // Optional system prompt (e.g., for voice transcription context)
-    messages: Option<Vec<HistoryMessage>>, // Optional conversation history for restored sessions
+    messages: Option<Vec<HistoryMessage>>, // Optional conversation history for restored sessions (DEPRECATED - use sdk_session_id)
+    sdk_session_id: Option<String>, // SDK session ID for proper resume (preferred over messages)
     plan_mode: Option<bool>, // Whether this is a plan mode session (enables planning tools)
+    note_mode: Option<bool>, // Whether this is a note-taking mode session (read-only + note MCP tools)
     mcp_servers: Option<Vec<McpServerConfig>>, // Optional MCP servers to register
 ) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
     }
-    sidecar.send(OutboundMessage::Create { id, cwd, model: Some(model), system_prompt, messages, plan_mode, mcp_servers })
+    sidecar.send(OutboundMessage::Create { id, cwd, model: Some(model), system_prompt, messages, sdk_session_id, plan_mode, note_mode, mcp_servers })
 }
 
 #[tauri::command]

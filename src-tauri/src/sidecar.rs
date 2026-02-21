@@ -45,8 +45,13 @@ pub enum OutboundMessage {
         system_prompt: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         messages: Option<Vec<HistoryMessage>>,
+        /// SDK session ID for proper resume (preferred over messages)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sdk_session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         plan_mode: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note_mode: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         mcp_servers: Option<Vec<McpServerConfig>>,
     },
@@ -207,6 +212,12 @@ pub enum InboundMessage {
     RepoDescriptionError {
         id: String,
         error: String,
+    },
+    /// SDK session ID captured from system/init message for session persistence
+    SdkSessionId {
+        id: String,
+        #[serde(rename = "sdkSessionId")]
+        sdk_session_id: String,
     },
 }
 
@@ -592,6 +603,13 @@ impl SidecarManager {
             InboundMessage::RepoDescriptionError { id, error } => {
                 eprintln!("[sidecar] Repo description error for {}: {}", id, error);
                 let _ = app.emit(&format!("repo-description-error-{}", id), &error);
+            }
+            InboundMessage::SdkSessionId { id, sdk_session_id } => {
+                println!(
+                    "[sidecar] SDK session ID for {}: {}",
+                    id, sdk_session_id
+                );
+                let _ = app.emit(&format!("sdk-session-id-{}", id), &sdk_session_id);
             }
         }
     }

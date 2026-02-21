@@ -20,7 +20,8 @@ export interface RecordingFlowCallbacks {
   onTranscriptReady: (
     transcript: string,
     pendingSessionId: string | null,
-    voskTranscript?: string
+    voskTranscript?: string,
+    isNoteMode?: boolean
   ) => Promise<void>;
   /** Called to register recording-only hotkeys */
   onRegisterRecordingHotkeys: () => Promise<void>;
@@ -32,6 +33,7 @@ export function useRecordingFlow() {
   // State
   let isRecordingForNewSession = $state(false);
   let isRecordingForSetup = $state(false);
+  let isRecordingForNoteMode = $state(false);
   let wasAppFocusedOnRecordStart = true;
   let pendingTranscriptionSessionId: string | null = null;
   let unlistenAudioVisualization: UnlistenFn | null = null;
@@ -274,6 +276,12 @@ export function useRecordingFlow() {
    * Stop recording from hotkey (standard toggle)
    */
   async function stopRecordingFromHotkey() {
+    // If we're in note mode, delegate to note mode stop handler
+    if (isRecordingForNoteMode) {
+      await stopRecordingForNoteMode();
+      return;
+    }
+
     // Unregister recording hotkeys
     await callbacks?.onUnregisterRecordingHotkeys();
 
@@ -386,6 +394,7 @@ export function useRecordingFlow() {
 
     sdkSessions.clearSelection();
     isRecordingForNewSession = false;
+    isRecordingForNoteMode = false;
   }
 
   /**
@@ -401,10 +410,11 @@ export function useRecordingFlow() {
 
   /**
    * Stop recording for session setup view
+   * @returns The transcript, or null if transcription failed
    */
-  async function stopRecordingForSetup() {
+  async function stopRecordingForSetup(): Promise<string | null> {
     isRecordingForSetup = false;
-    await recording.stopRecording();
+    return await recording.stopRecording();
   }
 
   /**
@@ -423,6 +433,7 @@ export function useRecordingFlow() {
     }
 
     isRecordingForNewSession = false;
+    isRecordingForNoteMode = false;
 
     // Stop recording and paste
     recording.stopRecording(true).then(async (transcript) => {
@@ -430,6 +441,111 @@ export function useRecordingFlow() {
         await invoke('paste_text', { text: transcript });
       }
     });
+  }
+
+  /**
+   * Start recording for note-taking mode
+   */
+  async function startRecordingForNoteMode() {
+    if (get(isRecording)) return;
+    isRecordingForNoteMode = true;
+
+    // Stop open mic
+    await openMic.stop();
+
+    // Check if main window is focused
+    const mainWindow = getCurrentWindow();
+    wasAppFocusedOnRecordStart = await mainWindow.isFocused();
+
+    // Set overlay to note mode
+    overlay.setMode('note');
+    overlay.setSessionInfo(null, 'haiku', false);
+
+    // Create pending note session
+    const currentSettings = get(settings);
+    if (currentSettings.terminal_mode === 'Sdk') {
+      const sessionId = sdkSessions.createPendingNoteSession();
+      pendingTranscriptionSessionId = sessionId;
+      sdkSessions.selectSession(sessionId);
+      navigation.setView('sessions');
+
+      await setupAudioVisualizationListener();
+    }
+
+    await recording.startRecording(currentSettings.audio.device_id || undefined);
+
+    // Register recording hotkeys
+    await callbacks?.onRegisterRecordingHotkeys();
+
+    // Show overlay
+    if (!wasAppFocusedOnRecordStart || currentSettings.overlay.show_when_focused) {
+      await overlay.show();
+    }
+  }
+
+  /**
+   * Stop recording for note-taking mode
+   */
+  async function stopRecordingForNoteMode() {
+    // Unregister recording hotkeys
+    await callbacks?.onUnregisterRecordingHotkeys();
+
+    // Hide overlay
+    await overlay.hide();
+    overlay.clearSessionInfo();
+
+    // Clean up audio visualization
+    cleanupAudioVisualizationListener();
+
+    // Update pending session status
+    const sessionIdToProcess = pendingTranscriptionSessionId;
+    if (sessionIdToProcess) {
+      sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
+    }
+
+    // Capture Vosk transcript
+    const capturedVoskTranscript = get(recording).realtimeTranscript;
+
+    const wasNoteMode = isRecordingForNoteMode;
+    isRecordingForNoteMode = false;
+
+    // Stop recording (async - don't await)
+    recording
+      .stopRecording()
+      .then(async (transcript) => {
+        if (sessionIdToProcess) {
+          const audioData = get(recording).audioData;
+          if (audioData) {
+            sdkSessions.storeAudioData(sessionIdToProcess, audioData);
+          }
+        }
+
+        if (transcript) {
+          await callbacks?.onTranscriptReady(transcript, sessionIdToProcess, capturedVoskTranscript, wasNoteMode);
+        } else if (sessionIdToProcess) {
+          sdkSessions.updatePendingTranscription(sessionIdToProcess, {
+            transcriptionError: 'No transcription returned',
+          });
+        }
+
+        if (pendingTranscriptionSessionId === sessionIdToProcess) {
+          pendingTranscriptionSessionId = null;
+        }
+      })
+      .catch((error) => {
+        if (sessionIdToProcess) {
+          const audioData = get(recording).audioData;
+          if (audioData) {
+            sdkSessions.storeAudioData(sessionIdToProcess, audioData);
+          }
+          sdkSessions.updatePendingTranscription(sessionIdToProcess, {
+            transcriptionError: error?.message || 'Transcription failed',
+          });
+        }
+        if (pendingTranscriptionSessionId === sessionIdToProcess) {
+          pendingTranscriptionSessionId = null;
+        }
+      });
   }
 
   /**
@@ -447,6 +563,9 @@ export function useRecordingFlow() {
     get isRecordingForSetup() {
       return isRecordingForSetup;
     },
+    get isRecordingForNoteMode() {
+      return isRecordingForNoteMode;
+    },
 
     // Methods
     init,
@@ -461,6 +580,8 @@ export function useRecordingFlow() {
     startRecordingForSetup,
     stopRecordingForSetup,
     handleTranscribeToInput,
+    startRecordingForNoteMode,
+    stopRecordingForNoteMode,
     cleanupAudioVisualizationListener,
     cleanup,
   };

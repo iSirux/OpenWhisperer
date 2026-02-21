@@ -163,6 +163,9 @@ pub struct HotkeyConfig {
     pub cycle_repo: String,
     #[serde(default = "default_cycle_model", alias = "toggle_model")]
     pub cycle_model: String,
+    /// Hotkey to start recording in note-taking mode
+    #[serde(default = "default_note_mode")]
+    pub note_mode: String,
 }
 
 fn default_transcribe_to_input() -> String {
@@ -177,6 +180,10 @@ fn default_cycle_model() -> String {
     "CommandOrControl+Shift+M".to_string()
 }
 
+fn default_note_mode() -> String {
+    "CommandOrControl+Shift+N".to_string()
+}
+
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
@@ -184,6 +191,7 @@ impl Default for HotkeyConfig {
             transcribe_to_input: "CommandOrControl+Shift+T".to_string(),
             cycle_repo: "CommandOrControl+Shift+R".to_string(),
             cycle_model: "CommandOrControl+Shift+M".to_string(),
+            note_mode: default_note_mode(),
         }
     }
 }
@@ -655,10 +663,17 @@ pub struct VoiceCommandConfig {
     /// List of active voice commands that will cancel/discard the recording
     #[serde(default)]
     pub cancel_commands: Vec<String>,
+    /// List of voice commands that will trigger note-taking mode
+    #[serde(default = "default_note_commands")]
+    pub note_commands: Vec<String>,
 }
 
 fn default_voice_commands() -> Vec<String> {
     vec!["go go".to_string()]
+}
+
+fn default_note_commands() -> Vec<String> {
+    vec!["take a note".to_string(), "new note".to_string()]
 }
 
 impl Default for VoiceCommandConfig {
@@ -668,6 +683,7 @@ impl Default for VoiceCommandConfig {
             active_commands: default_voice_commands(),
             transcribe_commands: Vec::new(),
             cancel_commands: Vec::new(),
+            note_commands: default_note_commands(),
         }
     }
 }
@@ -787,6 +803,9 @@ pub struct RepoConfig {
     /// List of MCP server IDs to use for this repository (overrides global servers)
     #[serde(default)]
     pub mcp_servers: Option<Vec<String>>,
+    /// List of MCP server IDs to use for note-taking mode in this repository
+    #[serde(default)]
+    pub note_mcp_servers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -865,6 +884,15 @@ pub enum ThinkingLevel {
     #[default]
     Off,
     On,
+}
+
+/// Tool call display mode in SDK view
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolDisplayMode {
+    #[default]
+    List,
+    Grid,
 }
 
 /// MCP server transport type
@@ -1003,6 +1031,8 @@ pub struct AppConfig {
     pub session_response_rows: usize,
     #[serde(default)]
     pub sessions_view: SessionsViewConfig,
+    #[serde(default)]
+    pub tool_display_mode: ToolDisplayMode,
     #[serde(default, alias = "gemini")]
     pub llm: LlmConfig,
     /// MCP server configuration
@@ -1075,6 +1105,19 @@ pub enum RepoAutoSelectConfidence {
     Low,
 }
 
+/// Controls how thinking level is determined when using smart model selection
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoModelThinking {
+    /// Always disable thinking when using auto model
+    Off,
+    /// Always enable thinking when using auto model
+    On,
+    /// Let the LLM decide based on prompt complexity (default)
+    #[default]
+    Dynamic,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmFeaturesConfig {
     pub auto_name_sessions: bool,
@@ -1089,6 +1132,9 @@ pub struct LlmFeaturesConfig {
     pub use_dual_transcription: bool,
     #[serde(default)]
     pub recommend_model: bool,
+    /// Controls thinking level behavior when smart model selection is enabled
+    #[serde(default)]
+    pub auto_model_thinking: AutoModelThinking,
     /// Auto-select repository based on prompt content
     #[serde(default)]
     pub auto_select_repo: bool,
@@ -1106,6 +1152,7 @@ impl Default for LlmFeaturesConfig {
             clean_transcription: false,
             use_dual_transcription: false,
             recommend_model: false,
+            auto_model_thinking: AutoModelThinking::default(),
             auto_select_repo: false,
         }
     }
@@ -1203,6 +1250,7 @@ impl Default for AppConfig {
             session_prompt_rows: 2,
             session_response_rows: 2,
             sessions_view: SessionsViewConfig::default(),
+            tool_display_mode: ToolDisplayMode::default(),
             llm: LlmConfig::default(),
             mcp: McpConfig::default(),
         }

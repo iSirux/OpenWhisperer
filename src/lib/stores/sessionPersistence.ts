@@ -224,6 +224,8 @@ export interface PersistedSdkSession {
   pendingRepoSelection?: PendingRepoSelection;
   pendingPrompt?: string;
   pendingApprovalPrompt?: string;
+  // SDK session ID for proper resume after app restart (avoids context bloat)
+  sdkSessionId?: string;
 }
 
 export interface PersistedTerminalSession {

@@ -50,7 +50,7 @@ function createOpenMicStore() {
 
   // Pre-roll buffering: keep recent audio to avoid cutting off start of speech
   const PRE_ROLL_BUFFERS = 8; // ~128ms at 16kHz with 256-sample buffers
-  const HANGOVER_BUFFERS = 4; // Continue sending ~64ms after threshold drops
+  const HANGOVER_BUFFERS = 8; // Continue sending ~128ms after threshold drops
   let preRollBuffer: Int16Array[] = [];
   let wasAboveThreshold = false;
   let hangoverRemaining = 0;

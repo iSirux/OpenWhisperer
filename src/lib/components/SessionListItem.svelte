@@ -71,7 +71,18 @@
   <!-- Header row: type badge, status dot, interaction indicator, time, close button -->
   <div class="flex items-center justify-between" class:mb-2={hasContentBelow}>
     <div class="flex items-center gap-2">
-      {#if session.planMode?.isActive}
+      {#if session.noteMode?.isActive}
+        <!-- Note mode badge takes priority -->
+        <span
+          class="px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/20 text-amber-400 rounded flex items-center gap-1"
+          title={session.noteMode.noteCreated ? 'Note created' : 'Taking note...'}
+        >
+          <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          Note
+        </span>
+      {:else if session.planMode?.isActive}
         <!-- Planning badge takes priority over model badge -->
         <span
           class="px-1.5 py-0.5 text-[10px] font-medium bg-cyan-500/20 text-cyan-400 rounded flex items-center gap-1"

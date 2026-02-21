@@ -32,6 +32,8 @@ export interface EventHandlerCallbacks {
   onSwitchToSession: (sessionId: string) => void;
   /** Cancel the current recording */
   onCancelRecording: () => Promise<void>;
+  /** Send the current recording (stop and process) */
+  onSendRecording: () => Promise<void>;
   /** Start recording from open mic */
   onStartRecordingFromOpenMic: () => Promise<void>;
   /** Handle voice command (stop recording and process) */
@@ -47,6 +49,7 @@ export interface EventHandlerCallbacks {
 export function useSessionEventHandlers() {
   let callbacks: EventHandlerCallbacks | null = null;
   let unlistenDiscardRecording: UnlistenFn | null = null;
+  let unlistenSendRecording: UnlistenFn | null = null;
   let unlistenOpenMicTriggered: UnlistenFn | null = null;
   let unlistenVoiceCommandTriggered: UnlistenFn | null = null;
 
@@ -139,6 +142,12 @@ export function useSessionEventHandlers() {
       await callbacks?.onCancelRecording();
     });
 
+    // Listen for send-recording events from overlay (Go button)
+    unlistenSendRecording = await listen('send-recording', async () => {
+      console.log('[Recording] Send recording event received');
+      await callbacks?.onSendRecording();
+    });
+
     // Listen for open-mic-triggered events
     unlistenOpenMicTriggered = await listen<{ command: string }>(
       'open-mic-triggered',
@@ -198,6 +207,11 @@ export function useSessionEventHandlers() {
     if (unlistenDiscardRecording) {
       unlistenDiscardRecording();
       unlistenDiscardRecording = null;
+    }
+
+    if (unlistenSendRecording) {
+      unlistenSendRecording();
+      unlistenSendRecording = null;
     }
 
     if (unlistenOpenMicTriggered) {

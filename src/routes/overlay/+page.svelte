@@ -107,8 +107,9 @@
   }
 
   async function startDrag(event: MouseEvent) {
-    // Don't start drag if clicking on the discard button
-    if ((event.target as HTMLElement).closest('.discard-btn')) {
+    // Don't start drag if clicking on the discard or go buttons
+    const target = event.target as HTMLElement;
+    if (target.closest('.discard-btn') || target.closest('.go-btn')) {
       return;
     }
 

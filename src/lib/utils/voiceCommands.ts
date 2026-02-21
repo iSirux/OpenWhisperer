@@ -1,8 +1,8 @@
 import { get } from "svelte/store";
-import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS } from "$lib/stores/settings";
+import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS, NOTE_COMMAND_PRESETS } from "$lib/stores/settings";
 
 /** Type of voice command action */
-export type VoiceCommandType = 'send' | 'transcribe' | 'cancel' | null;
+export type VoiceCommandType = 'send' | 'transcribe' | 'cancel' | 'note' | null;
 
 export interface VoiceCommandResult {
   /** The cleaned transcript with voice commands removed */
@@ -17,6 +17,8 @@ export interface VoiceCommandResult {
   shouldTranscribe: boolean;
   /** Whether the command should cancel/discard the recording */
   shouldCancel: boolean;
+  /** Whether the command should trigger note-taking mode */
+  shouldNote: boolean;
   /** The type of command detected */
   commandType: VoiceCommandType;
 }
@@ -54,6 +56,14 @@ export function getActiveCancelCommands(): string[] {
 }
 
 /**
+ * Get the list of active note commands
+ */
+export function getActiveNoteCommands(): string[] {
+  const currentSettings = get(settings);
+  return currentSettings.audio.voice_commands.note_commands ?? [];
+}
+
+/**
  * Normalize a string for voice command matching:
  * - Lowercase
  * - Remove trailing punctuation
@@ -85,6 +95,7 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
     shouldSend: false,
     shouldTranscribe: false,
     shouldCancel: false,
+    shouldNote: false,
     commandType: null,
   };
 
@@ -96,10 +107,12 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
   const sendCommands = getActiveVoiceCommands();
   const transcribeCommands = getActiveTranscribeCommands();
   const cancelCommands = getActiveCancelCommands();
+  const noteCommands = getActiveNoteCommands();
 
   // Combine all commands with their types (cancel first for priority since it's destructive)
   const allCommands: { command: string; type: VoiceCommandType }[] = [
     ...cancelCommands.map(cmd => ({ command: cmd, type: 'cancel' as const })),
+    ...noteCommands.map(cmd => ({ command: cmd, type: 'note' as const })),
     ...sendCommands.map(cmd => ({ command: cmd, type: 'send' as const })),
     ...transcribeCommands.map(cmd => ({ command: cmd, type: 'transcribe' as const })),
   ];
@@ -156,6 +169,7 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
           result.shouldSend = type === 'send';
           result.shouldTranscribe = type === 'transcribe';
           result.shouldCancel = type === 'cancel';
+          result.shouldNote = type === 'note';
           break;
         }
       }
@@ -198,6 +212,7 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
           result.shouldSend = type === 'send';
           result.shouldTranscribe = type === 'transcribe';
           result.shouldCancel = type === 'cancel';
+          result.shouldNote = type === 'note';
           break;
         }
       }
@@ -321,6 +336,13 @@ export function getTranscribeCommandPresets(): readonly string[] {
  */
 export function getCancelCommandPresets(): readonly string[] {
   return CANCEL_COMMAND_PRESETS;
+}
+
+/**
+ * Get all available note command presets
+ */
+export function getNoteCommandPresets(): readonly string[] {
+  return NOTE_COMMAND_PRESETS;
 }
 
 /**

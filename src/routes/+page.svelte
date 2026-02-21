@@ -21,7 +21,6 @@
   import { useOpenMicLifecycle } from '$lib/composables/useOpenMic.svelte';
   import { useSessionEventHandlers } from '$lib/composables/useSessionEventHandlers.svelte';
   import {
-    processVoiceCommands,
     cleanupTranscript,
     getModelRecommendation,
     getRepoRecommendation,
@@ -141,6 +140,7 @@
         onStartRecording: () => recordingFlow.startRecordingFromHotkey(),
         onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
         onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
+        onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
       });
     }
   });
@@ -200,6 +200,7 @@
       onFocusSdkPrompt: handleFocusSdkPrompt,
       onSwitchToSession: handleSwitchToSession,
       onCancelRecording: recordingFlow.cancelRecording,
+      onSendRecording: recordingFlow.stopRecordingFromHotkey,
       onStartRecordingFromOpenMic: recordingFlow.startRecordingFromOpenMic,
       onVoiceCommand: handleVoiceCommand,
       onUnregisterRecordingHotkeys: () => hotkeyManager.unregisterRecordingHotkeys(),
@@ -213,6 +214,7 @@
       onStartRecording: () => recordingFlow.startRecordingFromHotkey(),
       onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
       onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
+      onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
     });
   });
 
@@ -237,13 +239,15 @@
   async function handleTranscriptReady(
     transcript: string,
     pendingSessionId: string | null,
-    voskTranscript?: string
+    voskTranscript?: string,
+    isNoteMode?: boolean
   ) {
-    // Process voice commands first
-    const processed = processVoiceCommands(transcript, voskTranscript);
+    // Note: Voice commands are detected via Vosk in real-time only
+    // (see voice-command-triggered event in useSessionEventHandlers)
+    // We don't check Whisper transcripts for voice commands to avoid false positives
 
-    if (processed.isEmpty) {
-      console.log('[voice-command] Transcript empty after removing voice command, skipping send');
+    if (!transcript.trim()) {
+      console.log('[transcript] Empty transcript, skipping');
       if (pendingSessionId) {
         sdkSessions.cancelPendingTranscription(pendingSessionId);
       }
@@ -254,15 +258,20 @@
     if (pendingSessionId) {
       sdkSessions.updatePendingTranscription(pendingSessionId, {
         status: 'processing',
-        transcript: processed.transcript,
-        voskTranscript: processed.voskTranscript || undefined,
+        transcript: transcript,
+        voskTranscript: voskTranscript || undefined,
       });
     }
 
     if ($settings.terminal_mode === 'Sdk') {
-      await processSdkTranscript(processed.transcript, pendingSessionId, processed.voskTranscript);
+      // Check if we're in note mode (from hotkey)
+      if (isNoteMode) {
+        await processNoteTranscript(transcript, pendingSessionId);
+      } else {
+        await processSdkTranscript(transcript, pendingSessionId, voskTranscript);
+      }
     } else {
-      await processPtyTranscript(processed.transcript, pendingSessionId, processed.voskTranscript);
+      await processPtyTranscript(transcript, pendingSessionId, voskTranscript);
     }
   }
 
@@ -352,6 +361,51 @@
     } else {
       await createSessionWithPrompt(finalTranscript, sessionRepo);
     }
+  }
+
+  /**
+   * Process transcript for note-taking mode
+   */
+  async function processNoteTranscript(
+    transcript: string,
+    pendingSessionId: string | null
+  ) {
+    // Note mode always uses the active repo (or '.' if none)
+    const repoPath = $activeRepo?.path || '.';
+
+    // Clean up transcription if enabled
+    let finalTranscript = transcript;
+    if (isTranscriptionCleanupEnabled()) {
+      const repoContext = $activeRepo ? buildSingleRepoContext($activeRepo) : undefined;
+      const cleanupResult = await cleanupTranscript(transcript, undefined, repoContext);
+      finalTranscript = cleanupResult.text;
+
+      if (pendingSessionId) {
+        updatePendingWithCleanup(
+          pendingSessionId,
+          undefined,
+          finalTranscript,
+          cleanupResult.wasCleanedUp,
+          cleanupResult.corrections,
+          cleanupResult.usedDualSource
+        );
+      }
+    }
+
+    // Complete the note session
+    if (pendingSessionId) {
+      await sdkSessions.completePendingNoteSession(pendingSessionId, repoPath, finalTranscript);
+      activeSessionId.set(null);
+    } else {
+      // Create a new note session if we don't have a pending one
+      const sessionId = sdkSessions.createPendingNoteSession();
+      sdkSessions.selectSession(sessionId);
+      await sdkSessions.completePendingNoteSession(sessionId, repoPath, finalTranscript);
+      activeSdkSessionId.set(sessionId);
+      activeSessionId.set(null);
+    }
+
+    navigation.setView('sessions');
   }
 
   /**
@@ -512,6 +566,51 @@
         recordingFlow.clearPendingSessionId();
       }
       await recording.cancelRecording();
+      return;
+    }
+
+    if (commandType === 'note') {
+      // Note mode - cancel existing pending session and create note session
+      if (pendingSessionId) {
+        sdkSessions.cancelPendingTranscription(pendingSessionId);
+      }
+
+      // Create a new pending note session
+      const noteSessionId = sdkSessions.createPendingNoteSession();
+      sdkSessions.selectSession(noteSessionId);
+      navigation.setView('sessions');
+      sdkSessions.updatePendingTranscription(noteSessionId, { status: 'transcribing' });
+
+      recording
+        .stopRecording(true)
+        .then(async (whisperTranscript) => {
+          if (noteSessionId) {
+            const audioData = get(recording).audioData;
+            if (audioData) {
+              sdkSessions.storeAudioData(noteSessionId, audioData);
+            }
+          }
+
+          const finalTranscript = whisperTranscript
+            ? processVoiceCommand(whisperTranscript).cleanedTranscript
+            : cleanedTranscript;
+
+          if (finalTranscript) {
+            await handleTranscriptReady(finalTranscript, noteSessionId, cleanedTranscript, true);
+          } else {
+            sdkSessions.updatePendingTranscription(noteSessionId, {
+              transcriptionError: 'No transcription available',
+            });
+          }
+
+          recordingFlow.clearPendingSessionId();
+        })
+        .catch((error) => {
+          sdkSessions.updatePendingTranscription(noteSessionId, {
+            transcriptionError: error?.message || 'Recording stop failed',
+          });
+          recordingFlow.clearPendingSessionId();
+        });
       return;
     }
 
@@ -748,6 +847,29 @@
     await settings.save({ ...$settings, default_thinking_level: settingsLevel });
   }
 
+  async function changeAutoModelThinking(newSetting: import('$lib/stores/settings').AutoModelThinking) {
+    settings.update((s) => ({
+      ...s,
+      llm: {
+        ...s.llm,
+        features: {
+          ...s.llm.features,
+          auto_model_thinking: newSetting,
+        },
+      },
+    }));
+    await settings.save({
+      ...$settings,
+      llm: {
+        ...$settings.llm,
+        features: {
+          ...$settings.llm.features,
+          auto_model_thinking: newSetting,
+        },
+      },
+    });
+  }
+
   function openSettingsTab(tab: string) {
     navigation.showSettings(tab);
   }
@@ -773,6 +895,7 @@
       thinkingLevel: ThinkingLevel;
       cwd: string;
       planMode: boolean;
+      noteMode: boolean;
     }
   ) {
     let repoPath = config.cwd;
@@ -813,6 +936,7 @@
       model: finalModel,
       thinkingLevel: finalThinking,
       planMode: config.planMode,
+      noteMode: config.noteMode,
     });
   }
 
@@ -830,6 +954,7 @@
     isAutoRepoSelected={$isAutoRepoSelected}
     defaultModel={$settings.default_model}
     defaultThinkingLevel={settingsToStoreThinking($settings.default_thinking_level)}
+    autoModelThinking={$settings.llm.features.auto_model_thinking}
     isRecording={$isRecording}
     isRecordingForNewSession={recordingFlow.isRecordingForNewSession}
     pendingTranscriptions={$pendingTranscriptions}
@@ -842,6 +967,7 @@
     onEnableAutoRepo={enableAutoRepo}
     onChangeModel={changeModel}
     onChangeThinking={changeThinking}
+    onChangeAutoModelThinking={changeAutoModelThinking}
     onStartRecording={recordingFlow.startRecordingNewSession}
     onStopRecording={recordingFlow.stopRecordingNewSession}
   />

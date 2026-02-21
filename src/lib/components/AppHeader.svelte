@@ -4,7 +4,9 @@
   import UsagePreview from './UsagePreview.svelte';
   import OpenMicMarquee from './OpenMicMarquee.svelte';
   import type { ThinkingLevel } from '$lib/stores/sdkSessions';
+  import type { AutoModelThinking } from '$lib/stores/settings';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
+  import { isAutoModel } from '$lib/utils/models';
 
   interface Repo {
     name: string;
@@ -19,6 +21,7 @@
     isAutoRepoSelected: boolean;
     defaultModel: string;
     defaultThinkingLevel: ThinkingLevel;
+    autoModelThinking: AutoModelThinking;
     isRecording: boolean;
     isRecordingForNewSession: boolean;
     pendingTranscriptions: number;
@@ -31,6 +34,7 @@
     onEnableAutoRepo: () => void;
     onChangeModel: (model: string) => void;
     onChangeThinking: (level: ThinkingLevel) => void;
+    onChangeAutoModelThinking: (setting: AutoModelThinking) => void;
     onStartRecording: () => void;
     onStopRecording: () => void;
   }
@@ -42,6 +46,7 @@
     isAutoRepoSelected,
     defaultModel,
     defaultThinkingLevel,
+    autoModelThinking,
     isRecording,
     isRecordingForNewSession,
     pendingTranscriptions,
@@ -54,9 +59,13 @@
     onEnableAutoRepo,
     onChangeModel,
     onChangeThinking,
+    onChangeAutoModelThinking,
     onStartRecording,
     onStopRecording,
   }: Props = $props();
+
+  // Check if current model is auto
+  const isAuto = $derived(isAutoModel(defaultModel));
 
   let showRepoSelector = $state(false);
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
@@ -220,6 +229,9 @@
       thinkingLevel={defaultThinkingLevel}
       onchange={onChangeThinking}
       size="sm"
+      isAutoModel={isAuto}
+      {autoModelThinking}
+      onChangeAutoModelThinking={onChangeAutoModelThinking}
     />
   </div>
 

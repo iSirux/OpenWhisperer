@@ -63,4 +63,13 @@
     </p>
     <HotkeyInput bind:value={$settings.hotkeys.cycle_model} />
   </div>
+  <div class="border-t border-border pt-4">
+    <label class="block text-sm font-medium text-text-secondary mb-1"
+      >Note Mode</label
+    >
+    <p class="text-xs text-text-muted mb-2">
+      Start recording in note-taking mode. Uses Haiku with note MCP tools.
+    </p>
+    <HotkeyInput bind:value={$settings.hotkeys.note_mode} />
+  </div>
 </div>
