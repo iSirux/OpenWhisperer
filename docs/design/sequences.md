@@ -119,6 +119,43 @@ The execution engine runs in the Rust backend for:
 
 The frontend receives execution state via Tauri events and provides the UI layer (visual editor, sequence session view, library browser).
 
+### Sidecar Integration
+
+The execution engine drives the sidecar **directly from the Rust backend** — no round-trip through the frontend.
+
+The `SidecarManager` already owns the sidecar process, sends JSON messages via stdin, and parses stdout responses. Currently, it re-emits all parsed messages as Tauri events for the frontend. For sequences, the executor registers an **internal message listener** alongside the existing event emitter:
+
+```
+┌─────────────────────────────────────────────────┐
+│  SidecarManager                                  │
+│  ┌─────────────────────┐                         │
+│  │  Message Parser      │                         │
+│  │  (existing stdout    │                         │
+│  │   JSON reader)       │                         │
+│  └──────┬──────────────┘                         │
+│         │ parsed message                          │
+│         ├─────────────────> Tauri Event Emitter   │ → Frontend (display)
+│         │                   (existing behavior)   │
+│         │                                         │
+│         └─────────────────> Sequence Executor     │ → Internal (advance node,
+│                             (new: registered      │    capture output, track
+│                              per execution)       │    usage, determine next)
+└─────────────────────────────────────────────────┘
+```
+
+**How a prompt node executes from the backend:**
+1. Executor calls `SidecarManager::send(CreateSession { ... })` — same IPC as the frontend uses
+2. Executor registers a listener for events matching this session ID
+3. Executor calls `SidecarManager::send(Query { ... })`
+4. Internal listener receives `Text`, `ToolStart`, `ToolResult`, `Usage`, `Done`/`Error` messages
+5. On `Done`: executor captures the accumulated text response, records usage, advances to the next node
+6. Tauri events are still emitted in parallel — the frontend's sequence session view shows live streaming output
+
+This means:
+- **Shared sidecar** — User sessions and sequence sessions use the same sidecar process (no extra resources)
+- **No frontend dependency** — Sequences run even if the UI is navigated away or minimized
+- **Full event visibility** — Frontend still sees everything for display, just doesn't drive the execution
+
 ### New Rust Modules
 
 ```
@@ -1498,9 +1535,18 @@ For reliable data extraction from AI responses, prompt nodes should use `output_
 1. `output_format: json` appends an instruction to the prompt telling the AI to respond with only valid JSON (no markdown fences, no preamble)
 2. The `json` filter parses the response string into a structured object
 3. The `get(key)` filter performs a JSON path lookup on the parsed object
-4. If JSON parsing fails, the filter returns an error and the node fails with a descriptive message
 
-This is deterministic, instant, and free — no hidden LLM calls. For unstructured responses, use the `regex` filter or `transform` nodes instead.
+**Lenient JSON parsing:** AI models sometimes return JSON wrapped in markdown fences, with preamble text, or with minor formatting issues. The `json` filter applies progressive recovery before failing:
+
+1. **Direct parse** — Try `serde_json::from_str()` on the raw response
+2. **Strip fences** — Remove `` ```json `` / `` ``` `` wrappers and retry
+3. **Extract JSON** — Find the first `{` to last `}` (or `[` to `]`) substring and retry
+4. **LLM fix** — Send the malformed response to a cheap model (Haiku) with "Fix this JSON" and parse the result
+5. **Fail** — If all attempts fail, the node errors with the original parse error message and the raw response for debugging
+
+Steps 1-3 are instant and free. Step 4 adds a small cost but handles edge cases like trailing commas, unquoted keys, or mixed text. The `on_error` strategy on the node determines what happens on failure.
+
+For unstructured responses, use the `regex` filter or `transform` nodes instead.
 
 ### Built-in Context Variables
 
@@ -2445,7 +2491,26 @@ A running sequence execution appears as a **session** in the main sidebar sessio
 
 **Sequence sessions** show the sequence name + status (running/paused/waiting/completed/failed).
 
-**SDK sub-sessions** created by prompt nodes appear as flat entries in the session list (not nested), tagged with the parent sequence name. The sequence session view has links to jump to each sub-session, and sub-sessions have a back-link to the parent sequence.
+**SDK sub-sessions** created by prompt nodes are shown as a **collapsible group** under the parent sequence session in the sidebar. Collapsed by default — one line per sequence. Click the expand toggle to reveal the sub-sessions underneath. This prevents sidebar clutter when sequences have many prompt nodes.
+
+```
+┌─ Session List ──────────────────────┐
+│  SDK: Fix auth bug                  │
+│  ▶ Seq: Code Review Pipeline  ●     │  ← collapsed (● = running)
+│  SDK: Refactor utils                │
+└─────────────────────────────────────┘
+
+┌─ Session List ──────────────────────┐
+│  SDK: Fix auth bug                  │
+│  ▼ Seq: Code Review Pipeline  ●     │  ← expanded
+│    ├ Review (haiku)           ✓     │
+│    ├ Fix Issues (sonnet)      ●     │
+│    └ Create PR                ○     │
+│  SDK: Refactor utils                │
+└─────────────────────────────────────┘
+```
+
+Sub-sessions have a back-link to the parent sequence, and the sequence session view has `[↗]` links to jump to each sub-session's full view.
 
 ### Sequence Session View
 
@@ -2500,6 +2565,25 @@ This view doubles as the primary debugging tool — users can see exactly what h
 ```
 
 Execution viewing doesn't need its own route — sequence sessions are viewed like any other session in the main view.
+
+### Creating a New Sequence
+
+Click "New Sequence" in the library view → modal with three options:
+
+1. **Pick a template** — Grid of built-in templates (Code Review, Feature Pipeline, PR Workflow, etc.) + "Blank" option. Selecting a template copies it to the user's sequences directory and opens it in the visual editor.
+
+2. **Describe with AI** — Text input (or voice): "Create a sequence that reviews code, runs tests, and creates a PR". LLM generates the YAML, dry-run validates it, and opens it in the visual editor for review.
+
+3. **Blank** — Opens an empty canvas with just sequence metadata (name, description) pre-filled.
+
+### Sequence Management
+
+In the sequence library view:
+- **Run** — Start execution (prompts for inputs if needed)
+- **Edit** — Open in visual editor
+- **Duplicate** — Copy sequence with a new name
+- **Delete** — Remove sequence (with confirmation)
+- **Open in Editor** — Open YAML file in system editor
 
 ### Store Structure
 
