@@ -2,7 +2,7 @@
   import { onDestroy } from 'svelte';
   import { recording, isRecording, isProcessing, hasRecorded, realtimeTranscript } from '$lib/stores/recording';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
-  import { sdkSessions, activeSdkSessionId, settingsToStoreThinking } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId, settingsToStoreEffort } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
   import { overlay } from '$lib/stores/overlay';
   import { resolveModelForApi } from '$lib/utils/models';
@@ -115,10 +115,10 @@
           // SDK mode: create or reuse SDK session
           const repoPath = $activeRepo?.path || '.';
           const model = resolveModelForApi($settings.default_model, $settings.enabled_models);
-          const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+          const effortLevel = settingsToStoreEffort($settings.default_effort_level);
           let sessionId = $activeSdkSessionId;
           if (!sessionId) {
-            sessionId = await sdkSessions.createSession(repoPath, model, thinkingLevel);
+            sessionId = await sdkSessions.createSession(repoPath, model, effortLevel);
             activeSdkSessionId.set(sessionId);
           }
           await sdkSessions.sendPrompt(sessionId, transcript);
@@ -157,10 +157,10 @@
         // SDK mode: create or reuse SDK session
         const repoPath = $activeRepo?.path || '.';
         const model = resolveModelForApi($settings.default_model, $settings.enabled_models);
-        const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+        const effortLevel = settingsToStoreEffort($settings.default_effort_level);
         let sessionId = $activeSdkSessionId;
         if (!sessionId) {
-          sessionId = await sdkSessions.createSession(repoPath, model, thinkingLevel);
+          sessionId = await sdkSessions.createSession(repoPath, model, effortLevel);
           activeSdkSessionId.set(sessionId);
         }
         await sdkSessions.sendPrompt(sessionId, prompt);
@@ -235,10 +235,10 @@
               if ($settings.terminal_mode === 'Sdk') {
                 const repoPath = $activeRepo?.path || '.';
                 const model = resolveModelForApi($settings.default_model, $settings.enabled_models);
-                const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+                const effortLevel = settingsToStoreEffort($settings.default_effort_level);
                 let sessionId = $activeSdkSessionId;
                 if (!sessionId) {
-                  sessionId = await sdkSessions.createSession(repoPath, model, thinkingLevel);
+                  sessionId = await sdkSessions.createSession(repoPath, model, effortLevel);
                   activeSdkSessionId.set(sessionId);
                 }
                 await sdkSessions.sendPrompt(sessionId, transcript);

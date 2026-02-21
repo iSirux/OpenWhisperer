@@ -1,13 +1,15 @@
 // Model color utilities for consistent color coding across the app
 // Each model has a distinct color that follows the current theme
 
-export type ModelType = 'opus' | 'sonnet' | 'haiku' | 'auto' | 'unknown';
+export type ModelType = 'opus' | 'sonnet' | 'haiku' | 'auto' | 'openai' | 'unknown';
 
 export function getModelType(modelId: string): ModelType {
   if (modelId === 'auto') return 'auto';
   if (modelId.includes('opus')) return 'opus';
   if (modelId.includes('sonnet')) return 'sonnet';
   if (modelId.includes('haiku')) return 'haiku';
+  // OpenAI models
+  if (modelId.startsWith('codex') || modelId.startsWith('gpt-')) return 'openai';
   return 'unknown';
 }
 
@@ -15,10 +17,18 @@ export function getShortModelName(model: string): string {
   if (model === 'auto') return 'Auto';
   if (model.includes('opus')) return 'Opus';
   if (model.includes('sonnet')) {
-    if (model.includes('1m') || model.includes('extended')) return 'Sonnet 1M';
     return 'Sonnet';
   }
   if (model.includes('haiku')) return 'Haiku';
+  // OpenAI models
+  if (model.startsWith('codex-mini')) return 'Codex Mini';
+  if (model.startsWith('codex')) return 'Codex';
+  if (model === 'gpt-5.3-codex-spark') return '5.3 Spark';
+  if (model === 'gpt-5.3-codex') return '5.3 Codex';
+  if (model === 'gpt-5.2-codex') return '5.2 Codex';
+  if (model === 'gpt-5.1-codex-mini') return '5.1 Mini';
+  if (model === 'gpt-5-codex') return '5 Codex';
+  if (model.startsWith('gpt-')) return model;
   const parts = model.split('-');
   return parts[parts.length - 1] || model;
 }
@@ -31,6 +41,7 @@ export function getModelBgColor(modelId: string): string {
     case 'opus': return 'bg-model-opus';
     case 'sonnet': return 'bg-model-sonnet';
     case 'haiku': return 'bg-model-haiku';
+    case 'openai': return 'bg-green-600';
     default: return 'bg-accent';
   }
 }
@@ -43,6 +54,7 @@ export function getModelBadgeBgColor(modelId: string): string {
     case 'opus': return 'bg-model-opus/20';
     case 'sonnet': return 'bg-model-sonnet/20';
     case 'haiku': return 'bg-model-haiku/20';
+    case 'openai': return 'bg-green-600/20';
     default: return 'bg-accent/20';
   }
 }
@@ -55,6 +67,7 @@ export function getModelTextColor(modelId: string): string {
     case 'opus': return 'text-model-opus';
     case 'sonnet': return 'text-model-sonnet';
     case 'haiku': return 'text-model-haiku';
+    case 'openai': return 'text-green-400';
     default: return 'text-accent';
   }
 }
@@ -67,6 +80,7 @@ export function getModelRingColor(modelId: string): string {
     case 'opus': return 'ring-model-opus';
     case 'sonnet': return 'ring-model-sonnet';
     case 'haiku': return 'ring-model-haiku';
+    case 'openai': return 'ring-green-400';
     default: return 'ring-accent';
   }
 }
@@ -79,6 +93,7 @@ export function getModelHoverBgColor(modelId: string): string {
     case 'opus': return 'hover:bg-model-opus/10';
     case 'sonnet': return 'hover:bg-model-sonnet/10';
     case 'haiku': return 'hover:bg-model-haiku/10';
+    case 'openai': return 'hover:bg-green-600/10';
     default: return 'hover:bg-accent/10';
   }
 }

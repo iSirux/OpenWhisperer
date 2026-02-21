@@ -1,9 +1,27 @@
 <script lang="ts">
-  import { settings, type ToolDisplayMode } from "$lib/stores/settings";
+  import { settings, type SdkProvider, type ToolDisplayMode } from "$lib/stores/settings";
   import "./toggle.css";
 </script>
 
 <div class="space-y-4">
+  <!-- SDK Provider -->
+  <div class="border-b border-border pb-4 mb-4">
+    <h3 class="text-sm font-medium text-text-primary mb-3">SDK Provider</h3>
+    <div>
+      <label class="block text-sm font-medium text-text-secondary mb-1">Default Provider</label>
+      <select
+        class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+        bind:value={$settings.sdk_provider}
+      >
+        <option value="Claude">Claude (Anthropic)</option>
+        <option value="OpenAI">OpenAI (Codex)</option>
+      </select>
+      <p class="text-xs text-text-muted mt-1">
+        Default SDK provider for new sessions. Configure models in the Claude or Codex tabs.
+      </p>
+    </div>
+  </div>
+
   <div>
     <label class="block text-sm font-medium text-text-secondary mb-1"
       >Session List Sort Order</label

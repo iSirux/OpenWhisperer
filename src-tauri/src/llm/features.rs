@@ -277,9 +277,12 @@ Model capabilities:
 - **Sonnet**: Balanced. Good for typical coding tasks, debugging, feature implementation, code review, refactoring.
 - **Opus**: Most capable, expensive. Best for complex architecture, multi-file refactoring, difficult debugging, system design, novel problem-solving.
 
-Extended thinking (for complex reasoning):
-- **null**: No extended thinking needed (most tasks)
-- **on**: Extended thinking enabled (31999 tokens) - for complex architecture, debugging, system design
+Effort level (controls reasoning depth, tool use, and verbosity):
+- **null**: No effort preference (fastest, cheapest)
+- **low**: Minimal reasoning for simple tasks
+- **medium**: Balanced reasoning for typical tasks
+- **high**: Thorough reasoning for complex tasks
+- **max**: Deepest reasoning for the most complex tasks (Opus only)
 
 Available models (only recommend from these): {}
 
@@ -289,7 +292,7 @@ Prompt to analyze:
 Choose the most cost-effective model that can handle this task well. Prefer cheaper models when the task is simple.
 
 Respond with ONLY a JSON object in this exact format:
-{{"recommended_model": "{}", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_thinking": "null|on"}}"#,
+{{"recommended_model": "{}", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_effort": "null|low|medium|high"}}"#,
             available_models.iter().map(|m| format!("**{}**", m)).collect::<Vec<_>>().join(", "),
             truncate_text(prompt, 1500),
             model_list
@@ -312,13 +315,13 @@ Respond with ONLY a JSON object in this exact format:
                     "enum": ["low", "medium", "high"],
                     "description": "Confidence level in this recommendation"
                 },
-                "suggested_thinking": {
+                "suggested_effort": {
                     "type": "string",
-                    "enum": ["null", "on"],
-                    "description": "Suggested extended thinking: null (off) or on (31999 tokens)"
+                    "enum": ["null", "low", "medium", "high"],
+                    "description": "Suggested effort level: null (off), low, medium, or high"
                 }
             },
-            "required": ["recommended_model", "reasoning", "confidence", "suggested_thinking"]
+            "required": ["recommended_model", "reasoning", "confidence", "suggested_effort"]
         });
 
         self.generate_structured_with_usage(&prompt_text, Some(schema)).await

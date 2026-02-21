@@ -183,6 +183,10 @@ export interface RepoConfig {
 import type { McpServerType, McpServerConfig, McpConfig } from '$lib/types/mcp';
 export type { McpServerType, McpServerConfig, McpConfig };
 
+export type SdkProvider = "Claude" | "OpenAI";
+export type OpenAiAuthMethod = "OAuth" | "ApiKey";
+export type ClaudeAuthMethod = "OAuth" | "ApiKey";
+
 export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
 
 export type Theme =
@@ -208,8 +212,10 @@ export interface SessionsViewConfig {
   card_size: SessionsGridSize;
 }
 
-// Thinking level for extended thinking mode: off or on (31999 tokens)
-export type ThinkingLevel = "off" | "on";
+// Effort level for reasoning depth control
+export type EffortLevel = "off" | "low" | "medium" | "high" | "max";
+/** @deprecated Use EffortLevel instead */
+export type ThinkingLevel = EffortLevel;
 
 export type LlmProvider = "Gemini" | "OpenAI" | "Groq" | "Local" | "Custom";
 // Alias for backwards compatibility
@@ -228,11 +234,13 @@ export type GeminiModelPriority = LlmModelPriority;
 // low: Auto-select for any confidence level
 export type RepoAutoSelectConfidence = "high" | "medium" | "low";
 
-// Controls how thinking level is determined when using smart model selection
-// off: Always disable thinking
-// on: Always enable thinking
+// Controls how effort level is determined when using smart model selection
+// off: Always disable effort
+// low/medium/high/max: Always use that effort level
 // dynamic: Let the LLM decide based on prompt complexity
-export type AutoModelThinking = "off" | "on" | "dynamic";
+export type AutoModelEffort = "off" | "low" | "medium" | "high" | "max" | "dynamic";
+/** @deprecated Use AutoModelEffort instead */
+export type AutoModelThinking = AutoModelEffort;
 
 export interface LlmFeaturesConfig {
   auto_name_sessions: boolean;
@@ -243,8 +251,10 @@ export interface LlmFeaturesConfig {
   /** Use both Vosk and Whisper transcriptions for cleanup (requires both to be enabled) */
   use_dual_transcription: boolean;
   recommend_model: boolean;
-  /** Controls thinking level behavior when smart model selection is enabled */
-  auto_model_thinking: AutoModelThinking;
+  /** Controls effort level behavior when smart model selection is enabled */
+  auto_model_effort: AutoModelEffort;
+  /** @deprecated Use auto_model_effort instead - kept for config backward compat */
+  auto_model_thinking?: AutoModelEffort;
   /** Auto-select repository based on prompt content */
   auto_select_repo: boolean;
 }
@@ -282,9 +292,21 @@ export interface AppConfig {
   /** When true, repo is auto-selected based on prompt content */
   auto_repo_mode: boolean;
   default_model: string;
-  default_thinking_level: ThinkingLevel;
+  default_effort_level: EffortLevel;
+  /** @deprecated Use default_effort_level instead */
+  default_thinking_level?: string;
   enabled_models: string[];
   terminal_mode: TerminalMode;
+  /** SDK provider for the main coding agent (Claude or OpenAI Codex) */
+  sdk_provider: SdkProvider;
+  /** Default OpenAI model for Codex SDK sessions */
+  openai_model: string;
+  /** Which OpenAI models are shown in the selector */
+  enabled_openai_models: string[];
+  /** OpenAI authentication method (OAuth via Codex CLI or API key) */
+  openai_auth_method: OpenAiAuthMethod;
+  /** Claude authentication method (OAuth via Claude CLI or API key) */
+  claude_auth_method: ClaudeAuthMethod;
   skip_permissions: boolean;
   theme: Theme;
   system: SystemConfig;
@@ -374,15 +396,25 @@ const defaultConfig: AppConfig = {
   repos: [],
   active_repo_index: 0,
   auto_repo_mode: false,
-  default_model: "claude-opus-4-5-20251101",
-  default_thinking_level: "off",
+  default_model: "claude-opus-4-6",
+  default_effort_level: "high",
   enabled_models: [
-    "claude-opus-4-5-20251101",
-    "claude-sonnet-4-5-20250929",
-    "claude-sonnet-4-5-20250929[1m]",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
   ],
   terminal_mode: "Interactive",
+  sdk_provider: "Claude",
+  openai_model: "gpt-5.3-codex",
+  enabled_openai_models: [
+    "codex-mini-latest",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-mini",
+  ],
+  openai_auth_method: "OAuth",
+  claude_auth_method: "OAuth",
   skip_permissions: false,
   theme: "Midnight",
   system: {
@@ -422,7 +454,7 @@ const defaultConfig: AppConfig = {
       clean_transcription: false,
       use_dual_transcription: false,
       recommend_model: false,
-      auto_model_thinking: "dynamic",
+      auto_model_effort: "dynamic",
       auto_select_repo: false,
     },
     confirm_repo_selection: false,
@@ -432,6 +464,9 @@ const defaultConfig: AppConfig = {
     servers: [],
   },
 };
+
+/** Whether the config was successfully loaded from disk (vs fell back to defaults) */
+export const configLoadedOk = writable<boolean>(true);
 
 function createSettingsStore() {
   const { subscribe, set, update } = writable<AppConfig>(defaultConfig);
@@ -445,6 +480,20 @@ function createSettingsStore() {
       try {
         const config = await invoke<AppConfig>("get_config");
         set(config);
+
+        // Check if config was loaded successfully from disk
+        try {
+          const loadStatus = await invoke<boolean>("get_config_load_status");
+          configLoadedOk.set(loadStatus);
+          if (!loadStatus) {
+            console.warn(
+              "[settings] Config was loaded from defaults due to a parse error. " +
+              "Saves are blocked to prevent overwriting your config file."
+            );
+          }
+        } catch (e) {
+          console.error("[settings] Failed to check config load status:", e);
+        }
       } catch (error) {
         console.error("Failed to load config:", error);
       }

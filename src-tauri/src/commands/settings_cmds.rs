@@ -1,4 +1,5 @@
 use crate::config::{AppConfig, RepoConfig};
+use crate::ConfigLoadStatus;
 use crate::git::GitManager;
 use tauri::State;
 use parking_lot::Mutex;
@@ -11,8 +12,29 @@ pub fn get_config(config: State<ConfigState>) -> AppConfig {
     config.lock().clone()
 }
 
+/// Returns whether the config was successfully loaded from disk.
+/// false means the config fell back to defaults due to a parse error.
 #[tauri::command]
-pub fn save_config(config: State<ConfigState>, new_config: AppConfig) -> Result<(), String> {
+pub fn get_config_load_status(status: State<ConfigLoadStatus>) -> bool {
+    *status.0.lock()
+}
+
+#[tauri::command]
+pub fn save_config(
+    config: State<ConfigState>,
+    load_status: State<ConfigLoadStatus>,
+    new_config: AppConfig,
+) -> Result<(), String> {
+    // Block saves if the config was loaded from defaults due to a parse error
+    let loaded_ok = *load_status.0.lock();
+    if !loaded_ok {
+        return Err(
+            "Config was loaded from defaults due to a parse error — refusing to overwrite. \
+             Please fix your config file manually or delete it to start fresh."
+                .to_string(),
+        );
+    }
+
     let mut cfg = config.lock();
     *cfg = new_config;
     cfg.save()

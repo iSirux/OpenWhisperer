@@ -1,6 +1,6 @@
 <script lang="ts">
   import { settings, type RepoConfig } from '$lib/stores/settings';
-  import { sdkSessions, activeSdkSessionId, type SdkImageContent, settingsToStoreThinking, type ThinkingLevel } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId, type SdkImageContent, settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
   import { activeSessionId } from '$lib/stores/sessions';
   import { getEnabledModels, type ModelInfo } from '$lib/utils/models';
   import { getModelBgColor, getModelHoverBgColor } from '$lib/utils/modelColors';
@@ -61,14 +61,14 @@
     const repo = repos[effectiveRepoIndex];
     if (!repo) return;
 
-    const thinkingLevel: ThinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+    const effortLevel: EffortLevel = settingsToStoreEffort($settings.default_effort_level);
 
     try {
       // Create a new session with the selected repo and model
       const newSessionId = await sdkSessions.createSession(
         repo.path,
         effectiveModel,
-        thinkingLevel
+        effortLevel
       );
 
       // Send the same prompt to the new session

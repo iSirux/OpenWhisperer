@@ -5,7 +5,50 @@
     getModelBadgeBgColor,
     getModelTextColor,
   } from "$lib/utils/modelColors";
+  import { invoke } from "@tauri-apps/api/core";
   import "./toggle.css";
+
+  // Claude auth state
+  let claudeAuthStatus = $state<{ hasEnvKey: boolean; hasOAuth: boolean; hasKeyringKey: boolean; authenticated: boolean } | null>(null);
+  let apiKeyInput = $state('');
+  let hasApiKey = $state(false);
+  let showApiKeyInput = $state(false);
+
+  $effect(() => {
+    checkClaudeAuth();
+  });
+
+  async function checkClaudeAuth() {
+    try {
+      claudeAuthStatus = await invoke<{ hasEnvKey: boolean; hasOAuth: boolean; hasKeyringKey: boolean; authenticated: boolean }>('check_claude_auth');
+      hasApiKey = await invoke<boolean>('has_claude_api_key');
+    } catch {
+      claudeAuthStatus = null;
+    }
+  }
+
+  async function handleSaveApiKey() {
+    if (!apiKeyInput.trim()) return;
+    try {
+      await invoke('save_claude_api_key', { apiKey: apiKeyInput.trim() });
+      hasApiKey = true;
+      apiKeyInput = '';
+      showApiKeyInput = false;
+      await checkClaudeAuth();
+    } catch (e) {
+      console.error('Failed to save API key:', e);
+    }
+  }
+
+  async function handleDeleteApiKey() {
+    try {
+      await invoke('delete_claude_api_key');
+      hasApiKey = false;
+      await checkClaudeAuth();
+    } catch (e) {
+      console.error('Failed to delete API key:', e);
+    }
+  }
 
   function toggleModel(modelId: string) {
     const currentEnabled = $settings.enabled_models || [];
@@ -39,6 +82,98 @@
 </script>
 
 <div class="space-y-4">
+  <!-- Authentication -->
+  <div class="border-b border-border pb-4 mb-4">
+    <h3 class="text-sm font-medium text-text-primary mb-3">Authentication</h3>
+    <div class="p-3 bg-surface rounded border border-border">
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-sm font-medium text-text-secondary">Anthropic Authentication</label>
+        {#if claudeAuthStatus?.authenticated}
+          <span class="text-xs px-2 py-0.5 rounded-full bg-green-600/20 text-green-400">Connected</span>
+        {:else}
+          <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-600/20 text-yellow-400">Not configured</span>
+        {/if}
+      </div>
+
+      <div class="space-y-2">
+        <div>
+          <label class="block text-xs text-text-muted mb-1">Auth Method</label>
+          <select
+            class="w-full px-2 py-1.5 bg-background border border-border rounded text-xs focus:outline-none focus:border-accent"
+            bind:value={$settings.claude_auth_method}
+          >
+            <option value="OAuth">OAuth - via Claude CLI login</option>
+            <option value="ApiKey">API Key (ANTHROPIC_API_KEY)</option>
+          </select>
+        </div>
+
+        {#if $settings.claude_auth_method === 'OAuth'}
+          <div class="flex items-center gap-2">
+            {#if claudeAuthStatus?.hasOAuth}
+              <div class="flex items-center gap-1.5 text-xs text-green-400">
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                </svg>
+                Authenticated via Claude CLI
+              </div>
+            {:else if claudeAuthStatus?.hasEnvKey}
+              <div class="flex items-center gap-1.5 text-xs text-green-400">
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                </svg>
+                ANTHROPIC_API_KEY found in environment
+              </div>
+            {:else}
+              <span class="text-xs text-text-muted">
+                Run <code class="px-1 py-0.5 bg-background rounded text-text-secondary">claude login</code> to authenticate, or switch to API Key mode.
+              </span>
+            {/if}
+          </div>
+        {:else}
+          <!-- API Key -->
+          <div>
+            {#if hasApiKey || claudeAuthStatus?.hasEnvKey}
+              <div class="flex items-center gap-2">
+                {#if hasApiKey}
+                  <span class="text-xs text-green-400">API key saved in keyring</span>
+                  <button
+                    class="text-xs text-red-400 hover:text-red-300"
+                    onclick={handleDeleteApiKey}
+                  >Remove</button>
+                {:else}
+                  <span class="text-xs text-green-400">ANTHROPIC_API_KEY found in environment</span>
+                {/if}
+              </div>
+            {:else if showApiKeyInput}
+              <div class="flex gap-2">
+                <input
+                  type="password"
+                  class="flex-1 px-2 py-1.5 bg-background border border-border rounded text-xs focus:outline-none focus:border-accent"
+                  placeholder="sk-ant-..."
+                  bind:value={apiKeyInput}
+                />
+                <button
+                  class="px-3 py-1.5 bg-accent text-white text-xs rounded hover:bg-accent-hover transition-colors"
+                  onclick={handleSaveApiKey}
+                  disabled={!apiKeyInput.trim()}
+                >Save</button>
+                <button
+                  class="px-2 py-1.5 text-xs text-text-muted hover:text-text-secondary"
+                  onclick={() => { showApiKeyInput = false; apiKeyInput = ''; }}
+                >Cancel</button>
+              </div>
+            {:else}
+              <button
+                class="text-xs text-accent hover:underline"
+                onclick={() => showApiKeyInput = true}
+              >Add API key</button>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+
   <div>
     <label class="block text-sm font-medium text-text-secondary mb-1"
       >Terminal Mode</label
@@ -144,28 +279,6 @@
           {/if}
         </button>
       {/each}
-    </div>
-  </div>
-
-  <div class="border-t border-border pt-4 mt-4">
-    <h3 class="text-sm font-medium text-text-primary mb-3">
-      Transcription
-    </h3>
-    <div class="flex items-center justify-between">
-      <div>
-        <label class="text-sm font-medium text-text-secondary"
-          >Include Transcription Notice</label
-        >
-        <p class="text-xs text-text-muted mt-0.5">
-          Tell Claude the prompt was voice-transcribed and may contain
-          minor errors
-        </p>
-      </div>
-      <input
-        type="checkbox"
-        class="toggle"
-        bind:checked={$settings.audio.include_transcription_notice}
-      />
     </div>
   </div>
 </div>

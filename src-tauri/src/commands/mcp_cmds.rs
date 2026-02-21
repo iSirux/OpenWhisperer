@@ -71,7 +71,7 @@ fn get_bearer_token_key(server_id: &str) -> String {
 /// Test an MCP server connection (for HTTP/SSE servers)
 #[tauri::command]
 pub async fn test_mcp_server(server_id: String) -> Result<McpTestResult, String> {
-    let config = AppConfig::load();
+    let (config, _) = AppConfig::load();
 
     let server = config.mcp.servers
         .iter()
@@ -162,7 +162,7 @@ pub async fn delete_mcp_bearer_token(app: AppHandle, server_id: String) -> Resul
 /// Check if an MCP server has a stored token (bearer or OAuth)
 #[tauri::command]
 pub async fn has_mcp_token(app: AppHandle, server_id: String) -> Result<bool, String> {
-    let config = AppConfig::load();
+    let (config, _) = AppConfig::load();
     let server = config
         .mcp
         .servers
@@ -198,7 +198,7 @@ pub async fn has_mcp_token(app: AppHandle, server_id: String) -> Result<bool, St
 /// Start the OAuth flow for an MCP server (returns authorization URL to open in browser)
 #[tauri::command]
 pub async fn start_mcp_oauth_flow(server_id: String) -> Result<OAuthFlowResult, String> {
-    let config = AppConfig::load();
+    let (config, _) = AppConfig::load();
     let server = config
         .mcp
         .servers
@@ -266,7 +266,7 @@ pub async fn exchange_mcp_oauth_code(
     code: String,
     code_verifier: String,
 ) -> Result<(), String> {
-    let config = AppConfig::load();
+    let (config, _) = AppConfig::load();
     let server = config
         .mcp
         .servers
@@ -354,7 +354,7 @@ pub async fn exchange_mcp_oauth_code(
 /// Refresh OAuth tokens for an MCP server
 #[tauri::command]
 pub async fn refresh_mcp_oauth_tokens(app: AppHandle, server_id: String) -> Result<(), String> {
-    let config = AppConfig::load();
+    let (config, _) = AppConfig::load();
     let server = config
         .mcp
         .servers
@@ -484,7 +484,7 @@ pub async fn get_mcp_auth_header(
     app: AppHandle,
     server_id: String,
 ) -> Result<Option<String>, String> {
-    let config = AppConfig::load();
+    let (config, _) = AppConfig::load();
     let server = config
         .mcp
         .servers

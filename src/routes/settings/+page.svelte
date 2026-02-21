@@ -5,6 +5,7 @@
   import {
     GeneralTab,
     ClaudeTab,
+    CodexTab,
     ThemesTab,
     SystemTab,
     MicrophoneTab,
@@ -99,6 +100,7 @@
 
   const tabs = [
     { id: "claude", label: "Claude" },
+    { id: "codex", label: "Codex" },
     { id: "sessions", label: "Sessions" },
     { id: "themes", label: "Themes" },
     { id: "system", label: "System" },
@@ -166,6 +168,8 @@
         <GeneralTab />
       {:else if activeTab === "claude"}
         <ClaudeTab />
+      {:else if activeTab === "codex"}
+        <CodexTab />
       {:else if activeTab === "themes"}
         <ThemesTab />
       {:else if activeTab === "system"}

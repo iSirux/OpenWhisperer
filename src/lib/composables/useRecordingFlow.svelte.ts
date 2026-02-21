@@ -9,7 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { get } from 'svelte/store';
 import { recording, isRecording } from '$lib/stores/recording';
-import { sdkSessions, settingsToStoreThinking } from '$lib/stores/sdkSessions';
+import { sdkSessions, settingsToStoreEffort } from '$lib/stores/sdkSessions';
 import { settings, activeRepo } from '$lib/stores/settings';
 import { overlay } from '$lib/stores/overlay';
 import { openMic } from '$lib/stores/openMic';
@@ -100,14 +100,14 @@ export function useRecordingFlow() {
   async function prepareRecording(): Promise<{
     repoPath: string;
     model: string;
-    thinkingLevel: ReturnType<typeof settingsToStoreThinking>;
+    effortLevel: ReturnType<typeof settingsToStoreEffort>;
     branch: string | null;
   }> {
     const currentSettings = get(settings);
     const currentActiveRepo = get(activeRepo);
     const repoPath = currentActiveRepo?.path || '.';
     const model = currentSettings.default_model;
-    const thinkingLevel = settingsToStoreThinking(currentSettings.default_thinking_level);
+    const effortLevel = settingsToStoreEffort(currentSettings.default_effort_level);
 
     // Get current git branch for overlay display
     let branch: string | null = null;
@@ -117,7 +117,7 @@ export function useRecordingFlow() {
       console.error('Failed to get git branch:', e);
     }
 
-    return { repoPath, model, thinkingLevel, branch };
+    return { repoPath, model, effortLevel, branch };
   }
 
   /**
@@ -125,9 +125,9 @@ export function useRecordingFlow() {
    */
   function createPendingSession(
     model: string,
-    thinkingLevel: ReturnType<typeof settingsToStoreThinking>
+    effortLevel: ReturnType<typeof settingsToStoreEffort>
   ): string {
-    const sessionId = sdkSessions.createPendingTranscriptionSession(model, thinkingLevel);
+    const sessionId = sdkSessions.createPendingTranscriptionSession(model, effortLevel);
     pendingTranscriptionSessionId = sessionId;
     return sessionId;
   }
@@ -142,7 +142,7 @@ export function useRecordingFlow() {
     // Stop open mic to avoid two Vosk sessions running simultaneously
     await openMic.stop();
 
-    const { model, thinkingLevel, branch } = await prepareRecording();
+    const { model, effortLevel, branch } = await prepareRecording();
 
     // Set overlay info
     overlay.setMode('session');
@@ -151,7 +151,7 @@ export function useRecordingFlow() {
     // Create pending transcription session immediately (SDK mode only)
     const currentSettings = get(settings);
     if (currentSettings.terminal_mode === 'Sdk') {
-      const sessionId = createPendingSession(model, thinkingLevel);
+      const sessionId = createPendingSession(model, effortLevel);
       sdkSessions.selectSession(sessionId);
       navigation.setView('sessions');
 
@@ -248,7 +248,7 @@ export function useRecordingFlow() {
     const mainWindow = getCurrentWindow();
     wasAppFocusedOnRecordStart = await mainWindow.isFocused();
 
-    const { model, thinkingLevel, branch } = await prepareRecording();
+    const { model, effortLevel, branch } = await prepareRecording();
 
     // Set overlay info
     overlay.setMode('session');
@@ -257,7 +257,7 @@ export function useRecordingFlow() {
     // Create pending transcription session (SDK mode only)
     const currentSettings = get(settings);
     if (currentSettings.terminal_mode === 'Sdk') {
-      createPendingSession(model, thinkingLevel);
+      createPendingSession(model, effortLevel);
       await setupAudioVisualizationListener();
     }
 
@@ -353,7 +353,7 @@ export function useRecordingFlow() {
     const mainWindow = getCurrentWindow();
     wasAppFocusedOnRecordStart = await mainWindow.isFocused();
 
-    const { model, thinkingLevel, branch } = await prepareRecording();
+    const { model, effortLevel, branch } = await prepareRecording();
 
     // Set overlay info
     overlay.setMode('session');
@@ -362,7 +362,7 @@ export function useRecordingFlow() {
     // Create pending session (SDK mode)
     const currentSettings = get(settings);
     if (currentSettings.terminal_mode === 'Sdk') {
-      createPendingSession(model, thinkingLevel);
+      createPendingSession(model, effortLevel);
       await setupAudioVisualizationListener();
     }
 

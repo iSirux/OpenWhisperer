@@ -1,8 +1,7 @@
 <script lang="ts">
   import { settings } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
 
   interface RepoDescriptionResult {
     description: string;
@@ -19,16 +18,6 @@
 
   // Track pending Claude generation requests (id -> index)
   const pendingClaudeRequests = new Map<string, number>();
-  let unlistenResult: UnlistenFn | null = null;
-  let unlistenError: UnlistenFn | null = null;
-
-  onMount(() => {
-    // We'll set up listeners dynamically when we start generating
-    return () => {
-      unlistenResult?.();
-      unlistenError?.();
-    };
-  });
 
   async function generateRepoDescriptionWithClaude(index: number) {
     const repo = $settings.repos[index];

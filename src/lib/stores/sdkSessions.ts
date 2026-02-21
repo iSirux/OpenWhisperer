@@ -6,7 +6,8 @@ import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
-import { isAutoModel, resolveModelForApi } from '$lib/utils/models';
+import { isAutoModel, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
+import type { McpServerConfig } from '$lib/types/mcp';
 
 // =============================================================================
 // Debounced Save
@@ -134,24 +135,33 @@ export interface NoteModeState {
   noteCreated: boolean;
 }
 
-export type ThinkingLevel = null | 'on';
-export type SettingsThinkingLevel = 'off' | 'on';
+export type EffortLevel = null | 'low' | 'medium' | 'high' | 'max';
+export type SettingsEffortLevel = 'off' | 'low' | 'medium' | 'high' | 'max';
 
-export function settingsToStoreThinking(level: SettingsThinkingLevel): ThinkingLevel {
-  return level === 'off' ? null : 'on';
+/** @deprecated Use EffortLevel instead */
+export type ThinkingLevel = EffortLevel;
+/** @deprecated Use SettingsEffortLevel instead */
+export type SettingsThinkingLevel = SettingsEffortLevel;
+
+export function settingsToStoreEffort(level: SettingsEffortLevel): EffortLevel {
+  return level === 'off' ? null : level;
 }
 
-export function storeToSettingsThinking(level: ThinkingLevel): SettingsThinkingLevel {
-  return level === null ? 'off' : 'on';
+export function storeToSettingsEffort(level: EffortLevel): SettingsEffortLevel {
+  return level === null ? 'off' : level;
 }
 
-export const THINKING_BUDGET = 31999;
-export const THINKING_BUDGETS: Record<string, number> = {
-  on: 31999,
-  think: 31999,
-  megathink: 31999,
-  ultrathink: 31999,
-};
+/** @deprecated Use settingsToStoreEffort instead */
+export function settingsToStoreThinking(level: string): EffortLevel {
+  if (level === 'off') return null;
+  if (level === 'on') return 'high'; // Legacy: 'on' maps to 'high' effort
+  return level as EffortLevel;
+}
+
+/** @deprecated Use storeToSettingsEffort instead */
+export function storeToSettingsThinking(level: EffortLevel): SettingsEffortLevel {
+  return storeToSettingsEffort(level);
+}
 
 export interface PendingRepoSelection {
   transcript: string;
@@ -178,6 +188,8 @@ export interface PendingTranscriptionInfo {
   modelRecommendation?: {
     modelId: string;
     reasoning: string;
+    effortLevel?: string;
+    /** @deprecated Use effortLevel */
     thinkingLevel?: string;
   };
   repoRecommendation?: {
@@ -192,8 +204,11 @@ export interface SdkSession {
   id: string;
   cwd: string;
   model: string;
+  provider?: SdkProvider;
   autoModelRequested?: boolean;
-  thinkingLevel: ThinkingLevel;
+  effortLevel: EffortLevel;
+  /** @deprecated Use effortLevel */
+  thinkingLevel?: EffortLevel;
   messages: SdkMessage[];
   status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
@@ -667,12 +682,13 @@ function createSdkSessionsStore() {
     id: string,
     cwd: string,
     model: string,
-    thinkingLevel: ThinkingLevel,
+    effortLevel: EffortLevel,
     systemPrompt?: string | null,
     historyMessages?: HistoryMessage[] | null,
     sdkSessionId?: string | null, // SDK session ID for proper resume (preferred over historyMessages)
     planMode?: boolean,
-    noteMode?: boolean
+    noteMode?: boolean,
+    provider?: string
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -686,7 +702,7 @@ function createSdkSessionsStore() {
       const repo = currentSettings.repos.find((r) => r.path === cwd);
       console.log('[MCP Debug] Session cwd:', cwd);
       console.log('[MCP Debug] Found repo:', repo?.name, 'with mcp_servers:', repo?.mcp_servers, 'note_mcp_servers:', repo?.note_mcp_servers);
-      let servers;
+      let servers: McpServerConfig[];
 
       if (noteMode) {
         // Note mode: only use note_mcp_servers from repo config
@@ -773,11 +789,11 @@ function createSdkSessionsStore() {
       planMode: planMode ?? null,
       noteMode: noteMode ?? null,
       mcpServers: mcpServers && mcpServers.length > 0 ? mcpServers : null,
+      provider: provider ?? null,
     });
 
-    if (thinkingLevel) {
-      const maxThinkingTokens = THINKING_BUDGETS[thinkingLevel];
-      await invoke('update_sdk_thinking', { id, maxThinkingTokens });
+    if (effortLevel) {
+      await invoke('update_sdk_effort', { id, effortLevel });
     }
 
     liveSessions.add(id);
@@ -797,7 +813,7 @@ function createSdkSessionsStore() {
       sidecarStarted = true;
     },
 
-    async createSession(cwd: string, model: string, thinkingLevel: ThinkingLevel = null, systemPrompt?: string, planMode?: boolean): Promise<string> {
+    async createSession(cwd: string, model: string, effortLevel: EffortLevel = null, systemPrompt?: string, planMode?: boolean, provider?: SdkProvider): Promise<string> {
       await this.ensureSidecarStarted();
 
       const id = crypto.randomUUID();
@@ -807,8 +823,9 @@ function createSdkSessionsStore() {
         id,
         cwd,
         model,
+        provider,
         autoModelRequested,
-        thinkingLevel,
+        effortLevel,
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
@@ -820,7 +837,7 @@ function createSdkSessionsStore() {
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
-      await registerSessionWithBackend(id, cwd, model, thinkingLevel, systemPrompt, null, null, planMode);
+      await registerSessionWithBackend(id, cwd, model, effortLevel, systemPrompt, null, null, planMode, undefined, provider);
 
       const currentSettings = get(settings);
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -845,7 +862,7 @@ function createSdkSessionsStore() {
       // Prefer SDK session ID for proper resume (avoids context bloat from prepending history)
       // Fall back to history messages only if no SDK session ID is available (legacy sessions)
       const historyMessages = session.sdkSessionId ? null : convertToHistoryMessages(session.messages);
-      await registerSessionWithBackend(id, session.cwd, session.model, session.thinkingLevel, null, historyMessages, session.sdkSessionId);
+      await registerSessionWithBackend(id, session.cwd, session.model, session.effortLevel, null, historyMessages, session.sdkSessionId, undefined, undefined, session.provider);
     },
 
     async sendPrompt(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
@@ -951,17 +968,21 @@ function createSdkSessionsStore() {
       }
     },
 
-    async updateSessionThinking(id: string, thinkingLevel: ThinkingLevel): Promise<void> {
-      update(sessions => sessions.map(s => s.id === id ? { ...s, thinkingLevel } : s));
+    async updateSessionEffort(id: string, effortLevel: EffortLevel): Promise<void> {
+      update(sessions => sessions.map(s => s.id === id ? { ...s, effortLevel } : s));
 
       if (!liveSessions.has(id)) return;
 
-      const maxThinkingTokens = thinkingLevel ? THINKING_BUDGETS[thinkingLevel] : null;
       try {
-        await invoke('update_sdk_thinking', { id, maxThinkingTokens });
+        await invoke('update_sdk_effort', { id, effortLevel });
       } catch (error) {
-        console.error('Failed to update SDK thinking:', error);
+        console.error('Failed to update SDK effort:', error);
       }
+    },
+
+    /** @deprecated Use updateSessionEffort instead */
+    async updateSessionThinking(id: string, effortLevel: EffortLevel): Promise<void> {
+      return this.updateSessionEffort(id, effortLevel);
     },
 
     async updateSessionCwd(id: string, cwd: string): Promise<void> {
@@ -975,7 +996,7 @@ function createSdkSessionsStore() {
       if (liveSessions.has(id)) {
         try {
           await invoke('close_sdk_session', { id });
-          await registerSessionWithBackend(id, cwd, session.model, session.thinkingLevel);
+          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, undefined, undefined, session.provider);
         } catch (error) {
           console.error('[sdkSessions] Failed to reinitialize backend session:', error);
         }
@@ -990,14 +1011,15 @@ function createSdkSessionsStore() {
       update(sessions => sessions.map(s => s.id === id ? { ...s, draftPrompt, draftImages } : s));
     },
 
-    createSetupSession(model: string, thinkingLevel: ThinkingLevel, planMode: boolean = false): string {
+    createSetupSession(model: string, effortLevel: EffortLevel, planMode: boolean = false, provider?: SdkProvider): string {
       const id = crypto.randomUUID();
 
       const session: SdkSession = {
         id,
         cwd: '',
         model,
-        thinkingLevel,
+        provider,
+        effortLevel,
         messages: [],
         status: 'setup',
         createdAt: Date.now(),
@@ -1009,7 +1031,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; model: string; thinkingLevel: ThinkingLevel; planMode: boolean; noteMode?: boolean; systemPrompt?: string }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; systemPrompt?: string; provider?: SdkProvider }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -1020,7 +1042,7 @@ function createSdkSessionsStore() {
                 ...s,
                 cwd: config.cwd,
                 model: config.noteMode ? 'claude-haiku-4-5-20251001' : config.model, // Note mode always uses Haiku
-                thinkingLevel: config.noteMode ? null : config.thinkingLevel, // Note mode doesn't use thinking
+                effortLevel: config.noteMode ? null : config.effortLevel, // Note mode doesn't use effort
                 status: 'initializing' as const,
                 planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
                 noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
@@ -1044,11 +1066,11 @@ function createSdkSessionsStore() {
         const unlisteners = await setupEventListeners(id);
         listeners.set(id, unlisteners);
 
-        // Note mode uses Haiku and no thinking
+        // Note mode uses Haiku and no effort
         const finalModel = config.noteMode ? 'claude-haiku-4-5-20251001' : config.model;
-        const finalThinking = config.noteMode ? null : config.thinkingLevel;
+        const finalEffort = config.noteMode ? null : config.effortLevel;
 
-        await registerSessionWithBackend(id, config.cwd, finalModel, finalThinking, finalSystemPrompt, null, null, config.planMode, config.noteMode);
+        await registerSessionWithBackend(id, config.cwd, finalModel, finalEffort, finalSystemPrompt, null, null, config.planMode, config.noteMode, config.provider);
 
         const currentSettings = get(settings);
         const resolvedModel = resolveModelForApi(finalModel, currentSettings.enabled_models);
@@ -1074,14 +1096,15 @@ function createSdkSessionsStore() {
       update(sessions => sessions.filter(s => s.id !== id || s.status !== 'setup'));
     },
 
-    createPendingTranscriptionSession(model: string, thinkingLevel: ThinkingLevel): string {
+    createPendingTranscriptionSession(model: string, effortLevel: EffortLevel, provider?: SdkProvider): string {
       const id = crypto.randomUUID();
 
       const session: SdkSession = {
         id,
         cwd: '',
         model,
-        thinkingLevel,
+        provider,
+        effortLevel,
         messages: [],
         status: 'pending_transcription',
         createdAt: Date.now(),
@@ -1108,7 +1131,7 @@ function createSdkSessionsStore() {
       );
     },
 
-    setRecommendations(id: string, options: { modelRecommendation?: { modelId: string; reasoning: string; thinkingLevel?: string }; repoRecommendation?: { repoIndex: number; repoName: string; reasoning: string; confidence: string }; transcript?: string }): void {
+    setRecommendations(id: string, options: { modelRecommendation?: { modelId: string; reasoning: string; effortLevel?: string; thinkingLevel?: string }; repoRecommendation?: { repoIndex: number; repoName: string; reasoning: string; confidence: string }; transcript?: string }): void {
       update(sessions =>
         sessions.map(s => {
           if (s.id !== id) return s;
@@ -1169,7 +1192,7 @@ function createSdkSessionsStore() {
         );
 
         try {
-          await this.initializeSession(id, cwd, session.model, session.thinkingLevel, systemPrompt, transcript);
+          await this.initializeSession(id, cwd, session.model, session.effortLevel, systemPrompt, transcript, session.provider);
         } catch (error) {
           update(sessions =>
             sessions.map(s =>
@@ -1211,7 +1234,7 @@ function createSdkSessionsStore() {
       );
 
       try {
-        await this.initializeSession(id, session.cwd, session.model, session.thinkingLevel, systemPrompt, prompt);
+        await this.initializeSession(id, session.cwd, session.model, session.effortLevel, systemPrompt, prompt, session.provider);
       } catch (error) {
         update(sessions =>
           sessions.map(s =>
@@ -1224,14 +1247,15 @@ function createSdkSessionsStore() {
       }
     },
 
-    createPendingRepoSession(model: string, thinkingLevel: ThinkingLevel, pendingRepoSelection: PendingRepoSelection): string {
+    createPendingRepoSession(model: string, effortLevel: EffortLevel, pendingRepoSelection: PendingRepoSelection, provider?: SdkProvider): string {
       const id = crypto.randomUUID();
 
       const session: SdkSession = {
         id,
         cwd: '',
         model,
-        thinkingLevel,
+        provider,
+        effortLevel,
         messages: [],
         status: 'pending_repo',
         createdAt: Date.now(),
@@ -1250,14 +1274,15 @@ function createSdkSessionsStore() {
       );
     },
 
-    createInitializingSession(cwd: string, model: string, thinkingLevel: ThinkingLevel, pendingPrompt: string): string {
+    createInitializingSession(cwd: string, model: string, effortLevel: EffortLevel, pendingPrompt: string, provider?: SdkProvider): string {
       const id = crypto.randomUUID();
 
       const session: SdkSession = {
         id,
         cwd,
         model,
-        thinkingLevel,
+        provider,
+        effortLevel,
         messages: [],
         status: 'initializing',
         createdAt: Date.now(),
@@ -1282,7 +1307,7 @@ function createSdkSessionsStore() {
       );
 
       try {
-        await this.initializeSession(id, cwd, session.model, session.thinkingLevel, systemPrompt, pendingPrompt);
+        await this.initializeSession(id, cwd, session.model, session.effortLevel, systemPrompt, pendingPrompt, session.provider);
       } catch (error) {
         update(sessions =>
           sessions.map(s =>
@@ -1295,7 +1320,7 @@ function createSdkSessionsStore() {
       }
     },
 
-    async initializeSession(id: string, cwd: string, model: string, thinkingLevel: ThinkingLevel, systemPrompt?: string, pendingPrompt?: string): Promise<void> {
+    async initializeSession(id: string, cwd: string, model: string, effortLevel: EffortLevel, systemPrompt?: string, pendingPrompt?: string, provider?: SdkProvider): Promise<void> {
       await this.ensureSidecarStarted();
 
       const unlisteners = await setupEventListeners(id);
@@ -1307,7 +1332,7 @@ function createSdkSessionsStore() {
         update(sessions => sessions.map(s => s.id === id ? { ...s, model: resolvedModel } : s));
       }
 
-      await registerSessionWithBackend(id, cwd, resolvedModel, thinkingLevel, systemPrompt);
+      await registerSessionWithBackend(id, cwd, resolvedModel, effortLevel, systemPrompt, undefined, undefined, undefined, undefined, provider);
       usageStats.trackSession('sdk', resolvedModel, cwd);
 
       if (pendingPrompt) {
@@ -1321,11 +1346,11 @@ function createSdkSessionsStore() {
       update(sessions => sessions.map(s => s.id === id ? { ...s, status } : s));
     },
 
-    async createPlanModeSession(cwd: string, model: string, thinkingLevel: ThinkingLevel = null): Promise<string> {
+    async createPlanModeSession(cwd: string, model: string, effortLevel: EffortLevel = null): Promise<string> {
       const { getPlanModeSystemPrompt } = await import('$lib/prompts/planMode');
       const systemPrompt = getPlanModeSystemPrompt();
 
-      const id = await this.createSession(cwd, model, thinkingLevel, systemPrompt, true);
+      const id = await this.createSession(cwd, model, effortLevel, systemPrompt, true);
 
       update(sessions =>
         sessions.map(s =>
@@ -1364,7 +1389,7 @@ function createSdkSessionsStore() {
         id,
         cwd,
         model,
-        thinkingLevel: null,
+        effortLevel: null,
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
@@ -1406,7 +1431,7 @@ function createSdkSessionsStore() {
         id,
         cwd: '',
         model,
-        thinkingLevel: null,
+        effortLevel: null,
         messages: [],
         status: 'pending_transcription',
         createdAt: Date.now(),
@@ -1589,7 +1614,7 @@ function createSdkSessionsStore() {
 
       const { planFilePath, featureName } = planSession.planMode;
 
-      const implementationId = await this.createSession(planSession.cwd, planSession.model, planSession.thinkingLevel);
+      const implementationId = await this.createSession(planSession.cwd, planSession.model, planSession.effortLevel);
 
       update(sessions =>
         sessions.map(s =>

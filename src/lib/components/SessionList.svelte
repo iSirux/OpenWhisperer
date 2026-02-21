@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
-  import { sdkSessions, activeSdkSessionId, settingsToStoreThinking } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId, settingsToStoreEffort } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
   import type { DisplaySession } from '$lib/types/session';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
@@ -75,9 +75,9 @@
   function createNewSession() {
     if ($settings.terminal_mode === 'Sdk') {
       const model = $settings.default_model;
-      const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+      const effortLevel = settingsToStoreEffort($settings.default_effort_level);
       // Create a setup session - user will configure it before starting
-      const sessionId = sdkSessions.createSetupSession(model, thinkingLevel, false);
+      const sessionId = sdkSessions.createSetupSession(model, effortLevel, false);
       activeSdkSessionId.set(sessionId);
       activeSessionId.set(null);
       window.dispatchEvent(new CustomEvent('switch-to-sessions'));

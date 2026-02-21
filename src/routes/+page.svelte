@@ -40,10 +40,11 @@
     sdkSessions,
     activeSdkSessionId,
     activeSdkSession,
-    type ThinkingLevel,
+    type EffortLevel,
+    settingsToStoreEffort,
     settingsToStoreThinking,
   } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo, isAutoRepoSelected } from '$lib/stores/settings';
+  import { settings, activeRepo, isAutoRepoSelected, configLoadedOk } from '$lib/stores/settings';
   import { recording, isRecording, pendingTranscriptions } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
@@ -345,7 +346,7 @@
       } else {
         const newSessionId = sdkSessions.createPendingTranscriptionSession(
           $settings.default_model,
-          settingsToStoreThinking($settings.default_thinking_level)
+          settingsToStoreEffort($settings.default_effort_level)
         );
         sdkSessions.setPendingApproval(newSessionId, finalTranscript, repoPath);
         activeSdkSessionId.set(newSessionId);
@@ -419,7 +420,7 @@
     confidence: string
   ) {
     const model = $settings.default_model;
-    const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+    const effortLevel = settingsToStoreEffort($settings.default_effort_level);
 
     if (pendingSessionId) {
       await sdkSessions.completePendingTranscription(pendingSessionId, '', transcript, undefined, {
@@ -430,7 +431,7 @@
       });
       navigation.setView('sessions');
     } else {
-      sdkSessions.createPendingRepoSession(model, thinkingLevel, {
+      sdkSessions.createPendingRepoSession(model, effortLevel, {
         transcript,
         recommendedIndex,
         reasoning,
@@ -477,7 +478,7 @@
     const repoName = repo?.name || '';
 
     // Get model (handling auto mode)
-    const { model, thinkingLevel, recommendation } = await getModelRecommendation(
+    const { model, effortLevel, recommendation } = await getModelRecommendation(
       transcript,
       $settings.enabled_models
     );
@@ -485,8 +486,8 @@
     if (recommendation) {
       updatePendingWithModelRecommendation(sessionId, recommendation);
       await sdkSessions.updateSessionModel(sessionId, model);
-      if (recommendation.thinkingLevel) {
-        await sdkSessions.updateSessionThinking(sessionId, recommendation.thinkingLevel);
+      if (recommendation.effortLevel) {
+        await sdkSessions.updateSessionEffort(sessionId, recommendation.effortLevel);
       }
     }
 
@@ -509,7 +510,7 @@
     const repoPath = repo?.path || '.';
     const repoName = repo?.name || '';
 
-    const { model, thinkingLevel } = await getModelRecommendation(
+    const { model, effortLevel } = await getModelRecommendation(
       transcript,
       $settings.enabled_models
     );
@@ -521,7 +522,7 @@
       allRepos: $settings.repos,
     });
 
-    const sessionId = await sdkSessions.createSession(repoPath, model, thinkingLevel, systemPrompt);
+    const sessionId = await sdkSessions.createSession(repoPath, model, effortLevel, systemPrompt);
     activeSdkSessionId.set(sessionId);
     await sdkSessions.sendPrompt(sessionId, transcript);
     activeSessionId.set(null);
@@ -801,9 +802,9 @@
     }
   }
 
-  function handleSessionThinkingChange(newLevel: ThinkingLevel) {
+  function handleSessionEffortChange(newLevel: EffortLevel) {
     if ($activeSdkSessionId) {
-      sdkSessions.updateSessionThinking($activeSdkSessionId, newLevel);
+      sdkSessions.updateSessionEffort($activeSdkSessionId, newLevel);
     }
   }
 
@@ -841,20 +842,20 @@
     await settings.save({ ...$settings, default_model: newModel });
   }
 
-  async function changeThinking(newLevel: ThinkingLevel) {
+  async function changeEffort(newLevel: EffortLevel) {
     const settingsLevel = newLevel === null ? 'off' : newLevel;
-    settings.update((s) => ({ ...s, default_thinking_level: settingsLevel }));
-    await settings.save({ ...$settings, default_thinking_level: settingsLevel });
+    settings.update((s) => ({ ...s, default_effort_level: settingsLevel }));
+    await settings.save({ ...$settings, default_effort_level: settingsLevel });
   }
 
-  async function changeAutoModelThinking(newSetting: import('$lib/stores/settings').AutoModelThinking) {
+  async function changeAutoModelEffort(newSetting: import('$lib/stores/settings').AutoModelEffort) {
     settings.update((s) => ({
       ...s,
       llm: {
         ...s.llm,
         features: {
           ...s.llm.features,
-          auto_model_thinking: newSetting,
+          auto_model_effort: newSetting,
         },
       },
     }));
@@ -864,7 +865,7 @@
         ...$settings.llm,
         features: {
           ...$settings.llm.features,
-          auto_model_thinking: newSetting,
+          auto_model_effort: newSetting,
         },
       },
     });
@@ -878,8 +879,8 @@
 
   function handleNewSession() {
     const model = $settings.default_model;
-    const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
-    const sessionId = sdkSessions.createSetupSession(model, thinkingLevel, false);
+    const effortLevel = settingsToStoreEffort($settings.default_effort_level);
+    const sessionId = sdkSessions.createSetupSession(model, effortLevel, false);
 
     activeSdkSessionId.set(sessionId);
     activeSessionId.set(null);
@@ -892,10 +893,11 @@
       prompt: string;
       images?: import('$lib/stores/sdkSessions').SdkImageContent[];
       model: string;
-      thinkingLevel: ThinkingLevel;
+      effortLevel: EffortLevel;
       cwd: string;
       planMode: boolean;
       noteMode: boolean;
+      provider?: import('$lib/utils/models').SdkProvider;
     }
   ) {
     let repoPath = config.cwd;
@@ -918,15 +920,15 @@
 
     // Handle auto model
     let finalModel = config.model;
-    let finalThinking = config.thinkingLevel;
+    let finalEffort = config.effortLevel;
 
     if (isAutoModel(config.model) && isModelRecommendationEnabled()) {
-      const { model, thinkingLevel } = await getModelRecommendation(
+      const { model, effortLevel } = await getModelRecommendation(
         config.prompt,
         $settings.enabled_models
       );
       finalModel = model;
-      if (thinkingLevel) finalThinking = thinkingLevel;
+      if (effortLevel) finalEffort = effortLevel;
     }
 
     await sdkSessions.startSetupSession(sessionId, {
@@ -934,9 +936,10 @@
       images: config.images,
       cwd: repoPath,
       model: finalModel,
-      thinkingLevel: finalThinking,
+      effortLevel: finalEffort,
       planMode: config.planMode,
       noteMode: config.noteMode,
+      provider: config.provider,
     });
   }
 
@@ -947,14 +950,20 @@
 </script>
 
 <div class="app-container h-screen flex flex-col bg-background">
+  {#if !$configLoadedOk}
+    <div class="config-warning bg-red-900/80 text-red-100 px-4 py-2 text-sm flex items-center gap-2 border-b border-red-700">
+      <span class="font-bold">Warning:</span>
+      <span>Config failed to parse and loaded defaults. Saves are blocked to protect your data. Fix or delete your config file to resume normal operation.</span>
+    </div>
+  {/if}
   <AppHeader
     repos={$settings.repos}
     activeRepoIndex={$settings.active_repo_index}
     activeRepo={$activeRepo}
     isAutoRepoSelected={$isAutoRepoSelected}
     defaultModel={$settings.default_model}
-    defaultThinkingLevel={settingsToStoreThinking($settings.default_thinking_level)}
-    autoModelThinking={$settings.llm.features.auto_model_thinking}
+    defaultEffortLevel={settingsToStoreEffort($settings.default_effort_level)}
+    autoModelEffort={$settings.llm.features.auto_model_effort}
     isRecording={$isRecording}
     isRecordingForNewSession={recordingFlow.isRecordingForNewSession}
     pendingTranscriptions={$pendingTranscriptions}
@@ -966,8 +975,8 @@
     onSelectRepo={selectRepo}
     onEnableAutoRepo={enableAutoRepo}
     onChangeModel={changeModel}
-    onChangeThinking={changeThinking}
-    onChangeAutoModelThinking={changeAutoModelThinking}
+    onChangeEffort={changeEffort}
+    onChangeAutoModelEffort={changeAutoModelEffort}
     onStartRecording={recordingFlow.startRecordingNewSession}
     onStopRecording={recordingFlow.stopRecordingNewSession}
   />
@@ -1013,7 +1022,7 @@
         {#if isSetupState}
           <SessionSetupView
             initialModel={activeSession.model}
-            initialThinkingLevel={activeSession.thinkingLevel}
+            initialEffortLevel={activeSession.effortLevel}
             initialCwd={$activeRepo?.path || ''}
             initialPlanMode={activeSession.planMode?.isActive || false}
             isRecordingForSetup={recordingFlow.isRecordingForSetup}

@@ -4,24 +4,29 @@
     getModelRingColor,
     getModelHoverBgColor,
   } from "$lib/utils/modelColors";
-  import { getEnabledModelsWithAuto, isAutoModel } from "$lib/utils/models";
+  import { getEnabledModelsWithAuto, getEnabledModels, isAutoModel, type SdkProvider } from "$lib/utils/models";
   import { settings } from "$lib/stores/settings";
 
   interface Props {
     model: string;
     onchange: (model: string) => void;
     size?: "sm" | "md";
+    provider?: SdkProvider;
   }
 
-  let { model, onchange, size = "sm" }: Props = $props();
+  let { model, onchange, size = "sm", provider = "claude" }: Props = $props();
 
   // Check if smart model selection feature is enabled
   const isSmartModelEnabled = $derived(
     $settings.llm?.enabled && $settings.llm?.features?.recommend_model
   );
 
-  // Get enabled models - Auto is always shown
-  const models = $derived(getEnabledModelsWithAuto($settings.enabled_models));
+  // Get enabled models - Auto is shown for Claude, plain list for OpenAI
+  const models = $derived(
+    provider === "openai"
+      ? getEnabledModels($settings.enabled_openai_models, "openai")
+      : getEnabledModelsWithAuto($settings.enabled_models)
+  );
 
   const sizeClasses = {
     sm: "px-2 py-0.5 text-[10px]",

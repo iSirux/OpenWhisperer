@@ -28,7 +28,9 @@ export interface ModelRecommendation {
   recommended_model: 'haiku' | 'sonnet' | 'opus';
   reasoning: string;
   confidence: 'low' | 'medium' | 'high';
-  suggested_thinking: 'null' | 'on' | null;
+  suggested_effort: 'null' | 'low' | 'medium' | 'high' | 'max' | null;
+  /** @deprecated Use suggested_effort */
+  suggested_thinking?: 'null' | 'on' | null;
 }
 
 export interface RepoRecommendation {
@@ -334,21 +336,25 @@ export async function cleanTranscription(
  */
 const MODEL_ID_MAP: Record<string, string> = {
   haiku: 'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-4-5-20250929',
-  opus: 'claude-opus-4-5-20251101',
+  sonnet: 'claude-sonnet-4-6',
+  opus: 'claude-opus-4-6',
 };
 
 /**
- * Thinking level mapping from LLM recommendation
- * Maps any non-null thinking suggestion to 'on' (31999 tokens)
+ * Effort level mapping from LLM recommendation
+ * Maps effort level suggestions to standard values
  */
-const THINKING_LEVEL_MAP: Record<string, string | null> = {
+const EFFORT_LEVEL_MAP: Record<string, string | null> = {
   null: null,
-  on: 'on',
-  // Legacy mappings - all map to 'on'
-  think: 'on',
-  megathink: 'on',
-  ultrathink: 'on',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  max: 'max',
+  // Legacy mappings from old thinking system
+  on: 'high',
+  think: 'high',
+  megathink: 'high',
+  ultrathink: 'max',
 };
 
 /**
@@ -359,6 +365,8 @@ export async function recommendModel(
   prompt: string
 ): Promise<{
   modelId: string;
+  effortLevel: string | null;
+  /** @deprecated Use effortLevel */
   thinkingLevel: string | null;
   reasoning: string;
   confidence: string;
@@ -379,13 +387,17 @@ export async function recommendModel(
     console.log('[llm] Model recommendation:', result);
 
     const modelId = MODEL_ID_MAP[result.recommended_model] || MODEL_ID_MAP.sonnet;
-    const thinkingLevel = result.suggested_thinking
-      ? THINKING_LEVEL_MAP[result.suggested_thinking]
+
+    // Prefer suggested_effort, fall back to suggested_thinking for backward compat
+    const rawEffort = result.suggested_effort ?? result.suggested_thinking;
+    const effortLevel = rawEffort
+      ? EFFORT_LEVEL_MAP[rawEffort] ?? null
       : null;
 
     return {
       modelId,
-      thinkingLevel,
+      effortLevel,
+      thinkingLevel: effortLevel, // Backward compat alias
       reasoning: result.reasoning,
       confidence: result.confidence,
     };

@@ -309,10 +309,8 @@ export function useHotkeyManager() {
           const currentSettings = get(settings);
           const currentOverlay = get(overlay);
 
-          // Get enabled models for cycling (exclude 1M context variant)
-          let cyclableModels = currentSettings.enabled_models.filter(
-            (id: string) => !id.includes('[1m]')
-          );
+          // Get enabled models for cycling
+          let cyclableModels = [...currentSettings.enabled_models];
 
           // Add 'auto' to cyclable models if smart model selection is enabled
           if (isModelRecommendationEnabled()) {

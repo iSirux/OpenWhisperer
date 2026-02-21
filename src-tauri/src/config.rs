@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
@@ -808,6 +808,32 @@ pub struct RepoConfig {
     pub note_mcp_servers: Option<Vec<String>>,
 }
 
+/// SDK provider for the main coding agent (Claude or OpenAI Codex)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum SdkProvider {
+    #[default]
+    Claude,
+    OpenAI,
+}
+
+/// OpenAI authentication method
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum OpenAiAuthMethod {
+    #[default]
+    OAuth,
+    ApiKey,
+}
+
+/// Claude authentication method
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum ClaudeAuthMethod {
+    /// Use existing Claude CLI OAuth session (~/.claude/.credentials.json)
+    #[default]
+    OAuth,
+    /// Use API key stored in keyring (ANTHROPIC_API_KEY)
+    ApiKey,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum TerminalMode {
     Interactive,
@@ -877,14 +903,56 @@ impl Default for SessionsViewConfig {
     }
 }
 
-/// Thinking level for extended thinking mode
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+/// Effort level for reasoning depth control
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum ThinkingLevel {
+pub enum EffortLevel {
     #[default]
     Off,
-    On,
+    Low,
+    Medium,
+    High,
+    Max,
 }
+
+/// Resilient deserializer for EffortLevel that maps legacy/unknown values
+/// instead of failing the entire config parse.
+/// Legacy mappings: "on"/"think" → High, "megathink"/"ultrathink" → Max
+impl<'de> Deserialize<'de> for EffortLevel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.to_lowercase().as_str() {
+            "off" => EffortLevel::Off,
+            "low" => EffortLevel::Low,
+            "medium" => EffortLevel::Medium,
+            "high" => EffortLevel::High,
+            "max" => EffortLevel::Max,
+            // Legacy thinking level values
+            "on" | "think" => {
+                eprintln!("[config] Migrating legacy effort value '{}' → High", s);
+                EffortLevel::High
+            }
+            "megathink" => {
+                eprintln!("[config] Migrating legacy effort value 'megathink' → Max");
+                EffortLevel::Max
+            }
+            "ultrathink" => {
+                eprintln!("[config] Migrating legacy effort value 'ultrathink' → Max");
+                EffortLevel::Max
+            }
+            other => {
+                eprintln!("[config] Unknown effort level '{}', defaulting to Off", other);
+                EffortLevel::Off
+            }
+        })
+    }
+}
+
+/// Backward compat alias
+pub type ThinkingLevel = EffortLevel;
 
 /// Tool call display mode in SDK view
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1001,12 +1069,27 @@ pub struct AppConfig {
     #[serde(default)]
     pub auto_repo_mode: bool,
     pub default_model: String,
-    #[serde(default)]
-    pub default_thinking_level: ThinkingLevel,
+    #[serde(default = "default_effort_level", alias = "default_thinking_level")]
+    pub default_effort_level: EffortLevel,
     #[serde(default = "default_enabled_models")]
     pub enabled_models: Vec<String>,
     #[serde(default)]
     pub terminal_mode: TerminalMode,
+    /// SDK provider for the main coding agent (Claude or OpenAI Codex)
+    #[serde(default)]
+    pub sdk_provider: SdkProvider,
+    /// Default OpenAI model for Codex SDK sessions
+    #[serde(default = "default_openai_model")]
+    pub openai_model: String,
+    /// Which OpenAI models are shown in the selector
+    #[serde(default = "default_enabled_openai_models")]
+    pub enabled_openai_models: Vec<String>,
+    /// OpenAI authentication method (OAuth via Codex CLI or API key)
+    #[serde(default)]
+    pub openai_auth_method: OpenAiAuthMethod,
+    /// Claude authentication method (OAuth via Claude CLI or API key)
+    #[serde(default)]
+    pub claude_auth_method: ClaudeAuthMethod,
     #[serde(default)]
     pub skip_permissions: bool,
     #[serde(default)]
@@ -1105,18 +1188,58 @@ pub enum RepoAutoSelectConfidence {
     Low,
 }
 
-/// Controls how thinking level is determined when using smart model selection
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+/// Controls how effort level is determined when using smart model selection
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum AutoModelThinking {
-    /// Always disable thinking when using auto model
+pub enum AutoModelEffort {
+    /// Always disable effort when using auto model
     Off,
-    /// Always enable thinking when using auto model
-    On,
+    Low,
+    Medium,
+    High,
+    Max,
     /// Let the LLM decide based on prompt complexity (default)
     #[default]
     Dynamic,
 }
+
+/// Resilient deserializer for AutoModelEffort that maps legacy/unknown values.
+impl<'de> Deserialize<'de> for AutoModelEffort {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.to_lowercase().as_str() {
+            "off" => AutoModelEffort::Off,
+            "low" => AutoModelEffort::Low,
+            "medium" => AutoModelEffort::Medium,
+            "high" => AutoModelEffort::High,
+            "max" => AutoModelEffort::Max,
+            "dynamic" => AutoModelEffort::Dynamic,
+            // Legacy thinking level values
+            "on" | "think" => {
+                eprintln!("[config] Migrating legacy auto_model_effort '{}' → High", s);
+                AutoModelEffort::High
+            }
+            "megathink" => {
+                eprintln!("[config] Migrating legacy auto_model_effort 'megathink' → Max");
+                AutoModelEffort::Max
+            }
+            "ultrathink" => {
+                eprintln!("[config] Migrating legacy auto_model_effort 'ultrathink' → Max");
+                AutoModelEffort::Max
+            }
+            other => {
+                eprintln!("[config] Unknown auto_model_effort '{}', defaulting to Dynamic", other);
+                AutoModelEffort::Dynamic
+            }
+        })
+    }
+}
+
+/// Backward compat alias
+pub type AutoModelThinking = AutoModelEffort;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmFeaturesConfig {
@@ -1132,9 +1255,9 @@ pub struct LlmFeaturesConfig {
     pub use_dual_transcription: bool,
     #[serde(default)]
     pub recommend_model: bool,
-    /// Controls thinking level behavior when smart model selection is enabled
-    #[serde(default)]
-    pub auto_model_thinking: AutoModelThinking,
+    /// Controls effort level behavior when smart model selection is enabled
+    #[serde(default, alias = "auto_model_thinking")]
+    pub auto_model_effort: AutoModelEffort,
     /// Auto-select repository based on prompt content
     #[serde(default)]
     pub auto_select_repo: bool,
@@ -1152,7 +1275,7 @@ impl Default for LlmFeaturesConfig {
             clean_transcription: false,
             use_dual_transcription: false,
             recommend_model: false,
-            auto_model_thinking: AutoModelThinking::default(),
+            auto_model_effort: AutoModelEffort::default(),
             auto_select_repo: false,
         }
     }
@@ -1213,12 +1336,29 @@ impl Default for LlmConfig {
     }
 }
 
+fn default_effort_level() -> EffortLevel {
+    EffortLevel::High
+}
+
 fn default_enabled_models() -> Vec<String> {
     vec![
-        "claude-opus-4-5-20251101".to_string(),
-        "claude-sonnet-4-5-20250929".to_string(),
-        "claude-sonnet-4-5-20250929[1m]".to_string(),
+        "claude-opus-4-6".to_string(),
+        "claude-sonnet-4-6".to_string(),
         "claude-haiku-4-5-20251001".to_string(),
+    ]
+}
+
+fn default_openai_model() -> String {
+    "gpt-5.3-codex".to_string()
+}
+
+fn default_enabled_openai_models() -> Vec<String> {
+    vec![
+        "codex-mini-latest".to_string(),
+        "gpt-5.3-codex".to_string(),
+        "gpt-5.3-codex-spark".to_string(),
+        "gpt-5.2-codex".to_string(),
+        "gpt-5.1-codex-mini".to_string(),
     ]
 }
 
@@ -1234,10 +1374,15 @@ impl Default for AppConfig {
             repos: vec![],
             active_repo_index: 0,
             auto_repo_mode: false,
-            default_model: "claude-opus-4-5-20251101".to_string(),
-            default_thinking_level: ThinkingLevel::default(),
+            default_model: "claude-opus-4-6".to_string(),
+            default_effort_level: default_effort_level(),
             enabled_models: default_enabled_models(),
             terminal_mode: TerminalMode::default(),
+            sdk_provider: SdkProvider::default(),
+            openai_model: default_openai_model(),
+            enabled_openai_models: default_enabled_openai_models(),
+            openai_auth_method: OpenAiAuthMethod::default(),
+            claude_auth_method: ClaudeAuthMethod::default(),
             skip_permissions: false,
             theme: Theme::default(),
             system: SystemConfig::default(),
@@ -1274,18 +1419,94 @@ impl AppConfig {
         Self::config_dir().join(filename)
     }
 
-    pub fn load() -> Self {
+    /// Load config with graceful recovery.
+    /// Returns (config, loaded_successfully).
+    /// `loaded_successfully` is true if config was parsed from disk (even with field-level fixups),
+    /// false if we fell back to defaults entirely.
+    pub fn load() -> (Self, bool) {
         let path = Self::config_path();
-        if path.exists() {
-            match fs::read_to_string(&path) {
-                Ok(content) => match serde_json::from_str(&content) {
-                    Ok(config) => return config,
-                    Err(e) => eprintln!("Failed to parse config: {}", e),
-                },
-                Err(e) => eprintln!("Failed to read config: {}", e),
+        if !path.exists() {
+            println!("[config.load] No config file found, using defaults");
+            return (Self::default(), false);
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[config.load] Failed to read config: {}", e);
+                return (Self::default(), false);
+            }
+        };
+
+        // Attempt 1: Normal deserialization (custom deserializers handle most legacy values)
+        match serde_json::from_str::<AppConfig>(&content) {
+            Ok(config) => {
+                println!("[config.load] Config loaded successfully ({} repos)", config.repos.len());
+                return (config, true);
+            }
+            Err(e) => {
+                eprintln!("[config.load] Normal parse failed: {}. Attempting field-level recovery...", e);
             }
         }
-        Self::default()
+
+        // Attempt 2: Parse as Value, fix known problematic fields, then retry
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(mut value) => {
+                Self::fix_known_fields(&mut value);
+                match serde_json::from_value::<AppConfig>(value) {
+                    Ok(config) => {
+                        eprintln!("[config.load] Recovery succeeded ({} repos)", config.repos.len());
+                        return (config, true);
+                    }
+                    Err(e) => {
+                        eprintln!("[config.load] Recovery also failed: {}. Falling back to defaults.", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[config.load] Config is not valid JSON: {}. Falling back to defaults.", e);
+            }
+        }
+
+        (Self::default(), false)
+    }
+
+    /// Fix known problematic fields in a parsed JSON Value.
+    /// This handles fields that can't be fixed by custom deserializers alone
+    /// (e.g., completely wrong types, removed enum variants).
+    fn fix_known_fields(value: &mut serde_json::Value) {
+        if let serde_json::Value::Object(obj) = value {
+            // Fix default_effort_level / default_thinking_level
+            if let Some(field) = obj.get("default_effort_level").or(obj.get("default_thinking_level")) {
+                if let serde_json::Value::Bool(_) | serde_json::Value::Number(_) = field {
+                    eprintln!("[config.fix] Fixing non-string default_effort_level");
+                    obj.insert("default_effort_level".to_string(), serde_json::Value::String("high".to_string()));
+                }
+            }
+
+            // Fix llm.features.auto_model_effort / auto_model_thinking
+            if let Some(serde_json::Value::Object(llm)) = obj.get_mut("llm") {
+                if let Some(serde_json::Value::Object(features)) = llm.get_mut("features") {
+                    for key in &["auto_model_effort", "auto_model_thinking"] {
+                        if let Some(field) = features.get(*key) {
+                            if let serde_json::Value::Bool(_) | serde_json::Value::Number(_) = field {
+                                eprintln!("[config.fix] Fixing non-string {}", key);
+                                features.insert(key.to_string(), serde_json::Value::String("dynamic".to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fix theme if it's a removed variant
+            if let Some(serde_json::Value::String(theme)) = obj.get("theme") {
+                let valid_themes = ["Midnight", "Slate", "Void", "Ember", "Pearl", "Latte", "Snow", "Sand"];
+                if !valid_themes.contains(&theme.as_str()) {
+                    eprintln!("[config.fix] Fixing unknown theme '{}' → Midnight", theme);
+                    obj.insert("theme".to_string(), serde_json::Value::String("Midnight".to_string()));
+                }
+            }
+        }
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -1294,6 +1515,31 @@ impl AppConfig {
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
 
         let path = Self::config_path();
+
+        // Rolling backup: rotate .bak.10 → delete, .bak.9 → .bak.10, ... .bak.1 → .bak.2, current → .bak.1
+        if path.exists() {
+            let max_backups = 10;
+            // Remove the oldest backup
+            let oldest = path.with_extension(format!("json.bak.{}", max_backups));
+            if oldest.exists() {
+                let _ = fs::remove_file(&oldest);
+            }
+            // Rotate existing backups up by one
+            for i in (1..max_backups).rev() {
+                let from = path.with_extension(format!("json.bak.{}", i));
+                let to = path.with_extension(format!("json.bak.{}", i + 1));
+                if from.exists() {
+                    let _ = fs::rename(&from, &to);
+                }
+            }
+            // Copy current config to .bak.1
+            let newest = path.with_extension("json.bak.1");
+            match fs::copy(&path, &newest) {
+                Ok(_) => {}
+                Err(e) => eprintln!("[config.save] Warning: failed to backup config: {}", e),
+            }
+        }
+
         println!("[config.save] Config path: {:?}", path);
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;

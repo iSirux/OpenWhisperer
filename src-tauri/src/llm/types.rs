@@ -32,7 +32,10 @@ pub struct ModelRecommendation {
     pub recommended_model: String, // haiku, sonnet, opus
     pub reasoning: String,
     pub confidence: String, // low, medium, high
-    pub suggested_thinking: Option<String>, // null or on (31999 tokens)
+    /// Suggested effort level: null, low, medium, high, max
+    pub suggested_effort: Option<String>,
+    /// @deprecated Use suggested_effort - kept for backward compat with old LLM responses
+    pub suggested_thinking: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

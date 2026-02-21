@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PendingTranscriptionInfo } from "$lib/stores/sdkSessions";
-  import type { AutoModelThinking } from "$lib/stores/settings";
+  import type { AutoModelEffort } from "$lib/stores/settings";
   import {
     getShortModelName,
     getModelBadgeBgColor,
@@ -25,8 +25,8 @@
     onApprove?: (editedPrompt?: string) => void;
     /** Callback when user cancels the approval */
     onCancelApproval?: () => void;
-    /** Auto model thinking setting - needed to show thinking mode in dynamic mode */
-    autoModelThinking?: AutoModelThinking;
+    /** Auto model effort setting - needed to show effort level in dynamic mode */
+    autoModelEffort?: AutoModelEffort;
   }
 
   let {
@@ -40,7 +40,7 @@
     repoName,
     onApprove,
     onCancelApproval,
-    autoModelThinking = "dynamic",
+    autoModelEffort = "dynamic",
   }: Props = $props();
 
   // Approval mode state
@@ -332,13 +332,13 @@
                 pendingTranscription.modelRecommendation.modelId
               )}
             </span>
-            {#if pendingTranscription.modelRecommendation.thinkingLevel}
-              <span class="thinking-badge thinking-on">
-                Thinking
+            {#if pendingTranscription.modelRecommendation.effortLevel}
+              <span class="effort-badge effort-on">
+                Effort: {pendingTranscription.modelRecommendation.effortLevel}
               </span>
-            {:else if autoModelThinking === "dynamic"}
-              <span class="thinking-badge thinking-off">
-                No thinking
+            {:else if autoModelEffort === "dynamic"}
+              <span class="effort-badge effort-off">
+                No effort
               </span>
             {/if}
           </div>
@@ -775,20 +775,21 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
   }
 
-  .thinking-badge {
+  .effort-badge {
     padding: 0.125rem 0.375rem;
     border-radius: 3px;
     font-size: 0.6875rem;
     font-weight: 500;
+    text-transform: capitalize;
   }
 
-  .thinking-badge.thinking-on {
+  .effort-badge.effort-on {
     background: rgba(6, 182, 212, 0.15);
     border: 1px solid rgba(6, 182, 212, 0.3);
     color: #22d3ee;
   }
 
-  .thinking-badge.thinking-off {
+  .effort-badge.effort-off {
     background: rgba(107, 114, 128, 0.1);
     border: 1px solid rgba(107, 114, 128, 0.2);
     color: #9ca3af;

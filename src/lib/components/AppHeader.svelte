@@ -1,10 +1,10 @@
 <script lang="ts">
   import ModelSelector from './ModelSelector.svelte';
-  import ThinkingToggle from './ThinkingToggle.svelte';
+  import EffortToggle from './EffortToggle.svelte';
   import UsagePreview from './UsagePreview.svelte';
   import OpenMicMarquee from './OpenMicMarquee.svelte';
-  import type { ThinkingLevel } from '$lib/stores/sdkSessions';
-  import type { AutoModelThinking } from '$lib/stores/settings';
+  import type { EffortLevel } from '$lib/stores/sdkSessions';
+  import type { AutoModelEffort } from '$lib/stores/settings';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import { isAutoModel } from '$lib/utils/models';
 
@@ -20,8 +20,8 @@
     activeRepo: Repo | null | undefined;
     isAutoRepoSelected: boolean;
     defaultModel: string;
-    defaultThinkingLevel: ThinkingLevel;
-    autoModelThinking: AutoModelThinking;
+    defaultEffortLevel: EffortLevel;
+    autoModelEffort: AutoModelEffort;
     isRecording: boolean;
     isRecordingForNewSession: boolean;
     pendingTranscriptions: number;
@@ -33,8 +33,8 @@
     onSelectRepo: (index: number) => void;
     onEnableAutoRepo: () => void;
     onChangeModel: (model: string) => void;
-    onChangeThinking: (level: ThinkingLevel) => void;
-    onChangeAutoModelThinking: (setting: AutoModelThinking) => void;
+    onChangeEffort: (level: EffortLevel) => void;
+    onChangeAutoModelEffort: (setting: AutoModelEffort) => void;
     onStartRecording: () => void;
     onStopRecording: () => void;
   }
@@ -45,8 +45,8 @@
     activeRepo,
     isAutoRepoSelected,
     defaultModel,
-    defaultThinkingLevel,
-    autoModelThinking,
+    defaultEffortLevel,
+    autoModelEffort,
     isRecording,
     isRecordingForNewSession,
     pendingTranscriptions,
@@ -58,8 +58,8 @@
     onSelectRepo,
     onEnableAutoRepo,
     onChangeModel,
-    onChangeThinking,
-    onChangeAutoModelThinking,
+    onChangeEffort,
+    onChangeAutoModelEffort,
     onStartRecording,
     onStopRecording,
   }: Props = $props();
@@ -224,14 +224,15 @@
       size="sm"
     />
 
-    <!-- Global Thinking Toggle -->
-    <ThinkingToggle
-      thinkingLevel={defaultThinkingLevel}
-      onchange={onChangeThinking}
+    <!-- Global Effort Toggle -->
+    <EffortToggle
+      effortLevel={defaultEffortLevel}
+      onchange={onChangeEffort}
+      modelId={defaultModel}
       size="sm"
       isAutoModel={isAuto}
-      {autoModelThinking}
-      onChangeAutoModelThinking={onChangeAutoModelThinking}
+      {autoModelEffort}
+      onChangeAutoModelEffort={onChangeAutoModelEffort}
     />
   </div>
 

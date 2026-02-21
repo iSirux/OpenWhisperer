@@ -2,6 +2,7 @@
   import { settings } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
   import "./toggle.css";
+  // toggle.css is imported for the transcription notice toggle
 
   interface ConnectionTestResult {
     health_ok: boolean;
@@ -501,4 +502,24 @@
       </div>
     </div>
   {/if}
+
+  <!-- Transcription Notice -->
+  <div class="border-t border-border pt-4 mt-4">
+    <div class="flex items-center justify-between">
+      <div>
+        <label class="text-sm font-medium text-text-secondary"
+          >Include Transcription Notice</label
+        >
+        <p class="text-xs text-text-muted mt-0.5">
+          Tell Claude the prompt was voice-transcribed and may contain
+          minor errors
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.audio.include_transcription_notice}
+      />
+    </div>
+  </div>
 </div>

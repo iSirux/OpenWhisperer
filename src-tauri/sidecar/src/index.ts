@@ -8,7 +8,11 @@ import {
   type SubagentStartHookInput,
   type SubagentStopHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
+import { Codex, type ThreadEvent, type Thread } from "@openai/codex-sdk";
 import * as readline from "readline";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { z } from "zod";
 
 // Planning question option schema
@@ -215,6 +219,7 @@ interface CreateMessage {
   id: string;
   cwd: string;
   model?: string;
+  provider?: "claude" | "openai"; // SDK provider (default: "claude")
   system_prompt?: string;
   messages?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED - use sdk_session_id instead)
   sdk_session_id?: string; // SDK session ID for proper resume (preferred over messages)
@@ -254,10 +259,10 @@ interface UpdateModelMessage {
   model: string;
 }
 
-interface UpdateThinkingMessage {
-  type: "update_thinking";
+interface UpdateEffortMessage {
+  type: "update_effort";
   id: string;
-  maxThinkingTokens: number | null;
+  effortLevel: string | null; // null, 'low', 'medium', 'high', 'max'
 }
 
 // LLM Feature: Generate repository description using Claude SDK
@@ -274,21 +279,25 @@ type InboundMessage =
   | CloseMessage
   | StopMessage
   | UpdateModelMessage
-  | UpdateThinkingMessage
+  | UpdateEffortMessage
   | GenerateRepoDescriptionMessage;
 
 interface Session {
   cwd: string;
+  provider: "claude" | "openai"; // SDK provider
   options: Options;
   abortController?: AbortController;
-  queryIterator?: Query; // The active query iterator for interrupt()
+  queryIterator?: Query; // The active query iterator for interrupt() (Claude only)
   sdkSessionId?: string; // Track the SDK's internal session ID for resume
   passedSdkSessionId?: string; // SDK session ID passed from frontend for restored sessions
   conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED)
-  maxThinkingTokens?: number; // Extended thinking budget (null/undefined = off)
+  effortLevel?: string; // Effort level: null/undefined = off, 'low', 'medium', 'high', 'max'
   currentQueryId?: string; // Unique ID for the current query (to detect stale done events)
   planMode?: boolean; // Whether this is a plan mode session
   noteMode?: boolean; // Whether this is a note-taking mode session
+  // OpenAI Codex-specific fields
+  codexThread?: Thread; // Active Codex thread instance
+  codexModel?: string; // OpenAI model to use
 }
 
 const sessions = new Map<string, Session>();
@@ -437,6 +446,354 @@ function sendRepoDescriptionError(id: string, error: string): void {
   send({ type: "repo_description_error", id, error });
 }
 
+// =============================================================================
+// OpenAI Codex SDK Integration
+// =============================================================================
+
+// Singleton Codex instance (reused across sessions)
+let codexInstance: Codex | null = null;
+
+function getCodexInstance(): Codex {
+  if (!codexInstance) {
+    codexInstance = new Codex();
+  }
+  return codexInstance;
+}
+
+// Map Codex thread events to our IPC protocol
+function handleCodexEvent(id: string, event: ThreadEvent): void {
+  switch (event.type) {
+    case "thread.started":
+      // Capture thread ID as SDK session ID for resume
+      send({
+        type: "debug",
+        id,
+        message: `Codex thread started: ${event.thread_id}`,
+      });
+      sendSdkSessionId(id, event.thread_id);
+      break;
+
+    case "turn.started":
+      send({ type: "debug", id, message: "Codex turn started" });
+      break;
+
+    case "turn.completed":
+      send({ type: "debug", id, message: "Codex turn completed" });
+      // Send usage data
+      if (event.usage) {
+        sendUsage(id, {
+          inputTokens: event.usage.input_tokens || 0,
+          outputTokens: event.usage.output_tokens || 0,
+          cacheReadTokens: event.usage.cached_input_tokens || 0,
+          cacheCreationTokens: 0,
+          totalCostUsd: 0, // Codex SDK doesn't report cost directly
+          durationMs: 0,
+          durationApiMs: 0,
+          numTurns: 1,
+          contextWindow: 200000,
+        });
+      }
+      break;
+
+    case "turn.failed":
+      send({
+        type: "debug",
+        id,
+        message: `Codex turn failed: ${event.error?.message}`,
+      });
+      sendError(id, event.error?.message || "Turn failed");
+      break;
+
+    case "item.started":
+      handleCodexItemEvent(id, event.item, "started");
+      break;
+
+    case "item.updated":
+      handleCodexItemEvent(id, event.item, "updated");
+      break;
+
+    case "item.completed":
+      handleCodexItemEvent(id, event.item, "completed");
+      break;
+
+    case "error":
+      send({
+        type: "debug",
+        id,
+        message: `Codex error: ${event.message}`,
+      });
+      sendError(id, event.message);
+      break;
+  }
+}
+
+function handleCodexItemEvent(
+  id: string,
+  item: ThreadEvent extends { item: infer I } ? I : never,
+  phase: "started" | "updated" | "completed"
+): void {
+  const typedItem = item as {
+    id: string;
+    type: string;
+    text?: string;
+    command?: string;
+    aggregated_output?: string;
+    exit_code?: number;
+    changes?: Array<{ path: string; kind: string }>;
+    server?: string;
+    tool?: string;
+    arguments?: unknown;
+    result?: { content: unknown[]; structured_content: unknown };
+    error?: { message: string };
+    query?: string;
+  };
+
+  switch (typedItem.type) {
+    case "agent_message":
+      if (phase === "completed" && typedItem.text) {
+        sendText(id, typedItem.text);
+      } else if (phase === "updated" && typedItem.text) {
+        // Stream partial text as it comes in
+        sendText(id, typedItem.text);
+      }
+      break;
+
+    case "reasoning":
+      if (phase === "started") {
+        sendThinkingStart(id, typedItem.text || "");
+      } else if (phase === "completed") {
+        sendThinkingEnd(id, 0, typedItem.text || "");
+      }
+      break;
+
+    case "command_execution":
+      if (phase === "started") {
+        sendToolStart(
+          id,
+          "Bash",
+          { command: typedItem.command },
+          typedItem.id
+        );
+      } else if (phase === "completed") {
+        sendToolResult(
+          id,
+          "Bash",
+          typedItem.aggregated_output || `exit code: ${typedItem.exit_code}`,
+          typedItem.id
+        );
+      }
+      break;
+
+    case "file_change":
+      if (phase === "started") {
+        const filePaths =
+          typedItem.changes?.map((c) => c.path).join(", ") || "unknown";
+        sendToolStart(
+          id,
+          "Edit",
+          { files: filePaths },
+          typedItem.id
+        );
+      } else if (phase === "completed") {
+        const summary =
+          typedItem.changes
+            ?.map((c) => `${c.kind}: ${c.path}`)
+            .join("\n") || "File changes applied";
+        sendToolResult(id, "Edit", summary, typedItem.id);
+      }
+      break;
+
+    case "mcp_tool_call":
+      if (phase === "started") {
+        const toolName = typedItem.tool
+          ? `mcp__${typedItem.server}__${typedItem.tool}`
+          : `mcp__${typedItem.server}`;
+        sendToolStart(id, toolName, typedItem.arguments, typedItem.id);
+      } else if (phase === "completed") {
+        const toolName = typedItem.tool
+          ? `mcp__${typedItem.server}__${typedItem.tool}`
+          : `mcp__${typedItem.server}`;
+        let output = "";
+        if (typedItem.error) {
+          output = `Error: ${typedItem.error.message}`;
+        } else if (typedItem.result) {
+          output = JSON.stringify(typedItem.result.content);
+        }
+        sendToolResult(id, toolName, output, typedItem.id);
+      }
+      break;
+
+    case "web_search":
+      if (phase === "started") {
+        sendToolStart(
+          id,
+          "WebSearch",
+          { query: typedItem.query },
+          typedItem.id
+        );
+      } else if (phase === "completed") {
+        sendToolResult(id, "WebSearch", "Search completed", typedItem.id);
+      }
+      break;
+
+    case "error":
+      if (phase === "completed") {
+        sendError(id, (typedItem as { message?: string }).message || "Unknown error");
+      }
+      break;
+  }
+}
+
+async function handleCodexQuery(msg: QueryMessage): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, "Session not found");
+    return;
+  }
+
+  const queryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  session.currentQueryId = queryId;
+
+  send({
+    type: "debug",
+    id: msg.id,
+    message: `Starting Codex query ${queryId} with prompt: ${msg.prompt.slice(0, 100)}...`,
+  });
+
+  try {
+    // Create abort controller for this query
+    const abortController = new AbortController();
+    session.abortController = abortController;
+
+    // Get or create thread
+    if (!session.codexThread) {
+      const codex = getCodexInstance();
+      const resumeId = session.sdkSessionId || session.passedSdkSessionId;
+
+      if (resumeId) {
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `Resuming Codex thread: ${resumeId}`,
+        });
+        session.codexThread = codex.resumeThread(resumeId);
+      } else {
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `Starting new Codex thread in ${session.cwd}`,
+        });
+        session.codexThread = codex.startThread({
+          workingDirectory: session.cwd,
+          model: session.codexModel,
+          approvalPolicy: "never",
+        });
+      }
+    }
+
+    // Build input - handle multimodal
+    let input: string | Array<{ type: string; text?: string; path?: string }>;
+    if (msg.images && msg.images.length > 0) {
+      // Write images to temp files since Codex uses file paths
+      const inputParts: Array<{
+        type: string;
+        text?: string;
+        path?: string;
+      }> = [];
+
+      for (const img of msg.images) {
+        const tmpDir = os.tmpdir();
+        const ext = img.mediaType.split("/")[1] || "png";
+        const tmpPath = path.join(
+          tmpDir,
+          `cw-codex-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+        );
+        fs.writeFileSync(tmpPath, Buffer.from(img.base64Data, "base64"));
+        inputParts.push({ type: "local_image", path: tmpPath });
+      }
+
+      if (msg.prompt.trim()) {
+        inputParts.push({ type: "text", text: msg.prompt });
+      }
+      input = inputParts;
+    } else {
+      input = msg.prompt;
+    }
+
+    // Run streamed query
+    const { events } = await session.codexThread.runStreamed(input as string, {
+      signal: abortController.signal,
+    });
+
+    // Track accumulated text for agent_message updates
+    let lastAgentMessageText = "";
+
+    for await (const event of events) {
+      // For agent_message updates, only send the delta (new text)
+      if (
+        event.type === "item.updated" &&
+        (event.item as { type: string }).type === "agent_message"
+      ) {
+        const currentText = (event.item as { text?: string }).text || "";
+        if (currentText.length > lastAgentMessageText.length) {
+          const delta = currentText.slice(lastAgentMessageText.length);
+          sendText(msg.id, delta);
+          lastAgentMessageText = currentText;
+        }
+        continue;
+      }
+
+      // Reset tracking when a new agent message starts
+      if (
+        event.type === "item.started" &&
+        (event.item as { type: string }).type === "agent_message"
+      ) {
+        lastAgentMessageText = "";
+      }
+
+      // Skip item.completed for agent_message since we already streamed the text
+      if (
+        event.type === "item.completed" &&
+        (event.item as { type: string }).type === "agent_message"
+      ) {
+        continue;
+      }
+
+      handleCodexEvent(msg.id, event);
+    }
+
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Codex query ${queryId} complete`,
+    });
+
+    if (session.currentQueryId === queryId) {
+      sendDone(msg.id);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Codex query ${queryId} error: ${errorMessage}`,
+    });
+
+    if (session.currentQueryId === queryId) {
+      // Don't send error for abort
+      if (errorMessage.includes("abort") || errorMessage.includes("cancel")) {
+        sendDone(msg.id);
+      } else {
+        sendError(msg.id, errorMessage);
+      }
+    }
+  } finally {
+    if (session.currentQueryId === queryId) {
+      session.abortController = undefined;
+    }
+  }
+}
+
 // Handler for generating repo descriptions using Claude SDK
 async function handleGenerateRepoDescription(
   msg: GenerateRepoDescriptionMessage
@@ -481,7 +838,7 @@ The vocabulary helps speech-to-text correctly transcribe project-specific terms.
   const options: Options = {
     cwd: msg.repo_path,
     permissionMode: "acceptEdits",
-    model: "claude-haiku-4-5-20251001", // Use Haiku for cost efficiency
+    model: "claude-haiku-4-5-20251001",
     mcpServers: {
       "repo-description-tools": repoDescriptionMcpServer,
     },
@@ -760,13 +1117,17 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     }
   }
 
+  const provider = msg.provider || "claude";
+
   sessions.set(msg.id, {
     cwd: msg.cwd,
+    provider,
     options,
     passedSdkSessionId: msg.sdk_session_id, // SDK session ID for proper resume
     conversationHistory: msg.messages, // Store conversation history for restored sessions (DEPRECATED)
     planMode: msg.plan_mode,
     noteMode: msg.note_mode,
+    codexModel: provider === "openai" ? msg.model : undefined,
   });
 
   if (msg.sdk_session_id) {
@@ -930,6 +1291,13 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     sendError(msg.id, "Session not found");
     return;
   }
+
+  // Route to provider-specific handler
+  if (session.provider === "openai") {
+    return handleCodexQuery(msg);
+  }
+
+  // === Claude provider path (unchanged) ===
 
   // Generate a unique query ID to track this specific query
   // This prevents stale done/error events from affecting newer queries
@@ -1484,6 +1852,16 @@ async function handleStop(msg: StopMessage): Promise<void> {
     return;
   }
 
+  // OpenAI Codex: use AbortController to cancel
+  if (session.provider === "openai") {
+    if (session.abortController) {
+      send({ type: "debug", id: msg.id, message: "Aborting Codex query..." });
+      session.abortController.abort();
+      session.abortController = undefined;
+    }
+    return;
+  }
+
   // Use interrupt() on the query iterator - this is the proper way to stop
   // the query and all subagents. The abort controller alone doesn't properly
   // stop subagents that are already running.
@@ -1533,66 +1911,73 @@ async function handleUpdateModel(msg: UpdateModelMessage): Promise<void> {
     return;
   }
 
-  // Update the model in the session options
-  session.options.model = msg.model;
+  if (session.provider === "openai") {
+    session.codexModel = msg.model;
+    // Codex thread needs to be recreated with new model on next query
+    session.codexThread = undefined;
+  } else {
+    session.options.model = msg.model;
+  }
   send({ type: "model_updated", id: msg.id, model: msg.model });
 }
 
-async function handleUpdateThinking(msg: UpdateThinkingMessage): Promise<void> {
+async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (!session) {
     sendError(msg.id, "Session not found");
     return;
   }
 
-  // Update the thinking tokens in the session
-  // null means thinking is off, a number sets the budget
-  session.maxThinkingTokens = msg.maxThinkingTokens ?? undefined;
+  // Update the effort level in the session
+  session.effortLevel = msg.effortLevel ?? undefined;
 
-  // Also update the options for future queries
-  if (msg.maxThinkingTokens) {
-    session.options.maxThinkingTokens = msg.maxThinkingTokens;
-  } else {
+  // For Claude provider: pass effort via extraArgs on session options
+  if (session.provider === "claude") {
+    if (msg.effortLevel) {
+      // Set --effort flag for Claude CLI
+      session.options.extraArgs = {
+        ...session.options.extraArgs,
+        "--effort": msg.effortLevel,
+      };
+    } else {
+      // Remove --effort flag
+      if (session.options.extraArgs) {
+        const { "--effort": _, ...rest } = session.options.extraArgs as Record<string, string>;
+        session.options.extraArgs = Object.keys(rest).length > 0 ? rest : undefined;
+      }
+    }
+
+    // Remove legacy maxThinkingTokens
     delete session.options.maxThinkingTokens;
   }
 
-  // If there's an active query, use setMaxThinkingTokens to update it dynamically
-  if (session.queryIterator) {
-    try {
-      await session.queryIterator.setMaxThinkingTokens(msg.maxThinkingTokens);
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `Updated thinking tokens on active query: ${msg.maxThinkingTokens}`,
-      });
-    } catch (err) {
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `Failed to update thinking on active query: ${err}`,
-      });
-    }
-  }
-
   send({
-    type: "thinking_updated",
+    type: "effort_updated",
     id: msg.id,
-    maxThinkingTokens: msg.maxThinkingTokens,
+    effortLevel: msg.effortLevel,
   });
 }
 
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (session) {
-    // Use interrupt() if we have an active query
-    if (session.queryIterator) {
-      try {
-        await session.queryIterator.interrupt();
-      } catch {
-        // Ignore errors during close
+    if (session.provider === "openai") {
+      // Abort any active Codex query
+      if (session.abortController) {
+        session.abortController.abort();
       }
-    } else if (session.abortController) {
-      session.abortController.abort();
+      session.codexThread = undefined;
+    } else {
+      // Use interrupt() if we have an active query
+      if (session.queryIterator) {
+        try {
+          await session.queryIterator.interrupt();
+        } catch {
+          // Ignore errors during close
+        }
+      } else if (session.abortController) {
+        session.abortController.abort();
+      }
     }
   }
   sessions.delete(msg.id);
@@ -1613,8 +1998,8 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
     case "update_model":
       await handleUpdateModel(msg);
       break;
-    case "update_thinking":
-      await handleUpdateThinking(msg);
+    case "update_effort":
+      await handleUpdateEffort(msg);
       break;
     case "close":
       await handleClose(msg);

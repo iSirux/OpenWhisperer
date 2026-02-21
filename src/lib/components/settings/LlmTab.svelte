@@ -893,7 +893,7 @@
                     <div class="flex gap-1">
                       <button
                         class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
-                          .llm.features.auto_model_thinking === 'off'
+                          .llm.features.auto_model_effort === 'off'
                           ? 'bg-accent text-white'
                           : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
                         onclick={() =>
@@ -903,7 +903,7 @@
                               ...s.llm,
                               features: {
                                 ...s.llm.features,
-                                auto_model_thinking: "off",
+                                auto_model_effort: "off",
                               },
                             },
                           }))}
@@ -912,7 +912,7 @@
                       </button>
                       <button
                         class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
-                          .llm.features.auto_model_thinking === 'on'
+                          .llm.features.auto_model_effort === 'high'
                           ? 'bg-accent text-white'
                           : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
                         onclick={() =>
@@ -922,16 +922,16 @@
                               ...s.llm,
                               features: {
                                 ...s.llm.features,
-                                auto_model_thinking: "on",
+                                auto_model_effort: "high",
                               },
                             },
                           }))}
                       >
-                        On
+                        High
                       </button>
                       <button
                         class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
-                          .llm.features.auto_model_thinking === 'dynamic'
+                          .llm.features.auto_model_effort === 'dynamic'
                           ? 'bg-accent text-white'
                           : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
                         onclick={() =>
@@ -941,7 +941,7 @@
                               ...s.llm,
                               features: {
                                 ...s.llm.features,
-                                auto_model_thinking: "dynamic",
+                                auto_model_effort: "dynamic",
                               },
                             },
                           }))}
@@ -950,12 +950,12 @@
                       </button>
                     </div>
                     <p class="text-xs text-text-muted mt-1">
-                      {#if $settings.llm.features.auto_model_thinking === 'off'}
-                        Thinking is always disabled when using auto model
-                      {:else if $settings.llm.features.auto_model_thinking === 'on'}
-                        Thinking is always enabled when using auto model
+                      {#if $settings.llm.features.auto_model_effort === 'off'}
+                        Effort is always disabled when using auto model
+                      {:else if $settings.llm.features.auto_model_effort === 'dynamic'}
+                        LLM decides effort level based on prompt complexity
                       {:else}
-                        LLM decides whether to use thinking based on prompt complexity
+                        Effort is always set to {$settings.llm.features.auto_model_effort} when using auto model
                       {/if}
                     </p>
                   </div>

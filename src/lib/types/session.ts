@@ -1,6 +1,7 @@
 // Shared session types used across SessionList and SessionCard components
 
 import type { SessionAiMetadata, PlanModeState, NoteModeState } from '$lib/stores/sdkSessions';
+import type { SdkProvider } from '$lib/utils/models';
 
 /**
  * Unified session type for display in the session list and grid views.
@@ -14,6 +15,7 @@ export interface DisplaySession {
   prompt: string;
   repoPath: string;
   model?: string; // model name for SDK sessions
+  provider?: SdkProvider; // SDK provider (claude or openai)
   createdAt: number; // When the session was created (for sorting)
   branch?: string; // git branch name
 

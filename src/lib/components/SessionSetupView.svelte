@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { ThinkingLevel, SdkImageContent } from '$lib/stores/sdkSessions';
+  import { invoke } from '@tauri-apps/api/core';
+  import type { EffortLevel, SdkImageContent } from '$lib/stores/sdkSessions';
   import type { RepoConfig } from '$lib/stores/settings';
   import { settings } from '$lib/stores/settings';
   import { isRecording, isTranscribing } from '$lib/stores/recording';
@@ -8,7 +9,7 @@
     getModelRingColor,
     getModelHoverBgColor,
   } from '$lib/utils/modelColors';
-  import { getEnabledModelsWithAuto, isAutoModel } from '$lib/utils/models';
+  import { getEnabledModelsWithAuto, getEnabledModels, getModelsForProvider, isAutoModel, DEFAULT_OPENAI_MODEL_ID, modelSupportsEffort, getMaxEffort, type SdkProvider } from '$lib/utils/models';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import {
     getImagesFromClipboard,
@@ -21,7 +22,7 @@
 
   interface Props {
     initialModel?: string;
-    initialThinkingLevel?: ThinkingLevel;
+    initialEffortLevel?: EffortLevel;
     initialCwd?: string;
     initialPlanMode?: boolean;
     initialNoteMode?: boolean;
@@ -30,10 +31,11 @@
       prompt: string;
       images?: SdkImageContent[];
       model: string;
-      thinkingLevel: ThinkingLevel;
+      effortLevel: EffortLevel;
       cwd: string;
       planMode: boolean;
       noteMode: boolean;
+      provider?: SdkProvider;
     }) => void;
     onStartRecording: () => void;
     onStopRecording: () => Promise<string | null>;
@@ -42,7 +44,7 @@
 
   let {
     initialModel = 'claude-sonnet-4-20250514',
-    initialThinkingLevel = null,
+    initialEffortLevel = null,
     initialCwd = '',
     initialPlanMode = false,
     initialNoteMode = false,
@@ -56,13 +58,15 @@
   // Local state
   let prompt = $state('');
   let model = $state(initialModel);
-  let thinkingLevel = $state<ThinkingLevel>(initialThinkingLevel);
+  let effortLevel = $state<EffortLevel>(initialEffortLevel);
   let cwd = $state(initialCwd);
   let planMode = $state(initialPlanMode);
   let noteMode = $state(initialNoteMode);
   let pendingImages = $state<ImageData[]>([]);
   let isProcessingImages = $state(false);
   let showRepoDropdown = $state(false);
+  let provider = $state<SdkProvider>('claude');
+  let openaiAvailable = $state(false);
   let isStarting = $state(false);
   let isAwaitingTranscript = $state(false);
   let textareaEl: HTMLTextAreaElement;
@@ -74,7 +78,11 @@
   const isSmartModelEnabled = $derived(
     $settings.llm?.enabled && $settings.llm?.features?.recommend_model
   );
-  const models = $derived(getEnabledModelsWithAuto($settings.enabled_models));
+  const models = $derived(
+    provider === 'openai'
+      ? getEnabledModels($settings.enabled_openai_models, 'openai')
+      : getEnabledModelsWithAuto($settings.enabled_models)
+  );
 
   const currentRepoName = $derived(() => {
     if (!cwd || cwd === '.') return 'Auto';
@@ -89,6 +97,13 @@
     if (textareaEl && !initialPlanMode) {
       textareaEl.focus();
     }
+  });
+
+  // Check if OpenAI Codex is available
+  $effect(() => {
+    invoke<{ authenticated: boolean }>('check_openai_codex_auth')
+      .then(result => { openaiAvailable = result.authenticated; })
+      .catch(() => { openaiAvailable = false; });
   });
 
   // Auto-resize textarea
@@ -126,10 +141,11 @@
         prompt: prompt.trim(),
         images: imageContent,
         model,
-        thinkingLevel,
+        effortLevel,
         cwd,
         planMode,
         noteMode,
+        provider,
       });
     } finally {
       isStarting = false;
@@ -204,6 +220,17 @@
       return;
     }
     model = id;
+  }
+
+  function handleProviderSwitch(newProvider: SdkProvider) {
+    if (newProvider === provider) return;
+    provider = newProvider;
+    // Reset model to the default for the new provider
+    if (newProvider === 'openai') {
+      model = $settings.openai_model || DEFAULT_OPENAI_MODEL_ID;
+    } else {
+      model = $settings.default_model || 'claude-sonnet-4-6';
+    }
   }
 
   function getModelButtonClasses(id: string, isSelected: boolean): string {
@@ -287,6 +314,31 @@
       </div>
     </div>
 
+    <!-- Provider Toggle (only show when both providers are available) -->
+    {#if openaiAvailable && !noteMode}
+      <div class="option-row">
+        <label class="option-label">Provider</label>
+        <div class="mode-toggle">
+          <button
+            class="mode-btn"
+            class:active={provider === 'claude'}
+            onclick={() => handleProviderSwitch('claude')}
+            style={provider === 'claude' ? 'background: var(--color-accent);' : ''}
+          >
+            Claude
+          </button>
+          <button
+            class="mode-btn"
+            class:active={provider === 'openai'}
+            onclick={() => handleProviderSwitch('openai')}
+            style={provider === 'openai' ? 'background: #16a34a;' : ''}
+          >
+            OpenAI
+          </button>
+        </div>
+      </div>
+    {/if}
+
     <!-- Mode Toggle -->
     <div class="option-row">
       <label class="option-label">Mode</label>
@@ -340,20 +392,23 @@
       </div>
     </div>
 
-    <!-- Thinking Toggle -->
-    <div class="option-row">
-      <label class="option-label">Thinking</label>
-      <button
-        class="thinking-btn"
-        class:active={thinkingLevel !== null}
-        onclick={() => thinkingLevel = thinkingLevel === null ? 'on' : null}
-      >
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-        </svg>
-        {thinkingLevel !== null ? 'Enabled' : 'Disabled'}
-      </button>
-    </div>
+    <!-- Effort Level -->
+    {#if modelSupportsEffort(model) || isAutoModel(model)}
+      <div class="option-row">
+        <label class="option-label">Effort</label>
+        <div class="flex items-center gap-2">
+          {#each (['off', 'low', 'medium', 'high', ...(getMaxEffort(model) === 'max' ? ['max'] : [])] as const) as level}
+            <button
+              class="effort-option-btn"
+              class:active={level === 'off' ? effortLevel === null : effortLevel === level}
+              onclick={() => effortLevel = level === 'off' ? null : level as EffortLevel}
+            >
+              {level === 'off' ? 'Off' : level.charAt(0).toUpperCase() + level.slice(1)}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     <!-- Repository Selector -->
     <div class="option-row">
@@ -684,14 +739,11 @@
     border: 1px solid var(--color-border);
   }
 
-  /* Thinking Button */
-  .thinking-btn {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    border-radius: 0.5rem;
-    font-size: 0.85rem;
+  /* Effort Option Button */
+  .effort-option-btn {
+    padding: 0.35rem 0.75rem;
+    border-radius: 0.375rem;
+    font-size: 0.8rem;
     font-weight: 500;
     color: var(--color-text-secondary);
     background: var(--color-surface);
@@ -699,12 +751,12 @@
     transition: all 0.15s ease;
   }
 
-  .thinking-btn:hover {
+  .effort-option-btn:hover {
     background: var(--color-surface-elevated);
     border-color: var(--color-accent);
   }
 
-  .thinking-btn.active {
+  .effort-option-btn.active {
     background: #0891b2;
     color: white;
     border-color: #06b6d4;

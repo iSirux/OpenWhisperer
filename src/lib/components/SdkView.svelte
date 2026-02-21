@@ -5,7 +5,7 @@
     type SdkMessage,
     type SdkSession,
     type SdkImageContent,
-    type ThinkingLevel,
+    type EffortLevel,
     type PlanningAnswer,
   } from "$lib/stores/sdkSessions";
   import { recording, isRecording, isTranscribing } from "$lib/stores/recording";
@@ -22,7 +22,7 @@
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import ModelSelector from "./ModelSelector.svelte";
-  import ThinkingToggle from "./ThinkingToggle.svelte";
+  import EffortToggle from "./EffortToggle.svelte";
   import RepoSelector from "./RepoSelector.svelte";
   import {
     recommendModel,
@@ -218,7 +218,7 @@
   let generatedQuickActions = $derived(session?.aiMetadata?.quickActions);
   let isNewChat = $derived(messages.length === 0 && status === "idle");
   let autoModelRequested = $derived(session?.autoModelRequested ?? false);
-  let sessionThinkingLevel = $derived(session?.thinkingLevel ?? null);
+  let sessionEffortLevel = $derived(session?.effortLevel ?? null);
   let pendingApprovalPrompt = $derived(session?.pendingApprovalPrompt);
   let usage = $derived(session?.usage);
   let hasUsageData = $derived(
@@ -558,7 +558,7 @@
         | {
             modelId: string;
             reasoning: string;
-            thinkingLevel?: string;
+            effortLevel?: string;
           }
         | undefined;
 
@@ -644,7 +644,7 @@
               storedModelRecommendation = {
                 modelId: recommendation.modelId,
                 reasoning: recommendation.reasoning,
-                thinkingLevel: recommendation.thinkingLevel ?? undefined,
+                effortLevel: recommendation.effortLevel ?? undefined,
               };
             } else {
               console.warn(
@@ -652,15 +652,15 @@
                 recommendation.modelId
               );
             }
-            // Apply thinking level recommendation if provided (regardless of model)
-            if (recommendation.thinkingLevel) {
-              await sdkSessions.updateSessionThinking(
+            // Apply effort level recommendation if provided (regardless of model)
+            if (recommendation.effortLevel) {
+              await sdkSessions.updateSessionEffort(
                 sessionId,
-                recommendation.thinkingLevel as ThinkingLevel
+                recommendation.effortLevel as EffortLevel
               );
               console.log(
-                "[SdkView] Using recommended thinking level:",
-                recommendation.thinkingLevel
+                "[SdkView] Using recommended effort level:",
+                recommendation.effortLevel
               );
             }
           }
@@ -824,13 +824,13 @@
     sdkSessions.cancelApproval(sessionId);
   }
 
-  // Model and thinking change handlers
+  // Model and effort change handlers
   function handleModelChange(newModel: string) {
     sdkSessions.updateSessionModel(sessionId, newModel);
   }
 
-  function handleThinkingChange(newLevel: ThinkingLevel) {
-    sdkSessions.updateSessionThinking(sessionId, newLevel);
+  function handleEffortChange(newLevel: EffortLevel) {
+    sdkSessions.updateSessionEffort(sessionId, newLevel);
   }
 
   function handleCwdChange(newCwd: string) {
@@ -898,7 +898,7 @@
         {sessionId}
         onRetry={handleRetryTranscription}
         onCancel={handleCancelPendingTranscription}
-        autoModelThinking={$settings.llm?.features?.auto_model_thinking}
+        autoModelEffort={$settings.llm?.features?.auto_model_effort}
       />
     {/if}
 
@@ -912,7 +912,7 @@
         {repoName}
         onApprove={handleApprove}
         onCancelApproval={handleCancelApproval}
-        autoModelThinking={$settings.llm?.features?.auto_model_thinking}
+        autoModelEffort={$settings.llm?.features?.auto_model_effort}
       />
     {/if}
 
@@ -922,7 +922,7 @@
         {pendingTranscription}
         {sessionId}
         completed={true}
-        autoModelThinking={$settings.llm?.features?.auto_model_thinking}
+        autoModelEffort={$settings.llm?.features?.auto_model_effort}
       />
     {/if}
 

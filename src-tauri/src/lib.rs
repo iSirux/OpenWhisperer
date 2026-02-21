@@ -14,6 +14,10 @@ use parking_lot::Mutex;
 use sidecar::SidecarManager;
 use std::sync::Arc;
 use vosk::VoskManager;
+
+/// Tracks whether config was successfully loaded from disk.
+/// When false, saves are blocked to prevent overwriting valid config with defaults.
+pub struct ConfigLoadStatus(pub Mutex<bool>);
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
@@ -48,12 +52,13 @@ fn toggle_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let config = AppConfig::load();
+    let (config, config_loaded_ok) = AppConfig::load();
     let usage_stats = UsageStats::load();
     let start_minimized = config.system.start_minimized;
     let terminal_manager = Arc::new(TerminalManager::new());
     let sidecar_manager = Arc::new(SidecarManager::new());
     let vosk_manager = Arc::new(VoskManager::new());
+    let config_load_status = ConfigLoadStatus(Mutex::new(config_loaded_ok));
 
     let builder = tauri::Builder::default();
 
@@ -92,6 +97,7 @@ pub fn run() {
         )
         .manage(Mutex::new(config))
         .manage(Mutex::new(usage_stats))
+        .manage(config_load_status)
         .manage(terminal_manager)
         .manage(sidecar_manager)
         .manage(vosk_manager)
@@ -192,6 +198,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             settings_cmds::get_config,
+            settings_cmds::get_config_load_status,
             settings_cmds::save_config,
             settings_cmds::add_repo,
             settings_cmds::remove_repo,
@@ -214,9 +221,18 @@ pub fn run() {
             sdk_cmds::send_sdk_prompt,
             sdk_cmds::stop_sdk_query,
             sdk_cmds::update_sdk_model,
-            sdk_cmds::update_sdk_thinking,
+            sdk_cmds::update_sdk_effort,
             sdk_cmds::close_sdk_session,
             sdk_cmds::generate_repo_description_with_claude,
+            sdk_cmds::check_openai_codex_auth,
+            sdk_cmds::run_codex_login,
+            sdk_cmds::save_openai_api_key,
+            sdk_cmds::has_openai_api_key,
+            sdk_cmds::delete_openai_api_key,
+            sdk_cmds::check_claude_auth,
+            sdk_cmds::save_claude_api_key,
+            sdk_cmds::has_claude_api_key,
+            sdk_cmds::delete_claude_api_key,
             session_cmds::get_persisted_sessions,
             session_cmds::save_persisted_sessions,
             session_cmds::clear_persisted_sessions,

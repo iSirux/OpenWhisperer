@@ -220,7 +220,8 @@ export function transformToDisplaySessions(
         aiMetadata: s.aiMetadata,
         pendingRepoSelection: s.pendingRepoSelection,
         planMode: s.planMode,
-        noteMode: s.noteMode
+        noteMode: s.noteMode,
+        provider: s.provider
       };
     })
   ];

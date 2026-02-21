@@ -4,7 +4,7 @@
  */
 
 import { settings } from '$lib/stores/settings';
-import { sdkSessions, settingsToStoreThinking, type ThinkingLevel } from '$lib/stores/sdkSessions';
+import { sdkSessions, settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
 import {
   cleanTranscription,
   recommendModel,
@@ -62,7 +62,9 @@ export interface RepoRecommendation {
 export interface ModelRecommendation {
   modelId: string;
   reasoning: string;
-  thinkingLevel?: ThinkingLevel;
+  effortLevel?: EffortLevel;
+  /** @deprecated Use effortLevel */
+  thinkingLevel?: EffortLevel;
 }
 
 export interface SystemPromptOptions {
@@ -145,30 +147,30 @@ export async function cleanupTranscript(
 export async function getModelRecommendation(
   transcript: string,
   enabledModels: string[]
-): Promise<{ model: string; thinkingLevel: ThinkingLevel | null; recommendation?: ModelRecommendation }> {
+): Promise<{ model: string; effortLevel: EffortLevel | null; recommendation?: ModelRecommendation }> {
   const currentSettings = get(settings);
   let model = currentSettings.default_model;
-  let thinkingLevel = settingsToStoreThinking(currentSettings.default_thinking_level);
-  const autoModelThinking = currentSettings.llm.features.auto_model_thinking;
+  let effortLevel = settingsToStoreEffort(currentSettings.default_effort_level);
+  const autoModelEffort = currentSettings.llm.features.auto_model_effort ?? currentSettings.llm.features.auto_model_thinking;
 
   if (!isAutoModel(model)) {
-    return { model, thinkingLevel };
+    return { model, effortLevel };
   }
 
-  // Apply auto model thinking setting when using auto model
+  // Apply auto model effort setting when using auto model
   // This applies even if model recommendation is disabled
-  if (autoModelThinking === 'off') {
-    thinkingLevel = null;
-  } else if (autoModelThinking === 'on') {
-    thinkingLevel = 'on';
+  if (autoModelEffort === 'off') {
+    effortLevel = null;
+  } else if (autoModelEffort !== 'dynamic') {
+    effortLevel = autoModelEffort as EffortLevel;
   }
   // 'dynamic' will let the LLM decide if recommendation is enabled
 
   if (!isModelRecommendationEnabled()) {
     // Auto selected but recommendation not enabled - fall back to first enabled model
-    model = enabledModels[0] || 'claude-sonnet-4-5-20250929';
+    model = enabledModels[0] || 'claude-sonnet-4-6';
     console.log('[llm] Auto model selected but recommendation disabled, falling back to:', model);
-    return { model, thinkingLevel };
+    return { model, effortLevel };
   }
 
   try {
@@ -180,27 +182,28 @@ export async function getModelRecommendation(
         model = recommendation.modelId;
         console.log('[llm] Auto selected model:', model, '-', recommendation.reasoning);
       } else {
-        model = enabledModels[0] || 'claude-sonnet-4-5-20250929';
+        model = enabledModels[0] || 'claude-sonnet-4-6';
         console.log('[llm] Recommended model not enabled, falling back to:', model);
       }
 
-      // Apply thinking level based on auto_model_thinking setting
-      if (autoModelThinking === 'dynamic' && recommendation.thinkingLevel) {
+      // Apply effort level based on auto_model_effort setting
+      const recommendedEffort = recommendation.effortLevel || recommendation.thinkingLevel;
+      if (autoModelEffort === 'dynamic' && recommendedEffort) {
         // Dynamic mode: use LLM recommendation
-        thinkingLevel = recommendation.thinkingLevel as ThinkingLevel;
-        console.log('[llm] Using recommended thinking level:', thinkingLevel);
+        effortLevel = recommendedEffort as EffortLevel;
+        console.log('[llm] Using recommended effort level:', effortLevel);
       } else {
-        // off/on mode: thinking level already set above
-        console.log('[llm] Using auto_model_thinking setting:', autoModelThinking, '-> thinking:', thinkingLevel);
+        // Fixed mode: effort level already set above
+        console.log('[llm] Using auto_model_effort setting:', autoModelEffort, '-> effort:', effortLevel);
       }
 
       return {
         model,
-        thinkingLevel,
+        effortLevel,
         recommendation: {
           modelId: recommendation.modelId,
           reasoning: recommendation.reasoning,
-          thinkingLevel: recommendation.thinkingLevel as ThinkingLevel | undefined,
+          effortLevel: (recommendedEffort as EffortLevel | undefined) ?? undefined,
         },
       };
     }
@@ -209,9 +212,9 @@ export async function getModelRecommendation(
   }
 
   // Fallback
-  model = enabledModels[0] || 'claude-sonnet-4-5-20250929';
+  model = enabledModels[0] || 'claude-sonnet-4-6';
   console.log('[llm] No recommendation, falling back to:', model);
-  return { model, thinkingLevel };
+  return { model, effortLevel };
 }
 
 /**
@@ -323,7 +326,7 @@ export function updatePendingWithModelRecommendation(
     modelRecommendation: {
       modelId: recommendation.modelId,
       reasoning: recommendation.reasoning,
-      thinkingLevel: recommendation.thinkingLevel ?? undefined,
+      effortLevel: recommendation.effortLevel ?? undefined,
     },
   });
 }

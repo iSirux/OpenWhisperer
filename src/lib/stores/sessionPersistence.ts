@@ -1,7 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { settings } from './settings';
-import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type ThinkingLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo } from './sdkSessions';
+import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo, type PlanModeState, type NoteModeState } from './sdkSessions';
+import type { SdkProvider } from '$lib/utils/models';
 import { sessions, activeSessionId, type TerminalSession } from './sessions';
 
 // ============================================================================
@@ -192,6 +193,7 @@ export interface PersistedPendingTranscriptionInfo {
   modelRecommendation?: {
     modelId: string;
     reasoning: string;
+    effortLevel?: string;
     thinkingLevel?: string;
   };
   repoRecommendation?: {
@@ -209,22 +211,25 @@ export interface PersistedSdkSession {
   id: string;
   cwd: string;
   model: string;
-  thinkingLevel?: ThinkingLevel;
+  provider?: SdkProvider;
+  autoModelRequested?: boolean;
+  effortLevel?: EffortLevel;
+  /** @deprecated Use effortLevel - kept for backward compat loading */
+  thinkingLevel?: string | null;
   messages: PersistedSdkMessage[];
   status: string;
   createdAt: number;
   startedAt?: number;
   accumulatedDurationMs?: number;
-  // Usage is now persisted!
   usage?: SdkSessionUsage;
-  // Unread flag is now persisted!
   unread?: boolean;
   aiMetadata?: SessionAiMetadata;
   pendingTranscription?: PersistedPendingTranscriptionInfo;
   pendingRepoSelection?: PendingRepoSelection;
   pendingPrompt?: string;
   pendingApprovalPrompt?: string;
-  // SDK session ID for proper resume after app restart (avoids context bloat)
+  planMode?: PlanModeState;
+  noteMode?: NoteModeState;
   sdkSessionId?: string;
 }
 
@@ -284,7 +289,7 @@ function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
   const session = deserializeFromPersistence<SdkSession>(persisted as unknown as Record<string, unknown>, {
     // Runtime-only fields that need defaults
     currentWorkStartedAt: undefined, // Session is idle when restored
-    thinkingLevel: null, // Default thinking level
+    effortLevel: null, // Default effort level
     accumulatedDurationMs: 0,
     messages: [],
   });
@@ -307,9 +312,14 @@ function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
     }));
   }
 
-  // Ensure thinking level is properly handled
-  if (persisted.thinkingLevel === undefined) {
-    session.thinkingLevel = null;
+  // Migrate old thinkingLevel to effortLevel
+  if (persisted.effortLevel !== undefined) {
+    session.effortLevel = persisted.effortLevel;
+  } else if (persisted.thinkingLevel !== undefined) {
+    // Legacy migration: 'on' -> 'high', 'off'/undefined -> null
+    session.effortLevel = persisted.thinkingLevel === 'on' ? 'high' : null;
+  } else {
+    session.effortLevel = null;
   }
 
   return session;
@@ -412,7 +422,7 @@ export async function saveSessionsToDisk(): Promise<void> {
   try {
     // Debug: Log thinking levels being saved
     persistedData.sdk_sessions.forEach(s => {
-      console.log(`[sessionPersistence] Saving session ${s.id.slice(0, 8)}: thinkingLevel =`, s.thinkingLevel);
+      console.log(`[sessionPersistence] Saving session ${s.id.slice(0, 8)}: effortLevel =`, s.effortLevel);
     });
 
     await invoke('save_persisted_sessions', {
@@ -465,7 +475,7 @@ export async function loadSessionsFromDisk(): Promise<void> {
 
     // Debug: Log thinking levels being restored
     limitedSdkSessions.forEach(s => {
-      console.log(`[sessionPersistence] Loading session ${s.id.slice(0, 8)}: thinkingLevel =`, s.thinkingLevel);
+      console.log(`[sessionPersistence] Loading session ${s.id.slice(0, 8)}: effortLevel =`, s.effortLevel);
     });
 
     // Restore SDK sessions

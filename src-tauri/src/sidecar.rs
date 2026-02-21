@@ -40,6 +40,8 @@ pub enum OutboundMessage {
         id: String,
         cwd: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
@@ -68,10 +70,10 @@ pub enum OutboundMessage {
         id: String,
         model: String,
     },
-    UpdateThinking {
+    UpdateEffort {
         id: String,
-        #[serde(rename = "maxThinkingTokens")]
-        max_thinking_tokens: Option<u32>,
+        #[serde(rename = "effortLevel")]
+        effort_level: Option<String>,
     },
     Close {
         id: String,
@@ -159,10 +161,10 @@ pub enum InboundMessage {
         id: String,
         model: String,
     },
-    ThinkingUpdated {
+    EffortUpdated {
         id: String,
-        #[serde(rename = "maxThinkingTokens")]
-        max_thinking_tokens: u64,
+        #[serde(rename = "effortLevel")]
+        effort_level: Option<String>,
     },
     Closed {
         id: String,
@@ -335,6 +337,17 @@ impl SidecarManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // Inject API keys from keyring into sidecar environment
+        {
+            use tauri_plugin_keyring::KeyringExt;
+            if let Ok(Some(key)) = app.keyring().get_password("claude-whisperer", "anthropic-api-key") {
+                cmd.env("ANTHROPIC_API_KEY", key);
+            }
+            if let Ok(Some(key)) = app.keyring().get_password("claude-whisperer", "openai-api-key") {
+                cmd.env("OPENAI_API_KEY", key);
+            }
+        }
 
         // On Windows, prevent the CMD window from appearing
         #[cfg(windows)]
@@ -537,17 +550,17 @@ impl SidecarManager {
                     }),
                 );
             }
-            InboundMessage::ThinkingUpdated {
+            InboundMessage::EffortUpdated {
                 id,
-                max_thinking_tokens,
+                effort_level,
             } => {
                 println!(
-                    "[sidecar] Thinking updated for {}: {} tokens",
-                    id, max_thinking_tokens
+                    "[sidecar] Effort updated for {}: {:?}",
+                    id, effort_level
                 );
                 let _ = app.emit(
-                    &format!("sdk-thinking-updated-{}", id),
-                    max_thinking_tokens,
+                    &format!("sdk-effort-updated-{}", id),
+                    &effort_level,
                 );
             }
             InboundMessage::PlanningQuestions { id, questions } => {
