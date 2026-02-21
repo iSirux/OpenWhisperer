@@ -37,7 +37,7 @@ Developers repeat the same multi-step workflows constantly: implement a feature,
 ### Design Principles
 
 - **YAML-first** — Workflows are stored as human-readable YAML files that both AI and humans can author and understand
-- **Visual + Text hybrid** — Edit as YAML or drag-and-drop in a visual node editor; both stay in sync
+- **Visual + Text hybrid** — Drag-and-drop in a visual node editor in-app, or edit YAML directly in your preferred text editor
 - **AI-native** — AI can generate, modify, and optimize workflows. Every node type is designed to be AI-authorable
 - **Repo-portable** — Sequences work across repos via context variables, not hardcoded paths
 - **Progressive complexity** — Simple linear sequences are trivial to create; branching, parallelism, and scheduling are available when needed
@@ -356,27 +356,43 @@ Inputs support optional `validation` rules:
 
 Validation runs before execution starts. Invalid inputs show descriptive error messages in the UI.
 
-### File Storage Locations
+### File Storage
+
+All sequences are stored globally. Per-repo sequences are not supported — instead, sequences can be restricted to specific repos via the `repos` field.
 
 ```
-# Global sequences
+# All user sequences
 ~/.config/claude-whisperer/sequences/
 ├── code-review.yaml
 ├── feature-pipeline.yaml
 └── daily-maintenance.yaml
 
-# Per-repo sequences (in repo root)
-<repo>/.claude-whisperer/sequences/
-├── deploy-pipeline.yaml
-└── release-checklist.yaml
-
-# Built-in templates (bundled with app, read-only)
+# Built-in templates (bundled with app, read-only, can be copied to user dir)
 <app>/templates/sequences/
 ├── code-review.yaml
 ├── code-simplify.yaml
 ├── feature-pipeline.yaml
 └── pr-workflow.yaml
 ```
+
+### Repo Restrictions
+
+By default, sequences are available to all repos. To restrict a sequence to specific repos, use the `repos` field:
+
+```yaml
+# Available to all repos (default — field omitted)
+name: "Code Review"
+
+# Restricted to specific repos by name
+name: "API Deploy Pipeline"
+repos: [API, Backend]            # Only available when these repos are active
+
+# Restricted by repo tags
+name: "Frontend Lint Check"
+repos: tagged:frontend           # Only repos with the "frontend" tag
+```
+
+When `repos` is specified, the sequence only appears in the library and only triggers (for event/schedule triggers) when one of the listed repos is active.
 
 ---
 
@@ -1835,17 +1851,20 @@ Scheduled executions are marked differently in the UI (clock icon vs. play icon)
 
 ## 10. Scoping & Multi-Repo Support
 
-### Scope Levels
+### All Sequences Are Global
 
-| Scope | Storage Location | Visibility |
-|-------|------------------|------------|
-| **Global** | `~/.config/claude-whisperer/sequences/` | Always available |
-| **Per-repo** | `<repo>/.claude-whisperer/sequences/` | Only when that repo is active |
-| **Built-in** | Bundled with app | Always available (read-only templates) |
+All sequences are stored in a single global location (`~/.config/claude-whisperer/sequences/`). There are no per-repo sequence directories. This keeps things simple — one library, one place to manage.
+
+Sequences are **available to all repos by default**. To restrict a sequence to specific repos, use the `repos` field in the YAML definition (see [Section 4: Repo Restrictions](#repo-restrictions)).
+
+| Storage | Location | Visibility |
+|---------|----------|------------|
+| **User sequences** | `~/.config/claude-whisperer/sequences/` | Always available (or filtered by `repos` field) |
+| **Built-in templates** | Bundled with app | Always available (read-only, can be copied to user dir) |
 
 ### Repo-Portable Sequences
 
-Sequences should generally use `{{ repo.path }}` and `{{ repo.name }}` instead of hardcoded paths. This makes a global sequence work with any repo:
+Sequences should use `{{ repo.path }}` and `{{ repo.name }}` instead of hardcoded paths. This makes any sequence work with any repo:
 
 ```yaml
 # GOOD — works with any repo
@@ -1914,29 +1933,31 @@ Then in sequences: `repos: tagged:frontend` selects all repos with the `frontend
 
 ### Design Approach
 
-The visual editor is a **synchronized view** of the YAML definition. Edits in either view update the other in real-time.
+The visual editor is the **primary in-app editing interface**. There is no in-app YAML text editor — users who prefer editing YAML directly can click "Open in Editor" to open the file in their system editor (VS Code, etc.).
+
+The canvas reads from YAML on load and writes to YAML on save. Changes in the canvas are saved to the YAML file when the user saves or when the sequence is run.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Sequence Editor                                    [YAML]  │
+│  Sequence Editor                             [Open in Editor]│
 │  ┌──────────────────────────────────┐ ┌──────────────────┐  │
 │  │        Node Canvas               │ │  Node Inspector  │  │
 │  │                                  │ │                  │  │
 │  │   ┌──────────┐                   │ │  Name: Review    │  │
 │  │   │ Review   │──┐               │ │  Type: prompt    │  │
 │  │   │ (prompt) │  │               │ │  Model: haiku    │  │
-│  │   └──────────┘  │               │ │                  │  │
-│  │                  ▼               │ │  Prompt:         │  │
-│  │           ┌──────────┐          │ │  ┌────────────┐  │  │
-│  │           │ Critical? │          │ │  │ Review the │  │  │
-│  │           │ (route)  │          │ │  │ latest...  │  │  │
-│  │           └──┬────┬──┘          │ │  └────────────┘  │  │
-│  │          yes │    │ no          │ │                  │  │
-│  │              ▼    ▼             │ │  Outputs:        │  │
-│  │   ┌──────┐  ┌──────────┐      │ │  summary ────    │  │
-│  │   │ Fix  │  │ Create PR│      │ │  score ─────     │  │
-│  │   └──┬───┘  └────┬─────┘      │ │                  │  │
-│  │      │            │             │ │  [Delete Node]   │  │
+│  │   └──────────┘  │               │ │  Tools: readonly │  │
+│  │                  ▼               │ │                  │  │
+│  │           ┌──────────┐          │ │  Prompt:         │  │
+│  │           │ Critical? │          │ │  ┌────────────┐  │  │
+│  │           │ (route)  │          │ │  │ Review the │  │  │
+│  │           └──┬────┬──┘          │ │  │ latest...  │  │  │
+│  │          yes │    │ no          │ │  └────────────┘  │  │
+│  │              ▼    ▼             │ │                  │  │
+│  │   ┌──────┐  ┌──────────┐      │ │  MCP: [github]   │  │
+│  │   │ Fix  │  │ Create PR│      │ │                  │  │
+│  │   └──┬───┘  └────┬─────┘      │ │  [Delete Node]   │  │
+│  │      │            │             │ │                  │  │
 │  │      ▼            ▼             │ │                  │  │
 │  │   ┌──────┐  ┌──────────┐      │ │                  │  │
 │  │   │ Test │  │ Notify   │      │ │                  │  │
@@ -1944,14 +1965,6 @@ The visual editor is a **synchronized view** of the YAML definition. Edits in ei
 │  │                                  │ │                  │  │
 │  │  [+ Add Node]                   │ │                  │  │
 │  └──────────────────────────────────┘ └──────────────────┘  │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  Execution Log (when running)                        │   │
-│  │  ✓ Review — completed (2.3s, $0.003)                 │   │
-│  │  ✓ Critical? — no → Create PR                        │   │
-│  │  ● Create PR — running...                            │   │
-│  │  ○ Notify — pending                                  │   │
-│  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -1964,8 +1977,7 @@ The visual editor is a **synchronized view** of the YAML definition. Edits in ei
 - **Mini-map** for navigation
 - **Color-coded** node types (prompt=blue, route=yellow, git=green, notify=purple, etc.)
 - **Status overlay** during execution (pending/running/complete/error per node)
-- **Live streaming view** — Click a running prompt node to see its SDK output in real-time
-- **Toggle** between canvas view and YAML text editor
+- **"Open in Editor"** button — opens the YAML file in the user's system editor for manual editing
 
 ### Node Palette
 
@@ -2085,7 +2097,7 @@ While editing in the visual editor, AI helps with individual nodes:
                v
 ┌──────────────────────────────────────────────┐
 │  Visual Editor (for review + edit)            │
-│  - Sequence opened with AI-generated content  │
+│  - AI-generated YAML opened in canvas editor  │
 │  - Highlighted placeholders if any            │
 │  - User reviews, edits, saves                 │
 └──────────────────────────────────────────────┘
@@ -2324,7 +2336,9 @@ User: "Execute daily maintenance"
 **Implementation:**
 - Add `sequence_commands` to voice command config alongside existing `active_commands`
 - When a voice command matches a sequence name (fuzzy match via LLM), start the execution
-- If the sequence has required inputs, prompt the user (voice or UI)
+- **Input extraction from voice:** The LLM parses the voice command to extract input values. "Start the feature pipeline for user authentication" → `feature_description = "user authentication"`. The LLM sees the sequence's input definitions (names, types, descriptions) and maps parts of the utterance to matching inputs.
+- If the LLM can't parse all required inputs, the remaining ones are collected via the `SequenceInputDialog` in the UI
+- Optional inputs that aren't mentioned in the voice command use their defaults
 
 ### Voice During Execution
 
@@ -2502,18 +2516,29 @@ Both stores use Svelte 5 runes and follow the same patterns as `sdkSessions.ts`.
 ```
 src/lib/components/sequences/
 ├── SequenceLibrary.svelte      # Grid/list of saved sequences with search + create
-├── SequenceCard.svelte         # Card for a single sequence (name, tags, last run)
-├── SequenceEditor.svelte       # Visual editor wrapper (canvas + inspector + YAML toggle)
+├── SequenceCard.svelte         # Card for a single sequence (name, tags, last run, repo restrictions)
+├── SequenceEditor.svelte       # Visual editor wrapper (canvas + inspector)
 ├── NodeCanvas.svelte           # @xyflow/svelte node graph canvas
 ├── NodeInspector.svelte        # Side panel for editing selected node properties
 ├── NodePalette.svelte          # Draggable node type list
-├── YamlEditor.svelte           # Code editor for YAML with syntax highlighting
 ├── SequenceSessionView.svelte  # Full-width scroll view for a running/completed sequence
 ├── SequenceNodeRow.svelte      # Single node rendered in the session view
 ├── SequenceApproval.svelte     # Inline approval prompt (approve/reject buttons)
 ├── SequenceInputDialog.svelte  # Modal for collecting sequence inputs at start
 └── SequenceUsageBar.svelte     # Token/cost/duration summary bar
 ```
+
+### Error Feedback
+
+**Authoring errors** (invalid YAML, missing required fields, broken references):
+- Toast notification with the error summary
+- Error details in the execution log
+- Clickable link to open the YAML file in the user's system editor at the error location
+
+**Runtime errors** (node failures, API errors, timeout):
+- Failed node shows red in the sequence session view with expandable error details
+- Toast notification for the error
+- Retry button on failed nodes where applicable
 
 ### Overlay Integration
 
@@ -2601,12 +2626,13 @@ Sub-sections:
 - [ ] Node palette (draggable node types)
 - [ ] Node inspector panel (edit selected node config)
 - [ ] Connection drawing (drag output → input)
-- [ ] YAML ↔ Canvas sync (bidirectional)
+- [ ] Canvas → YAML save (canvas is primary editor; writes to YAML file on save)
+- [ ] YAML → Canvas load (reads YAML on open; "Open in Editor" link for manual YAML editing)
 - [ ] Zoom, pan, mini-map
 - [ ] Execution overlay on canvas (live status per node)
 
 **AI Generation:**
-- [ ] Full generation from natural language description
+- [ ] Full generation from natural language description (generates YAML, opens in canvas)
 - [ ] Template suggestion based on description
 - [ ] Inline node assist (prompt authoring, route branch generation)
 - [ ] Dry-run validation with helpful error messages
@@ -2614,7 +2640,7 @@ Sub-sections:
 **Deliverables:**
 - Visual sequence builder with drag-and-drop
 - AI generates sequences from "create a workflow that..."
-- Edit in canvas or YAML, both stay in sync
+- "Open in Editor" for power users who prefer YAML directly
 
 ### Phase 4: Notifications + Scheduling
 
@@ -2976,7 +3002,7 @@ This eliminates the need for a separate secrets management UI for initial setup.
 2. **Per-node AI model + effort selection** — Right-size cost per step (Haiku for classification, Opus for complex reasoning) with granular effort levels
 3. **AI-generated workflows** — Describe what you want, get a working sequence
 4. **Desktop-native** — No server needed, works with local repos
-5. **Hybrid text+visual** — YAML for AI/power users, drag-and-drop for visual thinkers
+5. **Hybrid text+visual** — Visual canvas in-app, YAML in external editor for power users
 6. **Integrated with Claude Whisperer** — Reuses existing sessions, transcription, repo management, MCP servers
 7. **Multi-provider** — Same sequence can use Claude (Anthropic) for reasoning and Codex (OpenAI) for code generation
 8. **Deterministic extraction** — JSON output format + `json`/`get` filters for reliable structured data, no hidden LLM calls
