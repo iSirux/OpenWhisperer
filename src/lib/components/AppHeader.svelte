@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import ModelSelector from './ModelSelector.svelte';
   import EffortToggle from './EffortToggle.svelte';
   import UsagePreview from './UsagePreview.svelte';
@@ -239,6 +240,18 @@
   <div class="flex items-center gap-2">
     <!-- Open Mic Marquee (shows live transcription when listening) -->
     <OpenMicMarquee />
+
+    <!-- Sequences -->
+    <button
+      class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-surface-elevated rounded transition-colors"
+      onclick={() => goto('/sequences')}
+      title="Sequences"
+    >
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+      </svg>
+      Sequences
+    </button>
 
     <!-- Usage Preview -->
     <UsagePreview />

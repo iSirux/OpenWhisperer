@@ -44,7 +44,7 @@ pub fn save_config(
 pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Result<(), String> {
     println!("[add_repo] Called with path: {}, name: {}", path, name);
     let mut cfg = config.lock();
-    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, mcp_servers: None, note_mcp_servers: None });
+    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, mcp_servers: None, note_mcp_servers: None, tags: Vec::new() });
     println!("[add_repo] Repo added to config, total repos: {}", cfg.repos.len());
     let result = cfg.save();
     match &result {

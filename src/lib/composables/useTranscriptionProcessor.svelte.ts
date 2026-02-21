@@ -40,6 +40,14 @@ export interface ProcessedTranscript {
   commandType: VoiceCommandType;
   /** Whether the transcript is empty after processing */
   isEmpty: boolean;
+  /** Whether the command should trigger running a sequence */
+  shouldRunSequence?: boolean;
+  /** Whether the command should approve a pending approval */
+  shouldApprove?: boolean;
+  /** Whether the command should reject a pending approval */
+  shouldReject?: boolean;
+  /** Sequence name extracted from the transcript (for sequence commands) */
+  sequenceName?: string;
 }
 
 export interface CleanupResult {
@@ -103,6 +111,10 @@ export function processVoiceCommands(
     detectedCommand: result.detectedCommand ?? undefined,
     commandType: result.commandType,
     isEmpty: !result.cleanedTranscript.trim(),
+    shouldRunSequence: result.shouldRunSequence,
+    shouldApprove: result.shouldApprove,
+    shouldReject: result.shouldReject,
+    sequenceName: result.sequenceName,
   };
 }
 

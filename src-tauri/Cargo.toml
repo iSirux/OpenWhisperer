@@ -39,3 +39,7 @@ sha2 = "0.10"
 url = "2"
 base64 = "0.22"
 rand = "0.9"
+serde_yaml = "0.9"
+minijinja = { version = "2", features = ["builtins"] }
+cron = "0.12"
+regex = "1"

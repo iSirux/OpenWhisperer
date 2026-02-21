@@ -74,6 +74,12 @@ export interface VoiceCommandConfig {
   cancel_commands: string[];
   /** List of voice commands that will trigger note-taking mode */
   note_commands: string[];
+  /** List of voice commands that will trigger running a sequence */
+  sequence_commands: string[];
+  /** List of voice commands that will approve a pending approval node */
+  approve_commands: string[];
+  /** List of voice commands that will reject a pending approval node */
+  reject_commands: string[];
 }
 
 /** Default voice command presets for sending prompts */
@@ -111,6 +117,30 @@ export const NOTE_COMMAND_PRESETS = [
   "note this",
   "make a note",
   "jot this down",
+] as const;
+
+/** Default voice command presets for running sequences */
+export const SEQUENCE_COMMAND_PRESETS = [
+  "run sequence",
+  "start sequence",
+  "execute sequence",
+  "launch sequence",
+] as const;
+
+/** Default voice command presets for approving approval nodes */
+export const APPROVE_COMMAND_PRESETS = [
+  "approve",
+  "approved",
+  "looks good",
+  "go ahead",
+] as const;
+
+/** Default voice command presets for rejecting approval nodes */
+export const REJECT_COMMAND_PRESETS = [
+  "reject",
+  "rejected",
+  "deny",
+  "stop that",
 ] as const;
 
 /** Open mic configuration for passive voice listening */
@@ -177,6 +207,8 @@ export interface RepoConfig {
   mcp_servers?: string[];
   /** List of MCP server IDs to use for note-taking mode in this repository */
   note_mcp_servers?: string[];
+  /** Tags for multi-repo sequence filtering (e.g., "frontend", "backend", "infra") */
+  tags: string[];
 }
 
 // Import and re-export MCP types
@@ -280,6 +312,37 @@ export interface LlmConfig {
 // Alias for backwards compatibility
 export type GeminiConfig = LlmConfig;
 
+/** Notification channel type for sequences */
+export type NotificationChannelType = "system" | "slack" | "discord" | "webhook";
+
+/** Configuration for a notification channel */
+export interface NotificationChannelConfig {
+  id: string;
+  name: string;
+  channel_type: NotificationChannelType;
+  webhook_url: string | null;
+  headers: Record<string, string> | null;
+  enabled: boolean;
+}
+
+/** Sequence automation configuration */
+export interface SequenceConfig {
+  /** Whether sequence automation is enabled */
+  enabled: boolean;
+  /** Maximum number of concurrent sequence executions */
+  max_concurrent_executions: number;
+  /** Default timeout for nodes in seconds */
+  default_timeout: number;
+  /** How many days to keep execution history */
+  execution_history_days: number;
+  /** Configured notification channels */
+  notification_channels: NotificationChannelConfig[];
+  /** Maximum number of concurrent prompt nodes across all sequences */
+  max_concurrent_prompts: number;
+  /** Default requests-per-minute limit per provider */
+  default_provider_rpm: number;
+}
+
 export interface AppConfig {
   whisper: WhisperConfig;
   vosk: VoskConfig;
@@ -325,6 +388,8 @@ export interface AppConfig {
   gemini?: LlmConfig;
   /** MCP server configuration */
   mcp: McpConfig;
+  /** Sequence automation configuration */
+  sequences: SequenceConfig;
 }
 
 const defaultConfig: AppConfig = {
@@ -386,6 +451,9 @@ const defaultConfig: AppConfig = {
       transcribe_commands: [],
       cancel_commands: [],
       note_commands: ["take a note", "new note"],
+      sequence_commands: ["run sequence"],
+      approve_commands: ["approve"],
+      reject_commands: ["reject"],
     },
     open_mic: {
       enabled: false,
@@ -462,6 +530,15 @@ const defaultConfig: AppConfig = {
   },
   mcp: {
     servers: [],
+  },
+  sequences: {
+    enabled: false,
+    max_concurrent_executions: 3,
+    default_timeout: 300,
+    execution_history_days: 30,
+    notification_channels: [],
+    max_concurrent_prompts: 3,
+    default_provider_rpm: 50,
   },
 };
 

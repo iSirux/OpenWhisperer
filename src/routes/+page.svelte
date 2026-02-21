@@ -55,6 +55,13 @@
     setupPeriodicAutoSave,
   } from '$lib/stores/sessionPersistence';
   import { navigation } from '$lib/stores/navigation';
+  import {
+    activeExecution,
+    activeExecutionId,
+    loadExecutionHistory,
+  } from '$lib/stores/sequenceExecutions';
+  import { sequences, loadSequences } from '$lib/stores/sequences';
+  import SequenceSessionView from '$lib/components/sequences/SequenceSessionView.svelte';
 
   // Tauri APIs
   import { invoke } from '@tauri-apps/api/core';
@@ -173,6 +180,10 @@
     if ($settings.session_persistence.enabled) {
       await loadSessionsFromDisk();
     }
+
+    // Load sequences for execution view
+    await loadSequences();
+    await loadExecutionHistory();
 
     // Switch to sessions view if there are sessions
     if (($sessions.length > 0 || $sdkSessions.length > 0) && $navigation.mainView === 'start') {
@@ -1010,6 +1021,14 @@
         <Start />
       {:else if currentView === 'settings'}
         <Settings initialTab={settingsTabFromNav} />
+      {:else if currentView === 'sequences' && $activeExecution}
+        <!-- Sequence Execution View -->
+        {@const exec = $activeExecution}
+        {@const seqDef = $sequences.find(s => s.id === exec.sequence_id)}
+        <SequenceSessionView
+          execution={exec}
+          nodes={seqDef?.nodes ?? []}
+        />
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
         {@const activeSession = $activeSdkSession}

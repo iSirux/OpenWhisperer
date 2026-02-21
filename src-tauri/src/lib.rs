@@ -2,13 +2,15 @@ mod commands;
 mod config;
 mod llm;
 mod git;
+mod sequences;
 mod session_persistence;
 mod sidecar;
 mod terminal;
 mod vosk;
 mod whisper;
 
-use commands::{audio_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, vosk_cmds};
+use commands::{audio_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, vosk_cmds};
+use sequences::SequenceManager;
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
 use sidecar::SidecarManager;
@@ -170,6 +172,41 @@ pub fn run() {
                 }
             }
 
+            // Initialize sequence manager
+            let sidecar_for_seq: tauri::State<Arc<SidecarManager>> = app.state();
+            let (max_prompts, provider_rpm) = {
+                let cfg: tauri::State<parking_lot::Mutex<AppConfig>> = app.state();
+                let c = cfg.lock();
+                (c.sequences.max_concurrent_prompts, c.sequences.default_provider_rpm)
+            };
+            let sequence_manager = Arc::new(SequenceManager::new(
+                app.handle().clone(),
+                sidecar_for_seq.inner().clone(),
+                max_prompts,
+                provider_rpm,
+            ));
+            // Load sequence definitions
+            if let Err(e) = sequence_manager.load_definitions() {
+                eprintln!("[sequences] Failed to load definitions: {}", e);
+            }
+            let sequence_manager_for_scheduler = sequence_manager.clone();
+            let sequence_manager_for_triggers = sequence_manager.clone();
+            app.manage(sequence_manager);
+
+            // Initialize sequence scheduler
+            let scheduler = Arc::new(sequences::scheduler::SequenceScheduler::new());
+            {
+                let cfg: tauri::State<parking_lot::Mutex<AppConfig>> = app.state();
+                if cfg.lock().sequences.enabled {
+                    scheduler.start(sequence_manager_for_scheduler);
+                    // Start event trigger listeners
+                    sequence_manager_for_triggers
+                        .event_trigger_manager
+                        .start(app.handle(), sequence_manager_for_triggers.clone());
+                }
+            }
+            app.manage(scheduler);
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -275,6 +312,28 @@ pub fn run() {
             mcp_cmds::get_mcp_oauth_tokens,
             mcp_cmds::delete_mcp_oauth_tokens,
             mcp_cmds::get_mcp_auth_header,
+            sequence_cmds::list_sequences,
+            sequence_cmds::get_sequence,
+            sequence_cmds::save_sequence,
+            sequence_cmds::delete_sequence,
+            sequence_cmds::import_sequence,
+            sequence_cmds::export_sequence,
+            sequence_cmds::validate_sequence,
+            sequence_cmds::start_execution,
+            sequence_cmds::get_execution,
+            sequence_cmds::list_executions,
+            sequence_cmds::pause_execution,
+            sequence_cmds::resume_execution,
+            sequence_cmds::cancel_execution,
+            sequence_cmds::approve_node,
+            sequence_cmds::reject_node,
+            sequence_cmds::retry_node,
+            sequence_cmds::test_notification_channel,
+            sequence_cmds::list_schedules,
+            sequence_cmds::toggle_schedule,
+            sequence_cmds::list_event_triggers,
+            sequence_cmds::generate_sequence_yaml,
+            sequence_cmds::generate_node_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

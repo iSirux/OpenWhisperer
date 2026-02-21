@@ -6,7 +6,7 @@ import { writable } from 'svelte/store';
  * back from /usage or /sessions-view.
  */
 
-export type MainView = 'sessions' | 'settings' | 'start';
+export type MainView = 'sessions' | 'settings' | 'start' | 'sequences';
 
 function createNavigationStore() {
   const { subscribe, set, update } = writable<{
@@ -57,6 +57,13 @@ function createNavigationStore() {
      */
     showStart() {
       update(state => ({ ...state, mainView: 'start' }));
+    },
+
+    /**
+     * Show sequence execution view
+     */
+    showSequences() {
+      update(state => ({ ...state, mainView: 'sequences' }));
     },
 
     /**

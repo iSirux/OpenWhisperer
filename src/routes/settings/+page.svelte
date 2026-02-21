@@ -18,6 +18,7 @@
     OverlayTab,
     ReposTab,
     McpTab,
+    SequencesTab,
   } from "$lib/components/settings";
 
   // Accept an initial tab from parent component
@@ -114,6 +115,7 @@
     { id: "hotkeys", label: "Hotkeys" },
     { id: "overlay", label: "Overlay" },
     { id: "repos", label: "Repositories" },
+    { id: "sequences", label: "Sequences" },
   ];
 </script>
 
@@ -194,6 +196,8 @@
         <OverlayTab />
       {:else if activeTab === "repos"}
         <ReposTab />
+      {:else if activeTab === "sequences"}
+        <SequencesTab />
       {/if}
     </div>
   </div>

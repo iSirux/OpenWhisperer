@@ -10,14 +10,29 @@
     fetchBranchesForSessions,
     getSdkSmartStatus
   } from '$lib/composables/useDisplaySessions.svelte';
+  import {
+    executions,
+    activeExecutionId,
+    getStatusString,
+    getProgress,
+    isTerminal,
+    loadExecutionHistory,
+  } from '$lib/stores/sequenceExecutions';
+  import { navigation } from '$lib/stores/navigation';
+  import type { SequenceExecution } from '$lib/types/sequence';
   import SessionListItem from './SessionListItem.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
 
   interface Props {
-    currentView?: 'sessions' | 'settings' | 'start';
+    currentView?: 'sessions' | 'settings' | 'start' | 'sequences';
   }
 
   let { currentView = 'sessions' }: Props = $props();
+
+  // Load execution history on mount
+  onMount(() => {
+    loadExecutionHistory();
+  });
 
   // Timer for live duration updates
   let now = $state(Math.floor(Date.now() / 1000));
@@ -108,6 +123,7 @@
 
   // Session selection
   function selectSession(session: DisplaySession) {
+    activeExecutionId.set(null);
     if (session.type === 'pty') {
       activeSessionId.set(session.id);
       activeSdkSessionId.set(null);
@@ -124,6 +140,18 @@
     return session.type === 'pty'
       ? currentActiveSessionId === session.id
       : currentActiveSdkSessionId === session.id;
+  }
+
+  // Sequence execution selection
+  function selectExecution(exec: SequenceExecution) {
+    activeExecutionId.set(exec.id);
+    activeSessionId.set(null);
+    activeSdkSessionId.set(null);
+    navigation.showSequences();
+  }
+
+  function isExecutionActive(exec: SequenceExecution): boolean {
+    return currentView === 'sequences' && $activeExecutionId === exec.id;
   }
 
   // Confirmation dialog state
@@ -196,7 +224,45 @@
     </span>
   </button>
 
-  {#if allSessions.length === 0}
+  <!-- Sequence Executions -->
+  {#if $executions.length > 0}
+    <div class="border-b border-border">
+      <div class="px-3 py-1.5 text-[10px] uppercase tracking-wider text-text-muted font-medium">
+        Sequences
+      </div>
+      {#each $executions as exec (exec.id)}
+        {@const statusStr = getStatusString(exec.status)}
+        {@const progress = getProgress(exec)}
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-elevated transition-colors text-sm {isExecutionActive(exec) ? 'bg-accent/10 border-l-2 border-accent' : ''}"
+          onclick={() => selectExecution(exec)}
+        >
+          <!-- Pipeline icon -->
+          <svg class="w-4 h-4 flex-shrink-0 {statusStr === 'running' ? 'text-blue-400' : statusStr === 'completed' ? 'text-green-400' : statusStr === 'failed' ? 'text-red-400' : statusStr === 'paused' ? 'text-yellow-400' : 'text-text-muted'}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          <div class="flex-1 min-w-0">
+            <div class="truncate text-text-primary">{exec.sequence_name}</div>
+            <div class="flex items-center gap-2 text-[10px] text-text-muted">
+              <span class="{statusStr === 'running' ? 'text-blue-400' : statusStr === 'completed' ? 'text-green-400' : statusStr === 'failed' ? 'text-red-400' : ''}">{statusStr}</span>
+              {#if exec.total_nodes > 0}
+                <span>{exec.completed_node_ids.length}/{exec.total_nodes}</span>
+              {/if}
+            </div>
+          </div>
+          <!-- Progress bar -->
+          {#if !isTerminal(exec.status) && exec.total_nodes > 0}
+            <div class="w-10 h-1 bg-border rounded-full overflow-hidden flex-shrink-0">
+              <div class="h-full bg-accent rounded-full transition-all" style="width:{progress}%"></div>
+            </div>
+          {/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- Sessions -->
+  {#if allSessions.length === 0 && $executions.length === 0}
     <div class="p-4 text-center text-text-muted text-sm">
       <svg
         class="w-8 h-8 mx-auto mb-2 opacity-50"

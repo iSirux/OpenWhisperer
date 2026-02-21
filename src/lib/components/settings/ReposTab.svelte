@@ -493,6 +493,45 @@
             {/if}
           </div>
         {/if}
+
+        <!-- Tags for sequence filtering -->
+        <div class="text-xs">
+          <div class="font-medium text-text-secondary mb-1">Tags (for sequence filtering)</div>
+          <div class="flex flex-wrap gap-1 items-center">
+            {#each repo.tags || [] as tag}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-accent/10 text-accent rounded-full text-[10px]">
+                {tag}
+                <button
+                  class="hover:text-red-400 transition-colors"
+                  onclick={() => {
+                    const newTags = (repo.tags || []).filter(t => t !== tag);
+                    const updatedRepos = [...$settings.repos];
+                    updatedRepos[index] = { ...repo, tags: newTags };
+                    settings.save({ ...$settings, repos: updatedRepos });
+                  }}
+                >&times;</button>
+              </span>
+            {/each}
+            <input
+              type="text"
+              class="w-24 px-2 py-0.5 bg-background border border-border rounded text-[10px] focus:outline-none focus:border-accent"
+              placeholder="Add tag..."
+              onkeydown={(e) => {
+                const input = e.currentTarget as HTMLInputElement;
+                if (e.key === 'Enter' && input.value.trim()) {
+                  const tag = input.value.trim().toLowerCase();
+                  const currentTags = repo.tags || [];
+                  if (!currentTags.includes(tag)) {
+                    const updatedRepos = [...$settings.repos];
+                    updatedRepos[index] = { ...repo, tags: [...currentTags, tag] };
+                    settings.save({ ...$settings, repos: updatedRepos });
+                  }
+                  input.value = '';
+                }
+              }}
+            />
+          </div>
+        </div>
       </div>
     {/each}
   </div>
