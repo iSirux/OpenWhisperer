@@ -44,6 +44,8 @@ export interface EventHandlerCallbacks {
   ) => Promise<void>;
   /** Unregister recording hotkeys */
   onUnregisterRecordingHotkeys: () => Promise<void>;
+  /** Launch a prepared session */
+  onLaunchPrepared?: (sessionId: string, editedPrompt?: string) => Promise<void>;
 }
 
 export function useSessionEventHandlers() {
@@ -97,6 +99,11 @@ export function useSessionEventHandlers() {
     callbacks?.onSwitchToSession(customEvent.detail.sessionId);
   }
 
+  async function handleLaunchPrepared(event: Event) {
+    const customEvent = event as CustomEvent<{ sessionId: string; editedPrompt?: string }>;
+    await callbacks?.onLaunchPrepared?.(customEvent.detail.sessionId, customEvent.detail.editedPrompt);
+  }
+
   /**
    * Initialize event handlers with callbacks
    */
@@ -116,6 +123,7 @@ export function useSessionEventHandlers() {
     window.addEventListener('select-repo-for-session', handleSelectRepoForSession);
     window.addEventListener('focus-sdk-prompt', handleFocusSdkPrompt);
     window.addEventListener('switch-to-session', handleSwitchToSession);
+    window.addEventListener('launch-prepared', handleLaunchPrepared);
   }
 
   /**
@@ -130,6 +138,7 @@ export function useSessionEventHandlers() {
     window.removeEventListener('select-repo-for-session', handleSelectRepoForSession);
     window.removeEventListener('focus-sdk-prompt', handleFocusSdkPrompt);
     window.removeEventListener('switch-to-session', handleSwitchToSession);
+    window.removeEventListener('launch-prepared', handleLaunchPrepared);
   }
 
   /**

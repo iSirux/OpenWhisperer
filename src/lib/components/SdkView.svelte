@@ -201,6 +201,9 @@
   let isInitializing = $derived(status === "initializing");
   let isPendingTranscription = $derived(status === "pending_transcription");
   let isPendingApproval = $derived(status === "pending_approval");
+  let isPrepared = $derived(status === "prepared");
+  let preparedPrompt = $derived(session?.preparedPrompt ?? "");
+  let preparedRepoRecommendation = $derived(session?.preparedRepoRecommendation);
   let isLoading = $derived(isQuerying || isInitializing);
 
   // Plan mode state (must be defined before showQuickActions which uses isPlanMode)
@@ -425,6 +428,10 @@
 
     if (status === "pending_repo") {
       return { status: "pending_repo" };
+    }
+
+    if (status === "prepared") {
+      return { status: "prepared" };
     }
 
     if (status === "pending_approval") {
@@ -824,6 +831,23 @@
     sdkSessions.cancelApproval(sessionId);
   }
 
+  // Handlers for prepared sessions
+  function handleLaunchPrepared(editedPrompt?: string) {
+    window.dispatchEvent(
+      new CustomEvent("launch-prepared", {
+        detail: { sessionId, editedPrompt },
+      })
+    );
+  }
+
+  function handleCancelPrepared() {
+    sdkSessions.cancelPrepared(sessionId);
+  }
+
+  function handleSelectPreparedRepo(repoCwd: string) {
+    sdkSessions.updatePreparedRepo(sessionId, repoCwd);
+  }
+
   // Model and effort change handlers
   function handleModelChange(newModel: string) {
     sdkSessions.updateSessionModel(sessionId, newModel);
@@ -916,8 +940,25 @@
       />
     {/if}
 
+    <!-- Prepared session UI -->
+    {#if isPrepared && pendingTranscription}
+      <SessionRecordingHeader
+        {pendingTranscription}
+        {sessionId}
+        showPrepared={true}
+        {preparedPrompt}
+        onLaunch={handleLaunchPrepared}
+        onCancelPrepared={handleCancelPrepared}
+        repos={$settings.repos}
+        {preparedRepoRecommendation}
+        selectedRepoCwd={cwd}
+        onSelectRepo={handleSelectPreparedRepo}
+        autoModelEffort={$settings.llm?.features?.auto_model_effort}
+      />
+    {/if}
+
     <!-- Completed recording context shown at the top of active sessions -->
-    {#if hasCompletedRecordingData && pendingTranscription && !isPendingApproval}
+    {#if hasCompletedRecordingData && pendingTranscription && !isPendingApproval && !isPrepared}
       <SessionRecordingHeader
         {pendingTranscription}
         {sessionId}
@@ -982,21 +1023,23 @@
     {/if}
   </div>
 
-  <SdkPromptInput
-    bind:this={promptInputRef}
-    {sessionId}
-    {isQuerying}
-    isRecording={$isRecording}
-    isTranscribing={$isTranscribing && isRecordingForCurrentSession}
-    {isRecordingForCurrentSession}
-    {draftPrompt}
-    {draftImages}
-    onSendPrompt={handleSendPrompt}
-    onStopQuery={handleStopQuery}
-    onStartRecording={handleStartRecording}
-    onStopRecording={handleStopRecording}
-    onDraftChange={handleDraftChange}
-  />
+  {#if !isPrepared}
+    <SdkPromptInput
+      bind:this={promptInputRef}
+      {sessionId}
+      {isQuerying}
+      isRecording={$isRecording}
+      isTranscribing={$isTranscribing && isRecordingForCurrentSession}
+      {isRecordingForCurrentSession}
+      {draftPrompt}
+      {draftImages}
+      onSendPrompt={handleSendPrompt}
+      onStopQuery={handleStopQuery}
+      onStartRecording={handleStartRecording}
+      onStopRecording={handleStopRecording}
+      onDraftChange={handleDraftChange}
+    />
+  {/if}
 </div>
 
 <style>

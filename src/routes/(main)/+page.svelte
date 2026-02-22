@@ -222,6 +222,7 @@
       onStartRecordingFromOpenMic: recordingFlow.startRecordingFromOpenMic,
       onVoiceCommand: handleVoiceCommand,
       onUnregisterRecordingHotkeys: () => hotkeyManager.unregisterRecordingHotkeys(),
+      onLaunchPrepared: handleLaunchPrepared,
     });
 
     // Setup event listeners
@@ -417,6 +418,105 @@
     navigation.setView('sessions');
   }
 
+  /**
+   * Process transcript for prepare mode - does all processing but stops short of launching
+   */
+  async function handlePrepareTranscriptReady(
+    transcript: string,
+    sessionId: string,
+    voskTranscript?: string
+  ) {
+    if (!transcript.trim()) {
+      sdkSessions.cancelPendingTranscription(sessionId);
+      return;
+    }
+
+    sdkSessions.updatePendingTranscription(sessionId, {
+      status: 'processing',
+      transcript: transcript,
+      voskTranscript: voskTranscript || undefined,
+    });
+
+    let finalTranscript = transcript;
+
+    // Step 1: Clean up transcription
+    if (isTranscriptionCleanupEnabled()) {
+      const repoContext = buildAllReposContext($settings.repos);
+      const cleanupResult = await cleanupTranscript(transcript, voskTranscript, repoContext);
+      finalTranscript = cleanupResult.text;
+
+      updatePendingWithCleanup(
+        sessionId,
+        voskTranscript,
+        finalTranscript,
+        cleanupResult.wasCleanedUp,
+        cleanupResult.corrections,
+        cleanupResult.usedDualSource
+      );
+    }
+
+    // Step 2: Get repo recommendation if in auto-repo mode
+    let sessionCwd = '';
+    let sessionRepo = $activeRepo;
+    let preparedRepoRecommendation: { recommendedIndex: number | null; reasoning: string; confidence: string } | undefined;
+
+    if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
+      const repoRecommendation = await getRepoRecommendation(finalTranscript, $settings.repos);
+
+      if (repoRecommendation && !repoNeedsConfirmation(repoRecommendation.confidence)) {
+        // High confidence - auto-select repo
+        sessionRepo = $settings.repos[repoRecommendation.repoIndex];
+        sessionCwd = sessionRepo?.path || '';
+        updatePendingWithRepoRecommendation(
+          sessionId,
+          repoRecommendation,
+          sessionRepo?.name || 'Unknown'
+        );
+      } else {
+        // Low/medium confidence - store recommendation for the prepared UI to show
+        preparedRepoRecommendation = {
+          recommendedIndex: repoRecommendation?.repoIndex ?? null,
+          reasoning: repoRecommendation?.reasoning ?? 'Not enough information to determine repository',
+          confidence: repoRecommendation?.confidence ?? 'low',
+        };
+        sessionCwd = ''; // No repo selected yet
+      }
+    } else {
+      sessionCwd = sessionRepo?.path || '';
+    }
+
+    // Step 3: Get model recommendation
+    const { model, effortLevel, recommendation } = await getModelRecommendation(
+      finalTranscript,
+      $settings.enabled_models
+    );
+
+    if (recommendation) {
+      updatePendingWithModelRecommendation(sessionId, recommendation);
+      await sdkSessions.updateSessionModel(sessionId, model);
+      if (recommendation.effortLevel) {
+        await sdkSessions.updateSessionEffort(sessionId, recommendation.effortLevel);
+      }
+    }
+
+    // Step 4: Build system prompt
+    const systemPrompt = sessionCwd ? buildSystemPrompt({
+      repoPath: sessionCwd,
+      repoName: sessionRepo?.name || '',
+      includeTranscriptionNotice: true,
+      allRepos: $settings.repos,
+    }) : buildSystemPrompt({
+      repoPath: '',
+      repoName: '',
+      includeTranscriptionNotice: true,
+      allRepos: $settings.repos,
+    });
+
+    // Step 5: Set prepared status instead of launching
+    sdkSessions.setPrepared(sessionId, finalTranscript, sessionCwd, systemPrompt, preparedRepoRecommendation);
+    activeSessionId.set(null);
+  }
+
   async function handleRepoSelectionNeeded(
     pendingSessionId: string | null,
     transcript: string,
@@ -601,6 +701,49 @@
       return;
     }
 
+    if (commandType === 'prepare') {
+      // Prepare command - process transcription but don't start the session
+      const prepareSessionId = pendingSessionId || sdkSessions.createPendingTranscriptionSession(
+        $settings.default_model,
+        settingsToStoreEffort($settings.default_effort_level)
+      );
+      sdkSessions.selectSession(prepareSessionId);
+      navigation.setView('sessions');
+      sdkSessions.updatePendingTranscription(prepareSessionId, { status: 'transcribing' });
+
+      recording
+        .stopRecording(true)
+        .then(async (whisperTranscript) => {
+          if (prepareSessionId) {
+            const audioData = get(recording).audioData;
+            if (audioData) {
+              sdkSessions.storeAudioData(prepareSessionId, audioData);
+            }
+          }
+
+          const finalTranscript = whisperTranscript
+            ? processVoiceCommand(whisperTranscript).cleanedTranscript
+            : cleanedTranscript;
+
+          if (finalTranscript) {
+            await handlePrepareTranscriptReady(finalTranscript, prepareSessionId, cleanedTranscript);
+          } else {
+            sdkSessions.updatePendingTranscription(prepareSessionId, {
+              transcriptionError: 'No transcription available',
+            });
+          }
+
+          recordingFlow.clearPendingSessionId();
+        })
+        .catch((error) => {
+          sdkSessions.updatePendingTranscription(prepareSessionId, {
+            transcriptionError: error?.message || 'Recording stop failed',
+          });
+          recordingFlow.clearPendingSessionId();
+        });
+      return;
+    }
+
     // Send command - stop and process
     if (pendingSessionId) {
       sdkSessions.updatePendingTranscription(pendingSessionId, { status: 'transcribing' });
@@ -763,6 +906,14 @@
     activeSdkSessionId.set(sessionId);
     activeSessionId.set(null);
     navigation.setView('sessions');
+  }
+
+  async function handleLaunchPrepared(sessionId: string, editedPrompt?: string) {
+    try {
+      await sdkSessions.launchPrepared(sessionId, editedPrompt);
+    } catch (error) {
+      console.error('[session] Failed to launch prepared session:', error);
+    }
   }
 
   function handlePendingRepoSelection(index: number, editedPrompt?: string) {

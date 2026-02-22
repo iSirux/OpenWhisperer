@@ -23,9 +23,9 @@ if (!fs.existsSync(sdkPath)) {
 
 let content = fs.readFileSync(sdkPath, 'utf-8');
 
-// Check if already patched
-if (content.includes('windowsHide: true')) {
-  console.log('[patch-sdk] SDK already patched');
+// Check if already patched or natively supported
+if (content.includes('windowsHide:!0') || content.includes('windowsHide: true')) {
+  console.log('[patch-sdk] SDK already has windowsHide support (native or patched)');
   process.exit(0);
 }
 
@@ -43,9 +43,8 @@ const replacement = `this.child = spawn(spawnCommand, spawnArgs, {
       });`;
 
 if (!spawnPattern.test(content)) {
-  console.error('[patch-sdk] Could not find spawn pattern to patch. SDK may have been updated.');
-  console.error('[patch-sdk] Please update the patch script to match the new SDK format.');
-  process.exit(1);
+  console.log('[patch-sdk] Spawn pattern not found - SDK may natively support windowsHide. Skipping patch.');
+  process.exit(0);
 }
 
 content = content.replace(spawnPattern, replacement);

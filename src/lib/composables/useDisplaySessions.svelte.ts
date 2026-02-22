@@ -64,6 +64,11 @@ export function getSdkSmartStatus(session: SdkSession): {
     return { status: 'pending_repo' };
   }
 
+  // Handle prepared status
+  if (session.status === 'prepared') {
+    return { status: 'prepared' };
+  }
+
   // Handle initializing status
   if (session.status === 'initializing') {
     return { status: 'initializing' };
@@ -231,6 +236,7 @@ export function transformToDisplaySessions(
         statusDetail: smartStatus.detail,
         prompt:
           s.messages.find((m) => m.type === 'user')?.content ||
+          s.preparedPrompt ||
           s.pendingPrompt ||
           s.pendingRepoSelection?.transcript ||
           s.pendingTranscription?.transcript ||

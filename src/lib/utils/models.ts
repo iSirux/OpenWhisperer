@@ -27,7 +27,7 @@ export const ALL_MODELS: ModelInfo[] = [
     label: "Opus",
     title: "Claude Opus 4.6 - Most capable model",
     supportsEffort: true,
-    maxEffort: "max",
+    maxEffort: "high", // 'max' is API-key only, not available for Claude.ai subscribers
   },
   {
     id: "claude-sonnet-4-6",

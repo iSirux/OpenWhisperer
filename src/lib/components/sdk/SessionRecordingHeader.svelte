@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PendingTranscriptionInfo } from "$lib/stores/sdkSessions";
-  import type { AutoModelEffort } from "$lib/stores/settings";
+  import type { AutoModelEffort, RepoConfig } from "$lib/stores/settings";
   import {
     getShortModelName,
     getModelBadgeBgColor,
@@ -27,6 +27,22 @@
     onCancelApproval?: () => void;
     /** Auto model effort setting - needed to show effort level in dynamic mode */
     autoModelEffort?: AutoModelEffort;
+    /** Whether to show prepared session UI */
+    showPrepared?: boolean;
+    /** The prepared prompt for display/editing */
+    preparedPrompt?: string;
+    /** Callback when user launches the prepared session */
+    onLaunch?: (editedPrompt?: string) => void;
+    /** Callback when user cancels the prepared session */
+    onCancelPrepared?: () => void;
+    /** Available repos for prepared mode repo selection */
+    repos?: RepoConfig[];
+    /** Repo recommendation for prepared mode (low-confidence case) */
+    preparedRepoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string };
+    /** Currently selected repo cwd for prepared mode */
+    selectedRepoCwd?: string;
+    /** Callback when user selects a repo in prepared mode */
+    onSelectRepo?: (repoCwd: string) => void;
   }
 
   let {
@@ -41,6 +57,14 @@
     onApprove,
     onCancelApproval,
     autoModelEffort = "dynamic",
+    showPrepared = false,
+    preparedPrompt,
+    onLaunch,
+    onCancelPrepared,
+    repos = [],
+    preparedRepoRecommendation,
+    selectedRepoCwd = "",
+    onSelectRepo,
   }: Props = $props();
 
   // Approval mode state
@@ -52,6 +76,9 @@
   $effect(() => {
     if (showApproval && approvalPrompt) {
       editedPrompt = approvalPrompt;
+    }
+    if (showPrepared && preparedPrompt) {
+      editedPrompt = preparedPrompt;
     }
   });
 
@@ -90,6 +117,27 @@
       onCancelApproval();
     }
   }
+
+  function handleLaunch() {
+    if (onLaunch) {
+      const promptToSend = editedPrompt !== preparedPrompt ? editedPrompt : undefined;
+      onLaunch(promptToSend);
+    }
+  }
+
+  function handleCancelPrepared() {
+    if (onCancelPrepared) {
+      onCancelPrepared();
+    }
+  }
+
+  // Get repo name from path for display
+  function getRepoNameFromPath(path: string): string {
+    return path.split(/[/\\]/).pop() || path;
+  }
+
+  // Check if launch is allowed (repo must be selected)
+  let canLaunch = $derived(showPrepared && !!selectedRepoCwd);
 
   // Determine if this was a voice recording vs typed text input
   // Voice recordings have audio data (visualization history, duration, or audio bytes)
@@ -368,6 +416,114 @@
           </p>
         </div>
       {/if}
+    </div>
+  {/if}
+
+  <!-- Prepared Session UI -->
+  {#if showPrepared && preparedPrompt}
+    <div class="prepared-section">
+      <div class="prepared-header">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span>Session prepared — review and launch when ready</span>
+      </div>
+
+      <!-- Repo section -->
+      <div class="prepared-repo">
+        {#if selectedRepoCwd}
+          <div class="prepared-repo-display">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            <span class="repo-label">Repository:</span>
+            <span class="repo-value">{getRepoNameFromPath(selectedRepoCwd)}</span>
+          </div>
+        {:else}
+          <!-- No repo selected - show inline picker -->
+          <div class="prepared-repo-picker">
+            <div class="picker-label">
+              <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+              <span>Select a repository to launch:</span>
+            </div>
+            {#if preparedRepoRecommendation}
+              <p class="picker-reasoning text-xs text-text-muted mt-1">
+                {preparedRepoRecommendation.reasoning}
+              </p>
+            {/if}
+            <div class="picker-grid">
+              {#each repos as repo, index}
+                <button
+                  class="picker-repo-btn"
+                  class:recommended={preparedRepoRecommendation?.recommendedIndex === index}
+                  onclick={() => onSelectRepo?.(repo.path)}
+                >
+                  <span class="picker-repo-name">{repo.name}</span>
+                  {#if preparedRepoRecommendation?.recommendedIndex === index}
+                    <span class="picker-ai-badge">AI</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Editable prompt -->
+      <div class="prepared-prompt">
+        {#if isEditingPrompt}
+          <textarea
+            bind:this={textareaEl}
+            bind:value={editedPrompt}
+            oninput={autoResizeTextarea}
+            class="prompt-textarea prepared-textarea"
+            placeholder="Enter your prompt..."
+            rows="2"
+          ></textarea>
+        {:else}
+          <div class="prompt-display prepared-prompt-display" onclick={() => (isEditingPrompt = true)}>
+            <span class="prompt-text">{editedPrompt || preparedPrompt}</span>
+            <button
+              class="edit-inline-btn"
+              onclick={(e) => {
+                e.stopPropagation();
+                isEditingPrompt = true;
+              }}
+              title="Edit prompt"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Action buttons -->
+      <div class="prepared-actions">
+        <button class="cancel-approval-btn" onclick={handleCancelPrepared}>
+          Discard
+        </button>
+        {#if isEditingPrompt}
+          <button class="done-edit-btn" onclick={() => (isEditingPrompt = false)}>
+            Done Editing
+          </button>
+        {/if}
+        <button
+          class="launch-btn"
+          onclick={handleLaunch}
+          disabled={!canLaunch}
+          title={canLaunch ? 'Launch session' : 'Select a repository first'}
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          Launch
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -1052,5 +1208,152 @@
 
   .approve-btn:active {
     transform: scale(0.98);
+  }
+
+  /* Prepared Session UI Styles */
+  .prepared-section {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid rgba(20, 184, 166, 0.4);
+    border-radius: 8px;
+  }
+
+  .prepared-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #2dd4bf;
+    margin-bottom: 0.75rem;
+  }
+
+  .prepared-repo {
+    margin-bottom: 0.75rem;
+  }
+
+  .prepared-repo-display {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+    padding: 0.5rem 0.75rem;
+    background: var(--color-surface);
+    border-radius: 6px;
+  }
+
+  .prepared-repo-picker {
+    padding: 0.75rem;
+    background: var(--color-surface);
+    border-radius: 6px;
+    border: 1px dashed rgba(245, 158, 11, 0.3);
+  }
+
+  .picker-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #fbbf24;
+  }
+
+  .picker-reasoning {
+    margin-bottom: 0.5rem;
+  }
+
+  .picker-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .picker-repo-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .picker-repo-btn:hover {
+    border-color: rgba(20, 184, 166, 0.5);
+    color: var(--color-text-primary);
+    background: rgba(20, 184, 166, 0.05);
+  }
+
+  .picker-repo-btn.recommended {
+    border-color: rgba(20, 184, 166, 0.4);
+    background: rgba(20, 184, 166, 0.08);
+  }
+
+  .picker-repo-name {
+    font-weight: 500;
+  }
+
+  .picker-ai-badge {
+    padding: 0.0625rem 0.3125rem;
+    border-radius: 3px;
+    background: linear-gradient(135deg, #8b5cf6 0%, #f59e0b 100%);
+    color: white;
+    font-size: 0.625rem;
+    font-weight: 600;
+  }
+
+  .prepared-prompt {
+    margin-bottom: 0.75rem;
+  }
+
+  .prepared-textarea:focus {
+    box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.2);
+    border-color: #2dd4bf;
+  }
+
+  .prepared-prompt-display:hover {
+    border-color: #2dd4bf;
+  }
+
+  .prepared-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+
+  .launch-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: white;
+    background: #0d9488;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .launch-btn:hover:not(:disabled) {
+    background: #0f766e;
+  }
+
+  .launch-btn:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .launch-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>

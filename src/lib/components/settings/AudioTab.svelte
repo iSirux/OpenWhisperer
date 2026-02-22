@@ -175,6 +175,38 @@
             />
           </div>
         </div>
+
+        <!-- Prepare Commands -->
+        <div>
+          <label class="text-xs font-medium text-text-secondary block mb-1">Prepare Commands</label>
+          <p class="text-[10px] text-text-muted mb-1.5">
+            Say these to prepare a session without starting it
+          </p>
+          <div class="flex flex-wrap gap-1.5">
+            {#each $settings.audio.voice_commands.prepare_commands ?? [] as cmd}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-teal-500/10 text-teal-400 rounded text-xs">
+                {cmd}
+                <button class="hover:text-red-400" onclick={() => {
+                  const cmds = ($settings.audio.voice_commands.prepare_commands ?? []).filter(c => c !== cmd);
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, prepare_commands: cmds } } });
+                }}>&times;</button>
+              </span>
+            {/each}
+            <input
+              type="text"
+              class="w-32 px-2 py-0.5 text-xs rounded border border-border bg-background focus:outline-none focus:border-accent"
+              placeholder="Add command..."
+              onkeydown={(e) => {
+                const input = e.currentTarget as HTMLInputElement;
+                if (e.key === 'Enter' && input.value.trim()) {
+                  const cmds = [...($settings.audio.voice_commands.prepare_commands ?? []), input.value.trim()];
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, prepare_commands: cmds } } });
+                  input.value = '';
+                }
+              }}
+            />
+          </div>
+        </div>
       </div>
     </div>
   {/if}

@@ -93,6 +93,18 @@
           </svg>
           {session.planMode.isComplete ? 'Plan' : 'Planning'}
         </span>
+      {:else if session.status === 'prepared'}
+        <!-- Prepared badge (teal) -->
+        <span
+          class="px-1.5 py-0.5 text-[10px] font-medium bg-teal-500/20 text-teal-400 rounded flex items-center gap-1"
+          title="Session prepared - ready to launch"
+        >
+          <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          Prepared
+        </span>
       {:else if session.type === 'sequence'}
         <!-- Sequence badge -->
         <span

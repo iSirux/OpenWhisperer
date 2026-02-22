@@ -53,7 +53,8 @@
         ],
         "resources": [
             "sidecar/dist/",
-            "sidecar/node_modules/@anthropic-ai/"
+            "sidecar/node_modules/@anthropic-ai/",
+            "sidecar/node_modules/@openai/"
         ],
         "windows": {
             "wix": {

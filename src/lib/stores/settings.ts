@@ -80,6 +80,8 @@ export interface VoiceCommandConfig {
   approve_commands: string[];
   /** List of voice commands that will reject a pending approval node */
   reject_commands: string[];
+  /** List of voice commands that will prepare a session without starting it */
+  prepare_commands: string[];
 }
 
 /** Default voice command presets for sending prompts */
@@ -141,6 +143,15 @@ export const REJECT_COMMAND_PRESETS = [
   "rejected",
   "deny",
   "stop that",
+] as const;
+
+/** Default voice command presets for preparing sessions without starting */
+export const PREPARE_COMMAND_PRESETS = [
+  "go prepare",
+  "prep it",
+  "prepare this",
+  "queue it",
+  "save for later",
 ] as const;
 
 /** Open mic configuration for passive voice listening */
@@ -454,6 +465,7 @@ const defaultConfig: AppConfig = {
       sequence_commands: ["run sequence"],
       approve_commands: ["approve"],
       reject_commands: ["reject"],
+      prepare_commands: ["go prepare", "prep it"],
     },
     open_mic: {
       enabled: false,

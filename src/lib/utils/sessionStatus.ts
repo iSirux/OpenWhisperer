@@ -33,6 +33,9 @@ export function getStatusCategory(status: string): StatusCategory {
     case 'seq_cancelled':
       return 'error';
 
+    case 'prepared':
+      return 'ready';
+
     default:
       return 'ready';
   }
@@ -50,6 +53,8 @@ export function getStatusColor(status: string): string {
       return 'text-yellow-400';
     case 'pending_transcription':
       return 'text-violet-400';
+    case 'prepared':
+      return 'text-teal-400';
     case 'pending_repo':
       return 'text-amber-400';
     case 'Running':
@@ -93,6 +98,8 @@ export function getStatusBgColor(status: string): string {
       return 'bg-yellow-400';
     case 'pending_transcription':
       return 'bg-violet-400';
+    case 'prepared':
+      return 'bg-teal-400';
     case 'pending_repo':
       return 'bg-amber-400';
     case 'Running':
@@ -139,6 +146,8 @@ export function getStatusLabel(status: string, detail?: string): string {
       return 'Pending';
     case 'transcription_error':
       return 'Retry?';
+    case 'prepared':
+      return 'Prepared';
     case 'pending_repo':
       return 'Select Repo';
     case 'initializing':
@@ -232,6 +241,8 @@ export function getStatusSortOrder(status: string): number {
     case 'pending_transcription':
     case 'transcription_error':
       return -1;
+    case 'prepared':
+      return -0.5;
     case 'pending_repo':
     case 'initializing':
     case 'Starting':

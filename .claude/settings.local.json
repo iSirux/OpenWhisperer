@@ -39,7 +39,10 @@
       "Bash(wc:*)",
       "Bash(cd:*)",
       "Bash(ls:*)",
-      "Bash(tail:)"
+      "Bash(tail:)",
+      "Bash(find:*)",
+      "Bash(head:)",
+      "Bash(npm view:*)"
     ],
     "deny": [],
     "ask": []

@@ -6,7 +6,7 @@ import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
-import { isAutoModel, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
+import { isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import type { McpServerConfig } from '$lib/types/mcp';
 
 // =============================================================================
@@ -210,7 +210,7 @@ export interface SdkSession {
   /** @deprecated Use effortLevel */
   thinkingLevel?: EffortLevel;
   messages: SdkMessage[];
-  status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
+  status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'prepared' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
   startedAt?: number;
   accumulatedDurationMs: number;
@@ -228,6 +228,12 @@ export interface SdkSession {
   draftImages?: SdkImageContent[];
   /** SDK session ID for proper resume after app restart (persisted) */
   sdkSessionId?: string;
+  /** Prompt stored for a prepared session (ready to launch) */
+  preparedPrompt?: string;
+  /** System prompt stored for a prepared session */
+  preparedSystemPrompt?: string;
+  /** Repo recommendation stored for a prepared session (low-confidence case) */
+  preparedRepoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string };
 }
 
 export type HistoryMessage =
@@ -792,7 +798,7 @@ function createSdkSessionsStore() {
       provider: provider ?? null,
     });
 
-    if (effortLevel) {
+    if (effortLevel && modelSupportsEffort(model)) {
       await invoke('update_sdk_effort', { id, effortLevel });
     }
 
@@ -819,13 +825,15 @@ function createSdkSessionsStore() {
       const id = crypto.randomUUID();
       const autoModelRequested = isAutoModel(model);
 
+      const effectiveEffort = modelSupportsEffort(model) ? effortLevel : null;
+
       const session: SdkSession = {
         id,
         cwd,
         model,
         provider,
         autoModelRequested,
-        effortLevel,
+        effortLevel: effectiveEffort,
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
@@ -837,7 +845,7 @@ function createSdkSessionsStore() {
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
-      await registerSessionWithBackend(id, cwd, model, effortLevel, systemPrompt, null, null, planMode, undefined, provider);
+      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, planMode, undefined, provider);
 
       const currentSettings = get(settings);
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -973,8 +981,12 @@ function createSdkSessionsStore() {
 
       if (!liveSessions.has(id)) return;
 
+      // Get the session's model to check effort support
+      const session = get({ subscribe }).find(s => s.id === id);
+      const effectiveEffort = session && modelSupportsEffort(session.model) ? effortLevel : null;
+
       try {
-        await invoke('update_sdk_effort', { id, effortLevel });
+        await invoke('update_sdk_effort', { id, effortLevel: effectiveEffort });
       } catch (error) {
         console.error('Failed to update SDK effort:', error);
       }
@@ -1104,7 +1116,7 @@ function createSdkSessionsStore() {
         cwd: '',
         model,
         provider,
-        effortLevel,
+        effortLevel: modelSupportsEffort(model) ? effortLevel : null,
         messages: [],
         status: 'pending_transcription',
         createdAt: Date.now(),
@@ -1217,6 +1229,67 @@ function createSdkSessionsStore() {
     },
 
     cancelApproval(id: string): void {
+      update(sessions => sessions.filter(s => s.id !== id));
+    },
+
+    setPrepared(id: string, prompt: string, cwd: string, systemPrompt?: string, repoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string }): void {
+      update(sessions =>
+        sessions.map(s => s.id === id ? {
+          ...s,
+          status: 'prepared' as const,
+          cwd,
+          preparedPrompt: prompt,
+          preparedSystemPrompt: systemPrompt,
+          preparedRepoRecommendation: repoRecommendation,
+          pendingTranscription: s.pendingTranscription ? { ...s.pendingTranscription, status: 'processing' as PendingTranscriptionStatus } : s.pendingTranscription,
+        } : s)
+      );
+      debouncedSave();
+    },
+
+    updatePreparedRepo(id: string, cwd: string): void {
+      update(sessions =>
+        sessions.map(s => s.id === id && s.status === 'prepared' ? { ...s, cwd } : s)
+      );
+      debouncedSave();
+    },
+
+    async launchPrepared(id: string, editedPrompt?: string): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
+
+      if (!session || session.status !== 'prepared') return;
+
+      if (!session.cwd) throw new Error('No repository selected for prepared session');
+
+      const prompt = editedPrompt || session.preparedPrompt;
+      if (!prompt) throw new Error('No prompt to send');
+
+      update(sessions =>
+        sessions.map(s => s.id === id ? {
+          ...s,
+          status: 'initializing' as const,
+          pendingPrompt: prompt,
+          preparedPrompt: undefined,
+          preparedRepoRecommendation: undefined,
+        } : s)
+      );
+
+      try {
+        await this.initializeSession(id, session.cwd, session.model, session.effortLevel, session.preparedSystemPrompt, prompt, session.provider);
+      } catch (error) {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, status: 'error' as const, messages: [...s.messages, { type: 'error' as const, content: error instanceof Error ? error.message : 'Failed to launch prepared session', timestamp: Date.now() }] }
+              : s
+          )
+        );
+        throw error;
+      }
+    },
+
+    cancelPrepared(id: string): void {
       update(sessions => sessions.filter(s => s.id !== id));
     },
 

@@ -668,6 +668,9 @@ pub struct VoiceCommandConfig {
     /// List of voice commands that will reject a pending approval node
     #[serde(default = "default_reject_commands")]
     pub reject_commands: Vec<String>,
+    /// List of voice commands that will prepare a session without starting it
+    #[serde(default = "default_prepare_commands")]
+    pub prepare_commands: Vec<String>,
 }
 
 fn default_voice_commands() -> Vec<String> {
@@ -690,6 +693,10 @@ fn default_reject_commands() -> Vec<String> {
     vec!["reject".to_string()]
 }
 
+fn default_prepare_commands() -> Vec<String> {
+    vec!["go prepare".to_string(), "prep it".to_string()]
+}
+
 impl Default for VoiceCommandConfig {
     fn default() -> Self {
         Self {
@@ -701,6 +708,7 @@ impl Default for VoiceCommandConfig {
             sequence_commands: default_sequence_commands(),
             approve_commands: default_approve_commands(),
             reject_commands: default_reject_commands(),
+            prepare_commands: default_prepare_commands(),
         }
     }
 }

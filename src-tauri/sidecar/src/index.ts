@@ -1931,24 +1931,9 @@ async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
   // Update the effort level in the session
   session.effortLevel = msg.effortLevel ?? undefined;
 
-  // For Claude provider: pass effort via extraArgs on session options
+  // For Claude provider: set native effort option (SDK 0.2.49+ passes --effort to CLI)
   if (session.provider === "claude") {
-    if (msg.effortLevel) {
-      // Set --effort flag for Claude CLI
-      session.options.extraArgs = {
-        ...session.options.extraArgs,
-        "--effort": msg.effortLevel,
-      };
-    } else {
-      // Remove --effort flag
-      if (session.options.extraArgs) {
-        const { "--effort": _, ...rest } = session.options.extraArgs as Record<string, string>;
-        session.options.extraArgs = Object.keys(rest).length > 0 ? rest : undefined;
-      }
-    }
-
-    // Remove legacy maxThinkingTokens
-    delete session.options.maxThinkingTokens;
+    session.options.effort = (msg.effortLevel as Options["effort"]) ?? undefined;
   }
 
   send({
