@@ -30,6 +30,24 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use terminal::TerminalManager;
 
+#[cfg(target_os = "windows")]
+fn set_windows_app_user_model_id(app_id: &str) {
+    use std::ffi::OsStr;
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    let app_id_wide: Vec<u16> = OsStr::new(app_id)
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
+
+    // Best-effort call: failing here should not block app startup.
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(app_id_wide.as_ptr());
+    }
+}
+
 #[tauri::command]
 fn get_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -106,6 +124,9 @@ pub fn run() {
         .manage(sidecar_manager)
         .manage(vosk_manager)
         .setup(move |app| {
+            #[cfg(target_os = "windows")]
+            set_windows_app_user_model_id(&app.config().identifier);
+
             // Build tray menu
             let show_item = MenuItemBuilder::new("Show")
                 .id("show")
