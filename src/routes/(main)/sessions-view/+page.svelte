@@ -141,16 +141,17 @@
   });
 </script>
 
-<div class="sessions-view flex flex-col h-full bg-background">
-  <header class="flex items-center justify-between px-4 py-3 border-b border-border bg-surface">
-    <div class="flex items-center gap-4">
+<div class="sessions-view flex-1 flex flex-col overflow-hidden bg-background">
+  <!-- Action bar with stats and layout controls -->
+  <div class="flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
+    <div class="flex items-center gap-3">
       <button
-        class="p-1.5 hover:bg-surface-elevated rounded transition-colors"
+        class="p-1 hover:bg-surface-elevated rounded transition-colors"
         onclick={goBack}
         title="Back to main view"
       >
         <svg
-          class="w-5 h-5 text-text-secondary"
+          class="w-4 h-4 text-text-secondary"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -163,16 +164,15 @@
           />
         </svg>
       </button>
-      <h2 class="text-lg font-semibold text-text-primary">Sessions Command Center</h2>
 
       <!-- Stats badges -->
-      <div class="flex items-center gap-2 ml-4">
-        <span class="px-2 py-1 text-xs font-medium bg-surface-elevated rounded text-text-muted">
+      <div class="flex items-center gap-2">
+        <span class="px-2 py-0.5 text-xs font-medium bg-surface-elevated rounded text-text-muted">
           {allSessions.length} total
         </span>
         {#if pendingCount > 0}
           <span
-            class="px-2 py-1 text-xs font-medium bg-amber-500/20 text-amber-400 rounded flex items-center gap-1"
+            class="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-400 rounded flex items-center gap-1"
           >
             <div class="w-1.5 h-1.5 bg-amber-400 rounded-full"></div>
             {pendingCount} pending
@@ -180,19 +180,19 @@
         {/if}
         {#if activeCount > 0}
           <span
-            class="px-2 py-1 text-xs font-medium bg-emerald-500/20 text-emerald-400 rounded flex items-center gap-1"
+            class="px-2 py-0.5 text-xs font-medium bg-emerald-500/20 text-emerald-400 rounded flex items-center gap-1"
           >
             <div class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
             {activeCount} active
           </span>
         {/if}
         {#if unreadCount > 0}
-          <span class="px-2 py-1 text-xs font-medium bg-blue-500/20 text-blue-400 rounded">
+          <span class="px-2 py-0.5 text-xs font-medium bg-blue-500/20 text-blue-400 rounded">
             {unreadCount} unread
           </span>
         {/if}
         {#if errorCount > 0}
-          <span class="px-2 py-1 text-xs font-medium bg-red-500/20 text-red-400 rounded">
+          <span class="px-2 py-0.5 text-xs font-medium bg-red-500/20 text-red-400 rounded">
             {errorCount} errors
           </span>
         {/if}
@@ -291,7 +291,7 @@
         </button>
       </div>
     </div>
-  </header>
+  </div>
 
   <div class="flex-1 overflow-y-auto p-4">
     {#if allSessions.length === 0}

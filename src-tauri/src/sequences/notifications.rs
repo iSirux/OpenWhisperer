@@ -26,7 +26,8 @@ impl NotificationSender {
         }
     }
 
-    /// Send a notification to the given channel.
+    /// Send a notification to the given channel (external integrations only).
+    /// System notifications and sounds are handled by the frontend via Tauri events.
     pub async fn send(
         &self,
         channel: &NotificationChannelConfig,
@@ -35,7 +36,6 @@ impl NotificationSender {
         extra: Option<&NotifyExtra>,
     ) -> Result<(), String> {
         match channel.channel_type {
-            NotificationChannelType::System => self.send_system(title, message),
             NotificationChannelType::Slack => self.send_slack(channel, title, message, extra).await,
             NotificationChannelType::Discord => {
                 self.send_discord(channel, title, message, extra).await
@@ -44,16 +44,6 @@ impl NotificationSender {
                 self.send_webhook(channel, title, message, extra).await
             }
         }
-    }
-
-    /// System notifications are displayed by the frontend via Tauri event.
-    /// We just log them here since the Tauri event is already emitted by the executor.
-    fn send_system(&self, title: &str, message: &str) -> Result<(), String> {
-        println!(
-            "[notifications] System notification: title={:?}, message={:?}",
-            title, message
-        );
-        Ok(())
     }
 
     /// Send a Slack notification via incoming webhook.

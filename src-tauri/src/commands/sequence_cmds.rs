@@ -76,8 +76,9 @@ pub async fn start_execution(
     sequence_id: String,
     inputs: HashMap<String, serde_json::Value>,
     dry_run: bool,
+    entry_node_id: Option<String>,
 ) -> Result<String, String> {
-    manager.start_execution(&sequence_id, inputs, dry_run)
+    manager.start_execution_at(&sequence_id, inputs, dry_run, entry_node_id)
 }
 
 #[tauri::command]
@@ -93,6 +94,14 @@ pub fn list_executions(
     manager: State<Arc<SequenceManager>>,
 ) -> Result<Vec<ExecutionSummary>, String> {
     manager.list_executions()
+}
+
+#[tauri::command]
+pub fn dismiss_execution(
+    manager: State<Arc<SequenceManager>>,
+    execution_id: String,
+) -> Result<(), String> {
+    manager.dismiss_execution(&execution_id)
 }
 
 #[tauri::command]

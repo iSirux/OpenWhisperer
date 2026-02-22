@@ -636,13 +636,6 @@ impl UsageStats {
         }
     }
 
-    pub fn update_averages(&mut self, total_session_duration_ms: u64, total_prompts: u64, session_count: u64) {
-        if session_count > 0 {
-            self.average_session_duration_ms = total_session_duration_ms / session_count;
-            self.average_prompts_per_session = total_prompts as f64 / session_count as f64;
-        }
-    }
-
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -978,9 +971,6 @@ impl<'de> Deserialize<'de> for EffortLevel {
     }
 }
 
-/// Backward compat alias
-pub type ThinkingLevel = EffortLevel;
-
 /// Tool call display mode in SDK view
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -1081,12 +1071,11 @@ pub struct McpConfig {
     pub servers: Vec<McpServerConfig>,
 }
 
-/// Notification channel type for sequences
+/// Notification channel type for sequences (external integrations only)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationChannelType {
     #[default]
-    System,
     Slack,
     Discord,
     Webhook,
@@ -1274,9 +1263,6 @@ pub enum LlmProvider {
     Custom,
 }
 
-// Type alias for backwards compatibility
-pub type GeminiProvider = LlmProvider;
-
 /// Model selection priority for Gemini provider
 /// Note: As of Dec 2025, free tier is 20 RPD for both 2.5 Flash and 2.5 Flash-Lite
 /// Speed: prioritizes 2.5 Flash-Lite -> 2.5 Flash
@@ -1288,9 +1274,6 @@ pub enum LlmModelPriority {
     Speed,
     Accuracy,
 }
-
-// Type alias for backwards compatibility
-pub type GeminiModelPriority = LlmModelPriority;
 
 /// Minimum confidence level required for auto-selecting a repository
 /// High: Only auto-select when LLM is highly confident
@@ -1358,9 +1341,6 @@ impl<'de> Deserialize<'de> for AutoModelEffort {
     }
 }
 
-/// Backward compat alias
-pub type AutoModelThinking = AutoModelEffort;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmFeaturesConfig {
     pub auto_name_sessions: bool,
@@ -1382,9 +1362,6 @@ pub struct LlmFeaturesConfig {
     #[serde(default)]
     pub auto_select_repo: bool,
 }
-
-// Type alias for backwards compatibility
-pub type GeminiFeaturesConfig = LlmFeaturesConfig;
 
 impl Default for LlmFeaturesConfig {
     fn default() -> Self {
@@ -1428,9 +1405,6 @@ pub struct LlmConfig {
     pub min_auto_select_confidence: RepoAutoSelectConfidence,
     // API key is stored securely, not in config
 }
-
-// Type alias for backwards compatibility
-pub type GeminiConfig = LlmConfig;
 
 fn default_llm_model() -> String {
     "meta-llama/llama-4-maverick-17b-128e-instruct".to_string()

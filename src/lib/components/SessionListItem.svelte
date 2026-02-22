@@ -32,7 +32,7 @@
   }: Props = $props();
 
   function getDisplayedDuration(): string | null {
-    if (session.type === 'sdk') {
+    if (session.type === 'sdk' || session.type === 'sequence') {
       return getElapsedTime(
         session.accumulatedDurationMs,
         session.currentWorkStartedAt,
@@ -92,6 +92,17 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
           </svg>
           {session.planMode.isComplete ? 'Plan' : 'Planning'}
+        </span>
+      {:else if session.type === 'sequence'}
+        <!-- Sequence badge -->
+        <span
+          class="px-1.5 py-0.5 text-[10px] font-medium bg-indigo-500/20 text-indigo-400 rounded flex items-center gap-1"
+          title="Sequence execution"
+        >
+          <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          Sequence
         </span>
       {:else if session.type === 'sdk' && session.model}
         <span
@@ -185,6 +196,21 @@
     >
       {session.prompt}
     </p>
+  {/if}
+
+  <!-- Sequence progress -->
+  {#if session.type === 'sequence' && session.sequenceProgress}
+    <div class="flex items-center gap-2 mb-1.5">
+      <div class="flex-1 h-1 bg-border rounded-full overflow-hidden">
+        <div
+          class="h-full bg-accent rounded-full transition-all"
+          style="width:{Math.round((session.sequenceProgress.completed / session.sequenceProgress.total) * 100)}%"
+        ></div>
+      </div>
+      <span class="text-[10px] text-text-muted font-mono tabular-nums flex-shrink-0">
+        {session.sequenceProgress.completed}/{session.sequenceProgress.total}
+      </span>
+    </div>
   {/if}
 
   <!-- Latest message preview (SDK sessions only, hide when showing outcome) -->

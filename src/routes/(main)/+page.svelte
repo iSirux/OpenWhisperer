@@ -4,12 +4,10 @@
   import SdkView from '$lib/components/SdkView.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
   import SessionHeader from '$lib/components/SessionHeader.svelte';
-  import Settings from './settings/+page.svelte';
   import Start from '$lib/components/Start.svelte';
   import SessionPendingView from '$lib/components/SessionPendingView.svelte';
 
   // Refactored components
-  import AppHeader from '$lib/components/AppHeader.svelte';
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
   import SessionSidebarHeader from '$lib/components/SessionSidebarHeader.svelte';
   import SessionSetupView from '$lib/components/SessionSetupView.svelte';
@@ -44,7 +42,7 @@
     settingsToStoreEffort,
     settingsToStoreThinking,
   } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo, isAutoRepoSelected, configLoadedOk } from '$lib/stores/settings';
+  import { settings, activeRepo, isAutoRepoSelected } from '$lib/stores/settings';
   import { recording, isRecording, pendingTranscriptions } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
@@ -65,6 +63,7 @@
 
   // Tauri APIs
   import { invoke } from '@tauri-apps/api/core';
+  import { goto } from '$app/navigation';
   import { get } from 'svelte/store';
 
   // Utils
@@ -94,7 +93,6 @@
 
   // Current view from navigation store
   let currentView = $derived($navigation.mainView);
-  let settingsTabFromNav = $derived($navigation.settingsTab);
 
   // Reference to SdkView for focusing prompt input
   let sdkViewRef: { focusPromptInput: () => void } | undefined;
@@ -164,6 +162,14 @@
     openMicLifecycle.update(openMicEnabled, voskEnabled, currentlyRecording, currentlyListening, currentlyPaused);
   });
 
+  // Listen for recording events dispatched by AppHeader (in the layout)
+  function onHeaderStartRecording() {
+    recordingFlow.startRecordingNewSession();
+  }
+  function onHeaderStopRecording() {
+    recordingFlow.stopRecordingNewSession();
+  }
+
   onMount(async () => {
     await settings.load();
 
@@ -204,7 +210,7 @@
     // Initialize event handlers
     eventHandlers.init({
       onShowSessions: showSessionsView,
-      onOpenSettings: (tab) => navigation.showSettings(tab),
+      onOpenSettings: (tab) => goto(tab ? `/settings?tab=${tab}` : '/settings'),
       onCloseSettings: showSessionsView,
       onRetryTranscription: handleRetryTranscription,
       onApproveTranscription: handleApproveTranscription,
@@ -228,6 +234,10 @@
       onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
       onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
     });
+
+    // Listen for AppHeader recording events
+    window.addEventListener('app:header-start-recording', onHeaderStartRecording);
+    window.addEventListener('app:header-stop-recording', onHeaderStopRecording);
   });
 
   onDestroy(() => {
@@ -236,6 +246,9 @@
     recordingFlow.cleanup();
     sidebar.cleanup();
     hotkeyManager.cleanup();
+
+    window.removeEventListener('app:header-start-recording', onHeaderStartRecording);
+    window.removeEventListener('app:header-stop-recording', onHeaderStopRecording);
 
     if (cleanupAutoSave) cleanupAutoSave();
     if (cleanupPeriodicSave) cleanupPeriodicSave();
@@ -254,10 +267,6 @@
     voskTranscript?: string,
     isNoteMode?: boolean
   ) {
-    // Note: Voice commands are detected via Vosk in real-time only
-    // (see voice-command-triggered event in useSessionEventHandlers)
-    // We don't check Whisper transcripts for voice commands to avoid false positives
-
     if (!transcript.trim()) {
       console.log('[transcript] Empty transcript, skipping');
       if (pendingSessionId) {
@@ -276,7 +285,6 @@
     }
 
     if ($settings.terminal_mode === 'Sdk') {
-      // Check if we're in note mode (from hotkey)
       if (isNoteMode) {
         await processNoteTranscript(transcript, pendingSessionId);
       } else {
@@ -322,7 +330,6 @@
       repoRecommendation = await getRepoRecommendation(finalTranscript, $settings.repos);
 
       if (!repoRecommendation || repoNeedsConfirmation(repoRecommendation.confidence)) {
-        // Need user to select repo
         await handleRepoSelectionNeeded(
           pendingSessionId,
           finalTranscript,
@@ -333,7 +340,6 @@
         return;
       }
 
-      // Update pending session with recommendation
       if (pendingSessionId && repoRecommendation) {
         const recommendedRepo = $settings.repos[repoRecommendation.repoIndex];
         updatePendingWithRepoRecommendation(
@@ -344,7 +350,6 @@
       }
     }
 
-    // Determine repo for session
     const sessionRepo = repoRecommendation
       ? $settings.repos[repoRecommendation.repoIndex]
       : $activeRepo;
@@ -367,7 +372,6 @@
       return;
     }
 
-    // Create/complete session
     if (pendingSessionId) {
       await completePendingSession(pendingSessionId, finalTranscript, sessionRepo);
     } else {
@@ -375,17 +379,12 @@
     }
   }
 
-  /**
-   * Process transcript for note-taking mode
-   */
   async function processNoteTranscript(
     transcript: string,
     pendingSessionId: string | null
   ) {
-    // Note mode always uses the active repo (or '.' if none)
     const repoPath = $activeRepo?.path || '.';
 
-    // Clean up transcription if enabled
     let finalTranscript = transcript;
     if (isTranscriptionCleanupEnabled()) {
       const repoContext = $activeRepo ? buildSingleRepoContext($activeRepo) : undefined;
@@ -404,12 +403,10 @@
       }
     }
 
-    // Complete the note session
     if (pendingSessionId) {
       await sdkSessions.completePendingNoteSession(pendingSessionId, repoPath, finalTranscript);
       activeSessionId.set(null);
     } else {
-      // Create a new note session if we don't have a pending one
       const sessionId = sdkSessions.createPendingNoteSession();
       sdkSessions.selectSession(sessionId);
       await sdkSessions.completePendingNoteSession(sessionId, repoPath, finalTranscript);
@@ -420,9 +417,6 @@
     navigation.setView('sessions');
   }
 
-  /**
-   * Handle repo selection needed scenario
-   */
   async function handleRepoSelectionNeeded(
     pendingSessionId: string | null,
     transcript: string,
@@ -451,9 +445,6 @@
     }
   }
 
-  /**
-   * Process transcript for PTY mode
-   */
   async function processPtyTranscript(
     transcript: string,
     pendingSessionId: string | null,
@@ -467,7 +458,6 @@
       finalTranscript = cleanupResult.text;
     }
 
-    // Clear any pending SDK session (PTY mode doesn't use them)
     if (pendingSessionId) {
       sdkSessions.cancelPendingTranscription(pendingSessionId);
     }
@@ -477,9 +467,6 @@
     activeSdkSessionId.set(null);
   }
 
-  /**
-   * Complete a pending transcription session
-   */
   async function completePendingSession(
     sessionId: string,
     transcript: string,
@@ -488,7 +475,6 @@
     const repoPath = repo?.path || '.';
     const repoName = repo?.name || '';
 
-    // Get model (handling auto mode)
     const { model, effortLevel, recommendation } = await getModelRecommendation(
       transcript,
       $settings.enabled_models
@@ -502,7 +488,6 @@
       }
     }
 
-    // Build system prompt
     const systemPrompt = buildSystemPrompt({
       repoPath,
       repoName,
@@ -514,9 +499,6 @@
     activeSessionId.set(null);
   }
 
-  /**
-   * Create a new SDK session with a prompt
-   */
   async function createSessionWithPrompt(transcript: string, repo: typeof $activeRepo) {
     const repoPath = repo?.path || '.';
     const repoName = repo?.name || '';
@@ -541,9 +523,6 @@
 
   // ==================== Voice Command Handling ====================
 
-  /**
-   * Handle voice command detected during recording
-   */
   async function handleVoiceCommand(
     commandType: VoiceCommandType,
     cleanedTranscript: string,
@@ -553,7 +532,6 @@
     recordingFlow.cleanupAudioVisualizationListener();
 
     if (commandType === 'transcribe') {
-      // Paste transcript instead of sending
       if (pendingSessionId) {
         sdkSessions.cancelPendingTranscription(pendingSessionId);
         recordingFlow.clearPendingSessionId();
@@ -572,7 +550,6 @@
     }
 
     if (commandType === 'cancel') {
-      // Discard recording
       if (pendingSessionId) {
         sdkSessions.cancelPendingTranscription(pendingSessionId);
         recordingFlow.clearPendingSessionId();
@@ -582,12 +559,10 @@
     }
 
     if (commandType === 'note') {
-      // Note mode - cancel existing pending session and create note session
       if (pendingSessionId) {
         sdkSessions.cancelPendingTranscription(pendingSessionId);
       }
 
-      // Create a new pending note session
       const noteSessionId = sdkSessions.createPendingNoteSession();
       sdkSessions.selectSession(noteSessionId);
       navigation.setView('sessions');
@@ -758,7 +733,6 @@
 
     await settings.setActiveRepo(repoIndex);
 
-    // Clean transcription with repo context
     let finalTranscript = rawTranscript;
     if (isTranscriptionCleanupEnabled() && rawTranscript) {
       const repoContext = buildSingleRepoContext(selectedRepo);
@@ -766,7 +740,6 @@
       finalTranscript = cleanupResult.text;
     }
 
-    // Build system prompt
     const systemPrompt = buildSystemPrompt({
       repoPath: selectedRepo.path,
       repoName: selectedRepo.name,
@@ -807,18 +780,6 @@
 
   // ==================== Session Model/Thinking Handlers ====================
 
-  function handleSessionModelChange(newModel: string) {
-    if ($activeSdkSessionId) {
-      sdkSessions.updateSessionModel($activeSdkSessionId, newModel);
-    }
-  }
-
-  function handleSessionEffortChange(newLevel: EffortLevel) {
-    if ($activeSdkSessionId) {
-      sdkSessions.updateSessionEffort($activeSdkSessionId, newLevel);
-    }
-  }
-
   function handleSessionClose() {
     if ($activeSdkSessionId) {
       sdkSessions.closeSession($activeSdkSessionId);
@@ -828,75 +789,11 @@
 
   // ==================== View Navigation ====================
 
-  function showSettingsView() {
-    navigation.showSettings();
-  }
-
   function showSessionsView() {
     navigation.setView('sessions');
   }
 
-  function showStartView() {
-    navigation.setView('start');
-  }
-
-  async function selectRepo(index: number) {
-    await settings.setActiveRepo(index);
-  }
-
-  async function enableAutoRepo() {
-    await settings.setAutoRepoMode(true);
-  }
-
-  async function changeModel(newModel: string) {
-    settings.update((s) => ({ ...s, default_model: newModel }));
-    await settings.save({ ...$settings, default_model: newModel });
-  }
-
-  async function changeEffort(newLevel: EffortLevel) {
-    const settingsLevel = newLevel === null ? 'off' : newLevel;
-    settings.update((s) => ({ ...s, default_effort_level: settingsLevel }));
-    await settings.save({ ...$settings, default_effort_level: settingsLevel });
-  }
-
-  async function changeAutoModelEffort(newSetting: import('$lib/stores/settings').AutoModelEffort) {
-    settings.update((s) => ({
-      ...s,
-      llm: {
-        ...s.llm,
-        features: {
-          ...s.llm.features,
-          auto_model_effort: newSetting,
-        },
-      },
-    }));
-    await settings.save({
-      ...$settings,
-      llm: {
-        ...$settings.llm,
-        features: {
-          ...$settings.llm.features,
-          auto_model_effort: newSetting,
-        },
-      },
-    });
-  }
-
-  function openSettingsTab(tab: string) {
-    navigation.showSettings(tab);
-  }
-
   // ==================== Session Setup ====================
-
-  function handleNewSession() {
-    const model = $settings.default_model;
-    const effortLevel = settingsToStoreEffort($settings.default_effort_level);
-    const sessionId = sdkSessions.createSetupSession(model, effortLevel, false);
-
-    activeSdkSessionId.set(sessionId);
-    activeSessionId.set(null);
-    navigation.setView('sessions');
-  }
 
   async function handleSetupSessionStart(
     sessionId: string,
@@ -915,7 +812,6 @@
     let needsAutoRepo = !repoPath || repoPath === '.';
     let selectedRepo = needsAutoRepo ? null : $settings.repos.find((r) => r.path === repoPath);
 
-    // Auto-repo selection
     if (needsAutoRepo && $isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
       const recommendation = await getRepoRecommendation(config.prompt, $settings.repos);
       if (recommendation) {
@@ -929,7 +825,6 @@
       repoPath = selectedRepo?.path || '.';
     }
 
-    // Handle auto model
     let finalModel = config.model;
     let finalEffort = config.effortLevel;
 
@@ -960,38 +855,15 @@
   }
 </script>
 
-<div class="app-container h-screen flex flex-col bg-background">
-  {#if !$configLoadedOk}
-    <div class="config-warning bg-red-900/80 text-red-100 px-4 py-2 text-sm flex items-center gap-2 border-b border-red-700">
-      <span class="font-bold">Warning:</span>
-      <span>Config failed to parse and loaded defaults. Saves are blocked to protect your data. Fix or delete your config file to resume normal operation.</span>
-    </div>
-  {/if}
-  <AppHeader
-    repos={$settings.repos}
-    activeRepoIndex={$settings.active_repo_index}
-    activeRepo={$activeRepo}
-    isAutoRepoSelected={$isAutoRepoSelected}
-    defaultModel={$settings.default_model}
-    defaultEffortLevel={settingsToStoreEffort($settings.default_effort_level)}
-    autoModelEffort={$settings.llm.features.auto_model_effort}
-    isRecording={$isRecording}
-    isRecordingForNewSession={recordingFlow.isRecordingForNewSession}
-    pendingTranscriptions={$pendingTranscriptions}
-    {currentView}
-    onShowStart={showStartView}
-    onShowSettings={showSettingsView}
-    onShowSessions={showSessionsView}
-    onOpenSettingsTab={openSettingsTab}
-    onSelectRepo={selectRepo}
-    onEnableAutoRepo={enableAutoRepo}
-    onChangeModel={changeModel}
-    onChangeEffort={changeEffort}
-    onChangeAutoModelEffort={changeAutoModelEffort}
-    onStartRecording={recordingFlow.startRecordingNewSession}
-    onStopRecording={recordingFlow.stopRecordingNewSession}
-  />
-
+{#if currentView === 'sequences' && $activeExecution}
+  <!-- Sequence Execution View (full width, no sidebar) -->
+  <div class="flex-1 flex flex-col overflow-hidden">
+    <SequenceSessionView
+      execution={$activeExecution}
+      nodes={$sequences.find(s => s.id === $activeExecution.sequence_id)?.nodes ?? []}
+    />
+  </div>
+{:else}
   <div class="main-content flex-1 flex overflow-hidden">
     <aside
       class="sidebar border-r border-border bg-surface flex flex-col relative"
@@ -1007,7 +879,6 @@
       <div class="flex-1 overflow-hidden">
         <SessionList {currentView} />
       </div>
-      <!-- Resize handle -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="resize-handle absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-accent/50 transition-colors"
@@ -1019,18 +890,7 @@
     <main class="flex-1 flex flex-col overflow-hidden">
       {#if currentView === 'start'}
         <Start />
-      {:else if currentView === 'settings'}
-        <Settings initialTab={settingsTabFromNav} />
-      {:else if currentView === 'sequences' && $activeExecution}
-        <!-- Sequence Execution View -->
-        {@const exec = $activeExecution}
-        {@const seqDef = $sequences.find(s => s.id === exec.sequence_id)}
-        <SequenceSessionView
-          execution={exec}
-          nodes={seqDef?.nodes ?? []}
-        />
       {:else if $activeSdkSession}
-        <!-- SDK Mode Session -->
         {@const activeSession = $activeSdkSession}
         {@const sessionId = activeSession.id}
         {@const isPendingState =
@@ -1082,7 +942,6 @@
           {/if}
         {/if}
       {:else if $activeSession}
-        <!-- PTY Mode Session -->
         <SessionHeader session={$activeSession} />
         <div class="terminal-wrapper flex-1 overflow-hidden">
           {#key $activeSession.id}
@@ -1092,13 +951,9 @@
       {/if}
     </main>
   </div>
-</div>
+{/if}
 
 <style>
-  .app-container {
-    user-select: none;
-  }
-
   .terminal-wrapper {
     min-height: 0;
   }

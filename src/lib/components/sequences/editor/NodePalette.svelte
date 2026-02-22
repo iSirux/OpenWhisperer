@@ -15,6 +15,15 @@
 
   const categories: { name: string; category: NodeCategory; items: PaletteItem[] }[] = [
     {
+      name: 'Triggers',
+      category: 'trigger',
+      items: [
+        { type: 'trigger_manual', label: 'Manual', category: 'trigger' },
+        { type: 'trigger_schedule', label: 'Schedule', category: 'trigger' },
+        { type: 'trigger_event', label: 'Event', category: 'trigger' },
+      ],
+    },
+    {
       name: 'AI',
       category: 'ai',
       items: [

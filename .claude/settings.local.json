@@ -1,6 +1,9 @@
 {
   "permissions": {
     "allow": [
+      "Read",
+      "Glob",
+      "Grep",
       "Bash(cat:*)",
       "WebSearch",
       "Bash(npm run check:*)",
@@ -32,7 +35,10 @@
       "WebFetch(domain:svelteflow.dev)",
       "Bash(tail:*)",
       "Bash(grep:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(wc:*)",
+      "Bash(cd:*)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

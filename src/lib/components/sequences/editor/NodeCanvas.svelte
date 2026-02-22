@@ -10,6 +10,7 @@
   import GitNodeRenderer from './renderers/GitNodeRenderer.svelte';
   import ControlNodeRenderer from './renderers/ControlNodeRenderer.svelte';
   import CompoundNodeRenderer from './renderers/CompoundNodeRenderer.svelte';
+  import TriggerNodeRenderer from './renderers/TriggerNodeRenderer.svelte';
 
   import { createDefaultNode, getNodeCategory, getCategoryColor, type EditorNode, type EditorEdge } from '$lib/utils/sequenceConverter';
 
@@ -33,12 +34,14 @@
     git: GitNodeRenderer,
     control: ControlNodeRenderer,
     compound: CompoundNodeRenderer,
+    trigger: TriggerNodeRenderer,
   } as unknown as NodeTypes;
 
   let nodeIdCounter = $state(0);
   let containerEl: HTMLDivElement | undefined = $state();
 
   function getRendererType(nodeType: string): string {
+    if (nodeType === 'trigger') return 'trigger';
     if (nodeType === 'prompt') return 'prompt';
     if (nodeType === 'route') return 'route';
     if (nodeType === 'script') return 'script';
@@ -99,17 +102,19 @@
     nodeIdCounter++;
     const id = `${nodeType}_${nodeIdCounter}`;
     const nodeDef = createDefaultNode(nodeType, id);
-    const category = getNodeCategory(nodeType);
+    // For trigger palette types (trigger_manual etc.), the actual type is 'trigger'
+    const actualType = nodeDef.type;
+    const category = getNodeCategory(actualType);
     const center = getViewportCenter();
     const position = findOpenPosition(center);
 
     const newNode: EditorNode = {
       id,
-      type: getRendererType(nodeType),
+      type: getRendererType(actualType),
       position,
       data: {
         nodeDefinition: nodeDef,
-        label: id,
+        label: nodeDef.name || id,
         category,
       },
     };

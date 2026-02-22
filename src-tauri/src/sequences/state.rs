@@ -183,6 +183,7 @@ impl ExecutionContext {
     }
 
     /// Set a repo metadata value at `repo.{key}`
+    #[allow(dead_code)]
     pub fn set_repo(&mut self, key: &str, value: serde_json::Value) {
         let repo = self.data
             .entry("repo".to_string())
@@ -205,6 +206,7 @@ impl ExecutionContext {
     }
 
     /// Get a value by dotted path (e.g., "nodes.review.result" or "inputs.branch_name")
+    #[allow(dead_code)]
     pub fn get(&self, path: &str) -> Option<&serde_json::Value> {
         let parts: Vec<&str> = path.splitn(2, '.').collect();
         if parts.is_empty() {
@@ -223,6 +225,7 @@ impl ExecutionContext {
     }
 
     /// Recursively resolve a dotted path within a serde_json::Value
+    #[allow(dead_code)]
     fn resolve_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
         if path.is_empty() {
             return Some(value);

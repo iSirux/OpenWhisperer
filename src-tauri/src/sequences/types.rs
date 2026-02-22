@@ -160,6 +160,7 @@ pub enum NodeType {
     Parallel(ParallelNode),
     ForEach(ForEachNode),
     SubSequence(SubSequenceNode),
+    Trigger(TriggerNodeConfig),
 }
 
 // ─── Prompt Node ─────────────────────────────────────────────────────────────
@@ -270,20 +271,24 @@ pub struct ScriptNode {
     pub command: String,
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Timeout in seconds
-    #[serde(default)]
-    pub timeout: Option<u64>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
-    #[serde(default)]
-    pub outputs: Vec<OutputMapping>,
 }
 
 // ─── Notify Node ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotifyNode {
-    /// Notification channel id
+    /// Show a system notification (built-in, always available)
+    #[serde(default = "default_true")]
+    pub system_notification: bool,
+    /// Play a notification sound (built-in, always available)
+    #[serde(default)]
+    pub play_sound: bool,
+    /// Which sound to play (1-10), defaults to 1
+    #[serde(default)]
+    pub sound: Option<u8>,
+    /// Notification channel id (for external channels: Slack, Discord, Webhook)
     #[serde(default)]
     pub channel: Option<String>,
     /// Message template
@@ -426,8 +431,6 @@ pub struct GitHubPrNode {
     pub labels: Option<Vec<String>>,
     #[serde(default)]
     pub reviewers: Option<Vec<String>>,
-    #[serde(default)]
-    pub outputs: Vec<OutputMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -439,11 +442,6 @@ pub struct GitHubPrWaitNode {
     /// Poll interval in seconds
     #[serde(default)]
     pub poll_interval: Option<u64>,
-    /// Timeout in seconds
-    #[serde(default)]
-    pub timeout: Option<u64>,
-    #[serde(default)]
-    pub outputs: Vec<OutputMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -464,9 +462,6 @@ pub struct GitHubPrMergeNode {
 pub struct ApprovalNode {
     /// Message to display for approval request
     pub message: String,
-    /// Timeout in seconds
-    #[serde(default)]
-    pub timeout: Option<u64>,
     /// Action on timeout (node id or "skip"/"fail")
     #[serde(default)]
     pub on_timeout: Option<String>,
@@ -477,15 +472,14 @@ pub struct ApprovalNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WaitNode {
-    /// Template expression that must evaluate to truthy
+    /// Template expression that must evaluate to truthy (renamed from `condition`
+    /// to avoid conflict with NodeDefinition.condition which controls whether the
+    /// node should execute at all)
     #[serde(default)]
-    pub condition: Option<String>,
+    pub poll_condition: Option<String>,
     /// Poll interval in seconds
     #[serde(default)]
     pub poll_interval: Option<u64>,
-    /// Timeout in seconds
-    #[serde(default)]
-    pub timeout: Option<u64>,
     /// Command to run for polling
     #[serde(default)]
     pub poll_command: Option<String>,
@@ -515,8 +509,6 @@ pub struct FileNode {
     /// Destination path for copy
     #[serde(default)]
     pub destination: Option<String>,
-    #[serde(default)]
-    pub outputs: Vec<OutputMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,14 +522,9 @@ pub struct HttpNode {
     /// Body template
     #[serde(default)]
     pub body: Option<String>,
-    /// Timeout in seconds
-    #[serde(default)]
-    pub timeout: Option<u64>,
     /// Expected HTTP status codes
     #[serde(default)]
     pub expected_status: Option<Vec<u16>>,
-    #[serde(default)]
-    pub outputs: Vec<OutputMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -569,9 +556,6 @@ pub struct ParallelNode {
     /// Error handling for individual branches: "ignore", "skip", "cancel_others", "fail"
     #[serde(default)]
     pub on_branch_error: Option<String>,
-    /// Next node after all branches complete
-    #[serde(default)]
-    pub next: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -591,8 +575,6 @@ pub struct ForEachNode {
     #[serde(default)]
     pub on_item_error: Option<String>,
     pub nodes: Vec<NodeDefinition>,
-    #[serde(default)]
-    pub outputs: Vec<OutputMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -601,8 +583,35 @@ pub struct SubSequenceNode {
     pub sequence: String,
     #[serde(default)]
     pub inputs: Option<HashMap<String, serde_json::Value>>,
-    #[serde(default)]
-    pub outputs: Vec<OutputMapping>,
+}
+
+// ─── Trigger Node ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerNodeConfig {
+    pub trigger_type: TriggerNodeType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "trigger_kind", rename_all = "snake_case")]
+pub enum TriggerNodeType {
+    Manual,
+    Schedule {
+        cron: String,
+        #[serde(default)]
+        timezone: Option<String>,
+    },
+    Event {
+        event_type: String,
+        #[serde(default)]
+        filter: Option<HashMap<String, String>>,
+        #[serde(default)]
+        cooldown: Option<u64>,
+        #[serde(default)]
+        max_per_day: Option<u32>,
+        #[serde(default)]
+        once_per_day: Option<bool>,
+    },
 }
 
 // ─── Error Strategy ──────────────────────────────────────────────────────────
@@ -623,6 +632,7 @@ pub enum ErrorStrategy {
 
 impl ErrorStrategy {
     /// Try to parse a plain string into an ErrorStrategy variant
+    #[allow(dead_code)]
     fn from_str_opt(s: &str) -> Option<Self> {
         match s {
             "stop" => Some(ErrorStrategy::Stop),
@@ -647,13 +657,18 @@ pub struct OutputMapping {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SequenceTrigger {
-    Manual,
+    Manual {
+        #[serde(default)]
+        entry_node_id: Option<String>,
+    },
     Schedule {
         cron: String,
         #[serde(default)]
         timezone: Option<String>,
         #[serde(default)]
         inputs: Option<HashMap<String, serde_json::Value>>,
+        #[serde(default)]
+        entry_node_id: Option<String>,
     },
     Event {
         /// Event type: "session_end", "sequence_end", "recording_end", "app_start"
@@ -673,5 +688,7 @@ pub enum SequenceTrigger {
         /// For app_start: only fire once per day
         #[serde(default)]
         once_per_day: Option<bool>,
+        #[serde(default)]
+        entry_node_id: Option<String>,
     },
 }

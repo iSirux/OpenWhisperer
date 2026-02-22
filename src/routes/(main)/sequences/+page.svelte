@@ -66,19 +66,10 @@
   }
 </script>
 
-<div class="flex flex-col h-full">
-  <header class="flex items-center justify-between px-4 py-3 border-b border-border">
+<div class="flex flex-col flex-1 overflow-hidden">
+  <div class="flex items-center justify-between px-4 py-2 border-b border-border">
     <div class="flex items-center gap-3">
-      <button
-        class="p-1.5 hover:bg-surface-elevated rounded transition-colors text-text-muted hover:text-text-primary"
-        onclick={() => goto('/')}
-        title="Back"
-      >
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
-        </svg>
-      </button>
-      <h2 class="text-lg font-semibold text-text-primary">Sequences</h2>
+      <h2 class="text-sm font-semibold text-text-primary">Sequences</h2>
       <span class="text-xs text-text-muted">{$sequences.length} sequences</span>
     </div>
 
@@ -95,7 +86,7 @@
         Import YAML
       </button>
     </div>
-  </header>
+  </div>
 
   <!-- Tags filter -->
   {#if allTags.length > 0}

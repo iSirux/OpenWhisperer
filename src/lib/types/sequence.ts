@@ -115,11 +115,17 @@ export interface RouteBranchLong {
 export interface ScriptNode {
   command: string;
   cwd?: string;
-  timeout?: number;
   env?: Record<string, string>;
 }
 
 export interface NotifyNode {
+  /** Show a system notification (built-in, always available) */
+  system_notification: boolean;
+  /** Play a notification sound (built-in, always available) */
+  play_sound: boolean;
+  /** Which sound to play (1-10), defaults to 1 */
+  sound?: number;
+  /** Notification channel id (for external channels: Slack, Discord, Webhook) */
   channel?: string;
   message: string;
   title?: string;
@@ -154,7 +160,6 @@ export interface TransformOperation {
 
 export interface ApprovalNode {
   message: string;
-  timeout?: number;
   on_timeout?: string;
   notify?: string;
 }
@@ -172,7 +177,6 @@ export interface ParallelNode {
   branches: Record<string, NodeDefinition[]>;
   wait?: "all" | "first" | "any" | number;
   on_branch_error?: "ignore" | "skip" | "cancel_others" | "fail";
-  next?: string;
 }
 
 export interface ForEachNode {
@@ -182,7 +186,6 @@ export interface ForEachNode {
   max_parallel?: number;
   on_item_error?: string;
   nodes: NodeDefinition[];
-  outputs?: OutputMapping[];
 }
 
 // Git nodes
@@ -224,15 +227,12 @@ export interface GitHubPrNode {
   draft?: boolean;
   labels?: string[];
   reviewers?: string[];
-  outputs?: OutputMapping[];
 }
 
 export interface GitHubPrWaitNode {
   pr: string;
   wait_for: string;
   poll_interval?: number;
-  timeout?: number;
-  outputs?: OutputMapping[];
 }
 
 export interface GitHubPrMergeNode {
@@ -243,9 +243,8 @@ export interface GitHubPrMergeNode {
 
 // Action nodes
 export interface WaitNode {
-  condition?: string;
+  poll_condition?: string;
   poll_interval?: number;
-  timeout?: number;
   poll_command?: string;
   on_timeout?: string;
   on_success?: string;
@@ -258,7 +257,6 @@ export interface FileNode {
   content?: string;
   source?: string;
   destination?: string;
-  outputs?: OutputMapping[];
 }
 
 export interface HttpNode {
@@ -266,26 +264,37 @@ export interface HttpNode {
   url: string;
   headers?: Record<string, string>;
   body?: string;
-  timeout?: number;
   expected_status?: number[];
-  outputs?: OutputMapping[];
 }
 
 export interface SubSequenceNode {
   sequence: string;
   inputs?: Record<string, unknown>;
-  outputs?: OutputMapping[];
 }
 
 // Triggers
 export type SequenceTrigger =
-  | { type: "manual" }
-  | { type: "schedule"; cron: string; timezone?: string; inputs?: Record<string, unknown> }
+  | { type: "manual"; entry_node_id?: string }
+  | { type: "schedule"; cron: string; timezone?: string; inputs?: Record<string, unknown>; entry_node_id?: string }
   | {
       type: "event";
       event_type: string;
       filter?: Record<string, string>;
       inputs?: Record<string, string>;
+      cooldown?: number;
+      max_per_day?: number;
+      once_per_day?: boolean;
+      entry_node_id?: string;
+    };
+
+// Trigger node types (for canvas trigger nodes)
+export type TriggerNodeType =
+  | { trigger_kind: "manual" }
+  | { trigger_kind: "schedule"; cron: string; timezone?: string }
+  | {
+      trigger_kind: "event";
+      event_type: string;
+      filter?: Record<string, string>;
       cooldown?: number;
       max_per_day?: number;
       once_per_day?: boolean;

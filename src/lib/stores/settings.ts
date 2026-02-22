@@ -312,8 +312,8 @@ export interface LlmConfig {
 // Alias for backwards compatibility
 export type GeminiConfig = LlmConfig;
 
-/** Notification channel type for sequences */
-export type NotificationChannelType = "system" | "slack" | "discord" | "webhook";
+/** Notification channel type for sequences (external integrations only) */
+export type NotificationChannelType = "slack" | "discord" | "webhook";
 
 /** Configuration for a notification channel */
 export interface NotificationChannelConfig {

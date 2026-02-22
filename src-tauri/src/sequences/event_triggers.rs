@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use parking_lot::Mutex;
-use tauri::{AppHandle, Emitter, Listener};
+use tauri::{AppHandle, Listener};
 
 use crate::sequences::types::SequenceTrigger;
 
@@ -63,6 +63,7 @@ impl EventTriggerManager {
                     max_per_day,
                     once_per_day,
                     inputs,
+                    entry_node_id,
                 } = trigger
                 {
                     let trigger_key = format!("{}:{}", def.id, event_type);
@@ -78,6 +79,7 @@ impl EventTriggerManager {
                     let once_daily = once_per_day.unwrap_or(false);
                     let filter_clone = filter.clone();
                     let inputs_clone = inputs.clone();
+                    let entry_node_clone = entry_node_id.clone();
                     let trigger_key_clone = trigger_key.clone();
 
                     // Determine the Tauri event pattern to listen for
@@ -108,8 +110,9 @@ impl EventTriggerManager {
                             let seq_id = sequence_id.clone();
                             let mgr = manager_clone.clone();
                             let tids = triggered_ids.clone();
+                            let entry = entry_node_clone.clone();
                             tauri::async_runtime::spawn(async move {
-                                match mgr.start_execution(&seq_id, inputs_map, false) {
+                                match mgr.start_execution_at(&seq_id, inputs_map, false, entry) {
                                     Ok(exec_id) => {
                                         tids.lock().push(exec_id.clone());
                                         println!(
@@ -190,8 +193,9 @@ impl EventTriggerManager {
                         let seq_id = sequence_id.clone();
                         let mgr = manager_clone.clone();
                         let tids = triggered_ids.clone();
+                        let entry = entry_node_clone.clone();
                         tauri::async_runtime::spawn(async move {
-                            match mgr.start_execution(&seq_id, inputs_map, false) {
+                            match mgr.start_execution_at(&seq_id, inputs_map, false, entry) {
                                 Ok(exec_id) => {
                                     tids.lock().push(exec_id.clone());
                                     println!(
@@ -216,6 +220,7 @@ impl EventTriggerManager {
     }
 
     /// Stop all event listeners.
+    #[allow(dead_code)]
     pub fn stop(&self, app: &AppHandle) {
         self.running.store(false, Ordering::SeqCst);
         let mut listener_ids = self.listener_ids.lock();
@@ -225,6 +230,7 @@ impl EventTriggerManager {
     }
 
     /// Check if an execution was spawned by an event trigger (for self-exclusion).
+    #[allow(dead_code)]
     pub fn is_triggered_execution(&self, execution_id: &str) -> bool {
         self.triggered_execution_ids.lock().contains(&execution_id.to_string())
     }
@@ -246,6 +252,7 @@ impl EventTriggerManager {
                     once_per_day,
                     ..
                 } = trigger
+
                 {
                     let trigger_key = format!("{}:{}", def.id, event_type);
                     let last_fire = gs.last_fire.get(&trigger_key).cloned();

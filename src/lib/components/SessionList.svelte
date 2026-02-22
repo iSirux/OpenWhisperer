@@ -13,18 +13,15 @@
   import {
     executions,
     activeExecutionId,
-    getStatusString,
-    getProgress,
-    isTerminal,
+    closeExecution,
     loadExecutionHistory,
   } from '$lib/stores/sequenceExecutions';
   import { navigation } from '$lib/stores/navigation';
-  import type { SequenceExecution } from '$lib/types/sequence';
   import SessionListItem from './SessionListItem.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
 
   interface Props {
-    currentView?: 'sessions' | 'settings' | 'start' | 'sequences';
+    currentView?: string;
   }
 
   let { currentView = 'sessions' }: Props = $props();
@@ -61,8 +58,9 @@
     const ptySessions = $sessions;
     const sdkSessionsList = $sdkSessions;
     const sortOrder = $settings.session_sort_order;
+    const seqExecutions = $executions;
 
-    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder);
+    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder, seqExecutions);
     allSessions = sorted;
 
     // Only fetch branches when session list changes (add/remove), not on every update
@@ -111,6 +109,7 @@
   // Track active session IDs reactively for proper UI updates
   let currentActiveSessionId = $state<string | null>(null);
   let currentActiveSdkSessionId = $state<string | null>(null);
+  let currentActiveExecutionId = $state<string | null>(null);
 
   // Keep local state in sync with stores
   $effect(() => {
@@ -121,48 +120,60 @@
     currentActiveSdkSessionId = $activeSdkSessionId;
   });
 
+  $effect(() => {
+    currentActiveExecutionId = $activeExecutionId;
+  });
+
   // Session selection
   function selectSession(session: DisplaySession) {
-    activeExecutionId.set(null);
-    if (session.type === 'pty') {
-      activeSessionId.set(session.id);
-      activeSdkSessionId.set(null);
-    } else {
-      activeSdkSessionId.set(session.id);
+    if (session.type === 'sequence') {
+      activeExecutionId.set(session.id);
       activeSessionId.set(null);
-      sdkSessions.markAsRead(session.id);
+      activeSdkSessionId.set(null);
+      navigation.showSequences();
+    } else {
+      activeExecutionId.set(null);
+      if (session.type === 'pty') {
+        activeSessionId.set(session.id);
+        activeSdkSessionId.set(null);
+      } else {
+        activeSdkSessionId.set(session.id);
+        activeSessionId.set(null);
+        sdkSessions.markAsRead(session.id);
+      }
+      window.dispatchEvent(new CustomEvent('switch-to-sessions'));
     }
-    window.dispatchEvent(new CustomEvent('switch-to-sessions'));
   }
 
   function isSessionActive(session: DisplaySession): boolean {
+    if (session.type === 'sequence') {
+      return currentView === 'sequences' && currentActiveExecutionId === session.id;
+    }
     if (currentView !== 'sessions') return false;
     return session.type === 'pty'
       ? currentActiveSessionId === session.id
       : currentActiveSdkSessionId === session.id;
   }
 
-  // Sequence execution selection
-  function selectExecution(exec: SequenceExecution) {
-    activeExecutionId.set(exec.id);
-    activeSessionId.set(null);
-    activeSdkSessionId.set(null);
-    navigation.showSequences();
-  }
-
-  function isExecutionActive(exec: SequenceExecution): boolean {
-    return currentView === 'sequences' && $activeExecutionId === exec.id;
-  }
-
   // Confirmation dialog state
   let confirmDialog = $state<{
     show: boolean;
     sessionId: string;
-    sessionType: 'pty' | 'sdk';
+    sessionType: 'pty' | 'sdk' | 'sequence';
   }>({ show: false, sessionId: '', sessionType: 'pty' });
 
   function closeSession(session: DisplaySession, event: MouseEvent) {
     event.stopPropagation();
+
+    if (session.type === 'sequence') {
+      // For sequences, check if actively running
+      if (isActivelyWorking(session.status)) {
+        confirmDialog = { show: true, sessionId: session.id, sessionType: 'sequence' };
+        return;
+      }
+      performClose(session.id, 'sequence');
+      return;
+    }
 
     // Check if session is actively working
     if (session.type === 'pty') {
@@ -186,17 +197,19 @@
     performClose(session.id, session.type);
   }
 
-  function performClose(sessionId: string, sessionType: 'pty' | 'sdk') {
+  function performClose(sessionId: string, sessionType: 'pty' | 'sdk' | 'sequence') {
     if (sessionType === 'pty') {
       sessions.closeSession(sessionId);
       if ($activeSessionId === sessionId) {
         activeSessionId.set(null);
       }
-    } else {
+    } else if (sessionType === 'sdk') {
       sdkSessions.closeSession(sessionId);
       if ($activeSdkSessionId === sessionId) {
         activeSdkSessionId.set(null);
       }
+    } else {
+      closeExecution(sessionId);
     }
   }
 
@@ -224,45 +237,8 @@
     </span>
   </button>
 
-  <!-- Sequence Executions -->
-  {#if $executions.length > 0}
-    <div class="border-b border-border">
-      <div class="px-3 py-1.5 text-[10px] uppercase tracking-wider text-text-muted font-medium">
-        Sequences
-      </div>
-      {#each $executions as exec (exec.id)}
-        {@const statusStr = getStatusString(exec.status)}
-        {@const progress = getProgress(exec)}
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-elevated transition-colors text-sm {isExecutionActive(exec) ? 'bg-accent/10 border-l-2 border-accent' : ''}"
-          onclick={() => selectExecution(exec)}
-        >
-          <!-- Pipeline icon -->
-          <svg class="w-4 h-4 flex-shrink-0 {statusStr === 'running' ? 'text-blue-400' : statusStr === 'completed' ? 'text-green-400' : statusStr === 'failed' ? 'text-red-400' : statusStr === 'paused' ? 'text-yellow-400' : 'text-text-muted'}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-          </svg>
-          <div class="flex-1 min-w-0">
-            <div class="truncate text-text-primary">{exec.sequence_name}</div>
-            <div class="flex items-center gap-2 text-[10px] text-text-muted">
-              <span class="{statusStr === 'running' ? 'text-blue-400' : statusStr === 'completed' ? 'text-green-400' : statusStr === 'failed' ? 'text-red-400' : ''}">{statusStr}</span>
-              {#if exec.total_nodes > 0}
-                <span>{exec.completed_node_ids.length}/{exec.total_nodes}</span>
-              {/if}
-            </div>
-          </div>
-          <!-- Progress bar -->
-          {#if !isTerminal(exec.status) && exec.total_nodes > 0}
-            <div class="w-10 h-1 bg-border rounded-full overflow-hidden flex-shrink-0">
-              <div class="h-full bg-accent rounded-full transition-all" style="width:{progress}%"></div>
-            </div>
-          {/if}
-        </button>
-      {/each}
-    </div>
-  {/if}
-
-  <!-- Sessions -->
-  {#if allSessions.length === 0 && $executions.length === 0}
+  <!-- Sessions (PTY + SDK + Sequences mixed) -->
+  {#if allSessions.length === 0}
     <div class="p-4 text-center text-text-muted text-sm">
       <svg
         class="w-8 h-8 mx-auto mb-2 opacity-50"
@@ -297,9 +273,11 @@
 
 <ConfirmDialog
   show={confirmDialog.show}
-  title="Close active session?"
-  message="This session is still working. Are you sure you want to close it?"
-  confirmLabel="Close session"
+  title={confirmDialog.sessionType === 'sequence' ? 'Close running sequence?' : 'Close active session?'}
+  message={confirmDialog.sessionType === 'sequence'
+    ? 'This sequence is still running. Are you sure you want to close it?'
+    : 'This session is still working. Are you sure you want to close it?'}
+  confirmLabel={confirmDialog.sessionType === 'sequence' ? 'Close sequence' : 'Close session'}
   onconfirm={confirmClose}
   oncancel={cancelClose}
 />

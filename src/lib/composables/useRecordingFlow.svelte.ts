@@ -14,6 +14,7 @@ import { settings, activeRepo } from '$lib/stores/settings';
 import { overlay } from '$lib/stores/overlay';
 import { openMic } from '$lib/stores/openMic';
 import { navigation } from '$lib/stores/navigation';
+import { isRecordingForNewSession as headerRecordingStore } from '$lib/stores/headerRecording';
 
 export interface RecordingFlowCallbacks {
   /** Called when a recording stops with transcript ready to process */
@@ -37,6 +38,11 @@ export function useRecordingFlow() {
   let wasAppFocusedOnRecordStart = true;
   let pendingTranscriptionSessionId: string | null = null;
   let unlistenAudioVisualization: UnlistenFn | null = null;
+
+  // Sync isRecordingForNewSession to the header store so AppHeader (in the layout) can read it
+  $effect(() => {
+    headerRecordingStore.set(isRecordingForNewSession);
+  });
 
   // Stored callbacks
   let callbacks: RecordingFlowCallbacks | null = null;

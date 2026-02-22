@@ -236,6 +236,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             settings_cmds::get_config,
             settings_cmds::get_config_load_status,
+            settings_cmds::get_config_paths,
+            settings_cmds::open_config_file,
             settings_cmds::save_config,
             settings_cmds::add_repo,
             settings_cmds::remove_repo,
@@ -322,6 +324,7 @@ pub fn run() {
             sequence_cmds::start_execution,
             sequence_cmds::get_execution,
             sequence_cmds::list_executions,
+            sequence_cmds::dismiss_execution,
             sequence_cmds::pause_execution,
             sequence_cmds::resume_execution,
             sequence_cmds::cancel_execution,

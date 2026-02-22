@@ -2,6 +2,7 @@
   import { settings } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy } from "svelte";
+  import { page } from "$app/stores";
   import {
     GeneralTab,
     ClaudeTab,
@@ -21,17 +22,15 @@
     SequencesTab,
   } from "$lib/components/settings";
 
-  // Accept an initial tab from parent component
-  interface Props {
-    initialTab?: string;
-  }
-  let { initialTab = "claude" }: Props = $props();
+  // Read initial tab from URL query param (e.g. /settings?tab=llm)
+  let activeTab = $state($page.url.searchParams.get('tab') || 'claude');
 
-  let activeTab = $state(initialTab);
-
-  // Update active tab when initialTab prop changes
+  // Update tab when URL changes
   $effect(() => {
-    activeTab = initialTab;
+    const tabFromUrl = $page.url.searchParams.get('tab');
+    if (tabFromUrl) {
+      activeTab = tabFromUrl;
+    }
   });
 
   let saveStatus: "idle" | "saving" | "error" = $state("idle");
@@ -89,10 +88,7 @@
 
   onDestroy(() => {
     unsubscribe();
-    // Flush any pending save immediately instead of cancelling it
     if (hasPendingChanges) {
-      // Use synchronous save to ensure it completes before unmount
-      // Note: We can't await in onDestroy, so we fire-and-forget
       saveNow();
     }
     if (saveTimeout) clearTimeout(saveTimeout);
@@ -119,34 +115,7 @@
   ];
 </script>
 
-<div class="settings-panel flex flex-col h-full">
-  <header
-    class="flex items-center justify-between px-4 py-3 border-b border-border"
-  >
-    <div class="flex items-center gap-3">
-      <button
-        class="p-1.5 hover:bg-surface-elevated rounded transition-colors text-text-muted hover:text-text-primary"
-        onclick={() => window.dispatchEvent(new CustomEvent("close-settings"))}
-        title="Back to sessions"
-      >
-        <svg
-          class="w-5 h-5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M10 19l-7-7m0 0l7-7m-7 7h18"
-          />
-        </svg>
-      </button>
-      <h2 class="text-lg font-semibold text-text-primary">Settings</h2>
-    </div>
-  </header>
-
+<div class="settings-panel flex-1 flex flex-col overflow-hidden">
   <div class="flex flex-1 overflow-hidden">
     <nav
       class="w-40 border-r border-border bg-surface-elevated p-2 overflow-y-auto"

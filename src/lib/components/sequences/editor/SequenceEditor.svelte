@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
   import { invoke } from '@tauri-apps/api/core';
   import type { SequenceDefinition } from '$lib/types/sequence';
   import { definitionToGraph, graphToDefinition, type EditorNode, type EditorEdge } from '$lib/utils/sequenceConverter';
   import { settings } from '$lib/stores/settings';
+  import { goto } from '$app/navigation';
   import NodePalette from './NodePalette.svelte';
   import NodeCanvas from './NodeCanvas.svelte';
   import NodeInspector from './NodeInspector.svelte';
@@ -176,7 +176,7 @@
   }
 </script>
 
-<div class="flex flex-col h-screen bg-surface-base">
+<div class="flex flex-col h-full bg-surface-base">
   <!-- Toolbar -->
   <header class="flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
     <div class="flex items-center gap-3">
@@ -321,6 +321,6 @@
       <NodeCanvas bind:nodes bind:edges bind:addNodeType onNodeSelect={handleNodeSelect} />
     {/if}
 
-    <NodeInspector bind:selectedNode onNodeUpdate={handleNodeUpdate} onNodeDelete={handleNodeDelete} />
+    <NodeInspector bind:selectedNode allNodes={nodes} onNodeUpdate={handleNodeUpdate} onNodeDelete={handleNodeDelete} />
   </div>
 </div>

@@ -65,6 +65,7 @@ pub struct RepoRecommendation {
 
 impl RepoRecommendation {
     /// Returns the recommended index as Option<usize>, converting -1 to None
+    #[allow(dead_code)]
     pub fn get_index(&self) -> Option<usize> {
         if self.recommended_index >= 0 {
             Some(self.recommended_index as usize)
@@ -74,6 +75,7 @@ impl RepoRecommendation {
     }
 
     /// Returns the recommended name as Option<&str>, converting empty string to None
+    #[allow(dead_code)]
     pub fn get_name(&self) -> Option<&str> {
         if self.recommended_name.is_empty() {
             None

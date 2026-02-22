@@ -22,7 +22,7 @@ use crate::sidecar::SidecarManager;
 use self::executor::SequenceExecutor;
 use self::rate_limiter::SequenceRateLimiter;
 use self::event_triggers::EventTriggerManager;
-use self::state::{ExecutionSummary, SequenceExecution};
+use self::state::{ExecutionStatus, ExecutionSummary, SequenceExecution};
 use self::types::SequenceDefinition;
 
 /// Central manager for sequence definitions and executions.
@@ -110,6 +110,17 @@ impl SequenceManager {
         inputs: HashMap<String, serde_json::Value>,
         dry_run: bool,
     ) -> Result<String, String> {
+        self.start_execution_at(sequence_id, inputs, dry_run, None)
+    }
+
+    /// Start execution at a specific entry node (used by triggers).
+    pub fn start_execution_at(
+        &self,
+        sequence_id: &str,
+        inputs: HashMap<String, serde_json::Value>,
+        dry_run: bool,
+        entry_node_id: Option<String>,
+    ) -> Result<String, String> {
         let definition = self
             .get_definition(sequence_id)
             .ok_or_else(|| format!("Sequence '{}' not found", sequence_id))?;
@@ -138,9 +149,10 @@ impl SequenceManager {
             .insert(execution_id.clone(), pause_signal);
 
         // Spawn the execution task
+        let eid = execution_id.clone();
         let handle = tokio::spawn(async move {
             match executor
-                .execute(definition, inputs, dry_run, cancel, pause)
+                .execute(eid, definition, inputs, dry_run, cancel, pause, entry_node_id)
                 .await
             {
                 Ok(id) => {
@@ -173,7 +185,7 @@ impl SequenceManager {
         // The executor will see the paused state and block on the pause signal.
         let _ = self.app.emit(
             &format!("sequence-status-{}", execution_id),
-            serde_json::json!({ "execution_id": execution_id, "status": { "status": "paused" } }),
+            serde_json::to_value(&ExecutionStatus::Paused).unwrap_or_default(),
         );
         Ok(())
     }
@@ -259,6 +271,17 @@ impl SequenceManager {
     /// Load a specific execution from disk.
     pub fn get_execution(&self, exec_id: &str) -> Result<SequenceExecution, String> {
         persistence::load_execution(exec_id)
+    }
+
+    /// Delete an execution snapshot from disk (dismiss from history).
+    pub fn dismiss_execution(&self, exec_id: &str) -> Result<(), String> {
+        // Also clean up any in-memory state for this execution
+        self.executions.lock().remove(exec_id);
+        self.executor_handles.lock().remove(exec_id);
+        self.pause_signals.lock().remove(exec_id);
+        self.cancel_flags.lock().remove(exec_id);
+        self.approval_channels.lock().remove(exec_id);
+        persistence::delete_execution(exec_id)
     }
 
     // ─── Import / Export ─────────────────────────────────────────────────────

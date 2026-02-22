@@ -54,11 +54,11 @@ Available node types:
 - prompt: AI prompt (fields: prompt, model [opus/sonnet/haiku], effort [low/medium/high], system_prompt)
 - route: Conditional branching (fields: eval OR prompt, branches: {{key: {{next: target_id}}}}, default)
 - script: Shell command (fields: command, cwd, env, timeout)
-- notify: Notification (fields: channel, message, title)
+- notify: Notification (fields: system_notification [bool, default true], play_sound [bool], sound [1-10], channel [external channel id], message, title)
 - delay: Timed wait (fields: duration [e.g. "5s", "1m"])
 - transform: Data transformation (fields: input, operations: [{{type: regex/json_path/template, ...}}])
 - approval: Human approval gate (fields: message, timeout)
-- wait: Condition wait (fields: condition, poll_interval, timeout)
+- wait: Condition wait (fields: poll_condition, poll_interval, poll_command)
 - loop: Loop with nodes (fields: max_iterations, until, delay, nodes: [...])
 - parallel: Parallel branches (fields: branches: {{name: [...nodes]}}, wait: all/first)
 - for_each: Iterate items (fields: items, variable, mode: sequential/parallel, nodes: [...])
@@ -113,7 +113,7 @@ Do NOT include id, name, type, condition, timeout, on_error, retry_count, next, 
 
 For example, for a "prompt" node, return: {{"prompt": "...", "model": "sonnet"}}
 For a "script" node, return: {{"command": "...", "cwd": "..."}}
-For a "notify" node, return: {{"message": "...", "title": "..."}}
+For a "notify" node, return: {{"system_notification": true, "play_sound": true, "sound": 1, "message": "...", "title": "..."}}
 
 Respond with ONLY the JSON object."#
     );

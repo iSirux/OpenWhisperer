@@ -204,6 +204,7 @@ impl PersistedSessions {
     }
 
     /// Clear all persisted sessions
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.sdk_sessions.clear();
         self.terminal_sessions.clear();

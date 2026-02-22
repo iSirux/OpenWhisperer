@@ -9,7 +9,13 @@
   let detail = $derived.by(() => {
     const n = data.nodeDefinition as Record<string, unknown>;
     switch (nodeType) {
-      case 'notify': return (n.channel as string) || 'system';
+      case 'notify': {
+        const parts: string[] = [];
+        if (n.system_notification !== false) parts.push('system');
+        if (n.play_sound) parts.push('sound');
+        if (n.channel) parts.push(n.channel as string);
+        return parts.join(' + ') || 'notify';
+      }
       case 'delay': return (n.duration as string) || '';
       case 'file': return (n.operation as string) || '';
       case 'http': return `${(n.method as string) || 'GET'} ${((n.url as string) || '').slice(0, 30)}`;

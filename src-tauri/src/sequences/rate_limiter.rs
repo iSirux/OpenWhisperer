@@ -84,6 +84,7 @@ impl SequenceRateLimiter {
     /// Handle a rate-limit response from a provider.
     ///
     /// Returns the recommended delay in milliseconds.
+    #[allow(dead_code)]
     pub fn handle_rate_limit_response(&self, provider: &str, retry_after_secs: Option<u64>) -> u64 {
         // If the provider told us a Retry-After, use it
         if let Some(secs) = retry_after_secs {

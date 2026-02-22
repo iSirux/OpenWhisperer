@@ -1,6 +1,7 @@
 import { writable, derived, get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { playNotificationSound } from "$lib/utils/sound";
 import type {
   SequenceExecution,
   ExecutionSummary,
@@ -11,7 +12,6 @@ import type {
   SequenceNodeStartEvent,
   SequenceNodeCompleteEvent,
   SequenceNodeErrorEvent,
-  SequenceStatusEvent,
   SequenceLogEvent,
 } from "$lib/types/sequence";
 
@@ -166,9 +166,9 @@ export async function setupListeners(executionId: string): Promise<void> {
     )
   );
 
-  // Status change
+  // Status change (payload is raw ExecutionStatus, e.g. {"status": "running"})
   unlisteners.push(
-    await listen<SequenceStatusEvent>(
+    await listen<ExecutionStatus>(
       `sequence-status-${executionId}`,
       (event) => {
         executions.update((execs) =>
@@ -176,7 +176,7 @@ export async function setupListeners(executionId: string): Promise<void> {
             if (e.id !== executionId) return e;
             return {
               ...e,
-              status: event.payload.status,
+              status: event.payload,
             };
           })
         );
@@ -223,6 +223,38 @@ export async function setupListeners(executionId: string): Promise<void> {
     )
   );
 
+  // Notification events (system notifications + sounds)
+  unlisteners.push(
+    await listen<{
+      title: string;
+      message: string;
+      system_notification?: boolean;
+      play_sound?: boolean;
+      sound?: number;
+    }>(
+      `sequence-notification-${executionId}`,
+      (event) => {
+        const { title, message, system_notification, play_sound, sound } = event.payload;
+        if (system_notification) {
+          try {
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification(title, { body: message });
+            } else if ('Notification' in window && Notification.permission !== 'denied') {
+              Notification.requestPermission().then((perm) => {
+                if (perm === 'granted') new Notification(title, { body: message });
+              });
+            }
+          } catch (e) {
+            console.warn('Failed to send system notification:', e);
+          }
+        }
+        if (play_sound) {
+          playNotificationSound(sound);
+        }
+      }
+    )
+  );
+
   listeners.set(executionId, unlisteners);
 }
 
@@ -249,12 +281,14 @@ export function cleanupAllListeners(): void {
 export async function startExecution(
   sequenceId: string,
   inputs: Record<string, unknown> = {},
-  dryRun: boolean = false
+  dryRun: boolean = false,
+  entryNodeId?: string
 ): Promise<string> {
   const executionId = await invoke<string>("start_execution", {
     sequenceId,
     inputs,
     dryRun,
+    entryNodeId: entryNodeId ?? null,
   });
 
   // Create initial execution state
@@ -284,6 +318,18 @@ export async function startExecution(
 
   // Set up event listeners
   await setupListeners(executionId);
+
+  // Sync state from backend to catch any events that fired before listeners were ready
+  try {
+    const currentState = await invoke<SequenceExecution>("get_execution", { executionId });
+    if (currentState) {
+      executions.update((execs) =>
+        execs.map((e) => (e.id === executionId ? { ...e, ...currentState } : e))
+      );
+    }
+  } catch {
+    // Execution may not be persisted yet if it just started — that's OK
+  }
 
   // Select this execution
   activeExecutionId.set(executionId);
@@ -392,6 +438,17 @@ export async function loadFullExecution(
     console.error("Failed to load execution:", error);
     return null;
   }
+}
+
+/** Close/remove an execution from the list and delete from disk */
+export function closeExecution(executionId: string): void {
+  cleanupListeners(executionId);
+  executions.update((execs) => execs.filter((e) => e.id !== executionId));
+  activeExecutionId.update((id) => (id === executionId ? null : id));
+  // Delete from disk so it doesn't reappear on reload
+  invoke("dismiss_execution", { executionId }).catch((err) =>
+    console.error("Failed to dismiss execution:", err)
+  );
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -3,8 +3,6 @@ pub mod llm_cmds;
 pub mod input_cmds;
 pub mod mcp_cmds;
 
-// Backwards compatibility alias
-pub use llm_cmds as gemini_cmds;
 pub mod sdk_cmds;
 pub mod sequence_cmds;
 pub mod session_cmds;

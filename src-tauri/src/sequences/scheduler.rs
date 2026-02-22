@@ -101,7 +101,7 @@ impl SequenceScheduler {
 
                 for def in &definitions {
                     for trigger in &def.triggers {
-                        if let crate::sequences::types::SequenceTrigger::Schedule { cron, timezone: _, inputs } = trigger {
+                        if let crate::sequences::types::SequenceTrigger::Schedule { cron, timezone: _, inputs, entry_node_id } = trigger {
                             let schedule_key = format!("{}:{}", def.id, cron);
 
                             // Check enabled state
@@ -136,7 +136,7 @@ impl SequenceScheduler {
                             if should_fire {
                                 println!("[scheduler] Firing sequence '{}' (cron: {})", def.name, cron);
                                 let exec_inputs = inputs.clone().unwrap_or_default();
-                                match manager.start_execution(&def.id, exec_inputs, false) {
+                                match manager.start_execution_at(&def.id, exec_inputs, false, entry_node_id.clone()) {
                                     Ok(exec_id) => {
                                         println!("[scheduler] Started execution {} for '{}'", exec_id, def.name);
                                     }
@@ -159,6 +159,7 @@ impl SequenceScheduler {
     }
 
     /// Stop the scheduler
+    #[allow(dead_code)]
     pub fn stop(&self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(handle) = self.handle.lock().take() {

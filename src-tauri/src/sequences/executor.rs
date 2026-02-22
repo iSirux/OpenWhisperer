@@ -78,17 +78,18 @@ impl SequenceExecutor {
     /// execution can be cancelled or paused externally.
     pub async fn execute(
         &self,
+        execution_id: String,
         definition: SequenceDefinition,
         inputs: HashMap<String, serde_json::Value>,
         dry_run: bool,
         cancel_flag: Arc<AtomicBool>,
         pause_signal: Arc<Notify>,
+        entry_node_id: Option<String>,
     ) -> Result<String, String> {
         // 1. Validate required inputs
         self.validate_inputs(&definition, &inputs)?;
 
         // 2. Create execution state
-        let execution_id = uuid::Uuid::new_v4().to_string();
         let execution = Arc::new(Mutex::new(SequenceExecution::new(
             execution_id.clone(),
             definition.id.clone(),
@@ -116,8 +117,15 @@ impl SequenceExecutor {
         let _ = persistence::save_execution(&execution.lock());
 
         // 5. Execute node loop
-        let mut current_node_id: Option<String> =
-            definition.nodes.first().map(|n| n.id.clone());
+        let mut current_node_id: Option<String> = if let Some(ref eid) = entry_node_id {
+            // Explicit entry point from trigger
+            Some(eid.clone())
+        } else {
+            // Default: first non-trigger node
+            definition.nodes.iter()
+                .find(|n| !matches!(n.node_type, NodeType::Trigger(_)))
+                .map(|n| n.id.clone())
+        };
 
         while let Some(node_id) = current_node_id.take() {
             // --- Cancellation check ---
@@ -458,9 +466,14 @@ impl SequenceExecutor {
             return Some(next.clone());
         }
 
-        // Positional auto-advance
+        // Positional auto-advance (skip trigger nodes)
         let idx = definition.nodes.iter().position(|n| n.id == node_def.id);
-        idx.and_then(|i| definition.nodes.get(i + 1).map(|n| n.id.clone()))
+        idx.and_then(|i| {
+            definition.nodes[i + 1..]
+                .iter()
+                .find(|n| !matches!(n.node_type, NodeType::Trigger(_)))
+                .map(|n| n.id.clone())
+        })
     }
 
     // ─── Node Dispatch ───────────────────────────────────────────────────────
@@ -531,6 +544,10 @@ impl SequenceExecutor {
                 NodeType::SubSequence(s) => {
                     self.execute_subsequence(node, s, context, execution_id)
                         .await
+                }
+                NodeType::Trigger(_) => {
+                    // Trigger nodes are entry-point markers; no-op at execution time
+                    Ok(None)
                 }
             }
         })
@@ -1050,7 +1067,7 @@ impl SequenceExecutor {
                 .to_string(),
         };
 
-        let timeout_secs = script.timeout.or(node.timeout).unwrap_or(120);
+        let timeout_secs = node.timeout.unwrap_or(120);
 
         let mut cmd = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
         if cfg!(windows) {
@@ -1123,6 +1140,7 @@ impl SequenceExecutor {
         let title_str = rendered_title.unwrap_or_else(|| "Sequence Notification".to_string());
 
         // Emit Tauri event for the frontend to display
+        // Includes built-in notification flags so the frontend can handle system notifications and sounds
         let _ = self.app.emit(
             &format!("sequence-notification-{}", execution_id),
             serde_json::json!({
@@ -1130,6 +1148,9 @@ impl SequenceExecutor {
                 "message": rendered_message,
                 "channel": notify.channel,
                 "preset": notify.preset,
+                "system_notification": notify.system_notification,
+                "play_sound": notify.play_sound,
+                "sound": notify.sound.unwrap_or(1),
             }),
         );
 
@@ -1323,7 +1344,7 @@ impl SequenceExecutor {
             serde_json::json!({
                 "node_id": node.id,
                 "message": rendered_message,
-                "timeout": approval.timeout,
+                "timeout": node.timeout,
             }),
         );
 
@@ -1342,7 +1363,7 @@ impl SequenceExecutor {
             return Err("SequenceManager not found in app state".to_string());
         }
 
-        let timeout_secs = approval.timeout.or(node.timeout).unwrap_or(3600);
+        let timeout_secs = node.timeout.unwrap_or(3600);
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
@@ -1689,7 +1710,7 @@ impl SequenceExecutor {
         let rendered_pr = TemplateEngine::render(&gh_wait.pr, context)?;
         let cwd = resolve_cwd(context);
         let poll_interval = gh_wait.poll_interval.unwrap_or(30);
-        let timeout_secs = gh_wait.timeout.or(node.timeout).unwrap_or(3600);
+        let timeout_secs = node.timeout.unwrap_or(3600);
         let start = std::time::Instant::now();
 
         loop {
@@ -1824,7 +1845,7 @@ impl SequenceExecutor {
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Option<serde_json::Value>, String> {
         let poll_interval = wait.poll_interval.unwrap_or(10);
-        let timeout_secs = wait.timeout.or(node.timeout).unwrap_or(300);
+        let timeout_secs = node.timeout.unwrap_or(300);
         let start = std::time::Instant::now();
 
         loop {
@@ -1854,7 +1875,7 @@ impl SequenceExecutor {
                 }
             }
 
-            let condition_met = if let Some(ref condition) = wait.condition {
+            let condition_met = if let Some(ref condition) = wait.poll_condition {
                 TemplateEngine::eval_bool(condition, context)?
             } else if let Some(ref poll_command) = wait.poll_command {
                 let rendered_cmd = TemplateEngine::render(poll_command, context)?;
@@ -2019,7 +2040,7 @@ impl SequenceExecutor {
     ) -> Result<Option<serde_json::Value>, String> {
         let rendered_url = TemplateEngine::render(&http_node.url, context)?;
         let method_str = http_node.method.as_deref().unwrap_or("GET").to_uppercase();
-        let timeout_secs = http_node.timeout.or(node.timeout).unwrap_or(60);
+        let timeout_secs = node.timeout.unwrap_or(60);
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
@@ -2648,9 +2669,10 @@ impl SequenceExecutor {
         );
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let pause_signal = Arc::new(Notify::new());
+        let sub_exec_id = uuid::Uuid::new_v4().to_string();
 
         let exec_id = sub_executor
-            .execute(sub_def, sub_inputs, false, cancel_flag, pause_signal)
+            .execute(sub_exec_id, sub_def, sub_inputs, false, cancel_flag, pause_signal, None)
             .await?;
 
         // Load the completed execution to extract outputs

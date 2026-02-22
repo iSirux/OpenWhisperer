@@ -1,6 +1,6 @@
 [package]
 name = "claude-whisperer"
-version = "0.8.0"
+version = "0.9.0"
 description = "Voice-controlled interface for Claude Code"
 authors = ["iSirux"]
 edition = "2021"

@@ -11,6 +11,7 @@ pub struct TemplateEngine;
 
 impl TemplateEngine {
     /// Create a new `TemplateEngine`.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         TemplateEngine
     }

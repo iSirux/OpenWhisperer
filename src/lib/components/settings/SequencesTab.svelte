@@ -20,7 +20,7 @@
 
   // New channel form state
   let newName = $state('');
-  let newType = $state<NotificationChannelType>('system');
+  let newType = $state<NotificationChannelType>('slack');
   let newWebhookUrl = $state('');
   let newEnabled = $state(true);
   let newHeaderKey = $state('');
@@ -29,7 +29,7 @@
 
   // Edit form state
   let editName = $state('');
-  let editType = $state<NotificationChannelType>('system');
+  let editType = $state<NotificationChannelType>('slack');
   let editWebhookUrl = $state('');
   let editEnabled = $state(true);
   let editHeaderKey = $state('');
@@ -47,7 +47,7 @@
 
   function resetNewForm() {
     newName = '';
-    newType = 'system';
+    newType = 'slack';
     newWebhookUrl = '';
     newEnabled = true;
     newHeaderKey = '';
@@ -68,7 +68,7 @@
       id,
       name: newName.trim(),
       channel_type: newType,
-      webhook_url: newType !== 'system' ? newWebhookUrl || null : null,
+      webhook_url: newWebhookUrl || null,
       headers: newType === 'webhook' && Object.keys(newHeaders).length > 0 ? { ...newHeaders } : null,
       enabled: newEnabled,
     };
@@ -115,7 +115,7 @@
       id: editingChannelId,
       name: editName.trim(),
       channel_type: editType,
-      webhook_url: editType !== 'system' ? editWebhookUrl || null : null,
+      webhook_url: editWebhookUrl || null,
       headers: editType === 'webhook' && Object.keys(editHeaders).length > 0 ? { ...editHeaders } : null,
       enabled: editEnabled,
     };
@@ -166,7 +166,6 @@
 
   function channelTypeLabel(type: NotificationChannelType): string {
     switch (type) {
-      case 'system': return 'System';
       case 'slack': return 'Slack';
       case 'discord': return 'Discord';
       case 'webhook': return 'Webhook';
@@ -277,7 +276,7 @@
     <div class="flex items-center justify-between mb-3">
       <div>
         <h3 class="text-sm font-semibold text-text-primary">Notification Channels</h3>
-        <p class="text-xs text-text-muted mt-0.5">Configure notification channels for sequence alerts.</p>
+        <p class="text-xs text-text-muted mt-0.5">Configure external notification channels (Slack, Discord, Webhook) for sequences.</p>
       </div>
       {#if !showAddForm}
         <button
@@ -313,15 +312,13 @@
             bind:value={newType}
             class="w-full px-2 py-1 text-sm rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none"
           >
-            <option value="system">System</option>
             <option value="slack">Slack</option>
             <option value="discord">Discord</option>
             <option value="webhook">Webhook</option>
           </select>
         </div>
 
-        {#if newType !== 'system'}
-          <div>
+        <div>
             <label class="block text-xs text-text-muted mb-1">Webhook URL</label>
             <input
               type="url"
@@ -330,7 +327,6 @@
               class="w-full px-2 py-1 text-sm rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none"
             />
           </div>
-        {/if}
 
         {#if newType === 'webhook'}
           <div>
@@ -381,7 +377,7 @@
           <button
             class="px-3 py-1 text-xs font-medium rounded bg-accent text-white hover:bg-accent/80 transition-colors disabled:opacity-50"
             onclick={addChannel}
-            disabled={!newName.trim() || !slugify(newName) || (newType !== 'system' && !newWebhookUrl.trim())}
+            disabled={!newName.trim() || !slugify(newName) || !newWebhookUrl.trim()}
           >
             Add
           </button>
@@ -418,15 +414,13 @@
                 </span>
               </div>
               <div class="flex items-center gap-1 shrink-0 ml-2">
-                {#if channel.channel_type !== 'system'}
-                  <button
-                    class="px-2 py-0.5 text-[10px] rounded border border-border text-text-muted hover:text-accent hover:border-accent transition-colors disabled:opacity-50"
-                    onclick={() => testChannel(channel.id)}
-                    disabled={testingChannelId === channel.id}
-                  >
-                    {testingChannelId === channel.id ? 'Sending...' : 'Test'}
-                  </button>
-                {/if}
+                <button
+                  class="px-2 py-0.5 text-[10px] rounded border border-border text-text-muted hover:text-accent hover:border-accent transition-colors disabled:opacity-50"
+                  onclick={() => testChannel(channel.id)}
+                  disabled={testingChannelId === channel.id}
+                >
+                  {testingChannelId === channel.id ? 'Sending...' : 'Test'}
+                </button>
                 <button
                   class="px-2 py-0.5 text-[10px] rounded border border-border text-text-muted hover:text-text-primary hover:border-accent transition-colors"
                   onclick={() => editingChannelId === channel.id ? cancelEditing() : startEditing(channel)}
@@ -469,24 +463,21 @@
                     bind:value={editType}
                     class="w-full px-2 py-1 text-sm rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none"
                   >
-                    <option value="system">System</option>
                     <option value="slack">Slack</option>
                     <option value="discord">Discord</option>
                     <option value="webhook">Webhook</option>
                   </select>
                 </div>
 
-                {#if editType !== 'system'}
-                  <div>
-                    <label class="block text-xs text-text-muted mb-1">Webhook URL</label>
-                    <input
-                      type="url"
-                      bind:value={editWebhookUrl}
-                      placeholder={editType === 'slack' ? 'https://hooks.slack.com/services/...' : editType === 'discord' ? 'https://discord.com/api/webhooks/...' : 'https://...'}
-                      class="w-full px-2 py-1 text-sm rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none"
-                    />
-                  </div>
-                {/if}
+                <div>
+                  <label class="block text-xs text-text-muted mb-1">Webhook URL</label>
+                  <input
+                    type="url"
+                    bind:value={editWebhookUrl}
+                    placeholder={editType === 'slack' ? 'https://hooks.slack.com/services/...' : editType === 'discord' ? 'https://discord.com/api/webhooks/...' : 'https://...'}
+                    class="w-full px-2 py-1 text-sm rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none"
+                  />
+                </div>
 
                 {#if editType === 'webhook'}
                   <div>
@@ -537,7 +528,7 @@
                   <button
                     class="px-3 py-1 text-xs font-medium rounded bg-accent text-white hover:bg-accent/80 transition-colors disabled:opacity-50"
                     onclick={() => saveEditing(i)}
-                    disabled={!editName.trim() || (editType !== 'system' && !editWebhookUrl.trim())}
+                    disabled={!editName.trim() || !editWebhookUrl.trim()}
                   >
                     Save
                   </button>

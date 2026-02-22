@@ -7,7 +7,6 @@ mod types;
 mod utils;
 
 pub use types::*;
-pub use api_types::LlmUsage;
 pub use providers::GenerationResult;
 
 use crate::config::{LlmModelPriority, LlmProvider};
@@ -36,9 +35,6 @@ pub struct LlmClient {
     /// Model priority when auto_model is enabled
     model_priority: LlmModelPriority,
 }
-
-// Type alias for backwards compatibility
-pub type GeminiClient = LlmClient;
 
 impl LlmClient {
     pub fn new(

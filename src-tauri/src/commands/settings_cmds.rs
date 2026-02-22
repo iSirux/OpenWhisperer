@@ -19,6 +19,49 @@ pub fn get_config_load_status(status: State<ConfigLoadStatus>) -> bool {
     *status.0.lock()
 }
 
+/// Returns the path to the config file and its parent directory.
+#[tauri::command]
+pub fn get_config_paths() -> (String, String) {
+    let config_path = AppConfig::config_path();
+    let config_dir = AppConfig::config_dir();
+    (
+        config_path.to_string_lossy().to_string(),
+        config_dir.to_string_lossy().to_string(),
+    )
+}
+
+/// Opens the config file in the system's default editor.
+#[tauri::command]
+pub fn open_config_file() -> Result<(), String> {
+    let path = AppConfig::config_path();
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/c", "start", "", &path.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to open config file: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open config file: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open config file: {}", e))?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn save_config(
     config: State<ConfigState>,

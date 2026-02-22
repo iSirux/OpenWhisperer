@@ -2,6 +2,7 @@
 
 import type { SessionAiMetadata, PlanModeState, NoteModeState } from '$lib/stores/sdkSessions';
 import type { SdkProvider } from '$lib/utils/models';
+import type { ExecutionStatus } from '$lib/types/sequence';
 
 /**
  * Unified session type for display in the session list and grid views.
@@ -9,7 +10,7 @@ import type { SdkProvider } from '$lib/utils/models';
  */
 export interface DisplaySession {
   id: string;
-  type: 'pty' | 'sdk';
+  type: 'pty' | 'sdk' | 'sequence';
   status: string;
   statusDetail?: string; // e.g., tool name being run
   prompt: string;
@@ -48,4 +49,8 @@ export interface DisplaySession {
 
   // Note mode state
   noteMode?: NoteModeState;
+
+  // Sequence execution fields
+  sequenceStatus?: ExecutionStatus;
+  sequenceProgress?: { completed: number; total: number };
 }
