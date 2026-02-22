@@ -855,103 +855,98 @@
   }
 </script>
 
-{#if currentView === 'sequences' && $activeExecution}
-  <!-- Sequence Execution View (full width, no sidebar) -->
-  <div class="flex-1 flex flex-col overflow-hidden">
-    <SequenceSessionView
-      execution={$activeExecution}
-      nodes={$sequences.find(s => s.id === $activeExecution.sequence_id)?.nodes ?? []}
+<div class="main-content flex-1 flex overflow-hidden">
+  <aside
+    class="sidebar border-r border-border bg-surface flex flex-col relative"
+    style="width: {sidebar.width}px; min-width: {sidebar.minWidth}px; max-width: {sidebar.maxWidth}px;"
+  >
+    <SessionSidebarHeader
+      sessions={$sessions}
+      sdkSessions={$sdkSessions}
+      {currentView}
+      markSessionsUnread={$settings.mark_sessions_unread}
+      onShowSessions={showSessionsView}
     />
-  </div>
-{:else}
-  <div class="main-content flex-1 flex overflow-hidden">
-    <aside
-      class="sidebar border-r border-border bg-surface flex flex-col relative"
-      style="width: {sidebar.width}px; min-width: {sidebar.minWidth}px; max-width: {sidebar.maxWidth}px;"
-    >
-      <SessionSidebarHeader
-        sessions={$sessions}
-        sdkSessions={$sdkSessions}
-        {currentView}
-        markSessionsUnread={$settings.mark_sessions_unread}
-        onShowSessions={showSessionsView}
+    <div class="flex-1 overflow-hidden">
+      <SessionList {currentView} />
+    </div>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="resize-handle absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-accent/50 transition-colors"
+      class:bg-accent={sidebar.isResizing}
+      onmousedown={sidebar.startResize}
+    ></div>
+  </aside>
+
+  <main class="flex-1 flex flex-col overflow-hidden">
+    {#if currentView === 'start'}
+      <Start />
+    {:else if currentView === 'sequences' && $activeExecution}
+      <SequenceSessionView
+        execution={$activeExecution}
+        nodes={$sequences.find(s => s.id === $activeExecution.sequence_id)?.nodes ?? []}
       />
-      <div class="flex-1 overflow-hidden">
-        <SessionList {currentView} />
-      </div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="resize-handle absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-accent/50 transition-colors"
-        class:bg-accent={sidebar.isResizing}
-        onmousedown={sidebar.startResize}
-      ></div>
-    </aside>
+    {:else if $activeSdkSession}
+      {@const activeSession = $activeSdkSession}
+      {@const sessionId = activeSession.id}
+      {@const isPendingState =
+        activeSession.status === 'pending_repo' ||
+        activeSession.status === 'initializing'}
+      {@const isSetupState = activeSession.status === 'setup'}
 
-    <main class="flex-1 flex flex-col overflow-hidden">
-      {#if currentView === 'start'}
-        <Start />
-      {:else if $activeSdkSession}
-        {@const activeSession = $activeSdkSession}
-        {@const sessionId = activeSession.id}
-        {@const isPendingState =
-          activeSession.status === 'pending_repo' ||
-          activeSession.status === 'initializing'}
-        {@const isSetupState = activeSession.status === 'setup'}
+      {#if isSetupState}
+        <SessionSetupView
+          initialModel={activeSession.model}
+          initialEffortLevel={activeSession.effortLevel}
+          initialCwd={$activeRepo?.path || ''}
+          initialPlanMode={activeSession.planMode?.isActive || false}
+          isRecordingForSetup={recordingFlow.isRecordingForSetup}
+          onStart={(config) => handleSetupSessionStart(sessionId, config)}
+          onStartRecording={recordingFlow.startRecordingForSetup}
+          onStopRecording={recordingFlow.stopRecordingForSetup}
+          onCancel={() => handleSetupSessionCancel(sessionId)}
+        />
+      {:else}
+        <SdkSessionHeader
+          createdAt={activeSession.createdAt}
+          messages={activeSession.messages}
+          isPending={isPendingState}
+          repoName={activeSdkRepoName}
+          branch={activeSdkSessionBranch}
+          firstPrompt={activeSdkFirstPrompt()}
+          onClose={handleSessionClose}
+          onCancel={handlePendingSessionCancel}
+        />
 
-        {#if isSetupState}
-          <SessionSetupView
-            initialModel={activeSession.model}
-            initialEffortLevel={activeSession.effortLevel}
-            initialCwd={$activeRepo?.path || ''}
-            initialPlanMode={activeSession.planMode?.isActive || false}
-            isRecordingForSetup={recordingFlow.isRecordingForSetup}
-            onStart={(config) => handleSetupSessionStart(sessionId, config)}
-            onStartRecording={recordingFlow.startRecordingForSetup}
-            onStopRecording={recordingFlow.stopRecordingForSetup}
-            onCancel={() => handleSetupSessionCancel(sessionId)}
-          />
+        {#if isPendingState}
+          <div class="terminal-wrapper flex-1 overflow-hidden">
+            <SessionPendingView
+              status={activeSession.status as 'pending_repo' | 'initializing'}
+              repos={$settings.repos}
+              pendingSelection={activeSession.pendingRepoSelection}
+              pendingPrompt={activeSession.pendingPrompt}
+              onSelectRepo={handlePendingRepoSelection}
+              onCancel={handlePendingSessionCancel}
+            />
+          </div>
         {:else}
-          <SdkSessionHeader
-            createdAt={activeSession.createdAt}
-            messages={activeSession.messages}
-            isPending={isPendingState}
-            repoName={activeSdkRepoName}
-            branch={activeSdkSessionBranch}
-            firstPrompt={activeSdkFirstPrompt()}
-            onClose={handleSessionClose}
-            onCancel={handlePendingSessionCancel}
-          />
-
-          {#if isPendingState}
-            <div class="terminal-wrapper flex-1 overflow-hidden">
-              <SessionPendingView
-                status={activeSession.status as 'pending_repo' | 'initializing'}
-                repos={$settings.repos}
-                pendingSelection={activeSession.pendingRepoSelection}
-                pendingPrompt={activeSession.pendingPrompt}
-                onSelectRepo={handlePendingRepoSelection}
-                onCancel={handlePendingSessionCancel}
-              />
-            </div>
-          {:else}
-            <div class="terminal-wrapper flex-1 overflow-hidden">
-              {#key sessionId}
-                <SdkView bind:this={sdkViewRef} sessionId={sessionId} />
-              {/key}
-            </div>
-          {/if}
+          <div class="terminal-wrapper flex-1 overflow-hidden">
+            {#key sessionId}
+              <SdkView bind:this={sdkViewRef} sessionId={sessionId} />
+            {/key}
+          </div>
         {/if}
-      {:else if $activeSession}
-        <SessionHeader session={$activeSession} />
-        <div class="terminal-wrapper flex-1 overflow-hidden">
-          {#key $activeSession.id}
-            <Terminal sessionId={$activeSession.id} />
-          {/key}
-        </div>
       {/if}
-    </main>
-  </div>
-{/if}
+    {:else if $activeSession}
+      <SessionHeader session={$activeSession} />
+      <div class="terminal-wrapper flex-1 overflow-hidden">
+        {#key $activeSession.id}
+          <Terminal sessionId={$activeSession.id} />
+        {/key}
+      </div>
+    {/if}
+  </main>
+</div>
 
 <style>
   .terminal-wrapper {
