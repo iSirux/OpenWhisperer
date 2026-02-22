@@ -44,6 +44,7 @@ const listeners: Map<string, UnlistenFn[]> = new Map();
 
 /** Set up event listeners for an execution */
 export async function setupListeners(executionId: string): Promise<void> {
+  console.log(`[sequence] Setting up listeners for ${executionId.slice(0, 8)}`);
   const unlisteners: UnlistenFn[] = [];
 
   // Node start
@@ -51,6 +52,7 @@ export async function setupListeners(executionId: string): Promise<void> {
     await listen<SequenceNodeStartEvent>(
       `sequence-node-start-${executionId}`,
       (event) => {
+        console.log(`[sequence][${executionId.slice(0, 8)}] node-start:`, event.payload.node_id);
         executions.update((execs) =>
           execs.map((e) => {
             if (e.id !== executionId) return e;
@@ -77,6 +79,7 @@ export async function setupListeners(executionId: string): Promise<void> {
     await listen<SequenceNodeCompleteEvent>(
       `sequence-node-complete-${executionId}`,
       (event) => {
+        console.log(`[sequence][${executionId.slice(0, 8)}] node-complete:`, event.payload.node_id);
         executions.update((execs) =>
           execs.map((e) => {
             if (e.id !== executionId) return e;
@@ -171,6 +174,7 @@ export async function setupListeners(executionId: string): Promise<void> {
     await listen<ExecutionStatus>(
       `sequence-status-${executionId}`,
       (event) => {
+        console.log(`[sequence][${executionId.slice(0, 8)}] status event:`, event.payload);
         executions.update((execs) =>
           execs.map((e) => {
             if (e.id !== executionId) return e;
@@ -207,6 +211,7 @@ export async function setupListeners(executionId: string): Promise<void> {
     await listen<ExecutionStatus>(
       `sequence-done-${executionId}`,
       (event) => {
+        console.log(`[sequence][${executionId.slice(0, 8)}] done event:`, event.payload);
         executions.update((execs) =>
           execs.map((e) => {
             if (e.id !== executionId) return e;
@@ -234,6 +239,7 @@ export async function setupListeners(executionId: string): Promise<void> {
     }>(
       `sequence-notification-${executionId}`,
       (event) => {
+        console.log(`[sequence][${executionId.slice(0, 8)}] notification event:`, event.payload);
         const { title, message, system_notification, play_sound, sound } = event.payload;
         if (system_notification) {
           try {
@@ -284,12 +290,11 @@ export async function startExecution(
   dryRun: boolean = false,
   entryNodeId?: string
 ): Promise<string> {
-  const executionId = await invoke<string>("start_execution", {
-    sequenceId,
-    inputs,
-    dryRun,
-    entryNodeId: entryNodeId ?? null,
-  });
+  // Generate execution ID up-front so we can set up listeners BEFORE the
+  // backend starts emitting events (avoids race where fast sequences
+  // complete before listeners are registered).
+  const executionId = crypto.randomUUID();
+  console.log(`[sequence] startExecution id=${executionId.slice(0, 8)} for sequence=${sequenceId}`);
 
   // Create initial execution state
   executions.update((execs) => [
@@ -316,20 +321,17 @@ export async function startExecution(
     ...execs,
   ]);
 
-  // Set up event listeners
+  // Set up event listeners BEFORE starting execution
   await setupListeners(executionId);
 
-  // Sync state from backend to catch any events that fired before listeners were ready
-  try {
-    const currentState = await invoke<SequenceExecution>("get_execution", { executionId });
-    if (currentState) {
-      executions.update((execs) =>
-        execs.map((e) => (e.id === executionId ? { ...e, ...currentState } : e))
-      );
-    }
-  } catch {
-    // Execution may not be persisted yet if it just started — that's OK
-  }
+  // NOW start execution on the backend with our pre-generated ID
+  await invoke<string>("start_execution", {
+    executionId,
+    sequenceId,
+    inputs,
+    dryRun,
+    entryNodeId: entryNodeId ?? null,
+  });
 
   // Select this execution
   activeExecutionId.set(executionId);

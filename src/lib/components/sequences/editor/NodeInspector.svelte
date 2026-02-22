@@ -11,17 +11,44 @@
     allNodes = [] as EditorNode[],
     onNodeUpdate = (node: EditorNode) => {},
     onNodeDelete = (nodeId: string) => {},
+    sequenceDescription = $bindable(''),
+    sequenceRepos = $bindable<string[]>([]),
+    sequenceTags = $bindable<string[]>([]),
   }: {
     selectedNode: EditorNode | null;
     allNodes?: EditorNode[];
     onNodeUpdate?: (node: EditorNode) => void;
     onNodeDelete?: (nodeId: string) => void;
+    sequenceDescription?: string;
+    sequenceRepos?: string[];
+    sequenceTags?: string[];
   } = $props();
 
   let confirmingDelete = $state(false);
+  let newTag = $state('');
 
   let aiAssistDescription = $state('');
   let aiAssistLoading = $state(false);
+
+  function addTag() {
+    const tag = newTag.trim().toLowerCase();
+    if (tag && !sequenceTags.includes(tag)) {
+      sequenceTags = [...sequenceTags, tag];
+    }
+    newTag = '';
+  }
+
+  function removeTag(tag: string) {
+    sequenceTags = sequenceTags.filter(t => t !== tag);
+  }
+
+  function toggleRepo(path: string) {
+    if (sequenceRepos.includes(path)) {
+      sequenceRepos = sequenceRepos.filter(r => r !== path);
+    } else {
+      sequenceRepos = [...sequenceRepos, path];
+    }
+  }
 
   // Common CSS classes
   const inputCls = 'w-full px-2 py-1 text-xs rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none';
@@ -124,8 +151,78 @@
 
 <div class="w-[300px] border-l border-border bg-surface overflow-y-auto flex-shrink-0">
   {#if !selectedNode}
-    <div class="flex items-center justify-center h-full text-text-muted text-xs">
-      Select a node to edit
+    <div class="p-3 space-y-4 overflow-y-auto h-full">
+      <h3 class="text-sm font-semibold text-text-primary">Sequence Details</h3>
+
+      <!-- Description -->
+      <div>
+        <label class="block text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1">Description</label>
+        <textarea
+          bind:value={sequenceDescription}
+          class="w-full px-2 py-1.5 text-xs rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none resize-y"
+          rows="3"
+          placeholder="What does this sequence do?"
+        ></textarea>
+      </div>
+
+      <!-- Repositories -->
+      <div>
+        <label class="block text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1">
+          Repositories
+          <span class="font-normal text-text-muted ml-1">
+            {sequenceRepos.length === 0 ? '(all)' : `(${sequenceRepos.length})`}
+          </span>
+        </label>
+        {#if $settings.repos.length === 0}
+          <p class="text-[10px] text-text-muted italic">No repos configured.</p>
+        {:else}
+          <div class="flex flex-wrap gap-1">
+            {#each $settings.repos as repo}
+              <button
+                class="px-1.5 py-0.5 text-[10px] rounded-full border transition-colors {sequenceRepos.includes(repo.path)
+                  ? 'bg-accent/20 border-accent text-accent'
+                  : 'border-border text-text-muted hover:border-text-secondary hover:text-text-secondary'}"
+                onclick={() => toggleRepo(repo.path)}
+                title={repo.path}
+              >
+                {repo.name}
+              </button>
+            {/each}
+          </div>
+          <p class="text-[10px] text-text-muted mt-1">Leave empty for all repos.</p>
+        {/if}
+      </div>
+
+      <!-- Tags -->
+      <div>
+        <label class="block text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1">Tags</label>
+        {#if sequenceTags.length > 0}
+          <div class="flex flex-wrap gap-1 mb-1.5">
+            {#each sequenceTags as tag}
+              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] rounded-full bg-surface-elevated text-text-secondary border border-border/50">
+                {tag}
+                <button class="ml-0.5 hover:text-red-400 transition-colors" onclick={() => removeTag(tag)}>&times;</button>
+              </span>
+            {/each}
+          </div>
+        {/if}
+        <div class="flex items-center gap-1">
+          <input
+            type="text"
+            bind:value={newTag}
+            class="flex-1 px-1.5 py-0.5 text-[10px] rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none"
+            placeholder="Add tag..."
+            onkeydown={(e) => e.key === 'Enter' && addTag()}
+          />
+          <button
+            class="px-1.5 py-0.5 text-[10px] rounded border border-border text-text-muted hover:text-text-primary hover:bg-surface-elevated transition-colors disabled:opacity-50"
+            onclick={addTag}
+            disabled={!newTag.trim()}
+          >+</button>
+        </div>
+      </div>
+
+      <p class="text-[10px] text-text-muted italic pt-2 border-t border-border">Select a node on the canvas to edit its properties.</p>
     </div>
   {:else}
     <!-- Reusable snippet: Tag editor for string arrays -->

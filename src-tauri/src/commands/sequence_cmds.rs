@@ -73,12 +73,13 @@ pub fn validate_sequence(
 #[tauri::command]
 pub async fn start_execution(
     manager: State<'_, Arc<SequenceManager>>,
+    execution_id: Option<String>,
     sequence_id: String,
     inputs: HashMap<String, serde_json::Value>,
     dry_run: bool,
     entry_node_id: Option<String>,
 ) -> Result<String, String> {
-    manager.start_execution_at(&sequence_id, inputs, dry_run, entry_node_id)
+    manager.start_execution_with_id(execution_id, &sequence_id, inputs, dry_run, entry_node_id)
 }
 
 #[tauri::command]

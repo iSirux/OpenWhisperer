@@ -113,9 +113,35 @@ impl SequenceManager {
         self.start_execution_at(sequence_id, inputs, dry_run, None)
     }
 
+    /// Start execution with an optional pre-generated ID (for frontend callers
+    /// that need to set up event listeners before execution begins).
+    pub fn start_execution_with_id(
+        &self,
+        execution_id: Option<String>,
+        sequence_id: &str,
+        inputs: HashMap<String, serde_json::Value>,
+        dry_run: bool,
+        entry_node_id: Option<String>,
+    ) -> Result<String, String> {
+        self.start_execution_inner(execution_id, sequence_id, inputs, dry_run, entry_node_id)
+    }
+
     /// Start execution at a specific entry node (used by triggers).
     pub fn start_execution_at(
         &self,
+        sequence_id: &str,
+        inputs: HashMap<String, serde_json::Value>,
+        dry_run: bool,
+        entry_node_id: Option<String>,
+    ) -> Result<String, String> {
+        self.start_execution_inner(None, sequence_id, inputs, dry_run, entry_node_id)
+    }
+
+    /// Shared implementation for all execution start paths.
+    /// If `pre_id` is Some, uses that as the execution ID (frontend pre-generated).
+    fn start_execution_inner(
+        &self,
+        pre_id: Option<String>,
         sequence_id: &str,
         inputs: HashMap<String, serde_json::Value>,
         dry_run: bool,
@@ -136,8 +162,9 @@ impl SequenceManager {
         let cancel = cancel_flag.clone();
         let pause = pause_signal.clone();
 
-        // Generate execution ID up-front so we can return it immediately.
-        let execution_id = uuid::Uuid::new_v4().to_string();
+        // Use pre-generated ID from frontend, or generate one.
+        let execution_id = pre_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        println!("[sequence] start_execution_inner: id={}, sequence={}", execution_id, sequence_id);
         let exec_id = execution_id.clone();
 
         // Store coordination primitives

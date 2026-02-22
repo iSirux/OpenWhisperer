@@ -16,8 +16,6 @@
   let sequenceId = $state(initialDefinition?.id || '');
   let sequenceRepos = $state<string[]>(initialDefinition?.repos || []);
   let sequenceTags = $state<string[]>(initialDefinition?.tags || []);
-  let showMetadata = $state(false);
-  let newTag = $state('');
 
   // Graph state
   let nodes = $state<EditorNode[]>([]);
@@ -91,26 +89,6 @@
       tags: sequenceTags,
       repos: sequenceRepos,
     });
-  }
-
-  function toggleRepo(path: string) {
-    if (sequenceRepos.includes(path)) {
-      sequenceRepos = sequenceRepos.filter(r => r !== path);
-    } else {
-      sequenceRepos = [...sequenceRepos, path];
-    }
-  }
-
-  function addTag() {
-    const tag = newTag.trim().toLowerCase();
-    if (tag && !sequenceTags.includes(tag)) {
-      sequenceTags = [...sequenceTags, tag];
-    }
-    newTag = '';
-  }
-
-  function removeTag(tag: string) {
-    sequenceTags = sequenceTags.filter(t => t !== tag);
   }
 
   async function handleSave() {
@@ -193,15 +171,6 @@
         class="text-sm font-semibold bg-transparent border-none text-text-primary focus:outline-none focus:ring-1 focus:ring-accent rounded px-1 w-64"
         placeholder="Sequence name" />
 
-      <button
-        class="p-1.5 rounded transition-colors {showMetadata ? 'bg-accent/20 text-accent' : 'text-text-muted hover:text-text-primary hover:bg-surface-elevated'}"
-        onclick={() => showMetadata = !showMetadata}
-        title="Edit description, repos & tags"
-      >
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-        </svg>
-      </button>
     </div>
 
     <div class="flex items-center gap-2">
@@ -236,79 +205,6 @@
     </div>
   </header>
 
-  <!-- Metadata panel (collapsible) -->
-  {#if showMetadata}
-    <div class="px-4 py-3 border-b border-border bg-surface space-y-3">
-      <!-- Description -->
-      <div>
-        <label class="block text-xs font-medium text-text-secondary mb-1">Description</label>
-        <textarea
-          bind:value={sequenceDescription}
-          class="w-full px-2 py-1.5 text-xs rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none resize-none"
-          rows="2"
-          placeholder="What does this sequence do?"
-        ></textarea>
-      </div>
-
-      <div class="flex gap-6">
-        <!-- Repos -->
-        <div class="flex-1">
-          <label class="block text-xs font-medium text-text-secondary mb-1">
-            Repositories
-            <span class="font-normal text-text-muted ml-1">
-              {sequenceRepos.length === 0 ? '(all repos)' : `(${sequenceRepos.length} selected)`}
-            </span>
-          </label>
-          {#if $settings.repos.length === 0}
-            <p class="text-xs text-text-muted italic">No repositories configured. Add repos in Settings.</p>
-          {:else}
-            <div class="flex flex-wrap gap-1.5">
-              {#each $settings.repos as repo}
-                <button
-                  class="px-2 py-0.5 text-xs rounded-full border transition-colors {sequenceRepos.includes(repo.path)
-                    ? 'bg-accent/20 border-accent text-accent'
-                    : 'border-border text-text-muted hover:border-text-secondary hover:text-text-secondary'}"
-                  onclick={() => toggleRepo(repo.path)}
-                  title={repo.path}
-                >
-                  {repo.name}
-                </button>
-              {/each}
-            </div>
-            <p class="text-[10px] text-text-muted mt-1">Leave empty to allow this sequence on all repos.</p>
-          {/if}
-        </div>
-
-        <!-- Tags -->
-        <div class="flex-1">
-          <label class="block text-xs font-medium text-text-secondary mb-1">Tags</label>
-          <div class="flex flex-wrap gap-1.5 mb-1.5">
-            {#each sequenceTags as tag}
-              <span class="inline-flex items-center gap-0.5 px-2 py-0.5 text-xs rounded-full bg-surface-elevated text-text-secondary border border-border">
-                {tag}
-                <button class="ml-0.5 hover:text-red-400 transition-colors" onclick={() => removeTag(tag)}>&times;</button>
-              </span>
-            {/each}
-          </div>
-          <div class="flex items-center gap-1">
-            <input
-              type="text"
-              bind:value={newTag}
-              class="px-2 py-0.5 text-xs rounded border border-border bg-surface-elevated text-text-primary focus:border-accent focus:outline-none w-32"
-              placeholder="Add tag..."
-              onkeydown={(e) => e.key === 'Enter' && addTag()}
-            />
-            <button
-              class="px-2 py-0.5 text-xs rounded border border-border text-text-muted hover:text-text-primary hover:bg-surface-elevated transition-colors disabled:opacity-50"
-              onclick={addTag}
-              disabled={!newTag.trim()}
-            >+</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  {/if}
-
   <!-- Main area -->
   <div class="flex flex-1 overflow-hidden">
     <NodePalette onAddNode={(type) => { addNodeType = type; }} />
@@ -321,6 +217,6 @@
       <NodeCanvas bind:nodes bind:edges bind:addNodeType onNodeSelect={handleNodeSelect} />
     {/if}
 
-    <NodeInspector bind:selectedNode allNodes={nodes} onNodeUpdate={handleNodeUpdate} onNodeDelete={handleNodeDelete} />
+    <NodeInspector bind:selectedNode allNodes={nodes} onNodeUpdate={handleNodeUpdate} onNodeDelete={handleNodeDelete} bind:sequenceDescription bind:sequenceRepos bind:sequenceTags />
   </div>
 </div>
