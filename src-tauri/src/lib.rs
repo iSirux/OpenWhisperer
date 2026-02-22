@@ -292,6 +292,8 @@ pub fn run() {
             sdk_cmds::save_claude_api_key,
             sdk_cmds::has_claude_api_key,
             sdk_cmds::delete_claude_api_key,
+            sdk_cmds::fetch_claude_rate_limits,
+            sdk_cmds::fetch_codex_rate_limits,
             session_cmds::get_persisted_sessions,
             session_cmds::save_persisted_sessions,
             session_cmds::clear_persisted_sessions,
