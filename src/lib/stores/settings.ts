@@ -531,7 +531,7 @@ const defaultConfig: AppConfig = {
     "claude-haiku-4-5-20251001",
   ],
   terminal_mode: "Interactive",
-  codex_mode: "Sdk",
+  codex_mode: "AppServer",
   sdk_provider: "Claude",
   openai_model: "gpt-5.3-codex",
   enabled_openai_models: [

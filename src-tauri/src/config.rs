@@ -955,8 +955,8 @@ pub enum ClaudeTerminalMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum CodexMode {
     #[default]
-    Sdk,
     AppServer,
+    Sdk,
 }
 
 #[derive(Debug, Clone, PartialEq)]
