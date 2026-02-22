@@ -128,27 +128,70 @@
             >
           </div>
           <p class="text-xs text-text-muted mt-1">
-            Older sessions will be automatically removed when the limit
-            is exceeded
+            Sessions exceeding this limit are automatically moved to the
+            archive
           </p>
         </div>
-        <button
-          class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors"
-          onclick={async () => {
-            if (
-              confirm(
-                "Are you sure you want to clear all saved sessions? This cannot be undone."
-              )
-            ) {
-              const { clearPersistedSessions } = await import(
-                "$lib/stores/sessionPersistence"
-              );
-              await clearPersistedSessions();
-            }
-          }}
-        >
-          Clear Saved Sessions
-        </button>
+        <div>
+          <label
+            class="block text-sm font-medium text-text-secondary mb-1"
+            >Maximum Archived Sessions</label
+          >
+          <div class="flex items-center gap-3">
+            <input
+              type="range"
+              min="50"
+              max="2000"
+              step="50"
+              class="flex-1 accent-accent"
+              bind:value={
+                $settings.session_persistence.max_archived_sessions
+              }
+            />
+            <span class="text-sm text-text-primary w-12 text-right"
+              >{$settings.session_persistence.max_archived_sessions ??
+                500}</span
+            >
+          </div>
+          <p class="text-xs text-text-muted mt-1">
+            Closed sessions are moved to the archive. Oldest archived
+            sessions are permanently removed when this limit is exceeded.
+          </p>
+        </div>
+        <div class="flex gap-2">
+          <button
+            class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors"
+            onclick={async () => {
+              if (
+                confirm(
+                  "Are you sure you want to clear all saved sessions? This cannot be undone."
+                )
+              ) {
+                const { clearPersistedSessions } = await import(
+                  "$lib/stores/sessionPersistence"
+                );
+                await clearPersistedSessions();
+              }
+            }}
+          >
+            Clear Saved Sessions
+          </button>
+          <button
+            class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors"
+            onclick={async () => {
+              if (
+                confirm(
+                  "Are you sure you want to clear the entire archive? This cannot be undone."
+                )
+              ) {
+                const { archive } = await import("$lib/stores/archive");
+                await archive.clearAll();
+              }
+            }}
+          >
+            Clear Archive
+          </button>
+        </div>
       {/if}
     </div>
   </div>

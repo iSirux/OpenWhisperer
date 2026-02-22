@@ -302,6 +302,15 @@
       </div>
       <span class="error-text">{message.content}</span>
     </div>
+  {:else if message.type === "notification"}
+    <div class="notification-message">
+      <div class="notification-icon-wrapper">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm6.5-.25A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
+        </svg>
+      </div>
+      <span class="notification-text">{message.content}</span>
+    </div>
   {:else if message.type === "subagent_start"}
     <div class="subagent-call">
       <div class="subagent-header">
@@ -891,6 +900,38 @@
     color: var(--color-error);
     font-size: 0.8rem;
     line-height: 1.5;
+  }
+
+  /* Notification styles */
+  .notification-message {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.625rem;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+    border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
+  }
+
+  .notification-icon-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--color-accent);
+    flex-shrink: 0;
+  }
+
+  .notification-icon-wrapper svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .notification-text {
+    color: var(--color-text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.4;
   }
 
   /* Subagent styles */

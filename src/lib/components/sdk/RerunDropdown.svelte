@@ -4,6 +4,7 @@
   import { activeSessionId } from '$lib/stores/sessions';
   import { getEnabledModels, type ModelInfo } from '$lib/utils/models';
   import { getModelBgColor, getModelHoverBgColor } from '$lib/utils/modelColors';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {
     /** The original prompt content to rerun */
@@ -24,7 +25,7 @@
 
   // Get available models and repos from settings
   const models = $derived(getEnabledModels($settings.enabled_models));
-  const repos = $derived($settings.repos);
+  const repos = $derived($settings.repos.filter((r) => r.active !== false));
 
   // Find current repo index
   const currentRepoIndex = $derived(repos.findIndex(r => r.path === currentCwd));
@@ -159,9 +160,7 @@
                   class:selected={effectiveRepoIndex === index}
                   onclick={() => handleRepoSelect(index)}
                 >
-                  <svg class="repo-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                  </svg>
+                  <RepoIcon repo={repo} size="xs" />
                   <span class="repo-name">{getRepoDisplayName(repo)}</span>
                   {#if index === currentRepoIndex && selectedRepoIndex === null}
                     <span class="current-badge">current</span>

@@ -2,6 +2,7 @@
   import type { SequenceDefinition } from '$lib/types/sequence';
   import { startExecution } from '$lib/stores/sequenceExecutions';
   import { settings } from '$lib/stores/settings';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {
     sequence: SequenceDefinition;
@@ -160,6 +161,7 @@
                         values[input.name] = current;
                       }}
                       class="rounded border-border accent-accent" />
+                    <RepoIcon repo={repo} size="xs" />
                     <div class="flex-1 min-w-0">
                       <span class="text-xs text-text-primary">{repo.name}</span>
                       {#if (repo.tags || []).length > 0}

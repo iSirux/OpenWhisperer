@@ -4,7 +4,7 @@
  */
 
 import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
-import { settings } from '$lib/stores/settings';
+import { settings, type HotkeyEnabledConfig } from '$lib/stores/settings';
 import { isRecording } from '$lib/stores/recording';
 import { overlay } from '$lib/stores/overlay';
 import { isModelRecommendationEnabled, isRepoAutoSelectEnabled } from '$lib/utils/llm';
@@ -20,6 +20,10 @@ export interface HotkeyCallbacks {
   onStopAndPaste: () => Promise<void>;
   /** Called when recording should start in note mode */
   onStartNoteRecording: () => Promise<void>;
+  /** Called when selected text should be copied and sent as a new prompt */
+  onSendSelection: () => Promise<void>;
+  /** Called when selected text should be copied and prepared as a session */
+  onPrepareSelection: () => Promise<void>;
 }
 
 export function useHotkeyManager() {
@@ -32,12 +36,21 @@ export function useHotkeyManager() {
   let registeredCycleModelHotkey: string | null = null;
   let registeredToggleRecordingHotkey: string | null = null;
   let registeredNoteModeHotkey: string | null = null;
+  let sendSelectionHotkeyRegistered = false;
+  let prepareSelectionHotkeyRegistered = false;
+  let registeredSendSelectionHotkey: string | null = null;
+  let registeredPrepareSelectionHotkey: string | null = null;
 
   // Debounce flags
   let isTogglingRecording = false;
   let isCyclingRepo = false;
   let isCyclingModel = false;
   let isStartingNoteMode = false;
+  let isSendingSelection = false;
+  let isPreparingSelection = false;
+
+  // Track last-known enabled state for change detection
+  let lastEnabledState: string | null = null;
 
   // Callbacks stored from setup
   let callbacks: HotkeyCallbacks | null = null;
@@ -62,31 +75,38 @@ export function useHotkeyManager() {
       registeredNoteModeHotkey = null;
 
       const currentSettings = get(settings);
-      console.log('[Hotkey] Registering toggle_recording:', currentSettings.hotkeys.toggle_recording);
+      const enabled = currentSettings.hotkeys_enabled;
 
-      await register(currentSettings.hotkeys.toggle_recording, async () => {
-        if (isTogglingRecording) return;
-        isTogglingRecording = true;
+      // Register toggle_recording hotkey (only if enabled)
+      if (enabled.toggle_recording) {
+        console.log('[Hotkey] Registering toggle_recording:', currentSettings.hotkeys.toggle_recording);
 
-        try {
-          if (get(isRecording)) {
-            await callbacks?.onStopAndSend();
-          } else {
-            await callbacks?.onStartRecording();
+        await register(currentSettings.hotkeys.toggle_recording, async () => {
+          if (isTogglingRecording) return;
+          isTogglingRecording = true;
+
+          try {
+            if (get(isRecording)) {
+              await callbacks?.onStopAndSend();
+            } else {
+              await callbacks?.onStartRecording();
+            }
+          } finally {
+            setTimeout(() => {
+              isTogglingRecording = false;
+            }, 200);
           }
-        } finally {
-          setTimeout(() => {
-            isTogglingRecording = false;
-          }, 200);
-        }
-      });
+        });
 
-      registeredToggleRecordingHotkey = currentSettings.hotkeys.toggle_recording;
-      console.log('[Hotkey] Successfully registered toggle_recording:', registeredToggleRecordingHotkey);
+        registeredToggleRecordingHotkey = currentSettings.hotkeys.toggle_recording;
+        console.log('[Hotkey] Successfully registered toggle_recording:', registeredToggleRecordingHotkey);
+      } else {
+        console.log('[Hotkey] toggle_recording is disabled, skipping registration');
+      }
 
-      // Register note mode hotkey
+      // Register note mode hotkey (only if enabled)
       const noteModeHotkey = currentSettings.hotkeys.note_mode;
-      if (noteModeHotkey && noteModeHotkey !== currentSettings.hotkeys.toggle_recording) {
+      if (enabled.note_mode && noteModeHotkey && noteModeHotkey !== currentSettings.hotkeys.toggle_recording) {
         console.log('[Hotkey] Registering note_mode:', noteModeHotkey);
         await register(noteModeHotkey, async () => {
           if (isStartingNoteMode || get(isRecording)) return;
@@ -104,6 +124,64 @@ export function useHotkeyManager() {
         registeredNoteModeHotkey = noteModeHotkey;
         noteModeHotkeyRegistered = true;
         console.log('[Hotkey] Successfully registered note_mode:', noteModeHotkey);
+      } else if (!enabled.note_mode) {
+        console.log('[Hotkey] note_mode is disabled, skipping registration');
+      }
+
+      // Collect already-registered hotkeys for collision detection
+      const registeredHotkeys = new Set([
+        currentSettings.hotkeys.toggle_recording,
+        noteModeHotkey,
+      ].filter(Boolean));
+
+      // Register send_selection hotkey (only if enabled)
+      const sendSelectionHotkey = currentSettings.hotkeys.send_selection;
+      if (enabled.send_selection && sendSelectionHotkey && !registeredHotkeys.has(sendSelectionHotkey)) {
+        console.log('[Hotkey] Registering send_selection:', sendSelectionHotkey);
+        await register(sendSelectionHotkey, async () => {
+          if (isSendingSelection || get(isRecording)) return;
+          isSendingSelection = true;
+
+          try {
+            await callbacks?.onSendSelection();
+          } finally {
+            setTimeout(() => {
+              isSendingSelection = false;
+            }, 200);
+          }
+        });
+
+        registeredSendSelectionHotkey = sendSelectionHotkey;
+        sendSelectionHotkeyRegistered = true;
+        registeredHotkeys.add(sendSelectionHotkey);
+        console.log('[Hotkey] Successfully registered send_selection:', sendSelectionHotkey);
+      } else if (!enabled.send_selection) {
+        console.log('[Hotkey] send_selection is disabled, skipping registration');
+      }
+
+      // Register prepare_selection hotkey (only if enabled)
+      const prepareSelectionHotkey = currentSettings.hotkeys.prepare_selection;
+      if (enabled.prepare_selection && prepareSelectionHotkey && !registeredHotkeys.has(prepareSelectionHotkey)) {
+        console.log('[Hotkey] Registering prepare_selection:', prepareSelectionHotkey);
+        await register(prepareSelectionHotkey, async () => {
+          if (isPreparingSelection || get(isRecording)) return;
+          isPreparingSelection = true;
+
+          try {
+            await callbacks?.onPrepareSelection();
+          } finally {
+            setTimeout(() => {
+              isPreparingSelection = false;
+            }, 200);
+          }
+        });
+
+        registeredPrepareSelectionHotkey = prepareSelectionHotkey;
+        prepareSelectionHotkeyRegistered = true;
+        registeredHotkeys.add(prepareSelectionHotkey);
+        console.log('[Hotkey] Successfully registered prepare_selection:', prepareSelectionHotkey);
+      } else if (!enabled.prepare_selection) {
+        console.log('[Hotkey] prepare_selection is disabled, skipping registration');
       }
     } catch (error) {
       console.error('Failed to register hotkeys:', error);
@@ -111,9 +189,21 @@ export function useHotkeyManager() {
   }
 
   /**
-   * Check if the toggle_recording hotkey has changed and re-register if needed
+   * Check if the toggle_recording hotkey or enabled states have changed and re-register if needed
    */
-  function checkForHotkeyChange(currentHotkey: string) {
+  function checkForHotkeyChange(currentHotkey: string, enabledState?: HotkeyEnabledConfig) {
+    // Check if enabled states changed
+    if (enabledState) {
+      const enabledStr = JSON.stringify(enabledState);
+      if (lastEnabledState !== null && enabledStr !== lastEnabledState && callbacks) {
+        console.log('[Hotkey] Detected enabled state change, re-registering...');
+        lastEnabledState = enabledStr;
+        return true;
+      }
+      lastEnabledState = enabledStr;
+    }
+
+    // Check if hotkey binding changed
     if (!currentHotkey || currentHotkey === registeredToggleRecordingHotkey) {
       return false;
     }
@@ -136,6 +226,10 @@ export function useHotkeyManager() {
     if (transcribeHotkeyRegistered) return;
 
     const currentSettings = get(settings);
+    if (!currentSettings.hotkeys_enabled.transcribe_to_input) {
+      console.log('[Hotkey] transcribe_to_input is disabled, skipping registration');
+      return;
+    }
     try {
       await register(currentSettings.hotkeys.transcribe_to_input, async () => {
         if (!get(isRecording)) return;
@@ -182,15 +276,20 @@ export function useHotkeyManager() {
     }
 
     const currentSettings = get(settings);
+    if (!currentSettings.hotkeys_enabled.cycle_repo) {
+      console.log('[Hotkey] cycle_repo is disabled, skipping registration');
+      return;
+    }
     const autoRepoEnabled = isRepoAutoSelectEnabled();
 
     // Need at least 2 options to cycle: with auto-repo enabled, 1 repo is enough (auto + repo)
+    const activeRepoCount = currentSettings.repos.filter((r) => r.active !== false).length;
     const minRepos = autoRepoEnabled ? 1 : 2;
-    if (currentSettings.repos.length < minRepos) {
+    if (activeRepoCount < minRepos) {
       console.log(
         '[Hotkey] Only',
-        currentSettings.repos.length,
-        'repo(s) configured, auto-repo:',
+        activeRepoCount,
+        'active repo(s) configured, auto-repo:',
         autoRepoEnabled,
         '- skipping cycle repo hotkey'
       );
@@ -218,13 +317,15 @@ export function useHotkeyManager() {
           const s = get(settings);
           const autoRepoEnabled = isRepoAutoSelectEnabled();
 
-          // Build list of cyclable options: 'auto' (if enabled) + repo indices
+          // Build list of cyclable options: 'auto' (if enabled) + active repo indices
           const cyclableOptions: ('auto' | number)[] = [];
           if (autoRepoEnabled) {
             cyclableOptions.push('auto');
           }
           for (let i = 0; i < s.repos.length; i++) {
-            cyclableOptions.push(i);
+            if (s.repos[i].active !== false) {
+              cyclableOptions.push(i);
+            }
           }
 
           // Need at least 2 options to cycle
@@ -297,7 +398,12 @@ export function useHotkeyManager() {
   async function registerCycleModelHotkey() {
     if (cycleModelHotkeyRegistered) return;
 
-    const hotkeyString = get(settings).hotkeys.cycle_model;
+    const currentSettings = get(settings);
+    if (!currentSettings.hotkeys_enabled.cycle_model) {
+      console.log('[Hotkey] cycle_model is disabled, skipping registration');
+      return;
+    }
+    const hotkeyString = currentSettings.hotkeys.cycle_model;
     try {
       await register(hotkeyString, async () => {
         if (isCyclingModel) return;
@@ -391,6 +497,10 @@ export function useHotkeyManager() {
       registeredCycleModelHotkey = null;
       registeredToggleRecordingHotkey = null;
       registeredNoteModeHotkey = null;
+      sendSelectionHotkeyRegistered = false;
+      prepareSelectionHotkeyRegistered = false;
+      registeredSendSelectionHotkey = null;
+      registeredPrepareSelectionHotkey = null;
       callbacks = null;
       console.log('[Hotkey] Cleanup complete');
     } catch (error) {

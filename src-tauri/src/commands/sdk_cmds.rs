@@ -114,6 +114,30 @@ pub fn generate_repo_description_with_claude(
     })
 }
 
+/// Generate repository description using Codex SDK
+/// This explores the codebase with Codex tools and generates description, keywords, vocabulary.
+/// Results are returned via `repo-description-result-{id}` event.
+/// Errors are returned via `repo-description-error-{id}` event.
+#[tauri::command]
+pub fn generate_repo_description_with_codex(
+    app: AppHandle,
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    repo_path: String,
+    repo_name: String,
+) -> Result<(), String> {
+    // Start sidecar if not already running
+    if !sidecar.is_started() {
+        sidecar.start(app)?;
+    }
+
+    sidecar.send(OutboundMessage::GenerateRepoDescriptionWithCodex {
+        id,
+        repo_path,
+        repo_name,
+    })
+}
+
 /// Check if OpenAI Codex authentication is available
 /// Checks for ~/.codex/auth.json or the codex CLI
 #[tauri::command]

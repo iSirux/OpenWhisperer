@@ -87,7 +87,7 @@ pub fn save_config(
 pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Result<(), String> {
     println!("[add_repo] Called with path: {}, name: {}", path, name);
     let mut cfg = config.lock();
-    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, mcp_servers: None, note_mcp_servers: None, tags: Vec::new() });
+    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, icon: None, color: None, mcp_servers: None, note_mcp_servers: None, tags: Vec::new(), active: true });
     println!("[add_repo] Repo added to config, total repos: {}", cfg.repos.len());
     let result = cfg.save();
     match &result {
@@ -114,19 +114,49 @@ pub fn remove_repo(config: State<ConfigState>, index: usize) -> Result<(), Strin
 #[tauri::command]
 pub fn set_active_repo(config: State<ConfigState>, index: usize) -> Result<(), String> {
     let mut cfg = config.lock();
-    if index < cfg.repos.len() {
-        cfg.active_repo_index = index;
-        cfg.auto_repo_mode = false; // Disable auto mode when selecting specific repo
-        cfg.save()
-    } else {
-        Err("Invalid repo index".to_string())
+    if index >= cfg.repos.len() {
+        return Err("Invalid repo index".to_string());
     }
+    if !cfg.repos[index].active {
+        return Err("Cannot select an inactive repository".to_string());
+    }
+    cfg.active_repo_index = index;
+    cfg.auto_repo_mode = false; // Disable auto mode when selecting specific repo
+    cfg.save()
 }
 
 #[tauri::command]
 pub fn set_auto_repo_mode(config: State<ConfigState>, enabled: bool) -> Result<(), String> {
     let mut cfg = config.lock();
     cfg.auto_repo_mode = enabled;
+    cfg.save()
+}
+
+#[tauri::command]
+pub fn set_repo_active(config: State<ConfigState>, index: usize, active: bool) -> Result<(), String> {
+    let mut cfg = config.lock();
+    if index >= cfg.repos.len() {
+        return Err("Invalid repo index".to_string());
+    }
+
+    cfg.repos[index].active = active;
+
+    // If deactivating the currently active repo, switch to next active repo or auto mode
+    if !active && cfg.active_repo_index == index {
+        let next_active = cfg.repos.iter().enumerate()
+            .find(|(i, r)| *i != index && r.active)
+            .map(|(i, _)| i);
+
+        match next_active {
+            Some(next_idx) => {
+                cfg.active_repo_index = next_idx;
+            }
+            None => {
+                cfg.auto_repo_mode = true;
+            }
+        }
+    }
+
     cfg.save()
 }
 

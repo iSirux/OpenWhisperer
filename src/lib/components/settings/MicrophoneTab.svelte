@@ -483,7 +483,7 @@
             >Require Transcription Approval</label
           >
           <p class="text-xs text-text-muted mt-0.5">
-            Review and approve transcriptions before sending to Claude
+            Review and approve transcriptions before sending
           </p>
         </div>
         <input
@@ -645,7 +645,7 @@
               >Transcribe-to-Input Commands</label
             >
             <p class="text-xs text-text-muted mt-0.5">
-              Say these commands to paste the transcription into the current app instead of sending to Claude
+              Say these commands to paste the transcription into the current app instead of sending as a prompt
             </p>
           </div>
 
@@ -865,7 +865,7 @@
               >Note-Taking Commands</label
             >
             <p class="text-xs text-text-muted mt-0.5">
-              Say these commands to enter note-taking mode instead of sending to Claude
+              Say these commands to enter note-taking mode instead of sending as a prompt
             </p>
           </div>
 
@@ -959,7 +959,7 @@
           {#if ($settings.audio.voice_commands.note_commands ?? []).length > 0}
             <p class="text-xs text-text-muted mt-3">
               Active note commands: {($settings.audio.voice_commands.note_commands ?? []).length}
-              - Recording will use Haiku and note-taking MCP tools
+              - Recording will use the fastest model and note-taking MCP tools
             </p>
           {:else}
             <p class="text-xs text-text-muted mt-3">

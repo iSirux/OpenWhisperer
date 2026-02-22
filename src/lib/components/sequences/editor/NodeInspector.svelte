@@ -5,6 +5,7 @@
   import { settings } from '$lib/stores/settings';
   import { sequences } from '$lib/stores/sequences';
   import { playNotificationSound } from '$lib/utils/sound';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   let {
     selectedNode = $bindable<EditorNode | null>(null),
@@ -179,12 +180,13 @@
           <div class="flex flex-wrap gap-1">
             {#each $settings.repos as repo}
               <button
-                class="px-1.5 py-0.5 text-[10px] rounded-full border transition-colors {sequenceRepos.includes(repo.path)
+                class="flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-full border transition-colors {sequenceRepos.includes(repo.path)
                   ? 'bg-accent/20 border-accent text-accent'
                   : 'border-border text-text-muted hover:border-text-secondary hover:text-text-secondary'}"
                 onclick={() => toggleRepo(repo.path)}
                 title={repo.path}
               >
+                <RepoIcon repo={repo} size="xs" />
                 {repo.name}
               </button>
             {/each}

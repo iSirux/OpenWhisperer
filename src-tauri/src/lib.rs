@@ -1,3 +1,4 @@
+mod archive;
 mod commands;
 mod config;
 mod llm;
@@ -9,7 +10,7 @@ mod terminal;
 mod vosk;
 mod whisper;
 
-use commands::{audio_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, vosk_cmds};
+use commands::{archive_cmds, audio_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, vosk_cmds};
 use sequences::SequenceManager;
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -196,16 +197,11 @@ pub fn run() {
 
             // Initialize sequence scheduler
             let scheduler = Arc::new(sequences::scheduler::SequenceScheduler::new());
-            {
-                let cfg: tauri::State<parking_lot::Mutex<AppConfig>> = app.state();
-                if cfg.lock().sequences.enabled {
-                    scheduler.start(sequence_manager_for_scheduler);
-                    // Start event trigger listeners
-                    sequence_manager_for_triggers
-                        .event_trigger_manager
-                        .start(app.handle(), sequence_manager_for_triggers.clone());
-                }
-            }
+            scheduler.start(sequence_manager_for_scheduler);
+            // Start event trigger listeners
+            sequence_manager_for_triggers
+                .event_trigger_manager
+                .start(app.handle(), sequence_manager_for_triggers.clone());
             app.manage(scheduler);
 
             Ok(())
@@ -243,6 +239,7 @@ pub fn run() {
             settings_cmds::add_repo,
             settings_cmds::remove_repo,
             settings_cmds::set_active_repo,
+            settings_cmds::set_repo_active,
             settings_cmds::set_auto_repo_mode,
             settings_cmds::get_active_repo,
             settings_cmds::get_git_branch,
@@ -264,6 +261,7 @@ pub fn run() {
             sdk_cmds::update_sdk_effort,
             sdk_cmds::close_sdk_session,
             sdk_cmds::generate_repo_description_with_claude,
+            sdk_cmds::generate_repo_description_with_codex,
             sdk_cmds::check_openai_codex_auth,
             sdk_cmds::run_codex_login,
             sdk_cmds::save_openai_api_key,
@@ -276,6 +274,15 @@ pub fn run() {
             session_cmds::get_persisted_sessions,
             session_cmds::save_persisted_sessions,
             session_cmds::clear_persisted_sessions,
+            archive_cmds::get_archive_entries,
+            archive_cmds::get_archive_entry_data,
+            archive_cmds::archive_sdk_session,
+            archive_cmds::archive_terminal_session,
+            archive_cmds::archive_sequence_execution,
+            archive_cmds::delete_archive_entry,
+            archive_cmds::clear_archive,
+            archive_cmds::trim_archive,
+            archive_cmds::get_archive_count,
             usage_cmds::get_usage_stats,
             usage_cmds::track_session,
             usage_cmds::track_prompt,
@@ -288,6 +295,7 @@ pub fn run() {
             get_autostart_enabled,
             toggle_autostart,
             input_cmds::paste_text,
+            input_cmds::copy_selection,
             llm_cmds::test_gemini_connection,
             llm_cmds::generate_session_name,
             llm_cmds::generate_session_outcome,
@@ -297,7 +305,6 @@ pub fn run() {
             llm_cmds::save_gemini_api_key,
             llm_cmds::has_gemini_api_key,
             llm_cmds::delete_gemini_api_key,
-            llm_cmds::generate_repo_description,
             llm_cmds::recommend_repo,
             llm_cmds::generate_quick_actions,
             vosk_cmds::test_vosk_connection,

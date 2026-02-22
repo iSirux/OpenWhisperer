@@ -452,9 +452,56 @@ export async function loadFullExecution(
 
 /** Close/remove an execution from the list and delete from disk */
 export function closeExecution(executionId: string): void {
+  // Capture execution data for archiving before removing from store
+  const currentExecs = get(executions);
+  const executionToArchive = currentExecs.find((e) => e.id === executionId);
+
   cleanupListeners(executionId);
   executions.update((execs) => execs.filter((e) => e.id !== executionId));
   activeExecutionId.update((id) => (id === executionId ? null : id));
+
+  // Archive the execution before deleting from disk
+  if (executionToArchive) {
+    const statusStr = getStatusString(executionToArchive.status);
+    const startedAtMs = executionToArchive.started_at
+      ? new Date(executionToArchive.started_at).getTime()
+      : Date.now();
+    const completedAtMs = executionToArchive.completed_at
+      ? new Date(executionToArchive.completed_at).getTime()
+      : 0;
+
+    const entry = {
+      id: executionToArchive.id,
+      sessionType: "sequence" as const,
+      name: executionToArchive.sequence_name || undefined,
+      status: statusStr,
+      createdAt: startedAtMs,
+      archivedAt: Date.now(),
+      durationMs: completedAtMs > 0 ? completedAtMs - startedAtMs : 0,
+      totalCost: executionToArchive.total_cost || undefined,
+      messageCount: executionToArchive.completed_node_ids?.length ?? 0,
+    };
+
+    invoke("archive_sequence_execution", {
+      executionData: executionToArchive,
+      entry,
+    })
+      .then(async () => {
+        const { settings } = await import("./settings");
+        const currentSettings = get(settings);
+        await invoke("trim_archive", {
+          maxEntries:
+            currentSettings.session_persistence?.max_archived_sessions ?? 500,
+        });
+        // Refresh archive count for sidebar
+        const { archive } = await import("./archive");
+        archive.refreshCount();
+      })
+      .catch((err: unknown) =>
+        console.error("[sequenceExecutions] Failed to archive execution:", err)
+      );
+  }
+
   // Delete from disk so it doesn't reappear on reload
   invoke("dismiss_execution", { executionId }).catch((err) =>
     console.error("Failed to dismiss execution:", err)

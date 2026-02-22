@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { RepoConfig } from '$lib/stores/settings';
   import type { PendingRepoSelection } from '$lib/stores/sdkSessions';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {
     status: 'pending_repo' | 'initializing';
@@ -79,19 +80,26 @@
 
   let displayPrompt = $derived(pendingSelection?.transcript || pendingPrompt || '');
 
-  // Sort repos to show recommended first
+  // Sort repos to show recommended first, filtering to active repos only
   let sortedRepos = $derived(() => {
+    // Filter to active repos while preserving original indices into the full array
+    const activeWithIndex = repos
+      .map((repo, index) => ({ repo, originalIndex: index }))
+      .filter(({ repo }) => repo.active !== false);
+
     if (!pendingSelection || pendingSelection.recommendedIndex === null || pendingSelection.recommendedIndex === undefined) {
-      return repos.map((repo, index) => ({ repo, originalIndex: index }));
+      return activeWithIndex;
     }
 
-    const recommended = repos[pendingSelection.recommendedIndex];
-    const others = repos
-      .map((repo, index) => ({ repo, originalIndex: index }))
-      .filter((_, index) => index !== pendingSelection.recommendedIndex);
+    const recommendedEntry = activeWithIndex.find(({ originalIndex }) => originalIndex === pendingSelection.recommendedIndex);
+    if (!recommendedEntry) {
+      return activeWithIndex;
+    }
+
+    const others = activeWithIndex.filter(({ originalIndex }) => originalIndex !== pendingSelection.recommendedIndex);
 
     return [
-      { repo: recommended, originalIndex: pendingSelection.recommendedIndex },
+      recommendedEntry,
       ...others
     ];
   });
@@ -159,9 +167,7 @@
             onclick={() => handleSelectRepo(originalIndex)}
           >
             <div class="repo-icon">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
+              <RepoIcon repo={repo} size="sm" />
             </div>
             <div class="repo-info">
               <div class="repo-name">
@@ -196,7 +202,7 @@
         <div class="spinner"></div>
       </div>
       <h3 class="initializing-title">Starting Session</h3>
-      <p class="initializing-description">Initializing Claude and preparing your workspace...</p>
+      <p class="initializing-description">Initializing and preparing your workspace...</p>
 
       {#if displayPrompt}
         <div class="prompt-preview initializing-prompt">

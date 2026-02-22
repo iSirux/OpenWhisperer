@@ -72,10 +72,38 @@ function createSessionsStore() {
 
     async closeSession(sessionId: string) {
       try {
+        // Capture session data for archiving before removing
+        let sessionToArchive: TerminalSession | undefined;
+        subscribe(sessions => {
+          sessionToArchive = sessions.find(s => s.id === sessionId);
+        })();
+
         await invoke('close_terminal', { sessionId });
         update((sessions) => sessions.filter((s) => s.id !== sessionId));
         // Clean up the event listener for this session
         this.cleanupSessionListener(sessionId);
+
+        // Archive the session
+        if (sessionToArchive) {
+          try {
+            const { terminalSessionToPersisted } = await import('./sessionPersistence');
+            const persisted = terminalSessionToPersisted(sessionToArchive);
+            await invoke('archive_terminal_session', { session: persisted });
+            // Trim archive to configured max
+            const { get: getStore } = await import('svelte/store');
+            const { settings: settingsStore } = await import('./settings');
+            const currentSettings = getStore(settingsStore);
+            await invoke('trim_archive', {
+              maxEntries: currentSettings.session_persistence?.max_archived_sessions ?? 500,
+            });
+            // Refresh archive count for sidebar
+            const { archive } = await import('./archive');
+            archive.refreshCount();
+          } catch (archiveError) {
+            console.error('[sessions] Failed to archive session:', archiveError);
+          }
+        }
+
         // Save to disk so the closed session is removed from persistence
         await saveSessionsToDisk();
       } catch (error) {

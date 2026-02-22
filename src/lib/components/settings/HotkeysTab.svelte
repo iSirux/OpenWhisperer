@@ -12,7 +12,7 @@
     </p>
     <ul class="text-xs text-text-muted mt-1 ml-4 list-disc">
       <li>
-        <strong>Record & Send</strong> — transcribes and sends to Claude
+        <strong>Record & Send</strong> — transcribes and sends the prompt
       </li>
       <li>
         <strong>Transcribe Only</strong> — transcribes and pastes to current
@@ -23,53 +23,142 @@
       class="text-xs text-text-muted mt-2 pt-2 border-t border-border/50"
     >
       <strong class="text-text-secondary">Tip:</strong> Click a hotkey field
-      and press your desired key combination to set it.
+      and press your desired key combination to set it. Use the toggle to
+      enable or disable a hotkey without clearing it.
     </p>
   </div>
+
+  <!-- Record & Send -->
   <div>
-    <label class="block text-sm font-medium text-text-secondary mb-1"
-      >Record & Send</label
-    >
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Record & Send</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.toggle_recording}
+      />
+    </div>
     <p class="text-xs text-text-muted mb-2">
-      Starts recording. Press again to transcribe and send to Claude.
+      Starts recording. Press again to transcribe and send the prompt.
     </p>
-    <HotkeyInput bind:value={$settings.hotkeys.toggle_recording} />
+    <HotkeyInput
+      bind:value={$settings.hotkeys.toggle_recording}
+      enabled={$settings.hotkeys_enabled.toggle_recording}
+    />
   </div>
+
+  <!-- Transcribe Only -->
   <div>
-    <label class="block text-sm font-medium text-text-secondary mb-1"
-      >Transcribe Only</label
-    >
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Transcribe Only</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.transcribe_to_input}
+      />
+    </div>
     <p class="text-xs text-text-muted mb-2">
       While recording, transcribes and pastes into current app (does not
-      send to Claude)
+      send as prompt)
     </p>
-    <HotkeyInput bind:value={$settings.hotkeys.transcribe_to_input} />
+    <HotkeyInput
+      bind:value={$settings.hotkeys.transcribe_to_input}
+      enabled={$settings.hotkeys_enabled.transcribe_to_input}
+    />
   </div>
+
+  <!-- Cycle Repository -->
   <div class="border-t border-border pt-4">
-    <label class="block text-sm font-medium text-text-secondary mb-1"
-      >Cycle Repository</label
-    >
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Cycle Repository</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.cycle_repo}
+      />
+    </div>
     <p class="text-xs text-text-muted mb-2">
       While recording, cycles through repositories
     </p>
-    <HotkeyInput bind:value={$settings.hotkeys.cycle_repo} />
+    <HotkeyInput
+      bind:value={$settings.hotkeys.cycle_repo}
+      enabled={$settings.hotkeys_enabled.cycle_repo}
+    />
   </div>
+
+  <!-- Cycle Model -->
   <div>
-    <label class="block text-sm font-medium text-text-secondary mb-1"
-      >Cycle Model</label
-    >
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Cycle Model</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.cycle_model}
+      />
+    </div>
     <p class="text-xs text-text-muted mb-2">
-      While recording, cycles through models (Opus → Sonnet → Haiku)
+      While recording, cycles through available models
     </p>
-    <HotkeyInput bind:value={$settings.hotkeys.cycle_model} />
+    <HotkeyInput
+      bind:value={$settings.hotkeys.cycle_model}
+      enabled={$settings.hotkeys_enabled.cycle_model}
+    />
   </div>
+
+  <!-- Note Mode -->
   <div class="border-t border-border pt-4">
-    <label class="block text-sm font-medium text-text-secondary mb-1"
-      >Note Mode</label
-    >
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Note Mode</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.note_mode}
+      />
+    </div>
     <p class="text-xs text-text-muted mb-2">
-      Start recording in note-taking mode. Uses Haiku with note MCP tools.
+      Start recording in note-taking mode. Uses the fastest model with note MCP tools.
     </p>
-    <HotkeyInput bind:value={$settings.hotkeys.note_mode} />
+    <HotkeyInput
+      bind:value={$settings.hotkeys.note_mode}
+      enabled={$settings.hotkeys_enabled.note_mode}
+    />
+  </div>
+
+  <!-- Send Selection -->
+  <div class="border-t border-border pt-4">
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Send Selection</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.send_selection}
+      />
+    </div>
+    <p class="text-xs text-text-muted mb-2">
+      Copies selected text from any app and immediately sends it as a new prompt
+    </p>
+    <HotkeyInput
+      bind:value={$settings.hotkeys.send_selection}
+      enabled={$settings.hotkeys_enabled.send_selection}
+    />
+  </div>
+
+  <!-- Prepare Selection -->
+  <div>
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Prepare Selection</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.prepare_selection}
+      />
+    </div>
+    <p class="text-xs text-text-muted mb-2">
+      Copies selected text from any app and creates a prepared session for review before sending
+    </p>
+    <HotkeyInput
+      bind:value={$settings.hotkeys.prepare_selection}
+      enabled={$settings.hotkeys_enabled.prepare_selection}
+    />
   </div>
 </div>

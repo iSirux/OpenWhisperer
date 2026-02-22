@@ -219,6 +219,8 @@
       !isPlanMode
   );
   let generatedQuickActions = $derived(session?.aiMetadata?.quickActions);
+  let sessionOutcome = $derived(session?.aiMetadata?.outcome);
+  let sessionCategory = $derived(session?.aiMetadata?.category);
   let isNewChat = $derived(messages.length === 0 && status === "idle");
   let autoModelRequested = $derived(session?.autoModelRequested ?? false);
   let sessionEffortLevel = $derived(session?.effortLevel ?? null);
@@ -257,6 +259,7 @@
     | {
         focus: () => void;
         getCurrentDraft: () => { prompt: string; images: SdkImageContent[] };
+        appendToPrompt: (text: string) => void;
       }
     | undefined;
 
@@ -573,7 +576,7 @@
       if (
         $isAutoRepoSelected &&
         isRepoAutoSelectEnabled() &&
-        $settings.repos.length > 1 &&
+        $settings.repos.filter((r) => r.active !== false).length > 1 &&
         (!cwd || cwd === "" || cwd === ".")
       ) {
         try {
@@ -796,6 +799,67 @@
     recording.clearTranscript();
   }
 
+  // Inline recording (record and append to prompt, does not send)
+  let isInlineRecordingForCurrentSession = $state(false);
+  let isInlineTranscribing = $state(false);
+
+  async function handleStartInlineRecording() {
+    if ($isRecording) return;
+    isInlineRecordingForCurrentSession = true;
+    await recording.startRecording($settings.audio.device_id || undefined);
+  }
+
+  async function handleStopInlineRecording() {
+    if (!$isRecording) return;
+
+    // Capture Vosk transcript before stopping (for dual-source cleanup)
+    const capturedVoskTranscript = get(recording).realtimeTranscript;
+
+    isInlineRecordingForCurrentSession = false;
+    isInlineTranscribing = true;
+
+    try {
+      const whisperTranscript = await recording.stopRecording(true);
+
+      if (!whisperTranscript) return;
+
+      // Apply LLM transcription cleanup (same as existing flow, but no voice commands)
+      let finalTranscript = whisperTranscript;
+
+      if (isTranscriptionCleanupEnabled()) {
+        const currentRepo = cwd && cwd !== '.'
+          ? $settings.repos.find(r => r.path === cwd)
+          : null;
+        const repoContext = currentRepo ? buildSingleRepoContext(currentRepo) : undefined;
+
+        try {
+          const cleanupResult = await cleanupTranscript(
+            whisperTranscript,
+            capturedVoskTranscript,
+            repoContext
+          );
+          finalTranscript = cleanupResult.text;
+
+          if (cleanupResult.wasCleanedUp) {
+            console.log(
+              '[SdkView] Inline transcription cleaned up:',
+              cleanupResult.corrections,
+              cleanupResult.usedDualSource ? '(dual-source)' : ''
+            );
+          }
+        } catch (error) {
+          console.error('[SdkView] Inline transcription cleanup failed, using original:', error);
+        }
+      }
+
+      // Append to prompt instead of sending
+      promptInputRef?.appendToPrompt(finalTranscript);
+    } finally {
+      isInlineTranscribing = false;
+      recording.clearTranscript();
+    }
+  }
+
   // Handlers for pending transcription sessions
   function handleRetryTranscription() {
     // Dispatch event to parent to retry transcription
@@ -903,9 +967,11 @@
     <PlanModeBanner {planMode} />
   {/if}
 
+  <!-- Temporarily hidden - token counts and costs are not accurate
   {#if hasUsageData && usage}
     <SdkUsageBar {usage} {isQuerying} />
   {/if}
+  -->
 
   <div
     class="messages"
@@ -949,7 +1015,7 @@
         {preparedPrompt}
         onLaunch={handleLaunchPrepared}
         onCancelPrepared={handleCancelPrepared}
-        repos={$settings.repos}
+        repos={$settings.repos.filter((r) => r.active !== false)}
         {preparedRepoRecommendation}
         selectedRepoCwd={cwd}
         onSelectRepo={handleSelectPreparedRepo}
@@ -985,10 +1051,20 @@
       <SdkLoadingIndicator {statusMessage} />
     {/if}
 
+    {#if showQuickActions && sessionOutcome}
+      <div class="session-outcome">
+        {#if sessionCategory}
+          <span class="outcome-category">{sessionCategory}</span>
+        {/if}
+        <span class="outcome-text">{sessionOutcome}</span>
+      </div>
+    {/if}
+
     {#if showQuickActions}
       <SdkQuickActions
         onSendPrompt={(prompt) => handleSendPrompt(prompt)}
         generatedActions={generatedQuickActions}
+        hasOutcomeAbove={!!sessionOutcome}
       />
     {/if}
 
@@ -1031,12 +1107,16 @@
       isRecording={$isRecording}
       isTranscribing={$isTranscribing && isRecordingForCurrentSession}
       {isRecordingForCurrentSession}
+      isInlineRecording={isInlineRecordingForCurrentSession && $isRecording}
+      {isInlineTranscribing}
       {draftPrompt}
       {draftImages}
       onSendPrompt={handleSendPrompt}
       onStopQuery={handleStopQuery}
       onStartRecording={handleStartRecording}
       onStopRecording={handleStopRecording}
+      onStartInlineRecording={handleStartInlineRecording}
+      onStopInlineRecording={handleStopInlineRecording}
       onDraftChange={handleDraftChange}
     />
   {/if}
@@ -1071,5 +1151,32 @@
     padding: 0.5rem 1rem;
     border-top: 1px solid var(--color-border);
     background: var(--color-surface);
+  }
+
+  .session-outcome {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 0 0;
+    margin-top: 0.5rem;
+    border-top: 1px dashed var(--color-border);
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+  }
+
+  .outcome-category {
+    display: inline-flex;
+    padding: 0.125rem 0.5rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    font-size: 0.7rem;
+    color: var(--color-text-secondary);
+    text-transform: capitalize;
+    white-space: nowrap;
+  }
+
+  .outcome-text {
+    color: var(--color-text-secondary);
   }
 </style>

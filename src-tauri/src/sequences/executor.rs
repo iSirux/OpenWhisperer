@@ -601,7 +601,7 @@ impl SequenceExecutor {
                 &node.id,
                 LogLevel::Info,
                 format!(
-                    "Sending prompt to Claude (model: {}, effort: {}): {}",
+                    "Sending prompt (model: {}, effort: {}): {}",
                     model_label, effort_label, prompt_preview
                 ),
             );
@@ -786,7 +786,7 @@ impl SequenceExecutor {
                         &node.id,
                         LogLevel::Info,
                         format!(
-                            "Claude responded ({} input, {} output, {} cache_read tokens, ${:.4}, {}ms, {} turns): {}",
+                            "AI responded ({} input, {} output, {} cache_read tokens, ${:.4}, {}ms, {} turns): {}",
                             tokens.input_tokens,
                             tokens.output_tokens,
                             tokens.cache_read,
@@ -802,7 +802,7 @@ impl SequenceExecutor {
                         &node.id,
                         LogLevel::Info,
                         format!(
-                            "Claude responded (no usage data): {}",
+                            "AI responded (no usage data): {}",
                             Self::truncate_for_log(&text, 200),
                         ),
                     );
@@ -812,7 +812,7 @@ impl SequenceExecutor {
                 self.push_ai_log(
                     &node.id,
                     LogLevel::Error,
-                    format!("Claude prompt failed: {}", e),
+                    format!("AI prompt failed: {}", e),
                 );
             }
         }

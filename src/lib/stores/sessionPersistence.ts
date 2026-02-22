@@ -29,6 +29,7 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
     'currentWorkStartedAt', // Runtime-only timer, accumulated time is persisted instead
     'draftPrompt', // Transient input state - user is still typing
     'draftImages', // Transient input state - images pending to be sent
+    'pendingSystemNotifications', // Transient parallel agent notifications - cleared after first query
   ]),
   // PendingTranscriptionInfo fields that shouldn't be persisted
   PendingTranscriptionInfo: new Set([
@@ -258,7 +259,7 @@ export interface PersistedSessions {
  * Convert frontend SDK session to persisted format.
  * Uses auto-serialization - all fields are preserved except those in NON_PERSISTABLE_FIELDS.
  */
-function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
+export function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
   // Calculate final accumulated duration including current work period
   let accumulatedDurationMs = session.accumulatedDurationMs || 0;
   if (session.currentWorkStartedAt) {
@@ -328,7 +329,7 @@ function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
 /**
  * Convert frontend terminal session to persisted format.
  */
-function terminalSessionToPersisted(session: TerminalSession, outputBuffer?: string): PersistedTerminalSession {
+export function terminalSessionToPersisted(session: TerminalSession, outputBuffer?: string): PersistedTerminalSession {
   return {
     id: session.id,
     repo_path: session.repo_path,
@@ -425,10 +426,45 @@ export async function saveSessionsToDisk(): Promise<void> {
       console.log(`[sessionPersistence] Saving session ${s.id.slice(0, 8)}: effortLevel =`, s.effortLevel);
     });
 
-    await invoke('save_persisted_sessions', {
+    const result = await invoke<{
+      overflowSdkSessions: PersistedSdkSession[];
+      overflowTerminalSessions: PersistedTerminalSession[];
+    }>('save_persisted_sessions', {
       sessions: persistedData,
       maxSessions: currentSettings.session_persistence.max_sessions,
     });
+
+    // Archive overflow sessions instead of losing them
+    const hasOverflow = (result.overflowSdkSessions?.length > 0) || (result.overflowTerminalSessions?.length > 0);
+    if (hasOverflow) {
+      console.log(`[sessionPersistence] Archiving ${result.overflowSdkSessions?.length ?? 0} SDK + ${result.overflowTerminalSessions?.length ?? 0} terminal overflow sessions`);
+
+      for (const session of (result.overflowSdkSessions || [])) {
+        try {
+          await invoke('archive_sdk_session', { session });
+        } catch (err) {
+          console.error('[sessionPersistence] Failed to archive overflow SDK session:', err);
+        }
+      }
+
+      for (const session of (result.overflowTerminalSessions || [])) {
+        try {
+          await invoke('archive_terminal_session', { session });
+        } catch (err) {
+          console.error('[sessionPersistence] Failed to archive overflow terminal session:', err);
+        }
+      }
+
+      // Trim archive after batch archiving
+      await invoke('trim_archive', {
+        maxEntries: currentSettings.session_persistence.max_archived_sessions ?? 500,
+      });
+
+      // Refresh archive count for sidebar
+      const { archive } = await import('./archive');
+      archive.refreshCount();
+    }
+
     console.log('[sessionPersistence] Sessions saved to disk');
   } catch (error) {
     console.error('[sessionPersistence] Failed to save sessions:', error);

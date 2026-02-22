@@ -191,16 +191,53 @@ impl PersistedSessions {
     }
 
     /// Trim sessions to max count, keeping the most recent ones
+    #[allow(dead_code)]
     pub fn trim_to_max(&mut self, max_sessions: usize) {
-        // Sort SDK sessions by created_at descending and keep only max_sessions
+        let (_sdk_overflow, _terminal_overflow) = self.separate_overflow(max_sessions);
+        // Overflow sessions are discarded (use separate_overflow directly to capture them)
+    }
+
+    /// Separate sessions that exceed max count, returning overflow sessions.
+    /// Active/running sessions are protected and never overflowed.
+    /// Returns (overflow_sdk_sessions, overflow_terminal_sessions)
+    pub fn separate_overflow(
+        &mut self,
+        max_sessions: usize,
+    ) -> (Vec<PersistedSdkSession>, Vec<PersistedTerminalSession>) {
+        // Sort SDK sessions by created_at descending (newest first)
         self.sdk_sessions
             .sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        self.sdk_sessions.truncate(max_sessions);
 
-        // Sort terminal sessions by created_at descending and keep only max_sessions
+        // Separate: keep newest up to max_sessions, but always protect active sessions
+        let sdk_overflow = if self.sdk_sessions.len() > max_sessions {
+            let mut keep = Vec::new();
+            let mut overflow = Vec::new();
+
+            for (i, session) in self.sdk_sessions.drain(..).enumerate() {
+                if i < max_sessions || is_active_status(&session.status) {
+                    keep.push(session);
+                } else {
+                    overflow.push(session);
+                }
+            }
+
+            self.sdk_sessions = keep;
+            overflow
+        } else {
+            Vec::new()
+        };
+
+        // Sort terminal sessions by created_at descending and truncate
         self.terminal_sessions
             .sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        self.terminal_sessions.truncate(max_sessions);
+
+        let terminal_overflow = if self.terminal_sessions.len() > max_sessions {
+            self.terminal_sessions.split_off(max_sessions)
+        } else {
+            Vec::new()
+        };
+
+        (sdk_overflow, terminal_overflow)
     }
 
     /// Clear all persisted sessions
@@ -211,4 +248,19 @@ impl PersistedSessions {
         self.active_sdk_session_id = None;
         self.active_terminal_session_id = None;
     }
+}
+
+/// Check if a session status represents an actively running session
+/// that should be protected from overflow archiving
+fn is_active_status(status: &str) -> bool {
+    matches!(
+        status,
+        "querying"
+            | "initializing"
+            | "pending_transcription"
+            | "pending_repo"
+            | "pending_approval"
+            | "setup"
+            | "prepared"
+    )
 }

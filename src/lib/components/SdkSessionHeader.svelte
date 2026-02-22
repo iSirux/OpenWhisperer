@@ -1,4 +1,8 @@
 <script lang="ts">
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
+  import { findRepoByPath } from '$lib/utils/repoIcons';
+  import { settings } from '$lib/stores/settings';
+
   interface Message {
     type: string;
     content?: string;
@@ -12,6 +16,7 @@
     messages?: Message[];
     isPending?: boolean;
     repoName?: string;
+    repoPath?: string;
     branch?: string | null;
     firstPrompt?: string | null;
     onClose: () => void;
@@ -23,11 +28,14 @@
     messages = [],
     isPending = false,
     repoName = '',
+    repoPath = '',
     branch = null,
     firstPrompt = null,
     onClose,
     onCancel,
   }: Props = $props();
+
+  const repoConfig = $derived(findRepoByPath($settings.repos, repoPath));
 
   let isChatCopied = $state(false);
 
@@ -64,9 +72,7 @@
     {/if}
     {#if repoName}
       {#if sessionTime}<span class="separator">·</span>{/if}
-      <svg class="repo-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-      </svg>
+      <RepoIcon repo={repoConfig} size="xs" />
       <span class="repo-name">{repoName}</span>
       {#if branch}
         <span class="separator">·</span>

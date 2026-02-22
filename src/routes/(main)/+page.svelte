@@ -6,6 +6,7 @@
   import SessionHeader from '$lib/components/SessionHeader.svelte';
   import Start from '$lib/components/Start.svelte';
   import SessionPendingView from '$lib/components/SessionPendingView.svelte';
+  import ArchiveView from '$lib/components/ArchiveView.svelte';
 
   // Refactored components
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
@@ -42,7 +43,7 @@
     settingsToStoreEffort,
     settingsToStoreThinking,
   } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo, isAutoRepoSelected } from '$lib/stores/settings';
+  import { settings, activeRepo, isAutoRepoSelected, isRepoActive } from '$lib/stores/settings';
   import { recording, isRecording, pendingTranscriptions } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
@@ -53,16 +54,20 @@
     setupPeriodicAutoSave,
   } from '$lib/stores/sessionPersistence';
   import { navigation } from '$lib/stores/navigation';
+  import { pendingHeaderAction } from '$lib/stores/headerRecording';
   import {
     activeExecution,
     activeExecutionId,
     loadExecutionHistory,
+    runningCount as sequenceRunningCount,
   } from '$lib/stores/sequenceExecutions';
   import { sequences, loadSequences } from '$lib/stores/sequences';
+  import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import SequenceSessionView from '$lib/components/sequences/SequenceSessionView.svelte';
 
   // Tauri APIs
   import { invoke } from '@tauri-apps/api/core';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { goto } from '$app/navigation';
   import { get } from 'svelte/store';
 
@@ -90,6 +95,9 @@
   // Cleanup handlers
   let cleanupAutoSave: (() => void) | null = null;
   let cleanupPeriodicSave: (() => void) | null = null;
+
+  // Active repos only (excludes inactive repos from selectors/recommendations)
+  const activeReposList = $derived($settings.repos.filter(isRepoActive));
 
   // Current view from navigation store
   let currentView = $derived($navigation.mainView);
@@ -138,15 +146,19 @@
     }
   });
 
-  // Effect to re-register hotkeys when toggle_recording hotkey changes
+  // Effect to re-register hotkeys when hotkey bindings or enabled states change
   $effect(() => {
     const currentHotkey = $settings.hotkeys.toggle_recording;
-    if (hotkeyManager.checkForHotkeyChange(currentHotkey)) {
+    // Track enabled state so toggling on/off triggers re-registration
+    const enabledState = $settings.hotkeys_enabled;
+    if (hotkeyManager.checkForHotkeyChange(currentHotkey, enabledState)) {
       hotkeyManager.setup({
         onStartRecording: () => recordingFlow.startRecordingFromHotkey(),
         onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
         onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
         onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
+        onSendSelection: handleSendSelection,
+        onPrepareSelection: handlePrepareSelection,
       });
     }
   });
@@ -160,6 +172,14 @@
     const currentlyPaused = $isOpenMicPaused;
 
     openMicLifecycle.update(openMicEnabled, voskEnabled, currentlyRecording, currentlyListening, currentlyPaused);
+  });
+
+  // Effect to emit active session/sequence counts to the overlay
+  $effect(() => {
+    const allSessions = [...$sessions, ...$sdkSessions];
+    const activeSessions = allSessions.filter(s => isActivelyWorking(s.status)).length;
+    const activeSequences = $sequenceRunningCount;
+    overlay.setActivityInfo(activeSessions, activeSequences);
   });
 
   // Listen for recording events dispatched by AppHeader (in the layout)
@@ -234,11 +254,24 @@
       onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
       onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
       onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
+      onSendSelection: handleSendSelection,
+      onPrepareSelection: handlePrepareSelection,
     });
 
     // Listen for AppHeader recording events
     window.addEventListener('app:header-start-recording', onHeaderStartRecording);
     window.addEventListener('app:header-stop-recording', onHeaderStopRecording);
+
+    // Check for pending header action (e.g. Record clicked from /settings)
+    const pending = get(pendingHeaderAction);
+    if (pending) {
+      pendingHeaderAction.set(null);
+      if (pending === 'start') {
+        recordingFlow.startRecordingNewSession();
+      } else if (pending === 'stop') {
+        recordingFlow.stopRecordingNewSession();
+      }
+    }
   });
 
   onDestroy(() => {
@@ -308,7 +341,7 @@
 
     // Step 1: Clean up transcription
     if (isTranscriptionCleanupEnabled()) {
-      const repoContext = buildAllReposContext($settings.repos);
+      const repoContext = buildAllReposContext(activeReposList);
       const cleanupResult = await cleanupTranscript(transcript, voskTranscript, repoContext);
       finalTranscript = cleanupResult.text;
 
@@ -327,8 +360,8 @@
     // Step 2: Get repo recommendation if in auto-repo mode
     let repoRecommendation: Awaited<ReturnType<typeof getRepoRecommendation>> = null;
 
-    if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
-      repoRecommendation = await getRepoRecommendation(finalTranscript, $settings.repos);
+    if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && activeReposList.length > 1) {
+      repoRecommendation = await getRepoRecommendation(finalTranscript, activeReposList);
 
       if (!repoRecommendation || repoNeedsConfirmation(repoRecommendation.confidence)) {
         await handleRepoSelectionNeeded(
@@ -441,7 +474,7 @@
 
     // Step 1: Clean up transcription
     if (isTranscriptionCleanupEnabled()) {
-      const repoContext = buildAllReposContext($settings.repos);
+      const repoContext = buildAllReposContext(activeReposList);
       const cleanupResult = await cleanupTranscript(transcript, voskTranscript, repoContext);
       finalTranscript = cleanupResult.text;
 
@@ -460,8 +493,8 @@
     let sessionRepo = $activeRepo;
     let preparedRepoRecommendation: { recommendedIndex: number | null; reasoning: string; confidence: string } | undefined;
 
-    if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
-      const repoRecommendation = await getRepoRecommendation(finalTranscript, $settings.repos);
+    if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && activeReposList.length > 1) {
+      const repoRecommendation = await getRepoRecommendation(finalTranscript, activeReposList);
 
       if (repoRecommendation && !repoNeedsConfirmation(repoRecommendation.confidence)) {
         // High confidence - auto-select repo
@@ -504,12 +537,12 @@
       repoPath: sessionCwd,
       repoName: sessionRepo?.name || '',
       includeTranscriptionNotice: true,
-      allRepos: $settings.repos,
+      allRepos: activeReposList,
     }) : buildSystemPrompt({
       repoPath: '',
       repoName: '',
       includeTranscriptionNotice: true,
-      allRepos: $settings.repos,
+      allRepos: activeReposList,
     });
 
     // Step 5: Set prepared status instead of launching
@@ -592,7 +625,7 @@
       repoPath,
       repoName,
       includeTranscriptionNotice: true,
-      allRepos: $settings.repos,
+      allRepos: activeReposList,
     });
 
     await sdkSessions.completePendingTranscription(sessionId, repoPath, transcript, systemPrompt);
@@ -612,13 +645,190 @@
       repoPath,
       repoName,
       includeTranscriptionNotice: true,
-      allRepos: $settings.repos,
+      allRepos: activeReposList,
     });
 
     const sessionId = await sdkSessions.createSession(repoPath, model, effortLevel, systemPrompt);
     activeSdkSessionId.set(sessionId);
     await sdkSessions.sendPrompt(sessionId, transcript);
     activeSessionId.set(null);
+  }
+
+  // ==================== Selection Handling ====================
+
+  /**
+   * Handle "Send Selection" hotkey:
+   * 1. Copy selected text from focused app
+   * 2. Show/focus ClaudeWhisperer window
+   * 3. Run auto-model/repo recommendations
+   * 4. Create session and send immediately
+   */
+  async function handleSendSelection() {
+    try {
+      // Step 1: Copy selected text from the focused application
+      const selectedText = await invoke<string>('copy_selection');
+      if (!selectedText.trim()) {
+        console.log('[selection] No text selected, ignoring send_selection hotkey');
+        return;
+      }
+
+      console.log('[selection] Captured selection:', selectedText.substring(0, 80) + '...');
+
+      // Step 2: Show/focus the main window
+      const mainWindow = getCurrentWindow();
+      await mainWindow.show();
+      await mainWindow.setFocus();
+
+      // Step 3: Switch to sessions view
+      navigation.setView('sessions');
+
+      // Step 4: Process selection - get repo recommendation if auto-repo enabled
+      let sessionRepo = $activeRepo;
+
+      if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && activeReposList.length > 1) {
+        const repoRecommendation = await getRepoRecommendation(selectedText, activeReposList);
+
+        if (repoRecommendation && !repoNeedsConfirmation(repoRecommendation.confidence)) {
+          // High confidence - auto-select repo
+          sessionRepo = $settings.repos[repoRecommendation.repoIndex];
+        } else {
+          // Low/medium confidence - show repo selection UI
+          const model = $settings.default_model;
+          const effortLevel = settingsToStoreEffort($settings.default_effort_level);
+          const sessionId = sdkSessions.createPendingRepoSession(model, effortLevel, {
+            transcript: selectedText,
+            recommendedIndex: repoRecommendation?.repoIndex ?? null,
+            reasoning: repoRecommendation?.reasoning ?? 'Not enough information to determine repository',
+            confidence: repoRecommendation?.confidence ?? 'low',
+          });
+          activeSdkSessionId.set(sessionId);
+          activeSessionId.set(null);
+          return;
+        }
+      }
+
+      // Step 5: Get model recommendation and create session
+      const repoPath = sessionRepo?.path || '.';
+      const repoName = sessionRepo?.name || '';
+
+      const { model, effortLevel } = await getModelRecommendation(
+        selectedText,
+        $settings.enabled_models
+      );
+
+      const systemPrompt = buildSystemPrompt({
+        repoPath,
+        repoName,
+        includeTranscriptionNotice: false,
+        allRepos: activeReposList,
+      });
+
+      const sessionId = await sdkSessions.createSession(repoPath, model, effortLevel, systemPrompt);
+      activeSdkSessionId.set(sessionId);
+      await sdkSessions.sendPrompt(sessionId, selectedText);
+      activeSessionId.set(null);
+    } catch (error) {
+      console.error('[selection] Failed to send selection:', error);
+    }
+  }
+
+  /**
+   * Handle "Prepare Selection" hotkey:
+   * 1. Copy selected text from focused app
+   * 2. Show/focus ClaudeWhisperer window
+   * 3. Run auto-model/repo recommendations
+   * 4. Create prepared session for user review
+   */
+  async function handlePrepareSelection() {
+    try {
+      // Step 1: Copy selected text from the focused application
+      const selectedText = await invoke<string>('copy_selection');
+      if (!selectedText.trim()) {
+        console.log('[selection] No text selected, ignoring prepare_selection hotkey');
+        return;
+      }
+
+      console.log('[selection] Captured selection for prepare:', selectedText.substring(0, 80) + '...');
+
+      // Step 2: Show/focus the main window
+      const mainWindow = getCurrentWindow();
+      await mainWindow.show();
+      await mainWindow.setFocus();
+
+      // Step 3: Switch to sessions view
+      navigation.setView('sessions');
+
+      // Step 4: Create a pending session as placeholder
+      const sessionId = sdkSessions.createPendingTranscriptionSession(
+        $settings.default_model,
+        settingsToStoreEffort($settings.default_effort_level)
+      );
+      sdkSessions.selectSession(sessionId);
+      activeSdkSessionId.set(sessionId);
+      activeSessionId.set(null);
+
+      sdkSessions.updatePendingTranscription(sessionId, {
+        status: 'processing',
+        transcript: selectedText,
+      });
+
+      // Step 5: Get repo recommendation if in auto-repo mode
+      let sessionCwd = '';
+      let sessionRepo = $activeRepo;
+      let preparedRepoRecommendation: { recommendedIndex: number | null; reasoning: string; confidence: string } | undefined;
+
+      if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && activeReposList.length > 1) {
+        const repoRecommendation = await getRepoRecommendation(selectedText, activeReposList);
+
+        if (repoRecommendation && !repoNeedsConfirmation(repoRecommendation.confidence)) {
+          // High confidence - auto-select repo
+          sessionRepo = $settings.repos[repoRecommendation.repoIndex];
+          sessionCwd = sessionRepo?.path || '';
+          updatePendingWithRepoRecommendation(
+            sessionId,
+            repoRecommendation,
+            sessionRepo?.name || 'Unknown'
+          );
+        } else {
+          // Low/medium confidence - store recommendation for prepared UI
+          preparedRepoRecommendation = {
+            recommendedIndex: repoRecommendation?.repoIndex ?? null,
+            reasoning: repoRecommendation?.reasoning ?? 'Not enough information to determine repository',
+            confidence: repoRecommendation?.confidence ?? 'low',
+          };
+          sessionCwd = '';
+        }
+      } else {
+        sessionCwd = sessionRepo?.path || '';
+      }
+
+      // Step 6: Get model recommendation
+      const { model, effortLevel, recommendation } = await getModelRecommendation(
+        selectedText,
+        $settings.enabled_models
+      );
+
+      if (recommendation) {
+        updatePendingWithModelRecommendation(sessionId, recommendation);
+        await sdkSessions.updateSessionModel(sessionId, model);
+        if (recommendation.effortLevel) {
+          await sdkSessions.updateSessionEffort(sessionId, recommendation.effortLevel);
+        }
+      }
+
+      // Step 7: Build system prompt (no transcription notice - this is text selection)
+      const systemPrompt = buildSystemPrompt({
+        repoPath: sessionCwd,
+        repoName: sessionRepo?.name || '',
+        includeTranscriptionNotice: false,
+        allRepos: activeReposList,
+      });
+
+      // Step 8: Set prepared status - user can review/edit before launching
+      sdkSessions.setPrepared(sessionId, selectedText, sessionCwd, systemPrompt, preparedRepoRecommendation);
+    } catch (error) {
+      console.error('[selection] Failed to prepare selection:', error);
+    }
   }
 
   // ==================== Voice Command Handling ====================
@@ -887,7 +1097,7 @@
       repoPath: selectedRepo.path,
       repoName: selectedRepo.name,
       includeTranscriptionNotice: true,
-      allRepos: $settings.repos,
+      allRepos: activeReposList,
     });
 
     try {
@@ -963,8 +1173,8 @@
     let needsAutoRepo = !repoPath || repoPath === '.';
     let selectedRepo = needsAutoRepo ? null : $settings.repos.find((r) => r.path === repoPath);
 
-    if (needsAutoRepo && $isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
-      const recommendation = await getRepoRecommendation(config.prompt, $settings.repos);
+    if (needsAutoRepo && $isAutoRepoSelected && isRepoAutoSelectEnabled() && activeReposList.length > 1) {
+      const recommendation = await getRepoRecommendation(config.prompt, activeReposList);
       if (recommendation) {
         selectedRepo = $settings.repos[recommendation.repoIndex];
         repoPath = selectedRepo?.path || '.';
@@ -1030,7 +1240,9 @@
   </aside>
 
   <main class="flex-1 flex flex-col overflow-hidden">
-    {#if currentView === 'start'}
+    {#if currentView === 'archive'}
+      <ArchiveView onBack={() => navigation.showSessions()} />
+    {:else if currentView === 'start'}
       <Start />
     {:else if currentView === 'sequences' && $activeExecution}
       <SequenceSessionView
@@ -1048,6 +1260,7 @@
       {#if isSetupState}
         <SessionSetupView
           initialModel={activeSession.model}
+          initialProvider={activeSession.provider}
           initialEffortLevel={activeSession.effortLevel}
           initialCwd={$activeRepo?.path || ''}
           initialPlanMode={activeSession.planMode?.isActive || false}
@@ -1063,6 +1276,7 @@
           messages={activeSession.messages}
           isPending={isPendingState}
           repoName={activeSdkRepoName}
+          repoPath={activeSession.cwd}
           branch={activeSdkSessionBranch}
           firstPrompt={activeSdkFirstPrompt()}
           onClose={handleSessionClose}

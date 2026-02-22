@@ -8,12 +8,16 @@
   } from '$lib/utils/sessionStatus';
   import { getElapsedTime, getLegacyElapsedTime, getRepoName } from '$lib/utils/duration';
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
+  import { findRepoByPath } from '$lib/utils/repoIcons';
+  import { settings } from '$lib/stores/settings';
 
   interface Props {
     session: DisplaySession;
     isActive: boolean;
     now: number;
     showLatestMessage: boolean;
+    showSessionSummary: boolean;
     promptRows: number;
     responseRows: number;
     onselect: () => void;
@@ -25,6 +29,7 @@
     isActive,
     now,
     showLatestMessage,
+    showSessionSummary,
     promptRows,
     responseRows,
     onselect,
@@ -48,6 +53,7 @@
   let hasContentBelow = $derived(
     !!session.aiMetadata?.name ||
     !!session.prompt ||
+    (showSessionSummary && !!session.aiMetadata?.outcome) ||
     (showLatestMessage && session.type === 'sdk' && !!session.latestMessage && !session.aiMetadata?.outcome) ||
     (session.status !== 'pending_repo' && session.status !== 'setup' && !!session.repoPath && session.repoPath !== '.')
   );
@@ -160,6 +166,9 @@
       {/if}
     </div>
     <div class="flex items-center gap-2">
+      {#if session.unread}
+        <div class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0" title="Unread"></div>
+      {/if}
       {#if getDisplayedDuration() !== null}
         <span class="text-xs text-text-muted font-mono tabular-nums">
           {getDisplayedDuration()}
@@ -189,9 +198,9 @@
   {#if session.aiMetadata?.name}
     <!-- AI-generated session name -->
     <div class="mb-1">
-      <span class="text-sm font-medium text-text-primary">{session.aiMetadata.name}</span>
+      <span class="text-sm text-text-primary" class:font-semibold={session.unread} class:font-medium={!session.unread}>{session.aiMetadata.name}</span>
     </div>
-    {#if session.aiMetadata.outcome}
+    {#if showSessionSummary && session.aiMetadata.outcome}
       <p
         class="text-xs text-text-muted leading-snug mb-1.5"
         title={session.aiMetadata.outcome}
@@ -203,6 +212,7 @@
     <!-- Original prompt text (only show if we have actual content) -->
     <p
       class="text-sm text-text-primary leading-snug mb-1.5 select-text overflow-hidden"
+      class:font-semibold={session.unread}
       style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {promptRows};"
       title={session.prompt}
     >
@@ -239,14 +249,7 @@
   <!-- Repo name and branch (skip for pending_repo and setup since none selected yet) -->
   {#if session.status !== 'pending_repo' && session.status !== 'setup' && session.repoPath && session.repoPath !== '.'}
     <div class="flex items-center gap-1.5 text-text-muted">
-      <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-        />
-      </svg>
+      <RepoIcon repo={findRepoByPath($settings.repos, session.repoPath)} size="xs" />
       <span class="text-xs truncate">{getRepoName(session.repoPath)}</span>
       {#if session.branch}
         <span class="text-xs text-text-muted">·</span>
@@ -270,16 +273,9 @@
     border-left: 3px solid var(--color-accent);
   }
 
-  /* Unread session - blue border with subtle tint */
+  /* Unread session - no border/background, uses bold text + dot indicator instead */
   .session-item.unread {
-    background-color: rgba(59, 130, 246, 0.08);
-    border-left: 3px solid rgb(59, 130, 246);
-  }
-
-  /* Active + unread - active takes visual precedence, but add blue glow to border */
-  .session-item.unread.active {
-    background-color: rgba(99, 102, 241, 0.15);
-    border-left: 3px solid var(--color-accent);
-    box-shadow: inset 3px 0 0 rgb(59, 130, 246);
+    /* Intentionally no border or background — unread uses a different visual language
+       (bold text + blue dot) to clearly distinguish from active state */
   }
 </style>

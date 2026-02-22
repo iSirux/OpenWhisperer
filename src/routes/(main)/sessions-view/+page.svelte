@@ -310,7 +310,7 @@
           />
         </svg>
         <p class="text-lg mb-2">No sessions yet</p>
-        <p class="text-sm">Record a voice prompt to start a new Claude session</p>
+        <p class="text-sm">Record a voice prompt to start a new session</p>
       </div>
     {:else if layout === 'list'}
       <!-- List layout -->
@@ -322,6 +322,7 @@
             isActive={isSessionActive(session)}
             {now}
             showLatestMessage={$settings.show_latest_message_preview}
+            showSessionSummary={$settings.show_session_summary}
             promptRows={$settings.session_prompt_rows}
             responseRows={$settings.session_response_rows}
             onselect={() => selectSession(session)}
@@ -339,6 +340,7 @@
             isActive={isSessionActive(session)}
             {now}
             showLatestMessage={$settings.show_latest_message_preview}
+            showSessionSummary={$settings.show_session_summary}
             promptRows={$settings.session_prompt_rows}
             responseRows={$settings.session_response_rows}
             onselect={() => selectSession(session)}

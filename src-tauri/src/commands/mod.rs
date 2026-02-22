@@ -1,3 +1,4 @@
+pub mod archive_cmds;
 pub mod audio_cmds;
 pub mod llm_cmds;
 pub mod input_cmds;

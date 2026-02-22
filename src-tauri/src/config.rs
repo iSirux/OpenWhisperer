@@ -166,6 +166,12 @@ pub struct HotkeyConfig {
     /// Hotkey to start recording in note-taking mode
     #[serde(default = "default_note_mode")]
     pub note_mode: String,
+    /// Hotkey to copy selected text and immediately send as a new prompt
+    #[serde(default = "default_send_selection")]
+    pub send_selection: String,
+    /// Hotkey to copy selected text and create a prepared session for review
+    #[serde(default = "default_prepare_selection")]
+    pub prepare_selection: String,
 }
 
 fn default_transcribe_to_input() -> String {
@@ -184,6 +190,14 @@ fn default_note_mode() -> String {
     "CommandOrControl+Shift+N".to_string()
 }
 
+fn default_send_selection() -> String {
+    "CommandOrControl+Shift+E".to_string()
+}
+
+fn default_prepare_selection() -> String {
+    "CommandOrControl+Shift+J".to_string()
+}
+
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
@@ -192,6 +206,46 @@ impl Default for HotkeyConfig {
             cycle_repo: "CommandOrControl+Shift+R".to_string(),
             cycle_model: "CommandOrControl+Shift+M".to_string(),
             note_mode: default_note_mode(),
+            send_selection: default_send_selection(),
+            prepare_selection: default_prepare_selection(),
+        }
+    }
+}
+
+fn default_hotkey_enabled() -> bool {
+    true
+}
+
+/// Per-hotkey enabled/disabled state. Allows users to temporarily deactivate
+/// a hotkey without clearing its key binding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeyEnabledConfig {
+    #[serde(default = "default_hotkey_enabled")]
+    pub toggle_recording: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    pub transcribe_to_input: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    pub cycle_repo: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    pub cycle_model: bool,
+    #[serde(default)]
+    pub note_mode: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    pub send_selection: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    pub prepare_selection: bool,
+}
+
+impl Default for HotkeyEnabledConfig {
+    fn default() -> Self {
+        Self {
+            toggle_recording: true,
+            transcribe_to_input: true,
+            cycle_repo: true,
+            cycle_model: true,
+            note_mode: false,
+            send_selection: true,
+            prepare_selection: true,
         }
     }
 }
@@ -204,9 +258,15 @@ pub struct OverlayConfig {
     pub position_x: Option<i32>,
     #[serde(default)]
     pub position_y: Option<i32>,
+    #[serde(default = "default_show_active_sessions")]
+    pub show_active_sessions: bool,
 }
 
 fn default_show_when_focused() -> bool {
+    true
+}
+
+fn default_show_active_sessions() -> bool {
     true
 }
 
@@ -216,6 +276,7 @@ impl Default for OverlayConfig {
             show_when_focused: true,
             position_x: None,
             position_y: None,
+            show_active_sessions: true,
         }
     }
 }
@@ -243,10 +304,16 @@ pub struct SessionPersistenceConfig {
     pub max_sessions: usize,
     #[serde(default = "default_restore_sessions")]
     pub restore_sessions: usize,
+    #[serde(default = "default_max_archived_sessions")]
+    pub max_archived_sessions: usize,
 }
 
 fn default_restore_sessions() -> usize {
     10
+}
+
+fn default_max_archived_sessions() -> usize {
+    500
 }
 
 impl Default for SessionPersistenceConfig {
@@ -255,6 +322,7 @@ impl Default for SessionPersistenceConfig {
             enabled: true,
             max_sessions: 50,
             restore_sessions: 10,
+            max_archived_sessions: 500,
         }
     }
 }
@@ -825,6 +893,12 @@ pub struct RepoConfig {
     /// Unlike keywords which are categorical, vocabulary captures the actual terms/jargon used in the codebase
     #[serde(default)]
     pub vocabulary: Option<Vec<String>>,
+    /// Icon key from the curated icon set (e.g., "globe", "terminal", "database")
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Primary/brand color as hex string (e.g., "#6366f1")
+    #[serde(default)]
+    pub color: Option<String>,
     /// List of MCP server IDs to use for this repository (overrides global servers)
     #[serde(default)]
     pub mcp_servers: Option<Vec<String>>,
@@ -834,6 +908,14 @@ pub struct RepoConfig {
     /// Tags for multi-repo sequence filtering (e.g., "frontend", "backend", "infra")
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Whether this repo is active (shown in selectors, eligible for auto-select).
+    /// Defaults to true for backward compatibility with existing configs.
+    #[serde(default = "default_true")]
+    pub active: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// SDK provider for the main coding agent (Claude or OpenAI Codex)
@@ -1111,9 +1193,6 @@ fn default_notification_enabled() -> bool {
 /// Sequence automation configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequenceConfig {
-    /// Whether sequence automation is enabled
-    #[serde(default)]
-    pub enabled: bool,
     /// Maximum number of concurrent sequence executions
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_executions: usize,
@@ -1157,7 +1236,6 @@ fn default_provider_rpm() -> u32 {
 impl Default for SequenceConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             max_concurrent_executions: default_max_concurrent(),
             default_timeout: default_sequence_timeout(),
             execution_history_days: default_execution_history_days(),
@@ -1175,6 +1253,9 @@ pub struct AppConfig {
     pub vosk: VoskConfig,
     pub git: GitConfig,
     pub hotkeys: HotkeyConfig,
+    /// Per-hotkey enabled/disabled toggles
+    #[serde(default)]
+    pub hotkeys_enabled: HotkeyEnabledConfig,
     pub overlay: OverlayConfig,
     pub audio: AudioConfig,
     pub repos: Vec<RepoConfig>,
@@ -1220,6 +1301,8 @@ pub struct AppConfig {
     pub mark_sessions_unread: bool,
     #[serde(default = "default_show_latest_message_preview")]
     pub show_latest_message_preview: bool,
+    #[serde(default = "default_show_session_summary")]
+    pub show_session_summary: bool,
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: u32,
     #[serde(default = "default_session_prompt_rows")]
@@ -1238,6 +1321,13 @@ pub struct AppConfig {
     /// Sequence automation configuration
     #[serde(default)]
     pub sequences: SequenceConfig,
+    /// Inject a system message notifying agents that other agents may be working in parallel
+    #[serde(default = "default_notify_parallel_agents")]
+    pub notify_parallel_agents: bool,
+}
+
+fn default_notify_parallel_agents() -> bool {
+    true
 }
 
 fn default_mark_sessions_unread() -> bool {
@@ -1245,6 +1335,10 @@ fn default_mark_sessions_unread() -> bool {
 }
 
 fn default_show_latest_message_preview() -> bool {
+    true
+}
+
+fn default_show_session_summary() -> bool {
     true
 }
 
@@ -1376,12 +1470,12 @@ impl Default for LlmFeaturesConfig {
         Self {
             auto_name_sessions: true,
             detect_interaction_needed: true,
-            generate_quick_actions: false,
-            clean_transcription: false,
-            use_dual_transcription: false,
-            recommend_model: false,
+            generate_quick_actions: true,
+            clean_transcription: true,
+            use_dual_transcription: true,
+            recommend_model: true,
             auto_model_effort: AutoModelEffort::default(),
-            auto_select_repo: false,
+            auto_select_repo: true,
         }
     }
 }
@@ -1456,7 +1550,6 @@ fn default_openai_model() -> String {
 
 fn default_enabled_openai_models() -> Vec<String> {
     vec![
-        "codex-mini-latest".to_string(),
         "gpt-5.3-codex".to_string(),
         "gpt-5.3-codex-spark".to_string(),
         "gpt-5.2-codex".to_string(),
@@ -1471,6 +1564,7 @@ impl Default for AppConfig {
             vosk: VoskConfig::default(),
             git: GitConfig::default(),
             hotkeys: HotkeyConfig::default(),
+            hotkeys_enabled: HotkeyEnabledConfig::default(),
             overlay: OverlayConfig::default(),
             audio: AudioConfig::default(),
             repos: vec![],
@@ -1493,6 +1587,7 @@ impl Default for AppConfig {
             session_sort_order: SessionSortOrder::default(),
             mark_sessions_unread: true,
             show_latest_message_preview: true,
+            show_session_summary: true,
             sidebar_width: 256,
             session_prompt_rows: 2,
             session_response_rows: 2,
@@ -1501,6 +1596,7 @@ impl Default for AppConfig {
             llm: LlmConfig::default(),
             mcp: McpConfig::default(),
             sequences: SequenceConfig::default(),
+            notify_parallel_agents: true,
         }
     }
 }
@@ -1609,6 +1705,29 @@ impl AppConfig {
                     obj.insert("theme".to_string(), serde_json::Value::String("Midnight".to_string()));
                 }
             }
+
+            // Migrate removed OpenAI alias model id
+            if let Some(serde_json::Value::String(openai_model)) = obj.get("openai_model") {
+                if openai_model == "codex-mini-latest" {
+                    eprintln!("[config.fix] Migrating openai_model 'codex-mini-latest' → 'gpt-5.3-codex'");
+                    obj.insert("openai_model".to_string(), serde_json::Value::String("gpt-5.3-codex".to_string()));
+                }
+            }
+
+            if let Some(serde_json::Value::Array(enabled_models)) = obj.get_mut("enabled_openai_models") {
+                let original_len = enabled_models.len();
+                enabled_models.retain(|v| match v {
+                    serde_json::Value::String(s) => s != "codex-mini-latest",
+                    _ => true,
+                });
+                if enabled_models.len() != original_len {
+                    eprintln!("[config.fix] Removed deprecated model 'codex-mini-latest' from enabled_openai_models");
+                }
+                if enabled_models.is_empty() {
+                    enabled_models.push(serde_json::Value::String(default_openai_model()));
+                    eprintln!("[config.fix] enabled_openai_models was empty after migration; restored default");
+                }
+            }
         }
     }
 
@@ -1654,6 +1773,6 @@ impl AppConfig {
     }
 
     pub fn get_active_repo(&self) -> Option<&RepoConfig> {
-        self.repos.get(self.active_repo_index)
+        self.repos.get(self.active_repo_index).filter(|r| r.active)
     }
 }

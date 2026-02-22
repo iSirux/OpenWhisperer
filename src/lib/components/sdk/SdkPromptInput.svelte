@@ -15,12 +15,16 @@
     isRecording = false,
     isTranscribing = false,
     isRecordingForCurrentSession = false,
+    isInlineRecording = false,
+    isInlineTranscribing = false,
     draftPrompt = "",
     draftImages = [],
     onSendPrompt,
     onStopQuery,
     onStartRecording,
     onStopRecording,
+    onStartInlineRecording,
+    onStopInlineRecording,
     onDraftChange,
   }: {
     sessionId: string;
@@ -28,12 +32,16 @@
     isRecording?: boolean;
     isTranscribing?: boolean;
     isRecordingForCurrentSession?: boolean;
+    isInlineRecording?: boolean;
+    isInlineTranscribing?: boolean;
     draftPrompt?: string;
     draftImages?: SdkImageContent[];
     onSendPrompt: (prompt: string, images?: SdkImageContent[]) => void;
     onStopQuery: () => void;
     onStartRecording: () => void;
     onStopRecording: () => void;
+    onStartInlineRecording: () => void;
+    onStopInlineRecording: () => void;
     onDraftChange?: (prompt: string, images: SdkImageContent[]) => void;
   } = $props();
 
@@ -119,6 +127,15 @@
         height: img.height,
       })),
     };
+  }
+
+  // Expose method to append transcribed text to the current prompt
+  export function appendToPrompt(text: string) {
+    if (!text.trim()) return;
+    prompt = prompt.trim() ? `${prompt.trim()} ${text.trim()}` : text.trim();
+    autoResize();
+    notifyDraftChange();
+    textareaEl?.focus();
   }
 
   async function handleSendPrompt() {
@@ -238,17 +255,64 @@
       {/if}
     </div>
   {/if}
-  <textarea
-    bind:this={textareaEl}
-    bind:value={prompt}
-    oninput={() => { autoResize(); notifyDraftChange(); }}
-    onkeydown={handleKeydown}
-    onpaste={handlePaste}
-    placeholder={pendingImages.length > 0
-      ? "Add a message about the image(s)... (Enter to send)"
-      : "Enter your prompt... (Ctrl+V to paste images, Enter to send)"}
-    rows="1"
-  ></textarea>
+  <div class="textarea-wrapper">
+    <textarea
+      bind:this={textareaEl}
+      bind:value={prompt}
+      oninput={() => { autoResize(); notifyDraftChange(); }}
+      onkeydown={handleKeydown}
+      onpaste={handlePaste}
+      placeholder={pendingImages.length > 0
+        ? "Add a message about the image(s)... (Enter to send)"
+        : "Enter your prompt... (Ctrl+V to paste images, Enter to send)"}
+      rows="1"
+    ></textarea>
+    {#if isInlineTranscribing}
+      <button
+        class="inline-record-btn transcribing"
+        disabled
+        title="Transcribing..."
+      >
+        <div class="inline-transcribing-spinner"></div>
+        <svg class="inline-mic-icon" fill="currentColor" viewBox="0 0 20 20">
+          <path
+            fill-rule="evenodd"
+            d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z"
+            clip-rule="evenodd"
+          />
+        </svg>
+      </button>
+    {:else if isInlineRecording}
+      <button
+        class="inline-record-btn recording"
+        onclick={onStopInlineRecording}
+        title="Stop and append to prompt"
+      >
+        <div class="inline-recording-pulse"></div>
+        <svg class="inline-mic-icon" fill="currentColor" viewBox="0 0 20 20">
+          <path
+            fill-rule="evenodd"
+            d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z"
+            clip-rule="evenodd"
+          />
+        </svg>
+      </button>
+    {:else if !isRecording && !isTranscribing}
+      <button
+        class="inline-record-btn"
+        onclick={onStartInlineRecording}
+        title="Record and append to prompt"
+      >
+        <svg class="inline-mic-icon" fill="currentColor" viewBox="0 0 20 20">
+          <path
+            fill-rule="evenodd"
+            d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z"
+            clip-rule="evenodd"
+          />
+        </svg>
+      </button>
+    {/if}
+  </div>
   <div class="button-group">
     {#if isQuerying}
       <button
@@ -327,13 +391,18 @@
     position: relative;
   }
 
-  textarea {
+  .textarea-wrapper {
     flex: 1;
+    position: relative;
+  }
+
+  textarea {
+    width: 100%;
     background: var(--color-surface);
     color: var(--color-text-primary);
     border: 1px solid var(--color-border);
     border-radius: 6px;
-    padding: 0.75rem;
+    padding: 0.75rem 2.5rem 0.75rem 0.75rem;
     resize: none;
     font-family: inherit;
     font-size: 0.9rem;
@@ -343,6 +412,7 @@
     overflow-y: hidden;
     scrollbar-width: none;
     -ms-overflow-style: none;
+    box-sizing: border-box;
   }
 
   textarea::-webkit-scrollbar {
@@ -582,6 +652,86 @@
     border-top-left-radius: 0;
     border-top-right-radius: 0;
     border-top: none;
+  }
+
+  /* Inline record button - positioned inside textarea */
+  .inline-record-btn {
+    position: absolute;
+    bottom: 6px;
+    right: 6px;
+    width: 28px;
+    height: 28px;
+    min-width: unset;
+    padding: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--color-text-muted);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    z-index: 1;
+  }
+
+  .inline-record-btn:hover:not(:disabled) {
+    background: var(--color-surface-elevated);
+    color: var(--color-text-primary);
+  }
+
+  .inline-record-btn.recording {
+    background: var(--color-accent);
+    color: var(--color-background);
+  }
+
+  .inline-record-btn.recording:hover {
+    background: var(--color-accent-hover);
+  }
+
+  .inline-record-btn.transcribing {
+    color: var(--color-warning, #f59e0b);
+    cursor: wait;
+  }
+
+  .inline-record-btn.transcribing:disabled {
+    opacity: 1;
+  }
+
+  .inline-mic-icon {
+    width: 14px;
+    height: 14px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .inline-recording-pulse {
+    position: absolute;
+    inset: 0;
+    background: var(--color-accent);
+    border-radius: 50%;
+    animation: pulse-inline 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse-inline {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.7;
+      transform: scale(1.1);
+    }
+  }
+
+  .inline-transcribing-spinner {
+    position: absolute;
+    inset: 4px;
+    border: 2px solid transparent;
+    border-top-color: var(--color-warning, #f59e0b);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
   }
 
   /* Drag and drop indicator */

@@ -38,7 +38,7 @@ export interface SdkImageContent {
 }
 
 export interface SdkMessage {
-  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking';
+  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking' | 'notification';
   content?: string;
   images?: SdkImageContent[];
   tool?: string;
@@ -234,6 +234,8 @@ export interface SdkSession {
   preparedSystemPrompt?: string;
   /** Repo recommendation stored for a prepared session (low-confidence case) */
   preparedRepoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string };
+  /** Queued system notifications to prepend to the next query (e.g., parallel agent alerts) */
+  pendingSystemNotifications?: string[];
 }
 
 export type HistoryMessage =
@@ -677,6 +679,28 @@ function createSdkSessionsStore() {
       })
     );
 
+    // Parallel session notification - another session was started in the same CWD
+    unlisteners.push(
+      await listen<string>(`sdk-parallel-notification-${id}`, (e) => {
+        console.log(`[sdkSessions] Parallel session notification for ${id}: ${e.payload}`);
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  messages: [...s.messages, {
+                    type: 'notification' as const,
+                    content: e.payload,
+                    timestamp: Date.now(),
+                  }],
+                }
+              : s
+          )
+        );
+        debouncedSave();
+      })
+    );
+
     return unlisteners;
   }
 
@@ -842,12 +866,55 @@ function createSdkSessionsStore() {
 
       update(sessions => [...sessions, session]);
 
+      // For Codex sessions in the same CWD, queue pending notifications
+      // (Claude sessions are handled by the sidecar via PreToolUse hook + parallel_session_notification event)
+      const currentSettings = get(settings);
+      if (currentSettings.notify_parallel_agents && provider === 'openai') {
+        let currentSessions: SdkSession[] = [];
+        subscribe(s => { currentSessions = s; })();
+
+        const parallelCodexSessions = currentSessions.filter(
+          s => s.id !== id
+            && s.cwd === cwd
+            && s.provider === 'openai'
+            && !['done', 'error', 'setup'].includes(s.status)
+        );
+
+        if (parallelCodexSessions.length > 0) {
+          const notificationText =
+            '<system-message>\n' +
+            'Another AI agent session was just started in this same repository. ' +
+            'Multiple agents are now working here simultaneously. ' +
+            'Re-check the current state of any files before modifying them to avoid conflicts.\n' +
+            '</system-message>';
+
+          update(sessions =>
+            sessions.map(s => {
+              if (parallelCodexSessions.some(p => p.id === s.id)) {
+                return {
+                  ...s,
+                  messages: [...s.messages, {
+                    type: 'notification' as const,
+                    content: 'Another agent session was started in this repository. Multiple agents are now working here simultaneously.',
+                    timestamp: Date.now(),
+                  }],
+                  pendingSystemNotifications: [
+                    ...(s.pendingSystemNotifications || []),
+                    notificationText,
+                  ],
+                };
+              }
+              return s;
+            })
+          );
+        }
+      }
+
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
       await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, planMode, undefined, provider);
 
-      const currentSettings = get(settings);
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
       usageStats.trackSession('sdk', resolvedModel, cwd);
 
@@ -909,8 +976,24 @@ function createSdkSessionsStore() {
           .catch(err => console.error('[sdkSessions] Failed to generate session name:', err));
       }
 
+      // Check for and consume pending system notifications (e.g., parallel agent alerts)
+      let finalPrompt = prompt;
+      let pendingNotifications: string[] | undefined;
+      subscribe(sessions => {
+        pendingNotifications = sessions.find(s => s.id === id)?.pendingSystemNotifications;
+      })();
+
+      if (pendingNotifications?.length) {
+        finalPrompt = pendingNotifications.join('\n\n') + '\n\n' + prompt;
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id ? { ...s, pendingSystemNotifications: undefined } : s
+          )
+        );
+      }
+
       try {
-        await invoke('send_sdk_prompt', { id, prompt, images: images ?? null });
+        await invoke('send_sdk_prompt', { id, prompt: finalPrompt, images: images ?? null });
       } catch (error) {
         update(sessions =>
           sessions.map(s =>
@@ -934,6 +1017,12 @@ function createSdkSessionsStore() {
     },
 
     async closeSession(id: string): Promise<void> {
+      // Capture session data for archiving before removing
+      let sessionToArchive: SdkSession | undefined;
+      subscribe(sessions => {
+        sessionToArchive = sessions.find(s => s.id === id);
+      })();
+
       // Only try to close sidecar session if it was actually started
       if (liveSessions.has(id)) {
         try {
@@ -951,6 +1040,26 @@ function createSdkSessionsStore() {
 
       liveSessions.delete(id);
       update(sessions => sessions.filter(s => s.id !== id));
+
+      // Archive the session (only if it has messages worth archiving)
+      if (sessionToArchive && sessionToArchive.messages.length > 0) {
+        try {
+          const { sdkSessionToPersisted } = await import('./sessionPersistence');
+          const persisted = sdkSessionToPersisted(sessionToArchive);
+          await invoke('archive_sdk_session', { session: persisted });
+          // Trim archive to configured max
+          const currentSettings = get(settings);
+          await invoke('trim_archive', {
+            maxEntries: currentSettings.session_persistence?.max_archived_sessions ?? 500,
+          });
+          // Refresh archive count for sidebar
+          const { archive } = await import('./archive');
+          archive.refreshCount();
+        } catch (error) {
+          console.error('[sdkSessions] Failed to archive session:', error);
+        }
+      }
+
       await saveSessionsToDisk();
     },
 

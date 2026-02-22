@@ -109,6 +109,37 @@
       bind:checked={$settings.show_latest_message_preview}
     />
   </div>
+  <div class="flex items-center justify-between">
+    <div>
+      <label class="text-sm font-medium text-text-secondary"
+        >Show Session Summary</label
+      >
+      <p class="text-xs text-text-muted">
+        Display the AI-generated outcome summary in each session
+      </p>
+    </div>
+    <input
+      type="checkbox"
+      class="toggle"
+      bind:checked={$settings.show_session_summary}
+    />
+  </div>
+  <div class="flex items-center justify-between">
+    <div>
+      <label class="text-sm font-medium text-text-secondary"
+        >Notify Agents of Parallel Work</label
+      >
+      <p class="text-xs text-text-muted">
+        Include a system message telling agents that other agents may be working
+        on the same repo simultaneously
+      </p>
+    </div>
+    <input
+      type="checkbox"
+      class="toggle"
+      bind:checked={$settings.notify_parallel_agents}
+    />
+  </div>
   <div class="border-t border-border pt-4 mt-4">
     <h3 class="text-sm font-medium text-text-primary mb-3">
       Session List Row Limits

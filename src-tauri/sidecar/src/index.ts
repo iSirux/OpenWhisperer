@@ -7,6 +7,8 @@ import {
   type SDKMessage,
   type SubagentStartHookInput,
   type SubagentStopHookInput,
+  type PreToolUseHookInput,
+  type HookCallback,
 } from "@anthropic-ai/claude-agent-sdk";
 import { Codex, type ThreadEvent, type Thread } from "@openai/codex-sdk";
 import * as readline from "readline";
@@ -14,6 +16,16 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
+
+const OPENAI_MODEL_FALLBACK = "gpt-5.3-codex";
+
+function isUnsupportedChatGptAccountModelError(errorMessage: string): boolean {
+  const normalized = errorMessage.toLowerCase();
+  return (
+    normalized.includes("model is not supported") &&
+    normalized.includes("chatgpt account")
+  );
+}
 
 // Planning question option schema
 const PlanningQuestionOptionSchema = z.object({
@@ -116,6 +128,15 @@ const RepoDescriptionResultSchema = z.object({
   vocabulary: z
     .array(z.string())
     .describe("20-50 project-specific terms/jargon from the codebase"),
+  icon: z
+    .string()
+    .optional()
+    .describe("Icon key from the curated set that best represents the project"),
+  color: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Primary brand color as hex string (e.g. '#6366f1'), or null if none found"),
 });
 
 // Pending repo description results (requestId -> result)
@@ -151,6 +172,18 @@ const repoDescriptionMcpServer = createSdkMcpServer({
           .max(60)
           .describe(
             "Project-specific lingo/jargon from the codebase (20-50 words): function/class names, file names, custom types, abbreviations, framework terms"
+          ),
+        icon: z
+          .string()
+          .describe(
+            "Icon key from this set that best represents the project: globe, browser, layout, paint-brush, palette, server, cloud, api, router, shield, smartphone, tablet, terminal, command-line, database, table, storage, brain, sparkles, cpu, package, puzzle, cube, book, document, pencil, flask, check-circle, bug, monitor, window, desktop, gamepad, play, chart-bar, chart-line, pie-chart, chat, mail, notification, camera, video, music, microphone, shopping-cart, credit-card, tag, lock, key, fingerprint, folder, file, archive, cloud-upload, git-branch, merge, fork, rocket, lightning, wrench, cog, heart, star, zap, code, brackets, hash, robot, users, earth"
+          ),
+        color: z
+          .string()
+          .nullable()
+          .optional()
+          .describe(
+            "Primary brand color as hex string (e.g. '#6366f1') found in README, package.json, CSS, config files. Set to null if no brand color found."
           ),
       },
       async (args) => {
@@ -265,9 +298,17 @@ interface UpdateEffortMessage {
   effortLevel: string | null; // null, 'low', 'medium', 'high', 'max'
 }
 
-// LLM Feature: Generate repository description using Claude SDK
+// Generate repository description using Claude SDK
 interface GenerateRepoDescriptionMessage {
   type: "generate_repo_description";
+  id: string; // Request ID for tracking
+  repo_path: string; // Path to the repository
+  repo_name: string; // Name of the repository
+}
+
+// Generate repository description using Codex SDK
+interface GenerateRepoDescriptionWithCodexMessage {
+  type: "generate_repo_description_with_codex";
   id: string; // Request ID for tracking
   repo_path: string; // Path to the repository
   repo_name: string; // Name of the repository
@@ -280,7 +321,8 @@ type InboundMessage =
   | StopMessage
   | UpdateModelMessage
   | UpdateEffortMessage
-  | GenerateRepoDescriptionMessage;
+  | GenerateRepoDescriptionMessage
+  | GenerateRepoDescriptionWithCodexMessage;
 
 interface Session {
   cwd: string;
@@ -298,6 +340,8 @@ interface Session {
   // OpenAI Codex-specific fields
   codexThread?: Thread; // Active Codex thread instance
   codexModel?: string; // OpenAI model to use
+  codexSystemPrompt?: string; // System prompt to prepend to first Codex query (since ThreadOptions has no systemPrompt)
+  pendingParallelNotification?: string; // Queued notification to inject via PreToolUse hook when parallel session detected
 }
 
 const sessions = new Map<string, Session>();
@@ -437,7 +481,13 @@ function sendPlanningComplete(
 // Repo description result event
 function sendRepoDescriptionResult(
   id: string,
-  result: { description: string; keywords: string[]; vocabulary: string[] }
+  result: {
+    description: string;
+    keywords: string[];
+    vocabulary: string[];
+    icon?: string | null;
+    color?: string | null;
+  }
 ): void {
   send({ type: "repo_description_result", id, ...result });
 }
@@ -720,42 +770,81 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
       input = msg.prompt;
     }
 
+    // For Codex (OpenAI) sessions, prepend system prompt to first query
+    // since Codex ThreadOptions has no systemPrompt field
+    let shouldClearSystemPrompt = false;
+    if (session.codexSystemPrompt) {
+      if (typeof input === "string") {
+        input = session.codexSystemPrompt + "\n\n" + input;
+      } else {
+        // Multimodal input: prepend as text part
+        input = [{ type: "text", text: session.codexSystemPrompt }, ...input];
+      }
+      // Clear only after success so retries still include it.
+      shouldClearSystemPrompt = true;
+    }
+
     // Run streamed query
     const { events } = await session.codexThread.runStreamed(input as string, {
       signal: abortController.signal,
     });
 
-    // Track accumulated text for agent_message updates
-    let lastAgentMessageText = "";
+    // Track streaming state per agent message item so we can handle both:
+    // - cumulative updates (full text each update), and
+    // - delta updates (only the newly generated fragment).
+    // Also guarantees we still emit text when only item.completed arrives.
+    const agentMessageTextById = new Map<string, string>();
+    const streamedAgentMessageIds = new Set<string>();
 
     for await (const event of events) {
-      // For agent_message updates, only send the delta (new text)
+      // Stream agent_message text updates with compatibility for both
+      // cumulative and delta payload styles.
       if (
         event.type === "item.updated" &&
         (event.item as { type: string }).type === "agent_message"
       ) {
+        const itemId = (event.item as { id?: string }).id || "agent_message";
         const currentText = (event.item as { text?: string }).text || "";
-        if (currentText.length > lastAgentMessageText.length) {
-          const delta = currentText.slice(lastAgentMessageText.length);
-          sendText(msg.id, delta);
-          lastAgentMessageText = currentText;
+
+        const previousText = agentMessageTextById.get(itemId) || "";
+        let delta = "";
+        let nextText = previousText;
+
+        if (!previousText) {
+          delta = currentText;
+          nextText = currentText;
+        } else if (currentText === previousText) {
+          // No new text.
+          delta = "";
+        } else if (currentText.startsWith(previousText)) {
+          // Cumulative payload.
+          delta = currentText.slice(previousText.length);
+          nextText = currentText;
+        } else {
+          // Delta payload (or non-monotonic update): emit as-is and append.
+          delta = currentText;
+          nextText = previousText + currentText;
         }
+
+        if (delta) {
+          sendText(msg.id, delta);
+          streamedAgentMessageIds.add(itemId);
+        }
+        agentMessageTextById.set(itemId, nextText);
         continue;
       }
 
-      // Reset tracking when a new agent message starts
-      if (
-        event.type === "item.started" &&
-        (event.item as { type: string }).type === "agent_message"
-      ) {
-        lastAgentMessageText = "";
-      }
-
-      // Skip item.completed for agent_message since we already streamed the text
+      // If an agent message completed without any stream updates,
+      // emit the final text so the UI always shows a response.
       if (
         event.type === "item.completed" &&
         (event.item as { type: string }).type === "agent_message"
       ) {
+        const itemId = (event.item as { id?: string }).id || "agent_message";
+        const finalText = (event.item as { text?: string }).text || "";
+        if (!streamedAgentMessageIds.has(itemId) && finalText) {
+          sendText(msg.id, finalText);
+        }
         continue;
       }
 
@@ -769,6 +858,9 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
     });
 
     if (session.currentQueryId === queryId) {
+      if (shouldClearSystemPrompt) {
+        session.codexSystemPrompt = undefined;
+      }
       sendDone(msg.id);
     }
   } catch (error) {
@@ -778,6 +870,21 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
       id: msg.id,
       message: `Codex query ${queryId} error: ${errorMessage}`,
     });
+
+    if (
+      session.currentQueryId === queryId &&
+      session.codexModel !== OPENAI_MODEL_FALLBACK &&
+      isUnsupportedChatGptAccountModelError(errorMessage)
+    ) {
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Model ${session.codexModel || "<default>"} is not supported for ChatGPT-account Codex auth; retrying with ${OPENAI_MODEL_FALLBACK}`,
+      });
+      session.codexModel = OPENAI_MODEL_FALLBACK;
+      session.codexThread = undefined;
+      return handleCodexQuery(msg);
+    }
 
     if (session.currentQueryId === queryId) {
       // Don't send error for abort
@@ -807,7 +914,7 @@ async function handleGenerateRepoDescription(
   });
 
   // Build the prompt that instructs Claude to explore the codebase
-  const prompt = `You are analyzing a software repository to generate metadata for it. Your task is to explore the codebase and then submit a description, keywords, and vocabulary.
+  const prompt = `You are analyzing a software repository to generate metadata for it. Your task is to explore the codebase and then submit a description, keywords, vocabulary, icon, and color.
 
 Repository: ${msg.repo_name}
 Path: ${msg.repo_path}
@@ -829,6 +936,8 @@ Path: ${msg.repo_path}
      - Project-specific terminology (e.g., "sidecar", "PTY", "hotkey")
      - Abbreviations and acronyms used (e.g., "SDK", "LLM", "MCP")
      - Library/framework specific terms (e.g., "Tauri", "Svelte", "xterm")
+   - **icon**: Choose the best icon from this set: globe, browser, layout, paint-brush, palette, server, cloud, api, router, shield, smartphone, tablet, terminal, command-line, database, table, storage, brain, sparkles, cpu, package, puzzle, cube, book, document, pencil, flask, check-circle, bug, monitor, window, desktop, gamepad, play, chart-bar, chart-line, pie-chart, chat, mail, notification, camera, video, music, microphone, shopping-cart, credit-card, tag, lock, key, fingerprint, folder, file, archive, cloud-upload, git-branch, merge, fork, rocket, lightning, wrench, cog, heart, star, zap, code, brackets, hash, robot, users, earth
+   - **color**: If you find a primary brand color (in README badges, package.json, CSS files, config files, logo), provide it as a hex string like "#6366f1". Otherwise set to null.
 
 The keywords help match user prompts like "I want to add authentication" to the right repo.
 The vocabulary helps speech-to-text correctly transcribe project-specific terms.
@@ -856,6 +965,8 @@ The vocabulary helps speech-to-text correctly transcribe project-specific terms.
     description: string;
     keywords: string[];
     vocabulary: string[];
+    icon?: string | null;
+    color?: string | null;
   } | null = null;
 
   try {
@@ -884,11 +995,15 @@ The vocabulary helps speech-to-text correctly transcribe project-specific terms.
               description: string;
               keywords: string[];
               vocabulary: string[];
+              icon?: string;
+              color?: string | null;
             };
             result = {
               description: input.description,
               keywords: input.keywords,
               vocabulary: input.vocabulary,
+              icon: input.icon || null,
+              color: input.color || null,
             };
             send({
               type: "debug",
@@ -917,6 +1032,144 @@ The vocabulary helps speech-to-text correctly transcribe project-specific terms.
       type: "debug",
       id: requestId,
       message: `Error generating repo description: ${errorMessage}`,
+    });
+    sendRepoDescriptionError(requestId, errorMessage);
+  }
+}
+
+// Handler for generating repo descriptions using OpenAI Codex SDK
+async function handleGenerateRepoDescriptionWithCodex(
+  msg: GenerateRepoDescriptionWithCodexMessage
+): Promise<void> {
+  const requestId = msg.id;
+
+  send({
+    type: "debug",
+    id: requestId,
+    message: `Starting Codex repo description generation for: ${msg.repo_name} at ${msg.repo_path}`,
+  });
+
+  const prompt = `You are analyzing a software repository to generate metadata for it. Your task is to explore the codebase and then output a JSON result.
+
+Repository: ${msg.repo_name}
+Path: ${msg.repo_path}
+
+## Your Task
+
+1. **Explore the codebase** - Read key files like CLAUDE.md, README.md, package.json, Cargo.toml, etc. to understand the project.
+
+2. **Output a JSON block** with the following fields:
+   - **description**: A concise 1-2 sentence description of what the project does and its main technologies
+   - **keywords**: ~20 categorical/conceptual terms for matching user intent:
+     - Technology categories (e.g., "frontend", "backend", "database", "authentication")
+     - Domain concepts (e.g., "e-commerce", "real-time", "streaming", "desktop app")
+     - Feature types (e.g., "CRUD", "API", "dashboard", "CLI")
+     - Action verbs users might say (e.g., "deploy", "migrate", "refactor", "test")
+   - **vocabulary**: 20-50 project-specific lingo/jargon from the actual codebase:
+     - Function/class/module names (e.g., "SdkSession", "useSettings", "transcribeAudio")
+     - Custom types and interfaces (e.g., "RepoConfig", "WhisperProvider")
+     - Project-specific terminology (e.g., "sidecar", "PTY", "hotkey")
+     - Abbreviations and acronyms used (e.g., "SDK", "LLM", "MCP")
+     - Library/framework specific terms (e.g., "Tauri", "Svelte", "xterm")
+   - **icon**: Choose the best icon from this set: globe, browser, layout, paint-brush, palette, server, cloud, api, router, shield, smartphone, tablet, terminal, command-line, database, table, storage, brain, sparkles, cpu, package, puzzle, cube, book, document, pencil, flask, check-circle, bug, monitor, window, desktop, gamepad, play, chart-bar, chart-line, pie-chart, chat, mail, notification, camera, video, music, microphone, shopping-cart, credit-card, tag, lock, key, fingerprint, folder, file, archive, cloud-upload, git-branch, merge, fork, rocket, lightning, wrench, cog, heart, star, zap, code, brackets, hash, robot, users, earth
+   - **color**: If you find a primary brand color (in README badges, CSS files, config files), provide it as a hex string like "#6366f1". Otherwise set to null.
+
+**IMPORTANT**: Your final output MUST contain a JSON block wrapped in \`\`\`json ... \`\`\` fences with EXACTLY these fields:
+\`\`\`json
+{"description": "...", "keywords": ["..."], "vocabulary": ["..."], "icon": "...", "color": "#..." or null}
+\`\`\``;
+
+  try {
+    const codex = getCodexInstance();
+    const thread = codex.startThread({
+      workingDirectory: msg.repo_path,
+      skipGitRepoCheck: true,
+    });
+
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Codex thread started for repo description`,
+    });
+
+    // Collect all text output from Codex
+    let fullText = "";
+    const { events } = await thread.runStreamed(prompt, {});
+
+    for await (const event of events) {
+      // Collect text from agent_message items
+      if (event.type === "item.completed") {
+        const typedItem = event.item as { type: string; text?: string };
+        if (typedItem.type === "agent_message" && typedItem.text) {
+          fullText += typedItem.text;
+        }
+      }
+    }
+
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Codex response collected (${fullText.length} chars), parsing JSON...`,
+    });
+
+    // Parse JSON from the response text
+    // Look for ```json ... ``` block first, then try raw JSON
+    let jsonStr: string | null = null;
+    const jsonBlockMatch = fullText.match(/```json\s*([\s\S]*?)```/);
+    if (jsonBlockMatch) {
+      jsonStr = jsonBlockMatch[1].trim();
+    } else {
+      // Try to find a raw JSON object
+      const jsonObjMatch = fullText.match(/\{[\s\S]*"description"[\s\S]*\}/);
+      if (jsonObjMatch) {
+        jsonStr = jsonObjMatch[0];
+      }
+    }
+
+    if (!jsonStr) {
+      sendRepoDescriptionError(
+        requestId,
+        "Codex did not output a valid JSON block with repo description"
+      );
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(jsonStr) as {
+        description: string;
+        keywords: string[];
+        vocabulary: string[];
+        icon?: string;
+        color?: string | null;
+      };
+
+      if (!parsed.description || !parsed.keywords || !parsed.vocabulary) {
+        sendRepoDescriptionError(
+          requestId,
+          "Codex JSON output missing required fields (description, keywords, vocabulary)"
+        );
+        return;
+      }
+
+      sendRepoDescriptionResult(requestId, {
+        description: parsed.description,
+        keywords: parsed.keywords,
+        vocabulary: parsed.vocabulary,
+        icon: parsed.icon || null,
+        color: parsed.color || null,
+      });
+    } catch (parseErr) {
+      sendRepoDescriptionError(
+        requestId,
+        `Failed to parse Codex JSON output: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`
+      );
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Error generating repo description with Codex: ${errorMessage}`,
     });
     sendRepoDescriptionError(requestId, errorMessage);
   }
@@ -1128,6 +1381,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     planMode: msg.plan_mode,
     noteMode: msg.note_mode,
     codexModel: provider === "openai" ? msg.model : undefined,
+    codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
   });
 
   if (msg.sdk_session_id) {
@@ -1158,6 +1412,36 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       id: msg.id,
       message: "Session created in NOTE MODE - read-only tools + note MCP enabled",
     });
+  }
+
+  // Detect parallel sessions in the same CWD and queue notifications
+  const parallelNotification =
+    "<system-message>\n" +
+    "Another AI agent session was just started in this same repository. " +
+    "Multiple agents are now working here simultaneously. " +
+    "Re-check the current state of any files before modifying them to avoid conflicts.\n" +
+    "</system-message>";
+
+  for (const [existingId, existingSession] of sessions) {
+    if (
+      existingId !== msg.id &&
+      existingSession.cwd === msg.cwd &&
+      existingSession.provider === "claude"
+    ) {
+      existingSession.pendingParallelNotification = parallelNotification;
+      // Emit event so the frontend can show an immediate UI notification
+      send({
+        type: "parallel_session_notification",
+        id: existingId,
+        message:
+          "Another agent session was started in this repository. Multiple agents are now working here simultaneously.",
+      } as unknown as Parameters<typeof send>[0]); // Custom event type handled by Rust bridge
+      send({
+        type: "debug",
+        id: existingId,
+        message: `Parallel session detected: queued notification (new session ${msg.id})`,
+      });
+    }
   }
 
   send({ type: "created", id: msg.id });
@@ -1426,13 +1710,50 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
       stderr: (data: string) => {
         send({ type: "debug", id: msg.id, message: `[stderr] ${data}` });
       },
-      // Hook callbacks for subagent lifecycle events
+      // Hook callbacks for subagent lifecycle events and parallel agent detection
       hooks: {
+        PreToolUse: [
+          {
+            hooks: [
+              (async (_input: PreToolUseHookInput) => {
+                const s = sessions.get(msg.id);
+                if (s?.pendingParallelNotification) {
+                  const notification = s.pendingParallelNotification;
+                  s.pendingParallelNotification = undefined;
+                  send({
+                    type: "debug",
+                    id: msg.id,
+                    message: `Injecting parallel agent notification via PreToolUse systemMessage`,
+                  });
+                  return { systemMessage: notification };
+                }
+                return {};
+              }) as HookCallback,
+            ],
+          },
+        ],
         SubagentStart: [
           {
             hooks: [
               async (input: SubagentStartHookInput) => {
                 sendSubagentStart(msg.id, input.agent_id, input.agent_type);
+                // If a parallel session was detected, inject context into new subagents
+                // so they're aware of concurrent work (subagents don't inherit parent hooks)
+                const s = sessions.get(msg.id);
+                if (s?.pendingParallelNotification) {
+                  send({
+                    type: "debug",
+                    id: msg.id,
+                    message: `Injecting parallel agent notification into subagent ${input.agent_id} via additionalContext`,
+                  });
+                  return {
+                    continue: true,
+                    hookSpecificOutput: {
+                      hookEventName: "SubagentStart" as const,
+                      additionalContext: s.pendingParallelNotification,
+                    },
+                  };
+                }
                 return { continue: true };
               },
             ],
@@ -1991,6 +2312,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "generate_repo_description":
       await handleGenerateRepoDescription(msg);
+      break;
+    case "generate_repo_description_with_codex":
+      await handleGenerateRepoDescriptionWithCodex(msg);
       break;
     default:
       sendError(

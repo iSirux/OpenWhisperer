@@ -270,7 +270,7 @@ Respond with ONLY a JSON object in this exact format:
         // Build the prompt with only enabled models
         let model_list = available_models.join("|");
         let prompt_text = format!(
-            r#"Analyze this software development prompt and recommend the best Claude model.
+            r#"Analyze this software development prompt and recommend the best model.
 
 Model capabilities:
 - **Haiku**: Fast, cheap. Best for simple questions, quick lookups, straightforward code edits, syntax questions, documentation searches.
@@ -304,7 +304,7 @@ Respond with ONLY a JSON object in this exact format:
                 "recommended_model": {
                     "type": "string",
                     "enum": available_models,
-                    "description": "The recommended Claude model"
+                    "description": "The recommended model"
                 },
                 "reasoning": {
                     "type": "string",
@@ -325,77 +325,6 @@ Respond with ONLY a JSON object in this exact format:
         });
 
         self.generate_structured_with_usage(&prompt_text, Some(schema)).await
-    }
-
-    /// Generate repo description with usage tracking
-    pub async fn generate_repo_description_with_usage(
-        &self,
-        repo_name: &str,
-        claude_md_content: Option<&str>,
-        readme_content: Option<&str>,
-    ) -> Result<GenerationResult<RepoDescriptionResult>, String> {
-        let content = match (claude_md_content, readme_content) {
-            (Some(claude_md), _) => format!("CLAUDE.md content:\n{}", truncate_text(claude_md, 4000)),
-            (None, Some(readme)) => format!("README content:\n{}", truncate_text(readme, 4000)),
-            (None, None) => format!("Repository name: {}", repo_name),
-        };
-
-        let prompt = format!(
-            r#"Generate a description, keywords, and vocabulary for this software repository to help with auto-selection and voice transcription accuracy.
-
-Repository: {}
-
-{}
-
-Create THREE distinct outputs:
-
-1. **Description** (1-2 sentences): What the project does and its main technologies
-
-2. **Keywords** (~20 words): Categorical/conceptual terms for matching user intent:
-   - Technology categories (e.g., "frontend", "database", "authentication")
-   - Domain concepts (e.g., "e-commerce", "real-time", "streaming")
-   - Feature types (e.g., "CRUD", "API", "dashboard")
-   - Action verbs users might say (e.g., "deploy", "migrate", "refactor")
-
-3. **Vocabulary** (20-50 words): Actual project-specific lingo/jargon that appears in the codebase:
-   - Function/class/module names (e.g., "SdkSession", "useSettings", "transcribeAudio")
-   - File names and paths (e.g., "config.rs", "llm.ts", "overlay")
-   - Custom types and interfaces (e.g., "RepoConfig", "WhisperProvider")
-   - Project-specific terminology (e.g., "sidecar", "PTY", "hotkey")
-   - Abbreviations and acronyms used (e.g., "SDK", "LLM", "WSL")
-   - Library/framework specific terms (e.g., "Tauri", "Svelte", "xterm")
-
-Keywords help match "I want to add authentication" to the right repo.
-Vocabulary helps speech-to-text correctly hear "SdkSession" instead of "SDK session" or "useSettings" instead of "use settings".
-
-Respond with ONLY a JSON object in this exact format:
-{{"description": "...", "keywords": ["..."], "vocabulary": ["..."]}}"#,
-            repo_name,
-            content
-        );
-
-        let schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "description": "A concise 1-2 sentence description of the repository"
-                },
-                "keywords": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Categorical/conceptual keywords for matching user intent (~20 words)"
-                },
-                "vocabulary": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Project-specific lingo/jargon from the codebase (20-50 words)"
-                }
-            },
-            "required": ["description", "keywords", "vocabulary"]
-        });
-
-        self.generate_structured_with_usage(&prompt, Some(schema)).await
     }
 
     /// Recommend repo with usage tracking
@@ -509,7 +438,7 @@ Or if no clear match:
         last_message: &str,
     ) -> Result<GenerationResult<QuickActionsResult>, String> {
         let prompt = format!(
-            r#"Based on this AI coding assistant's last message, generate 2-4 contextual quick action buttons that would be most helpful for the user's next step.
+            r#"Based on this AI coding assistant's last message, generate 2-4 contextual quick action prompts that would be most helpful for the user's next step.
 
 User's original request:
 {}
@@ -521,19 +450,21 @@ Generate quick actions that are:
 1. Contextually relevant to what the assistant just said or did
 2. Common next steps the user might want to take
 3. Specific to the current situation (not generic)
+4. Short and direct (2-6 words) - these are displayed as button text AND sent as-is
 
 Examples of GOOD quick actions (specific to context):
 - After explaining code: "Show example usage", "Add error handling"
-- After making changes: "Run tests", "Show diff", "Commit changes"
+- After making changes: "Run the tests", "Show the diff", "Commit these changes"
 - After asking for clarification: "Yes, proceed", "No, try alternative"
 - After reporting an error: "Show stack trace", "Try a different approach"
-- After completing a task: "Add documentation", "Refactor", "Add tests"
+- After completing a task: "Add documentation", "Refactor this", "Add tests"
 
-Examples of BAD quick actions (too generic):
+Examples of BAD quick actions (too generic or too long):
 - "Help me", "Continue", "Do more"
+- "Please run the test suite and show me the results" (too long)
 
 Respond with ONLY a JSON object in this exact format:
-{{"actions": [{{"label": "Short Label", "prompt": "The full prompt to send"}}]}}"#,
+{{"actions": [{{"prompt": "Run the tests"}}]}}"#,
             truncate_text(user_prompt, 500),
             truncate_text(last_message, 1500)
         );
@@ -546,20 +477,16 @@ Respond with ONLY a JSON object in this exact format:
                     "items": {
                         "type": "object",
                         "properties": {
-                            "label": {
-                                "type": "string",
-                                "description": "Short button label (2-4 words)"
-                            },
                             "prompt": {
                                 "type": "string",
-                                "description": "The full prompt to send when clicked"
+                                "description": "Short actionable prompt (2-6 words) displayed as button text and sent as-is"
                             }
                         },
-                        "required": ["label", "prompt"]
+                        "required": ["prompt"]
                     },
                     "minItems": 2,
                     "maxItems": 4,
-                    "description": "List of 2-4 contextual quick action buttons"
+                    "description": "List of 2-4 contextual quick action prompts"
                 }
             },
             "required": ["actions"]

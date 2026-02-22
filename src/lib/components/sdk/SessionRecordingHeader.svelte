@@ -1,12 +1,15 @@
 <script lang="ts">
   import type { PendingTranscriptionInfo } from "$lib/stores/sdkSessions";
   import type { AutoModelEffort, RepoConfig } from "$lib/stores/settings";
+  import { settings } from "$lib/stores/settings";
   import {
     getShortModelName,
     getModelBadgeBgColor,
     getModelTextColor,
   } from "$lib/utils/modelColors";
   import TranscriptDiff from "../TranscriptDiff.svelte";
+  import RepoIcon from "$lib/components/RepoIcon.svelte";
+  import { findRepoByPath } from "$lib/utils/repoIcons";
 
   interface Props {
     pendingTranscription: PendingTranscriptionInfo;
@@ -66,6 +69,13 @@
     selectedRepoCwd = "",
     onSelectRepo,
   }: Props = $props();
+
+  // Resolve the recommended repo path using full repos array (recommendation index is into full array)
+  const recommendedRepoPath = $derived(
+    preparedRepoRecommendation?.recommendedIndex != null
+      ? $settings.repos[preparedRepoRecommendation.recommendedIndex]?.path
+      : null
+  );
 
   // Approval mode state
   let isEditingPrompt = $state(false);
@@ -434,9 +444,7 @@
       <div class="prepared-repo">
         {#if selectedRepoCwd}
           <div class="prepared-repo-display">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-            </svg>
+            <RepoIcon repo={findRepoByPath($settings.repos, selectedRepoCwd)} size="xs" />
             <span class="repo-label">Repository:</span>
             <span class="repo-value">{getRepoNameFromPath(selectedRepoCwd)}</span>
           </div>
@@ -458,11 +466,12 @@
               {#each repos as repo, index}
                 <button
                   class="picker-repo-btn"
-                  class:recommended={preparedRepoRecommendation?.recommendedIndex === index}
+                  class:recommended={repo.path === recommendedRepoPath}
                   onclick={() => onSelectRepo?.(repo.path)}
                 >
+                  <RepoIcon repo={repo} size="xs" />
                   <span class="picker-repo-name">{repo.name}</span>
-                  {#if preparedRepoRecommendation?.recommendedIndex === index}
+                  {#if repo.path === recommendedRepoPath}
                     <span class="picker-ai-badge">AI</span>
                   {/if}
                 </button>
@@ -550,19 +559,7 @@
       <!-- Repository info -->
       {#if repoName}
         <div class="approval-repo">
-          <svg
-            class="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-            />
-          </svg>
+          <RepoIcon repo={$settings.repos.find(r => r.name === repoName) || null} size="xs" />
           <span class="repo-label">Repository:</span>
           <span class="repo-value">{repoName}</span>
         </div>
@@ -635,7 +632,7 @@
               d="M13 10V3L4 14h7v7l9-11h-7z"
             />
           </svg>
-          Send to Claude
+          Send
         </button>
       </div>
     </div>

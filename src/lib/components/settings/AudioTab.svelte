@@ -72,7 +72,6 @@
   </div>
 
   <!-- Sequence Voice Commands Section -->
-  {#if $settings.sequences.enabled}
     <div class="border-t border-border pt-4">
       <h3 class="text-sm font-medium text-text-primary mb-3">Sequence Voice Commands</h3>
       <p class="text-xs text-text-muted mb-3">
@@ -209,5 +208,4 @@
         </div>
       </div>
     </div>
-  {/if}
 </div>

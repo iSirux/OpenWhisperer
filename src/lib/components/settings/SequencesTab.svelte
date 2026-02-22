@@ -178,12 +178,6 @@
   <div>
     <h3 class="text-sm font-semibold text-text-primary mb-3">Sequence Automation</h3>
 
-    <label class="flex items-center gap-2 cursor-pointer mb-4">
-      <input type="checkbox" bind:checked={$settings.sequences.enabled}
-        class="rounded border-border accent-accent" />
-      <span class="text-sm text-text-secondary">Enable sequences</span>
-    </label>
-
     <div class="space-y-3">
       <div>
         <label class="block text-xs text-text-muted mb-1">Max Concurrent Executions</label>

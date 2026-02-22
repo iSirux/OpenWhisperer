@@ -511,7 +511,7 @@
           >Include Transcription Notice</label
         >
         <p class="text-xs text-text-muted mt-0.5">
-          Tell Claude the prompt was voice-transcribed and may contain
+          Tell the AI the prompt was voice-transcribed and may contain
           minor errors
         </p>
       </div>

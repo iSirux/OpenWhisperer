@@ -27,6 +27,16 @@ export const VOICE_TRANSCRIPTION_SYSTEM_PROMPT =
   "There may be minor transcription errors such as homophones, missing punctuation, or misheard words. " +
   "Please interpret the intent behind the request even if there are small errors in the transcription.";
 
+// System prompt notifying agents about parallel work on the same branch/repo
+export const PARALLEL_AGENT_SYSTEM_PROMPT =
+  '<system-message>\n' +
+  'You may not be the only agent working on this codebase right now. ' +
+  'Other AI agents may be running simultaneously on the same branch or repository. ' +
+  'Before making changes, check the current state of files you plan to modify. ' +
+  'Be aware that files may have changed since the start of this conversation. ' +
+  "If you encounter unexpected changes or merge conflicts, they may be from another agent's work.\n" +
+  '</system-message>';
+
 export interface ProcessedTranscript {
   /** Final cleaned transcript */
   transcript: string;
@@ -269,6 +279,11 @@ export function repoNeedsConfirmation(confidence: string): boolean {
 export function buildSystemPrompt(options: SystemPromptOptions): string | undefined {
   const parts: string[] = [];
   const currentSettings = get(settings);
+
+  // Add parallel agent notification if enabled
+  if (currentSettings.notify_parallel_agents) {
+    parts.push(PARALLEL_AGENT_SYSTEM_PROMPT);
+  }
 
   // Add voice transcription notice if applicable
   const needsTranscriptionNotice =

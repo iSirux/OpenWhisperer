@@ -1,41 +1,54 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import ModelSelector from './ModelSelector.svelte';
   import EffortToggle from './EffortToggle.svelte';
-  import UsagePreview from './UsagePreview.svelte';
   import OpenMicMarquee from './OpenMicMarquee.svelte';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { navigation } from '$lib/stores/navigation';
   import { settings, activeRepo, isAutoRepoSelected, type AutoModelEffort } from '$lib/stores/settings';
   import { isRecording, pendingTranscriptions } from '$lib/stores/recording';
-  import { isRecordingForNewSession } from '$lib/stores/headerRecording';
+  import { isRecordingForNewSession, pendingHeaderAction } from '$lib/stores/headerRecording';
   import { settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
-  import { isAutoModel } from '$lib/utils/models';
+  import { DEFAULT_OPENAI_MODEL_ID, isAutoModel } from '$lib/utils/models';
 
   // Derived state from stores
-  let repos = $derived($settings.repos);
+  let repos = $derived($settings.repos.filter((r) => r.active !== false));
   let activeRepoIndex = $derived($settings.active_repo_index);
   let currentActiveRepo = $derived($activeRepo);
   let autoRepoSelected = $derived($isAutoRepoSelected);
-  let defaultModel = $derived($settings.default_model);
+  let sdkProvider = $derived($settings.sdk_provider);
+  let currentProvider = $derived(sdkProvider === 'OpenAI' ? 'openai' : 'claude');
+  let selectedModel = $derived(currentProvider === 'openai' ? $settings.openai_model : $settings.default_model);
   let defaultEffortLevel = $derived(settingsToStoreEffort($settings.default_effort_level));
   let autoModelEffort = $derived($settings.llm.features.auto_model_effort);
   let recording = $derived($isRecording);
   let recordingForNewSession = $derived($isRecordingForNewSession);
   let pending = $derived($pendingTranscriptions);
-  let currentView = $derived($navigation.mainView);
   let currentPath = $derived($page.url.pathname);
 
   // Check if current model is auto
-  const isAuto = $derived(isAutoModel(defaultModel));
+  const isAuto = $derived(currentProvider === 'claude' && isAutoModel(selectedModel));
 
   let showRepoSelector = $state(false);
+  let openaiAvailable = $state(false);
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
 
-  // Detect if we're on sequences or settings routes
-  let isOnSequences = $derived(currentPath.startsWith('/sequences'));
+  // Detect if we're on settings route
   let isOnSettings = $derived(currentPath.startsWith('/settings'));
+
+  onMount(() => {
+    invoke<{ authenticated: boolean }>('check_openai_codex_auth')
+      .then((result) => {
+        openaiAvailable = result.authenticated;
+      })
+      .catch(() => {
+        openaiAvailable = false;
+      });
+  });
 
   function handleRepoSelect(index: number) {
     settings.setActiveRepo(index);
@@ -58,8 +71,23 @@
   }
 
   async function handleChangeModel(model: string) {
+    if (currentProvider === 'openai') {
+      settings.update((s) => ({ ...s, openai_model: model }));
+      await settings.save({ ...$settings, openai_model: model });
+      return;
+    }
     settings.update((s) => ({ ...s, default_model: model }));
     await settings.save({ ...$settings, default_model: model });
+  }
+
+  async function handleChangeProvider(provider: 'Claude' | 'OpenAI') {
+    const nextSettings = {
+      ...$settings,
+      sdk_provider: provider,
+      openai_model: $settings.openai_model || DEFAULT_OPENAI_MODEL_ID,
+    };
+    settings.update(() => nextSettings);
+    await settings.save(nextSettings);
   }
 
   async function handleChangeEffort(level: EffortLevel) {
@@ -98,21 +126,6 @@
     navigation.setView('start');
   }
 
-  function handleShowSessions() {
-    if (currentPath !== '/') {
-      goto('/');
-    }
-    navigation.setView('sessions');
-  }
-
-  function handleToggleSequences() {
-    if (isOnSequences) {
-      goto('/');
-    } else {
-      goto('/sequences');
-    }
-  }
-
   function handleToggleSettings() {
     if (isOnSettings) {
       goto('/');
@@ -121,12 +134,22 @@
     }
   }
 
-  function handleStartRecording() {
-    window.dispatchEvent(new CustomEvent('app:header-start-recording'));
+  async function handleStartRecording() {
+    if (currentPath !== '/') {
+      pendingHeaderAction.set('start');
+      await goto('/');
+    } else {
+      window.dispatchEvent(new CustomEvent('app:header-start-recording'));
+    }
   }
 
-  function handleStopRecording() {
-    window.dispatchEvent(new CustomEvent('app:header-stop-recording'));
+  async function handleStopRecording() {
+    if (currentPath !== '/') {
+      pendingHeaderAction.set('stop');
+      await goto('/');
+    } else {
+      window.dispatchEvent(new CustomEvent('app:header-stop-recording'));
+    }
   }
 </script>
 
@@ -150,6 +173,7 @@
         {#if autoRepoSelected}
           <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500">Auto</span>
         {:else if currentActiveRepo}
+          <RepoIcon repo={currentActiveRepo} size="xs" />
           <span class="text-text-primary">{currentActiveRepo.name}</span>
         {:else}
           <span class="text-text-muted">No repo selected</span>
@@ -220,7 +244,8 @@
               class:text-white={isSelected}
               onclick={() => handleRepoSelect(index)}
             >
-              <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <RepoIcon repo={repo} size="sm" />
                 <div class="flex-1 min-w-0">
                   <div class="font-medium flex items-center gap-2">
                     {repo.name}
@@ -257,17 +282,44 @@
     </div>
 
     <!-- Global Model Selector -->
+    {#if openaiAvailable}
+      <div class="flex items-center gap-0.5 px-1.5 py-0.5 bg-surface-elevated rounded">
+        <button
+          class="rounded px-2 py-0.5 text-[10px] font-medium transition-all"
+          class:bg-accent={sdkProvider === 'Claude'}
+          class:text-white={sdkProvider === 'Claude'}
+          class:text-text-secondary={sdkProvider !== 'Claude'}
+          class:bg-border={sdkProvider !== 'Claude'}
+          onclick={() => handleChangeProvider('Claude')}
+        >
+          Claude
+        </button>
+        <button
+          class="rounded px-2 py-0.5 text-[10px] font-medium transition-all"
+          class:bg-green-600={sdkProvider === 'OpenAI'}
+          class:text-white={sdkProvider === 'OpenAI'}
+          class:text-text-secondary={sdkProvider !== 'OpenAI'}
+          class:bg-border={sdkProvider !== 'OpenAI'}
+          onclick={() => handleChangeProvider('OpenAI')}
+        >
+          Codex
+        </button>
+      </div>
+    {/if}
+
+    <!-- Global Model Selector -->
     <ModelSelector
-      model={defaultModel}
+      model={selectedModel}
       onchange={handleChangeModel}
       size="sm"
+      provider={currentProvider}
     />
 
     <!-- Global Effort Toggle -->
     <EffortToggle
       effortLevel={defaultEffortLevel}
       onchange={handleChangeEffort}
-      modelId={defaultModel}
+      modelId={selectedModel}
       size="sm"
       isAutoModel={isAuto}
       {autoModelEffort}
@@ -278,22 +330,6 @@
   <div class="flex items-center gap-2">
     <!-- Open Mic Marquee (shows live transcription when listening) -->
     <OpenMicMarquee />
-
-    <!-- Sequences -->
-    <button
-      class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-surface-elevated rounded transition-colors"
-      class:bg-surface-elevated={isOnSequences}
-      onclick={handleToggleSequences}
-      title="Sequences"
-    >
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-      </svg>
-      Sequences
-    </button>
-
-    <!-- Usage Preview -->
-    <UsagePreview />
 
     <!-- Record Button -->
     {#if recording && recordingForNewSession}

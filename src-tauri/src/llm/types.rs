@@ -46,14 +46,6 @@ pub struct ConnectionTestResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RepoDescriptionResult {
-    pub description: String,
-    pub keywords: Vec<String>,
-    /// Project-specific vocabulary/lingo (20-50 words) - actual terms used in the codebase
-    pub vocabulary: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoRecommendation {
     /// The index of the recommended repository (0-based), or -1 if no clear match
     pub recommended_index: i64,
@@ -88,8 +80,7 @@ impl RepoRecommendation {
 /// A single quick action suggestion
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuickAction {
-    pub label: String,  // Short button label (2-4 words)
-    pub prompt: String, // The actual prompt to send
+    pub prompt: String, // Short actionable prompt (2-6 words), displayed as button text and sent as-is
 }
 
 /// Result for generating contextual quick actions based on session state
