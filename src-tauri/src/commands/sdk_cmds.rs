@@ -259,3 +259,189 @@ pub fn delete_claude_api_key(app: tauri::AppHandle) -> Result<(), String> {
         .delete_password("claude-whisperer", "anthropic-api-key")
         .map_err(|e| format!("Failed to delete API key: {}", e))
 }
+
+// --- Claude API Rate Limit Usage ---
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RateLimitWindow {
+    pub utilization: f64,
+    pub resets_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExtraUsage {
+    pub is_enabled: bool,
+    pub monthly_limit: Option<u64>,
+    pub used_credits: Option<u64>,
+    pub utilization: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClaudeRateLimits {
+    pub five_hour: RateLimitWindow,
+    pub seven_day: RateLimitWindow,
+    pub extra_usage: ExtraUsage,
+}
+
+/// Fetch Claude Code rate limit usage from Anthropic OAuth API
+#[tauri::command]
+pub async fn fetch_claude_rate_limits() -> Result<ClaudeRateLimits, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let credentials_path = home.join(".claude").join(".credentials.json");
+
+    if !credentials_path.exists() {
+        return Err(
+            "Claude OAuth credentials not found. Please log in via Claude CLI.".to_string(),
+        );
+    }
+
+    let creds_content = std::fs::read_to_string(&credentials_path)
+        .map_err(|e| format!("Failed to read credentials: {}", e))?;
+    let creds: serde_json::Value = serde_json::from_str(&creds_content)
+        .map_err(|e| format!("Failed to parse credentials: {}", e))?;
+
+    let token = creds
+        .get("claudeAiOauth")
+        .and_then(|o| o.get("accessToken"))
+        .and_then(|t| t.as_str())
+        .ok_or("OAuth access token not found in credentials")?;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("User-Agent", "claude-code/2.0.32")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch rate limits: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("API error ({}): {}", status, body));
+    }
+
+    let data: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    Ok(ClaudeRateLimits {
+        five_hour: RateLimitWindow {
+            utilization: data["five_hour"]["utilization"]
+                .as_f64()
+                .unwrap_or(0.0),
+            resets_at: data["five_hour"]["resets_at"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+        },
+        seven_day: RateLimitWindow {
+            utilization: data["seven_day"]["utilization"]
+                .as_f64()
+                .unwrap_or(0.0),
+            resets_at: data["seven_day"]["resets_at"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+        },
+        extra_usage: ExtraUsage {
+            is_enabled: data["extra_usage"]["is_enabled"]
+                .as_bool()
+                .unwrap_or(false),
+            monthly_limit: data["extra_usage"]["monthly_limit"].as_u64(),
+            used_credits: data["extra_usage"]["used_credits"].as_u64(),
+            utilization: data["extra_usage"]["utilization"].as_f64(),
+        },
+    })
+}
+
+// --- Codex (OpenAI) API Rate Limit Usage ---
+
+/// Convert epoch seconds to ISO 8601 string
+fn epoch_to_iso(epoch: f64) -> String {
+    use chrono::{DateTime, Utc};
+    if let Some(dt) = DateTime::<Utc>::from_timestamp(epoch as i64, 0) {
+        dt.to_rfc3339()
+    } else {
+        String::new()
+    }
+}
+
+/// Fetch OpenAI Codex rate limit usage from ChatGPT API
+/// Reuses the same ClaudeRateLimits struct (normalized to the same shape)
+#[tauri::command]
+pub async fn fetch_codex_rate_limits() -> Result<ClaudeRateLimits, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let auth_path = home.join(".codex").join("auth.json");
+
+    if !auth_path.exists() {
+        return Err(
+            "Codex OAuth credentials not found. Please run `codex login`.".to_string(),
+        );
+    }
+
+    let auth_content = std::fs::read_to_string(&auth_path)
+        .map_err(|e| format!("Failed to read Codex auth: {}", e))?;
+    let auth: serde_json::Value = serde_json::from_str(&auth_content)
+        .map_err(|e| format!("Failed to parse Codex auth: {}", e))?;
+
+    // Try common token locations: tokens.access_token (codex login), or top-level fields
+    let token = auth
+        .get("tokens")
+        .and_then(|t| t.get("access_token"))
+        .or_else(|| auth.get("token"))
+        .or_else(|| auth.get("access_token"))
+        .or_else(|| auth.get("accessToken"))
+        .and_then(|t| t.as_str())
+        .ok_or("OAuth token not found in ~/.codex/auth.json")?;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch Codex rate limits: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Codex API error ({}): {}", status, body));
+    }
+
+    let data: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Codex response: {}", e))?;
+
+    // Normalize Codex response to the same shape as Claude
+    // Codex: rate_limit.primary_window / secondary_window with used_percent + reset_at (epoch)
+    let primary = &data["rate_limit"]["primary_window"];
+    let secondary = &data["rate_limit"]["secondary_window"];
+    let credits = &data["credits"];
+
+    Ok(ClaudeRateLimits {
+        five_hour: RateLimitWindow {
+            utilization: primary["used_percent"].as_f64().unwrap_or(0.0),
+            resets_at: primary["reset_at"]
+                .as_f64()
+                .map(epoch_to_iso)
+                .unwrap_or_default(),
+        },
+        seven_day: RateLimitWindow {
+            utilization: secondary["used_percent"].as_f64().unwrap_or(0.0),
+            resets_at: secondary["reset_at"]
+                .as_f64()
+                .map(epoch_to_iso)
+                .unwrap_or_default(),
+        },
+        extra_usage: ExtraUsage {
+            is_enabled: credits["is_enabled"].as_bool().unwrap_or(false),
+            monthly_limit: credits["monthly_limit"].as_u64(),
+            used_credits: credits["used_credits"].as_u64(),
+            utilization: credits["utilization"].as_f64(),
+        },
+    })
+}

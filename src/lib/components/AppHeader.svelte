@@ -14,6 +14,7 @@
   import { goto } from '$app/navigation';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import { DEFAULT_OPENAI_MODEL_ID, isAutoModel } from '$lib/utils/models';
+  import RateLimitIndicator from './RateLimitIndicator.svelte';
 
   // Derived state from stores
   let repos = $derived($settings.repos.filter((r) => r.active !== false));
@@ -328,6 +329,9 @@
   </div>
 
   <div class="flex items-center gap-2">
+    <!-- Rate Limit Indicator -->
+    <RateLimitIndicator />
+
     <!-- Open Mic Marquee (shows live transcription when listening) -->
     <OpenMicMarquee />
 

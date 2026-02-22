@@ -3,6 +3,7 @@
   import { usageStats, formatDuration, formatDate, formatRelativeTime, getWeeklyStats, getTotalForPeriod, formatTokens, formatCost } from '$lib/stores/usageStats';
   import { appSessionUsage } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
+  import { rateLimits, rateLimitData, isRateLimitLoading, codexRateLimits, codexRateLimitData, isCodexRateLimitLoading, formatTimeRemaining, calculatePace, formatCents } from '$lib/stores/rateLimits';
 
   // App session usage - cumulative across all SDK sessions since app launch
   let appUsage = $derived($appSessionUsage);
@@ -20,8 +21,49 @@
 
   let resettingStats = $state(false);
 
+  // Claude API rate limit data
+  let rl = $derived($rateLimitData);
+  let rlLoading = $derived($isRateLimitLoading);
+  let claude7dPace = $derived(
+    rl ? calculatePace(rl.seven_day.utilization, rl.seven_day.resets_at, 168) : null
+  );
+
+  // Codex API rate limit data
+  let cx = $derived($codexRateLimitData);
+  let cxLoading = $derived($isCodexRateLimitLoading);
+  let codex7dPace = $derived(
+    cx ? calculatePace(cx.seven_day.utilization, cx.seven_day.resets_at, 168) : null
+  );
+
+  function getPaceDiff(utilization: number, expectedPercent: number): string {
+    const diff = Math.abs(utilization - expectedPercent).toFixed(1);
+    if (utilization > expectedPercent + 5) return `+${diff}% ahead`;
+    if (utilization < expectedPercent - 5) return `${diff}% behind`;
+    return 'on pace';
+  }
+
+  function getPaceColor(utilization: number, expectedPercent: number): string {
+    if (utilization > expectedPercent + 5) return 'text-warning';
+    if (utilization < expectedPercent - 5) return 'text-success';
+    return 'text-text-secondary';
+  }
+
+  function getPaceColorClasses(paceRatio: number): string {
+    if (paceRatio >= 1.5) return 'bg-red-500/20 text-red-400';
+    if (paceRatio >= 1.2) return 'bg-yellow-500/20 text-yellow-400';
+    return 'bg-green-500/20 text-green-400';
+  }
+
+  function getUtilColor(pct: number): string {
+    if (pct > 90) return 'text-error';
+    if (pct > 70) return 'text-warning';
+    return 'text-text-primary';
+  }
+
   onMount(() => {
     usageStats.load();
+    rateLimits.fetchIfStale();
+    codexRateLimits.fetchIfStale();
   });
 
   async function resetStats() {
@@ -57,6 +99,209 @@
 
   <div class="flex-1 overflow-y-auto p-6">
     <div class="max-w-4xl mx-auto space-y-6">
+      <!-- API Rate Limits -->
+      {#if rl || cx}
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-medium text-text-primary">API Rate Limits</h3>
+            <button
+              class="text-[10px] text-text-muted hover:text-text-primary transition-colors"
+              onclick={() => { rateLimits.fetch(); codexRateLimits.fetch(); }}
+              disabled={rlLoading || cxLoading}
+            >
+              {rlLoading || cxLoading ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
+          <div class="p-4 bg-surface-elevated rounded-lg border border-border space-y-5">
+            {#if rl}
+              {@const claude5hPace = calculatePace(rl.five_hour.utilization, rl.five_hour.resets_at, 5)}
+              <div class="space-y-4">
+                <div class="text-xs font-medium text-text-secondary">Claude</div>
+                <!-- 5-Hour Window -->
+                <div>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <span class="text-sm text-text-secondary">5-Hour Window</span>
+                    <div class="flex items-center gap-3">
+                      {#if claude5hPace && claude5hPace.paceLabel !== 'idle'}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded {getPaceColorClasses(claude5hPace.paceRatio)}">{claude5hPace.paceLabel}</span>
+                      {/if}
+                      <span class="text-xs text-text-muted">resets in {formatTimeRemaining(rl.five_hour.resets_at)}</span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                      <div
+                        class="h-full rounded-full transition-all duration-500"
+                        class:bg-accent={rl.five_hour.utilization <= 70}
+                        class:bg-warning={rl.five_hour.utilization > 70 && rl.five_hour.utilization <= 90}
+                        class:bg-error={rl.five_hour.utilization > 90}
+                        style="width: {Math.min(100, rl.five_hour.utilization)}%"
+                      ></div>
+                    </div>
+                    <span class="text-sm font-medium text-text-primary min-w-[3rem] text-right" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                      {rl.five_hour.utilization.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+                <!-- 7-Day Window -->
+                <div>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <span class="text-sm text-text-secondary">7-Day Window</span>
+                    <div class="flex items-center gap-3">
+                      {#if claude7dPace && claude7dPace.paceLabel !== 'idle'}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded {getPaceColorClasses(claude7dPace.paceRatio)}">{claude7dPace.paceLabel}</span>
+                      {/if}
+                      <span class="text-xs text-text-muted">resets in {formatTimeRemaining(rl.seven_day.resets_at)}</span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                      <div
+                        class="h-full rounded-full transition-all duration-500"
+                        class:bg-accent={rl.seven_day.utilization <= 70}
+                        class:bg-warning={rl.seven_day.utilization > 70 && rl.seven_day.utilization <= 90}
+                        class:bg-error={rl.seven_day.utilization > 90}
+                        style="width: {Math.min(100, rl.seven_day.utilization)}%"
+                      ></div>
+                    </div>
+                    <span class="text-sm font-medium text-text-primary min-w-[3rem] text-right" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                      {rl.seven_day.utilization.toFixed(1)}%
+                    </span>
+                  </div>
+                  {#if claude7dPace}
+                    <div class="flex items-center justify-between mt-1.5 text-[10px] text-text-muted" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                      <span>Expected: {claude7dPace.expectedPercent.toFixed(1)}% (linear)</span>
+                      <span>Actual: {rl.seven_day.utilization.toFixed(1)}%</span>
+                    </div>
+                  {/if}
+                </div>
+                <!-- Extra Usage -->
+                {#if rl.extra_usage.is_enabled}
+                  <div class="pt-3 border-t border-border">
+                    <div class="flex items-center justify-between mb-1.5">
+                      <span class="text-sm text-text-secondary">Extra Usage (Monthly)</span>
+                      <span class="text-xs text-text-muted" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                        {rl.extra_usage.used_credits != null ? formatCents(rl.extra_usage.used_credits) : '$0.00'}
+                        / {rl.extra_usage.monthly_limit != null ? formatCents(rl.extra_usage.monthly_limit) : '---'}
+                      </span>
+                    </div>
+                    {#if rl.extra_usage.utilization != null}
+                      <div class="flex items-center gap-3">
+                        <div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                          <div
+                            class="h-full rounded-full transition-all duration-500"
+                            class:bg-accent={rl.extra_usage.utilization <= 70}
+                            class:bg-warning={rl.extra_usage.utilization > 70 && rl.extra_usage.utilization <= 90}
+                            class:bg-error={rl.extra_usage.utilization > 90}
+                            style="width: {Math.min(100, rl.extra_usage.utilization)}%"
+                          ></div>
+                        </div>
+                        <span class="text-sm font-medium text-text-primary min-w-[3rem] text-right" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                          {rl.extra_usage.utilization.toFixed(1)}%
+                        </span>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
+            {#if cx}
+              {@const codex5hPace = calculatePace(cx.five_hour.utilization, cx.five_hour.resets_at, 5)}
+              <div class="space-y-4" class:pt-5={rl} class:border-t={rl} class:border-border={rl}>
+                <div class="text-xs font-medium text-text-secondary">Codex</div>
+                <!-- 5-Hour Window -->
+                <div>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <span class="text-sm text-text-secondary">5-Hour Window</span>
+                    <div class="flex items-center gap-3">
+                      {#if codex5hPace && codex5hPace.paceLabel !== 'idle'}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded {getPaceColorClasses(codex5hPace.paceRatio)}">{codex5hPace.paceLabel}</span>
+                      {/if}
+                      <span class="text-xs text-text-muted">resets in {formatTimeRemaining(cx.five_hour.resets_at)}</span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                      <div
+                        class="h-full rounded-full transition-all duration-500"
+                        class:bg-accent={cx.five_hour.utilization <= 70}
+                        class:bg-warning={cx.five_hour.utilization > 70 && cx.five_hour.utilization <= 90}
+                        class:bg-error={cx.five_hour.utilization > 90}
+                        style="width: {Math.min(100, cx.five_hour.utilization)}%"
+                      ></div>
+                    </div>
+                    <span class="text-sm font-medium text-text-primary min-w-[3rem] text-right" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                      {cx.five_hour.utilization.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+                <!-- 7-Day Window -->
+                <div>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <span class="text-sm text-text-secondary">7-Day Window</span>
+                    <div class="flex items-center gap-3">
+                      {#if codex7dPace && codex7dPace.paceLabel !== 'idle'}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded {getPaceColorClasses(codex7dPace.paceRatio)}">{codex7dPace.paceLabel}</span>
+                      {/if}
+                      <span class="text-xs text-text-muted">resets in {formatTimeRemaining(cx.seven_day.resets_at)}</span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                      <div
+                        class="h-full rounded-full transition-all duration-500"
+                        class:bg-accent={cx.seven_day.utilization <= 70}
+                        class:bg-warning={cx.seven_day.utilization > 70 && cx.seven_day.utilization <= 90}
+                        class:bg-error={cx.seven_day.utilization > 90}
+                        style="width: {Math.min(100, cx.seven_day.utilization)}%"
+                      ></div>
+                    </div>
+                    <span class="text-sm font-medium text-text-primary min-w-[3rem] text-right" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                      {cx.seven_day.utilization.toFixed(1)}%
+                    </span>
+                  </div>
+                  {#if codex7dPace}
+                    <div class="flex items-center justify-between mt-1.5 text-[10px] text-text-muted" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                      <span>Expected: {codex7dPace.expectedPercent.toFixed(1)}% (linear)</span>
+                      <span>Actual: {cx.seven_day.utilization.toFixed(1)}%</span>
+                    </div>
+                  {/if}
+                </div>
+                <!-- Extra Usage / Credits -->
+                {#if cx.extra_usage.is_enabled}
+                  <div class="pt-3 border-t border-border">
+                    <div class="flex items-center justify-between mb-1.5">
+                      <span class="text-sm text-text-secondary">Credits (Monthly)</span>
+                      <span class="text-xs text-text-muted" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                        {cx.extra_usage.used_credits != null ? formatCents(cx.extra_usage.used_credits) : '$0.00'}
+                        / {cx.extra_usage.monthly_limit != null ? formatCents(cx.extra_usage.monthly_limit) : '---'}
+                      </span>
+                    </div>
+                    {#if cx.extra_usage.utilization != null}
+                      <div class="flex items-center gap-3">
+                        <div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                          <div
+                            class="h-full rounded-full transition-all duration-500"
+                            class:bg-accent={cx.extra_usage.utilization <= 70}
+                            class:bg-warning={cx.extra_usage.utilization > 70 && cx.extra_usage.utilization <= 90}
+                            class:bg-error={cx.extra_usage.utilization > 90}
+                            style="width: {Math.min(100, cx.extra_usage.utilization)}%"
+                          ></div>
+                        </div>
+                        <span class="text-sm font-medium text-text-primary min-w-[3rem] text-right" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                          {cx.extra_usage.utilization.toFixed(1)}%
+                        </span>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
       <!-- App Session Usage -->
       {#if hasAppUsage}
         <div>
