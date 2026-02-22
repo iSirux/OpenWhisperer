@@ -4,15 +4,17 @@
   let {
     onSendPrompt,
     generatedActions,
+    hasOutcomeAbove = false,
   }: {
     onSendPrompt: (prompt: string) => void;
     generatedActions?: QuickAction[];
+    hasOutcomeAbove?: boolean;
   } = $props();
 
   const defaultActions: QuickAction[] = [
-    { label: 'Implement', prompt: 'Please implement this.' },
-    { label: 'Fix', prompt: 'Please fix the issues.' },
-    { label: 'Keep going', prompt: 'Please continue.' },
+    { prompt: 'Implement this' },
+    { prompt: 'Fix the issues' },
+    { prompt: 'Keep going' },
   ];
 
   // Use generated actions if available, otherwise fall back to defaults
@@ -24,16 +26,15 @@
   const isContextual = $derived(generatedActions && generatedActions.length > 0);
 </script>
 
-<div class="quick-actions">
+<div class="quick-actions" class:no-border={hasOutcomeAbove}>
   <span class="quick-actions-label">Quick actions:</span>
   <div class="quick-actions-buttons">
     {#each quickActions as action}
       <button
         class="quick-action-button"
         onclick={() => onSendPrompt(action.prompt)}
-        title={action.prompt}
       >
-        {action.label}
+        {action.prompt}
       </button>
     {/each}
   </div>
@@ -48,6 +49,12 @@
     padding: 0.75rem 0;
     margin-top: 0.5rem;
     border-top: 1px dashed var(--color-border);
+  }
+
+  .quick-actions.no-border {
+    border-top: none;
+    margin-top: 0;
+    padding-top: 0.5rem;
   }
 
   .quick-actions-label {

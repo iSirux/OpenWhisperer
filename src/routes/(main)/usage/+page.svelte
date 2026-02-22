@@ -3,8 +3,6 @@
   import { usageStats, formatDuration, formatDate, formatRelativeTime, getWeeklyStats, getTotalForPeriod, formatTokens, formatCost } from '$lib/stores/usageStats';
   import { appSessionUsage } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
-  import { navigation } from '$lib/stores/navigation';
-  import { goto } from '$app/navigation';
 
   // App session usage - cumulative across all SDK sessions since app launch
   let appUsage = $derived($appSessionUsage);
@@ -50,27 +48,12 @@
     const repo = $settings.repos.find(r => r.path === path);
     return repo?.name || path.split(/[/\\]/).pop() || path;
   }
-
-  function goBack() {
-    // Ensure we go back to sessions view, not start
-    navigation.setView('sessions');
-    goto('/');
-  }
 </script>
 
-<div class="usage-view flex flex-col h-full bg-background">
-  <header class="flex items-center gap-4 px-4 py-3 border-b border-border bg-surface">
-    <button
-      class="p-1.5 hover:bg-surface-elevated rounded transition-colors"
-      onclick={goBack}
-      title="Back to main view"
-    >
-      <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-      </svg>
-    </button>
-    <h2 class="text-lg font-semibold text-text-primary">Usage Statistics</h2>
-  </header>
+<div class="usage-view flex-1 flex flex-col overflow-hidden bg-background">
+  <div class="flex items-center px-4 py-2 border-b border-border bg-surface">
+    <h2 class="text-sm font-medium text-text-primary">Usage Statistics</h2>
+  </div>
 
   <div class="flex-1 overflow-y-auto p-6">
     <div class="max-w-4xl mx-auto space-y-6">

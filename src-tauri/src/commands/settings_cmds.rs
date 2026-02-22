@@ -3,6 +3,7 @@ use crate::ConfigLoadStatus;
 use crate::git::GitManager;
 use tauri::State;
 use parking_lot::Mutex;
+use std::fs;
 use std::process::Command;
 
 pub type ConfigState = Mutex<AppConfig>;
@@ -17,6 +18,61 @@ pub fn get_config(config: State<ConfigState>) -> AppConfig {
 #[tauri::command]
 pub fn get_config_load_status(status: State<ConfigLoadStatus>) -> bool {
     *status.0.lock()
+}
+
+/// Returns the path to the config file and its parent directory.
+#[tauri::command]
+pub fn get_config_paths() -> (String, String) {
+    let config_path = AppConfig::config_path();
+    let config_dir = AppConfig::config_dir();
+    (
+        config_path.to_string_lossy().to_string(),
+        config_dir.to_string_lossy().to_string(),
+    )
+}
+
+/// Opens the config file in the system's default editor.
+#[tauri::command]
+pub fn open_config_file() -> Result<(), String> {
+    let path = AppConfig::config_path();
+
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {}", e))?;
+        }
+
+        let content = serde_json::to_string_pretty(&AppConfig::default())
+            .map_err(|e| format!("Failed to serialize default config: {}", e))?;
+        fs::write(&path, content)
+            .map_err(|e| format!("Failed to create config file: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/c", "start", "", &path.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to open config file: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open config file: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open config file: {}", e))?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -44,7 +100,7 @@ pub fn save_config(
 pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Result<(), String> {
     println!("[add_repo] Called with path: {}, name: {}", path, name);
     let mut cfg = config.lock();
-    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, mcp_servers: None, note_mcp_servers: None });
+    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, icon: None, color: None, mcp_servers: None, note_mcp_servers: None, tags: Vec::new(), active: true });
     println!("[add_repo] Repo added to config, total repos: {}", cfg.repos.len());
     let result = cfg.save();
     match &result {
@@ -71,19 +127,49 @@ pub fn remove_repo(config: State<ConfigState>, index: usize) -> Result<(), Strin
 #[tauri::command]
 pub fn set_active_repo(config: State<ConfigState>, index: usize) -> Result<(), String> {
     let mut cfg = config.lock();
-    if index < cfg.repos.len() {
-        cfg.active_repo_index = index;
-        cfg.auto_repo_mode = false; // Disable auto mode when selecting specific repo
-        cfg.save()
-    } else {
-        Err("Invalid repo index".to_string())
+    if index >= cfg.repos.len() {
+        return Err("Invalid repo index".to_string());
     }
+    if !cfg.repos[index].active {
+        return Err("Cannot select an inactive repository".to_string());
+    }
+    cfg.active_repo_index = index;
+    cfg.auto_repo_mode = false; // Disable auto mode when selecting specific repo
+    cfg.save()
 }
 
 #[tauri::command]
 pub fn set_auto_repo_mode(config: State<ConfigState>, enabled: bool) -> Result<(), String> {
     let mut cfg = config.lock();
     cfg.auto_repo_mode = enabled;
+    cfg.save()
+}
+
+#[tauri::command]
+pub fn set_repo_active(config: State<ConfigState>, index: usize, active: bool) -> Result<(), String> {
+    let mut cfg = config.lock();
+    if index >= cfg.repos.len() {
+        return Err("Invalid repo index".to_string());
+    }
+
+    cfg.repos[index].active = active;
+
+    // If deactivating the currently active repo, switch to next active repo or auto mode
+    if !active && cfg.active_repo_index == index {
+        let next_active = cfg.repos.iter().enumerate()
+            .find(|(i, r)| *i != index && r.active)
+            .map(|(i, _)| i);
+
+        match next_active {
+            Some(next_idx) => {
+                cfg.active_repo_index = next_idx;
+            }
+            None => {
+                cfg.auto_repo_mode = true;
+            }
+        }
+    }
+
     cfg.save()
 }
 

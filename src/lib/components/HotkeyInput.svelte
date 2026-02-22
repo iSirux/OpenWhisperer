@@ -1,10 +1,11 @@
 <script lang="ts">
   interface Props {
     value: string;
+    enabled?: boolean;
     onchange?: (value: string) => void;
   }
 
-  let { value = $bindable(), onchange }: Props = $props();
+  let { value = $bindable(), enabled = true, onchange }: Props = $props();
 
   let isCapturing = $state(false);
   let inputElement: HTMLButtonElement | null = $state(null);
@@ -101,6 +102,7 @@
   }
 
   function handleClick() {
+    if (!enabled) return;
     isCapturing = true;
     // Focus will be handled by the button's native focus
   }
@@ -120,12 +122,13 @@
   }
 </script>
 
-<div class="hotkey-input-wrapper">
+<div class="hotkey-input-wrapper" class:disabled={!enabled}>
   <button
     bind:this={inputElement}
     type="button"
     class="hotkey-input"
     class:capturing={isCapturing}
+    class:disabled={!enabled}
     onclick={handleClick}
     onkeydown={handleKeyDown}
     onblur={handleBlur}
@@ -136,7 +139,7 @@
       <span class="hotkey-display">{formatForDisplay(value)}</span>
     {/if}
   </button>
-  {#if value && !isCapturing}
+  {#if value && !isCapturing && enabled}
     <button
       type="button"
       class="clear-button"
@@ -171,7 +174,16 @@
     color: var(--color-text-primary);
   }
 
-  .hotkey-input:hover {
+  .hotkey-input-wrapper.disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+
+  .hotkey-input.disabled {
+    cursor: default;
+  }
+
+  .hotkey-input:hover:not(.disabled) {
     border-color: var(--color-accent);
   }
 

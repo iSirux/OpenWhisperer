@@ -14,6 +14,7 @@
   import { isRepoAutoSelectEnabled } from "$lib/utils/llm";
   import { overlay } from "$lib/stores/overlay";
   import StatusBadge from "./StatusBadge.svelte";
+  import RepoIcon from "./RepoIcon.svelte";
   import Waveform from "./Waveform.svelte";
   import TranscriptMarquee from "./TranscriptMarquee.svelte";
   import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
@@ -22,10 +23,13 @@
     getModelBadgeBgColor,
     getModelTextColor,
   } from "$lib/utils/modelColors";
-  import type { OverlayMode } from "$lib/stores/overlay";
+  import type { OverlayMode, OverlayActivityInfo } from "$lib/stores/overlay";
 
   // Check if Vosk real-time transcription should be shown
   $: showRealtimeTranscript = $settings.vosk?.enabled ?? false;
+
+  // Check if active sessions should be shown in overlay
+  $: showActiveSessions = $settings.overlay?.show_active_sessions ?? true;
 
   // Track remote recording state (from main window events)
   let remoteRecordingState: RecordingState = "idle";
@@ -33,11 +37,27 @@
   let unlistenSessionInfo: UnlistenFn | null = null;
   let unlistenMode: UnlistenFn | null = null;
   let unlistenInlineSessionInfo: UnlistenFn | null = null;
+  let unlistenActivityInfo: UnlistenFn | null = null;
 
   // Use remote state if available, otherwise local state
   $: isRecordingActive = remoteRecordingState === "recording" || $isRecording;
   $: isProcessingActive =
     remoteRecordingState === "processing" || $isProcessing;
+
+  // Build the activity status text
+  $: hasActivity = $overlay.activityInfo.activeSessions > 0 || $overlay.activityInfo.activeSequences > 0;
+  $: activityText = buildActivityText($overlay.activityInfo.activeSessions, $overlay.activityInfo.activeSequences);
+
+  function buildActivityText(sessions: number, sequences: number): string {
+    const parts: string[] = [];
+    if (sessions > 0) {
+      parts.push(`${sessions} active session${sessions !== 1 ? "s" : ""}`);
+    }
+    if (sequences > 0) {
+      parts.push(`${sequences} active sequence${sequences !== 1 ? "s" : ""}`);
+    }
+    return parts.join(", ");
+  }
 
   function getModelLabel(model: string | null): string {
     if (!model) return "";
@@ -102,6 +122,18 @@
       overlay.updateInlineSessionInfoLocal(event.payload);
       setTimeout(notifyResize, 10);
     });
+
+    // Listen for activity info changes from main window (active sessions/sequences)
+    unlistenActivityInfo = await listen<OverlayActivityInfo>(
+      "overlay-activity-info",
+      (event) => {
+        overlay.updateActivityInfoLocal(
+          event.payload.activeSessions,
+          event.payload.activeSequences
+        );
+        setTimeout(notifyResize, 10);
+      }
+    );
   });
 
   onDestroy(() => {
@@ -116,6 +148,9 @@
     }
     if (unlistenInlineSessionInfo) {
       unlistenInlineSessionInfo();
+    }
+    if (unlistenActivityInfo) {
+      unlistenActivityInfo();
     }
   });
 
@@ -239,6 +274,7 @@
               >Auto</span
             >
           {:else if $activeRepo}
+            <RepoIcon repo={$activeRepo} size="xs" />
             <span class="text-text-secondary truncate"
               >{$activeRepo.name}</span
             >
@@ -296,6 +332,17 @@
           </div>
         {/if}
       </div>
+    </div>
+  {/if}
+
+  <!-- Active sessions/sequences indicator -->
+  {#if showActiveSessions && hasActivity}
+    <div class="mt-1.5 flex items-center gap-1.5 px-0.5">
+      <div class="relative flex-shrink-0">
+        <div class="w-2 h-2 rounded-full bg-emerald-400"></div>
+        <div class="absolute inset-0 w-2 h-2 rounded-full bg-emerald-400 animate-ping opacity-75"></div>
+      </div>
+      <span class="text-[11px] text-text-secondary">{activityText}</span>
     </div>
   {/if}
 

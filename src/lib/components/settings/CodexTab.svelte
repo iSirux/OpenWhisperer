@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { settings, type SdkProvider, type OpenAiAuthMethod } from "$lib/stores/settings";
+  import {
+    settings,
+    type SdkProvider,
+    type OpenAiAuthMethod,
+  } from "$lib/stores/settings";
   import { OPENAI_MODELS } from "$lib/utils/models";
   import {
     getModelBadgeBgColor,
@@ -9,9 +13,13 @@
   import "./toggle.css";
 
   // OpenAI auth state
-  let openaiAuthStatus = $state<{ hasAuthFile: boolean; hasCli: boolean; authenticated: boolean } | null>(null);
+  let openaiAuthStatus = $state<{
+    hasAuthFile: boolean;
+    hasCli: boolean;
+    authenticated: boolean;
+  } | null>(null);
   let isRunningLogin = $state(false);
-  let apiKeyInput = $state('');
+  let apiKeyInput = $state("");
   let hasApiKey = $state(false);
   let showApiKeyInput = $state(false);
 
@@ -21,8 +29,12 @@
 
   async function checkOpenAiAuth() {
     try {
-      openaiAuthStatus = await invoke<{ hasAuthFile: boolean; hasCli: boolean; authenticated: boolean }>('check_openai_codex_auth');
-      hasApiKey = await invoke<boolean>('has_openai_api_key');
+      openaiAuthStatus = await invoke<{
+        hasAuthFile: boolean;
+        hasCli: boolean;
+        authenticated: boolean;
+      }>("check_openai_codex_auth");
+      hasApiKey = await invoke<boolean>("has_openai_api_key");
     } catch {
       openaiAuthStatus = null;
     }
@@ -31,12 +43,12 @@
   async function handleCodexLogin() {
     isRunningLogin = true;
     try {
-      const success = await invoke<boolean>('run_codex_login');
+      const success = await invoke<boolean>("run_codex_login");
       if (success) {
         await checkOpenAiAuth();
       }
     } catch (e) {
-      console.error('Codex login failed:', e);
+      console.error("Codex login failed:", e);
     } finally {
       isRunningLogin = false;
     }
@@ -45,21 +57,21 @@
   async function handleSaveApiKey() {
     if (!apiKeyInput.trim()) return;
     try {
-      await invoke('save_openai_api_key', { apiKey: apiKeyInput.trim() });
+      await invoke("save_openai_api_key", { apiKey: apiKeyInput.trim() });
       hasApiKey = true;
-      apiKeyInput = '';
+      apiKeyInput = "";
       showApiKeyInput = false;
     } catch (e) {
-      console.error('Failed to save API key:', e);
+      console.error("Failed to save API key:", e);
     }
   }
 
   async function handleDeleteApiKey() {
     try {
-      await invoke('delete_openai_api_key');
+      await invoke("delete_openai_api_key");
       hasApiKey = false;
     } catch (e) {
-      console.error('Failed to delete API key:', e);
+      console.error("Failed to delete API key:", e);
     }
   }
 
@@ -96,11 +108,19 @@
     <h3 class="text-sm font-medium text-text-primary mb-3">Authentication</h3>
     <div class="p-3 bg-surface rounded border border-border">
       <div class="flex items-center justify-between mb-2">
-        <label class="text-sm font-medium text-text-secondary">OpenAI Authentication</label>
+        <label class="text-sm font-medium text-text-secondary"
+          >OpenAI Authentication</label
+        >
         {#if openaiAuthStatus?.authenticated || hasApiKey}
-          <span class="text-xs px-2 py-0.5 rounded-full bg-green-600/20 text-green-400">Connected</span>
+          <span
+            class="text-xs px-2 py-0.5 rounded-full bg-green-600/20 text-green-400"
+            >Connected</span
+          >
         {:else}
-          <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-600/20 text-yellow-400">Not configured</span>
+          <span
+            class="text-xs px-2 py-0.5 rounded-full bg-yellow-600/20 text-yellow-400"
+            >Not configured</span
+          >
         {/if}
       </div>
 
@@ -116,12 +136,20 @@
           </select>
         </div>
 
-        {#if $settings.openai_auth_method === 'OAuth'}
+        {#if $settings.openai_auth_method === "OAuth"}
           <div class="flex items-center gap-2">
             {#if openaiAuthStatus?.authenticated}
               <div class="flex items-center gap-1.5 text-xs text-green-400">
-                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
-                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                <svg
+                  class="w-3.5 h-3.5"
+                  fill="currentColor"
+                  viewBox="0 0 20 20"
+                >
+                  <path
+                    fill-rule="evenodd"
+                    d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                    clip-rule="evenodd"
+                  />
                 </svg>
                 Authenticated via Codex CLI
               </div>
@@ -131,10 +159,12 @@
                 onclick={handleCodexLogin}
                 disabled={isRunningLogin}
               >
-                {isRunningLogin ? 'Logging in...' : 'Login with OpenAI'}
+                {isRunningLogin ? "Logging in..." : "Login with OpenAI"}
               </button>
               {#if !openaiAuthStatus?.hasCli}
-                <span class="text-xs text-text-muted">Codex CLI not found. Install with: npm i -g @openai/codex</span>
+                <span class="text-xs text-text-muted"
+                  >Codex CLI not found. Install with: npm i -g @openai/codex</span
+                >
               {/if}
             {/if}
           </div>
@@ -145,8 +175,8 @@
                 <span class="text-xs text-green-400">API key saved</span>
                 <button
                   class="text-xs text-red-400 hover:text-red-300"
-                  onclick={handleDeleteApiKey}
-                >Remove</button>
+                  onclick={handleDeleteApiKey}>Remove</button
+                >
               </div>
             {:else if showApiKeyInput}
               <div class="flex gap-2">
@@ -159,18 +189,21 @@
                 <button
                   class="px-3 py-1.5 bg-accent text-white text-xs rounded hover:bg-accent-hover transition-colors"
                   onclick={handleSaveApiKey}
-                  disabled={!apiKeyInput.trim()}
-                >Save</button>
+                  disabled={!apiKeyInput.trim()}>Save</button
+                >
                 <button
                   class="px-2 py-1.5 text-xs text-text-muted hover:text-text-secondary"
-                  onclick={() => { showApiKeyInput = false; apiKeyInput = ''; }}
-                >Cancel</button>
+                  onclick={() => {
+                    showApiKeyInput = false;
+                    apiKeyInput = "";
+                  }}>Cancel</button
+                >
               </div>
             {:else}
               <button
                 class="text-xs text-accent hover:underline"
-                onclick={() => showApiKeyInput = true}
-              >Add API key</button>
+                onclick={() => (showApiKeyInput = true)}>Add API key</button
+              >
             {/if}
           </div>
         {/if}
@@ -178,11 +211,31 @@
     </div>
   </div>
 
+  <div class="border-t border-border pt-4 mt-4">
+    <label class="block text-sm font-medium text-text-secondary mb-1"
+      >Terminal Mode</label
+    >
+    <select
+      class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+      bind:value={$settings.codex_mode}
+    >
+      <option value="AppServer">Codex App Server (Recommended)</option>
+      <option value="Sdk">SDK (Codex SDK, not recommended)</option>
+    </select>
+    <p class="text-xs text-text-muted mt-1">
+      {#if $settings.codex_mode === "AppServer"}
+        Uses Codex App Server JSON-RPC over stdio in the integrated session
+        view.
+      {:else if $settings.codex_mode === "Sdk"}
+        Uses the integrated Codex SDK session view with structured tool events.
+        Codex SDK mode is not recommended.
+      {/if}
+    </p>
+  </div>
+
   <!-- Enabled Models -->
   <div>
-    <h3 class="text-sm font-medium text-text-primary mb-2">
-      Enabled Models
-    </h3>
+    <h3 class="text-sm font-medium text-text-primary mb-2">Enabled Models</h3>
     <p class="text-xs text-text-muted mb-3">
       Select which Codex models are available in the model selector and for
       hotkey cycling. At least one model must remain enabled.
@@ -229,8 +282,9 @@
               <div class="flex items-center gap-2">
                 <span
                   class="text-sm font-medium px-2 py-0.5 rounded {getModelBadgeBgColor(
-                    model.id
-                  )} {getModelTextColor(model.id)}">{model.label}</span>
+                    model.id,
+                  )} {getModelTextColor(model.id)}">{model.label}</span
+                >
               </div>
               <p class="text-xs text-text-muted mt-0.5">
                 {model.title}
@@ -247,12 +301,14 @@
 
   <!-- Default Model -->
   <div class="border-t border-border pt-4 mt-4">
-    <label class="block text-sm font-medium text-text-secondary mb-1">Default Model</label>
+    <label class="block text-sm font-medium text-text-secondary mb-1"
+      >Default Model</label
+    >
     <select
       class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
       bind:value={$settings.openai_model}
     >
-      {#each OPENAI_MODELS.filter(m => isModelEnabled(m.id)) as model}
+      {#each OPENAI_MODELS.filter((m) => isModelEnabled(m.id)) as model}
         <option value={model.id}>{model.label} - {model.title}</option>
       {/each}
     </select>

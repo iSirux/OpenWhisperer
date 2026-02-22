@@ -348,7 +348,7 @@
       <span class="text-sm font-medium text-text-primary">MCP Servers</span>
     </div>
     <p class="text-xs text-text-muted">
-      Configure external MCP (Model Context Protocol) servers to extend Claude's capabilities
+      Configure external MCP (Model Context Protocol) servers to extend the AI's capabilities
       with custom tools. Servers are started on-demand when sessions need them.
     </p>
   </div>
@@ -502,7 +502,7 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
       </svg>
       <p class="text-sm">No MCP servers configured</p>
-      <p class="text-xs mt-1">Add a server to extend Claude's capabilities</p>
+      <p class="text-xs mt-1">Add a server to extend the AI's capabilities</p>
     </div>
   {/if}
 
@@ -744,7 +744,7 @@
     <div class="text-xs text-text-muted space-y-2">
       <p>
         <strong>Model Context Protocol (MCP)</strong> allows external tools and services
-        to extend Claude's capabilities. MCP servers provide additional tools that Claude
+        to extend the AI's capabilities. MCP servers provide additional tools that the AI
         can use during sessions.
       </p>
       <p>

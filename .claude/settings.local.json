@@ -1,6 +1,9 @@
 {
   "permissions": {
     "allow": [
+      "Read",
+      "Glob",
+      "Grep",
       "Bash(cat:*)",
       "WebSearch",
       "Bash(npm run check:*)",
@@ -26,7 +29,20 @@
       "WebFetch(domain:openai.github.io)",
       "WebFetch(domain:community.openai.com)",
       "WebFetch(domain:openai.com)",
-      "WebFetch(domain:platform.openai.com)"
+      "WebFetch(domain:platform.openai.com)",
+      "Bash(test:*)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:svelteflow.dev)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(head:*)",
+      "Bash(wc:*)",
+      "Bash(cd:*)",
+      "Bash(ls:*)",
+      "Bash(tail:)",
+      "Bash(find:*)",
+      "Bash(head:)",
+      "Bash(npm view:*)"
     ],
     "deny": [],
     "ask": []

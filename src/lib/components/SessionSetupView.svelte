@@ -3,13 +3,25 @@
   import type { EffortLevel, SdkImageContent } from '$lib/stores/sdkSessions';
   import type { RepoConfig } from '$lib/stores/settings';
   import { settings } from '$lib/stores/settings';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
+  import { findRepoByPath } from '$lib/utils/repoIcons';
   import { isRecording, isTranscribing } from '$lib/stores/recording';
   import {
     getModelBgColor,
     getModelRingColor,
     getModelHoverBgColor,
   } from '$lib/utils/modelColors';
-  import { getEnabledModelsWithAuto, getEnabledModels, getModelsForProvider, isAutoModel, DEFAULT_OPENAI_MODEL_ID, modelSupportsEffort, getMaxEffort, type SdkProvider } from '$lib/utils/models';
+  import {
+    getEnabledModelsWithAuto,
+    getEnabledModels,
+    getProviderForModel,
+    isAutoModel,
+    DEFAULT_MODEL_ID,
+    DEFAULT_OPENAI_MODEL_ID,
+    modelSupportsEffort,
+    getMaxEffort,
+    type SdkProvider,
+  } from '$lib/utils/models';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import {
     getImagesFromClipboard,
@@ -21,11 +33,15 @@
   } from '$lib/utils/image';
 
   interface Props {
+    sessionId: string;
     initialModel?: string;
+    initialProvider?: SdkProvider;
     initialEffortLevel?: EffortLevel;
     initialCwd?: string;
     initialPlanMode?: boolean;
     initialNoteMode?: boolean;
+    initialDraftPrompt?: string;
+    initialDraftImages?: SdkImageContent[];
     isRecordingForSetup?: boolean;
     onStart: (config: {
       prompt: string;
@@ -37,42 +53,69 @@
       noteMode: boolean;
       provider?: SdkProvider;
     }) => void;
+    onDraftChange?: (prompt: string, images: SdkImageContent[]) => void;
     onStartRecording: () => void;
     onStopRecording: () => Promise<string | null>;
     onCancel?: () => void;
   }
 
   let {
-    initialModel = 'claude-sonnet-4-20250514',
+    sessionId,
+    initialModel = DEFAULT_MODEL_ID,
+    initialProvider = undefined,
     initialEffortLevel = null,
     initialCwd = '',
     initialPlanMode = false,
     initialNoteMode = false,
+    initialDraftPrompt = '',
+    initialDraftImages = [],
     isRecordingForSetup = false,
     onStart,
+    onDraftChange,
     onStartRecording,
     onStopRecording,
     onCancel,
   }: Props = $props();
 
+  function toImageData(images: SdkImageContent[]): ImageData[] {
+    return images.map((img) => ({
+      mediaType: img.mediaType,
+      base64Data: img.base64Data,
+      width: img.width ?? 0,
+      height: img.height ?? 0,
+      originalSize: 0,
+      compressedSize: 0,
+    }));
+  }
+
+  function toSdkImageContent(images: ImageData[]): SdkImageContent[] {
+    return images.map((img) => ({
+      mediaType: img.mediaType,
+      base64Data: img.base64Data,
+      width: img.width,
+      height: img.height,
+    }));
+  }
+
   // Local state
-  let prompt = $state('');
+  let prompt = $state(initialDraftPrompt);
   let model = $state(initialModel);
   let effortLevel = $state<EffortLevel>(initialEffortLevel);
   let cwd = $state(initialCwd);
   let planMode = $state(initialPlanMode);
   let noteMode = $state(initialNoteMode);
-  let pendingImages = $state<ImageData[]>([]);
+  let pendingImages = $state<ImageData[]>(toImageData(initialDraftImages));
   let isProcessingImages = $state(false);
   let showRepoDropdown = $state(false);
-  let provider = $state<SdkProvider>('claude');
+  let provider = $state<SdkProvider>(initialProvider ?? getProviderForModel(initialModel));
   let openaiAvailable = $state(false);
   let isStarting = $state(false);
   let isAwaitingTranscript = $state(false);
   let textareaEl: HTMLTextAreaElement;
+  let prevSessionId = $state(sessionId);
 
   // Derived state
-  const repos = $derived($settings.repos || []);
+  const repos = $derived(($settings.repos || []).filter((r) => r.active !== false));
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
   const isAutoRepoMode = $derived(!cwd || cwd === '.');
   const isSmartModelEnabled = $derived(
@@ -99,11 +142,44 @@
     }
   });
 
+  // Restore draft when switching between setup sessions.
+  $effect(() => {
+    if (sessionId !== prevSessionId) {
+      prompt = initialDraftPrompt;
+      pendingImages = toImageData(initialDraftImages);
+      prevSessionId = sessionId;
+    }
+  });
+
   // Check if OpenAI Codex is available
   $effect(() => {
     invoke<{ authenticated: boolean }>('check_openai_codex_auth')
-      .then(result => { openaiAvailable = result.authenticated; })
-      .catch(() => { openaiAvailable = false; });
+      .then(result => {
+        openaiAvailable = result.authenticated;
+        if (!openaiAvailable && provider === 'openai') {
+          provider = 'claude';
+          model = $settings.default_model || DEFAULT_MODEL_ID;
+        }
+      })
+      .catch(() => {
+        openaiAvailable = false;
+        if (provider === 'openai') {
+          provider = 'claude';
+          model = $settings.default_model || DEFAULT_MODEL_ID;
+        }
+      });
+  });
+
+  // Keep selected model aligned with current provider and enabled model list.
+  $effect(() => {
+    const availableModels = models;
+    if (availableModels.length === 0) return;
+
+    if (!availableModels.some((m) => m.id === model)) {
+      model = provider === 'openai'
+        ? ($settings.openai_model || availableModels[0].id || DEFAULT_OPENAI_MODEL_ID)
+        : ($settings.default_model || availableModels[0].id || DEFAULT_MODEL_ID);
+    }
   });
 
   // Auto-resize textarea
@@ -122,18 +198,20 @@
     autoResize();
   });
 
+  // Persist setup draft per session so typed content survives session switching.
+  $effect(() => {
+    prompt;
+    pendingImages;
+    onDraftChange?.(prompt, toSdkImageContent(pendingImages));
+  });
+
   async function handleStart() {
     if (!canStart || isStarting) return;
 
     isStarting = true;
 
     const imageContent: SdkImageContent[] | undefined = pendingImages.length > 0
-      ? pendingImages.map(img => ({
-          mediaType: img.mediaType,
-          base64Data: img.base64Data,
-          width: img.width,
-          height: img.height,
-        }))
+      ? toSdkImageContent(pendingImages)
       : undefined;
 
     try {
@@ -145,7 +223,7 @@
         cwd,
         planMode,
         noteMode,
-        provider,
+        provider: noteMode ? 'claude' : provider,
       });
     } finally {
       isStarting = false;
@@ -229,7 +307,7 @@
     if (newProvider === 'openai') {
       model = $settings.openai_model || DEFAULT_OPENAI_MODEL_ID;
     } else {
-      model = $settings.default_model || 'claude-sonnet-4-6';
+      model = $settings.default_model || DEFAULT_MODEL_ID;
     }
   }
 
@@ -306,38 +384,13 @@
         </h3>
         <p class="header-description">
           {noteMode
-            ? 'Capture a voice note. Claude will create a note using your configured note-taking tools.'
+            ? 'Capture a voice note. The AI will create a note using your configured note-taking tools.'
             : planMode
-              ? 'Describe the feature you want to plan. Claude will help you flesh out the requirements.'
-              : 'Enter your prompt to start a new Claude session'}
+              ? 'Describe the feature you want to plan. The AI will help you flesh out the requirements.'
+              : 'Enter your prompt to start a new session'}
         </p>
       </div>
     </div>
-
-    <!-- Provider Toggle (only show when both providers are available) -->
-    {#if openaiAvailable && !noteMode}
-      <div class="option-row">
-        <label class="option-label">Provider</label>
-        <div class="mode-toggle">
-          <button
-            class="mode-btn"
-            class:active={provider === 'claude'}
-            onclick={() => handleProviderSwitch('claude')}
-            style={provider === 'claude' ? 'background: var(--color-accent);' : ''}
-          >
-            Claude
-          </button>
-          <button
-            class="mode-btn"
-            class:active={provider === 'openai'}
-            onclick={() => handleProviderSwitch('openai')}
-            style={provider === 'openai' ? 'background: #16a34a;' : ''}
-          >
-            OpenAI
-          </button>
-        </div>
-      </div>
-    {/if}
 
     <!-- Mode Toggle -->
     <div class="option-row">
@@ -375,6 +428,31 @@
         </button>
       </div>
     </div>
+
+    <!-- Provider Toggle (only show when both providers are available) -->
+    {#if openaiAvailable && !noteMode}
+      <div class="option-row">
+        <label class="option-label">Provider</label>
+        <div class="mode-toggle">
+          <button
+            class="mode-btn"
+            class:active={provider === 'claude'}
+            onclick={() => handleProviderSwitch('claude')}
+            style={provider === 'claude' ? 'background: var(--color-accent);' : ''}
+          >
+            Claude
+          </button>
+          <button
+            class="mode-btn"
+            class:active={provider === 'openai'}
+            onclick={() => handleProviderSwitch('openai')}
+            style={provider === 'openai' ? 'background: #16a34a;' : ''}
+          >
+            Codex
+          </button>
+        </div>
+      </div>
+    {/if}
 
     <!-- Model Selector -->
     <div class="option-row">
@@ -421,6 +499,7 @@
           {#if isAutoRepoMode && autoRepoEnabled}
             <span class="auto-text">{currentRepoName()}</span>
           {:else}
+            <RepoIcon repo={findRepoByPath(repos, cwd)} size="sm" />
             <span>{currentRepoName()}</span>
           {/if}
           <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -463,14 +542,17 @@
                 onclick={() => handleRepoSelect(repo.path)}
                 title={repo.path}
               >
-                <div class="repo-info">
-                  <div class="repo-name">{repo.name}</div>
-                  {#if repo.description}
-                    <div class="repo-desc">{repo.description}</div>
-                  {/if}
+                <div class="repo-option-left">
+                  <RepoIcon repo={repo} size="sm" />
+                  <div class="repo-info">
+                    <div class="repo-name">{repo.name}</div>
+                    {#if repo.description}
+                      <div class="repo-desc">{repo.description}</div>
+                    {/if}
+                  </div>
                 </div>
                 {#if isSelected}
-                  <svg class="w-3 h-3 text-accent flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
                   </svg>
                 {/if}
@@ -827,6 +909,14 @@
 
   .repo-option.add-repo {
     color: var(--color-accent);
+  }
+
+  .repo-option-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 0;
   }
 
   .repo-info {

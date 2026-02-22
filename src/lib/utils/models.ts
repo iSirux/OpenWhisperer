@@ -25,33 +25,26 @@ export const ALL_MODELS: ModelInfo[] = [
   {
     id: "claude-opus-4-6",
     label: "Opus",
-    title: "Claude Opus 4.6 - Most capable model",
+    title: "Opus 4.6 - Most capable model",
     supportsEffort: true,
-    maxEffort: "max",
+    maxEffort: "high", // 'max' is API-key only, not available for Claude.ai subscribers
   },
   {
     id: "claude-sonnet-4-6",
     label: "Sonnet",
-    title: "Claude Sonnet 4.6 - Balanced performance",
+    title: "Sonnet 4.6 - Balanced performance",
     supportsEffort: true,
     maxEffort: "high",
   },
   {
     id: "claude-haiku-4-5-20251001",
     label: "Haiku",
-    title: "Claude Haiku 4.5 - Fastest model",
+    title: "Haiku 4.5 - Fastest model",
     supportsEffort: false,
   },
 ];
 
 export const OPENAI_MODELS: ModelInfo[] = [
-  {
-    id: "codex-mini-latest",
-    label: "Codex Mini",
-    title: "Codex Mini - Default fast coding model (alias)",
-    supportsEffort: true,
-    maxEffort: "high",
-  },
   {
     id: "gpt-5.3-codex",
     label: "5.3 Codex",
@@ -82,7 +75,15 @@ export const OPENAI_MODELS: ModelInfo[] = [
   },
 ];
 
-export const DEFAULT_OPENAI_MODEL_ID = "codex-mini-latest";
+export const DEFAULT_OPENAI_MODEL_ID = "gpt-5.3-codex";
+
+const OPENAI_MODEL_ALIASES: Record<string, string> = {
+  "codex-mini-latest": DEFAULT_OPENAI_MODEL_ID,
+};
+
+export function normalizeOpenAiModelId(modelId: string): string {
+  return OPENAI_MODEL_ALIASES[modelId] || modelId;
+}
 
 // Check if a model ID is the auto model
 export function isAutoModel(modelId: string): boolean {
@@ -97,7 +98,8 @@ export function getModelsForProvider(provider: SdkProvider): ModelInfo[] {
 // Get enabled models filtered by the enabled_models setting
 export function getEnabledModels(enabledModelIds: string[], provider: SdkProvider = "claude"): ModelInfo[] {
   const allModels = getModelsForProvider(provider);
-  return allModels.filter((model) => enabledModelIds.includes(model.id));
+  const normalizedEnabled = new Set(enabledModelIds.map((id) => normalizeOpenAiModelId(id)));
+  return allModels.filter((model) => normalizedEnabled.has(model.id));
 }
 
 // Get enabled models with Auto option always prepended (Claude only)
@@ -111,7 +113,8 @@ export function getEnabledModelsWithAuto(enabledModelIds: string[], _includeAuto
 // Get model info by ID (searches both Claude and OpenAI models)
 export function getModelById(id: string): ModelInfo | undefined {
   if (id === AUTO_MODEL.id) return AUTO_MODEL;
-  return ALL_MODELS.find((model) => model.id === id) || OPENAI_MODELS.find((model) => model.id === id);
+  const normalizedId = normalizeOpenAiModelId(id);
+  return ALL_MODELS.find((model) => model.id === normalizedId) || OPENAI_MODELS.find((model) => model.id === normalizedId);
 }
 
 // Default model to use when no other model is available
@@ -141,9 +144,9 @@ export function getProviderForModel(modelId: string): SdkProvider {
 export function resolveModelForApi(modelId: string, enabledModels: string[]): string {
   if (isAutoModel(modelId)) {
     // "auto" should never be sent to the API - fall back to first enabled model
-    return enabledModels[0] || DEFAULT_MODEL_ID;
+    return normalizeOpenAiModelId(enabledModels[0] || DEFAULT_MODEL_ID);
   }
-  return modelId;
+  return normalizeOpenAiModelId(modelId);
 }
 
 /**

@@ -54,12 +54,28 @@ export interface HotkeyConfig {
   cycle_model: string;
   /** Hotkey to start recording in note-taking mode */
   note_mode: string;
+  /** Hotkey to copy selected text and immediately send as a new SDK session prompt */
+  send_selection: string;
+  /** Hotkey to copy selected text and create a prepared session for review */
+  prepare_selection: string;
+}
+
+/** Per-hotkey enabled/disabled state. Allows temporarily deactivating a hotkey without clearing its binding. */
+export interface HotkeyEnabledConfig {
+  toggle_recording: boolean;
+  transcribe_to_input: boolean;
+  cycle_repo: boolean;
+  cycle_model: boolean;
+  note_mode: boolean;
+  send_selection: boolean;
+  prepare_selection: boolean;
 }
 
 export interface OverlayConfig {
   show_when_focused: boolean;
   position_x: number | null;
   position_y: number | null;
+  show_active_sessions: boolean;
 }
 
 /** Voice command configuration for triggering prompt send */
@@ -74,6 +90,14 @@ export interface VoiceCommandConfig {
   cancel_commands: string[];
   /** List of voice commands that will trigger note-taking mode */
   note_commands: string[];
+  /** List of voice commands that will trigger running a sequence */
+  sequence_commands: string[];
+  /** List of voice commands that will approve a pending approval node */
+  approve_commands: string[];
+  /** List of voice commands that will reject a pending approval node */
+  reject_commands: string[];
+  /** List of voice commands that will prepare a session without starting it */
+  prepare_commands: string[];
 }
 
 /** Default voice command presets for sending prompts */
@@ -111,6 +135,39 @@ export const NOTE_COMMAND_PRESETS = [
   "note this",
   "make a note",
   "jot this down",
+] as const;
+
+/** Default voice command presets for running sequences */
+export const SEQUENCE_COMMAND_PRESETS = [
+  "run sequence",
+  "start sequence",
+  "execute sequence",
+  "launch sequence",
+] as const;
+
+/** Default voice command presets for approving approval nodes */
+export const APPROVE_COMMAND_PRESETS = [
+  "approve",
+  "approved",
+  "looks good",
+  "go ahead",
+] as const;
+
+/** Default voice command presets for rejecting approval nodes */
+export const REJECT_COMMAND_PRESETS = [
+  "reject",
+  "rejected",
+  "deny",
+  "stop that",
+] as const;
+
+/** Default voice command presets for preparing sessions without starting */
+export const PREPARE_COMMAND_PRESETS = [
+  "go prepare",
+  "prep it",
+  "prepare this",
+  "queue it",
+  "save for later",
 ] as const;
 
 /** Open mic configuration for passive voice listening */
@@ -161,6 +218,7 @@ export interface SessionPersistenceConfig {
   enabled: boolean;
   max_sessions: number;
   restore_sessions: number;
+  max_archived_sessions: number;
 }
 
 export interface RepoConfig {
@@ -173,10 +231,23 @@ export interface RepoConfig {
   /** Project-specific vocabulary/lingo for transcription cleanup and repo matching (20-50 words).
    * Unlike keywords which are categorical, vocabulary captures the actual terms/jargon used in the codebase */
   vocabulary?: string[];
+  /** Icon key from the curated icon set (e.g., "globe", "terminal", "database") */
+  icon?: string;
+  /** Primary/brand color as hex string (e.g., "#6366f1") */
+  color?: string;
   /** List of MCP server IDs to use for this repository (overrides global servers) */
   mcp_servers?: string[];
   /** List of MCP server IDs to use for note-taking mode in this repository */
   note_mcp_servers?: string[];
+  /** Tags for multi-repo sequence filtering (e.g., "frontend", "backend", "infra") */
+  tags: string[];
+  /** Whether this repo is active (shown in selectors, eligible for auto-select). Defaults to true. */
+  active?: boolean;
+}
+
+/** Helper: treat undefined/missing active field as true for backward compatibility */
+export function isRepoActive(repo: RepoConfig): boolean {
+  return repo.active !== false;
 }
 
 // Import and re-export MCP types
@@ -187,7 +258,9 @@ export type SdkProvider = "Claude" | "OpenAI";
 export type OpenAiAuthMethod = "OAuth" | "ApiKey";
 export type ClaudeAuthMethod = "OAuth" | "ApiKey";
 
-export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
+export type ClaudeTerminalMode = "Interactive" | "Prompt" | "Sdk";
+export type CodexMode = "Sdk" | "AppServer";
+export type TerminalMode = ClaudeTerminalMode | CodexMode;
 
 export type Theme =
   | "Midnight"
@@ -280,11 +353,41 @@ export interface LlmConfig {
 // Alias for backwards compatibility
 export type GeminiConfig = LlmConfig;
 
+/** Notification channel type for sequences (external integrations only) */
+export type NotificationChannelType = "slack" | "discord" | "webhook";
+
+/** Configuration for a notification channel */
+export interface NotificationChannelConfig {
+  id: string;
+  name: string;
+  channel_type: NotificationChannelType;
+  webhook_url: string | null;
+  headers: Record<string, string> | null;
+  enabled: boolean;
+}
+
+/** Sequence automation configuration */
+export interface SequenceConfig {
+  /** Maximum number of concurrent sequence executions */
+  max_concurrent_executions: number;
+  /** Default timeout for nodes in seconds */
+  default_timeout: number;
+  /** How many days to keep execution history */
+  execution_history_days: number;
+  /** Configured notification channels */
+  notification_channels: NotificationChannelConfig[];
+  /** Maximum number of concurrent prompt nodes across all sequences */
+  max_concurrent_prompts: number;
+  /** Default requests-per-minute limit per provider */
+  default_provider_rpm: number;
+}
+
 export interface AppConfig {
   whisper: WhisperConfig;
   vosk: VoskConfig;
   git: GitConfig;
   hotkeys: HotkeyConfig;
+  hotkeys_enabled: HotkeyEnabledConfig;
   overlay: OverlayConfig;
   audio: AudioConfig;
   repos: RepoConfig[];
@@ -296,7 +399,10 @@ export interface AppConfig {
   /** @deprecated Use default_effort_level instead */
   default_thinking_level?: string;
   enabled_models: string[];
-  terminal_mode: TerminalMode;
+  /** Terminal mode used when sdk_provider is Claude */
+  terminal_mode: ClaudeTerminalMode;
+  /** OpenAI Codex mode used when sdk_provider is OpenAI */
+  codex_mode: CodexMode;
   /** SDK provider for the main coding agent (Claude or OpenAI Codex) */
   sdk_provider: SdkProvider;
   /** Default OpenAI model for Codex SDK sessions */
@@ -315,6 +421,7 @@ export interface AppConfig {
   session_sort_order: SessionSortOrder;
   mark_sessions_unread: boolean;
   show_latest_message_preview: boolean;
+  show_session_summary: boolean;
   session_prompt_rows: number;
   session_response_rows: number;
   sidebar_width: number;
@@ -325,6 +432,10 @@ export interface AppConfig {
   gemini?: LlmConfig;
   /** MCP server configuration */
   mcp: McpConfig;
+  /** Sequence automation configuration */
+  sequences: SequenceConfig;
+  /** Inject a system message notifying agents that other agents may be working in parallel */
+  notify_parallel_agents: boolean;
 }
 
 const defaultConfig: AppConfig = {
@@ -364,11 +475,23 @@ const defaultConfig: AppConfig = {
     cycle_repo: "CommandOrControl+Shift+R",
     cycle_model: "CommandOrControl+Shift+M",
     note_mode: "CommandOrControl+Shift+N",
+    send_selection: "CommandOrControl+Shift+E",
+    prepare_selection: "CommandOrControl+Shift+J",
+  },
+  hotkeys_enabled: {
+    toggle_recording: true,
+    transcribe_to_input: true,
+    cycle_repo: true,
+    cycle_model: true,
+    note_mode: false,
+    send_selection: true,
+    prepare_selection: true,
   },
   overlay: {
     show_when_focused: true,
     position_x: null,
     position_y: null,
+    show_active_sessions: true,
   },
   audio: {
     device_id: null,
@@ -386,6 +509,10 @@ const defaultConfig: AppConfig = {
       transcribe_commands: [],
       cancel_commands: [],
       note_commands: ["take a note", "new note"],
+      sequence_commands: ["run sequence"],
+      approve_commands: ["approve"],
+      reject_commands: ["reject"],
+      prepare_commands: ["go prepare", "prep it"],
     },
     open_mic: {
       enabled: false,
@@ -404,10 +531,10 @@ const defaultConfig: AppConfig = {
     "claude-haiku-4-5-20251001",
   ],
   terminal_mode: "Interactive",
+  codex_mode: "AppServer",
   sdk_provider: "Claude",
   openai_model: "gpt-5.3-codex",
   enabled_openai_models: [
-    "codex-mini-latest",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.2-codex",
@@ -427,13 +554,15 @@ const defaultConfig: AppConfig = {
     enabled: true,
     max_sessions: 50,
     restore_sessions: 5,
+    max_archived_sessions: 500,
   },
   session_sort_order: "Chronological",
   mark_sessions_unread: true,
   show_latest_message_preview: true,
+  show_session_summary: true,
   session_prompt_rows: 2,
   session_response_rows: 2,
-  sidebar_width: 256,
+  sidebar_width: 282,
   sessions_view: {
     layout: "grid",
     grid_columns: 3,
@@ -450,12 +579,12 @@ const defaultConfig: AppConfig = {
     features: {
       auto_name_sessions: true,
       detect_interaction_needed: true,
-      generate_quick_actions: false,
-      clean_transcription: false,
-      use_dual_transcription: false,
-      recommend_model: false,
+      generate_quick_actions: true,
+      clean_transcription: true,
+      use_dual_transcription: true,
+      recommend_model: true,
       auto_model_effort: "dynamic",
-      auto_select_repo: false,
+      auto_select_repo: true,
     },
     confirm_repo_selection: false,
     min_auto_select_confidence: "high",
@@ -463,6 +592,15 @@ const defaultConfig: AppConfig = {
   mcp: {
     servers: [],
   },
+  sequences: {
+    max_concurrent_executions: 3,
+    default_timeout: 300,
+    execution_history_days: 30,
+    notification_channels: [],
+    max_concurrent_prompts: 3,
+    default_provider_rpm: 50,
+  },
+  notify_parallel_agents: true,
 };
 
 /** Whether the config was successfully loaded from disk (vs fell back to defaults) */
@@ -561,6 +699,17 @@ function createSettingsStore() {
       }
     },
 
+    async setRepoActive(index: number, active: boolean) {
+      try {
+        await invoke("set_repo_active", { index, active });
+        await this.load();
+        emit("settings-changed");
+      } catch (error) {
+        console.error("Failed to set repo active state:", error);
+        throw error;
+      }
+    },
+
     async setAutoRepoMode(enabled: boolean) {
       try {
         await invoke("set_auto_repo_mode", { enabled });
@@ -589,3 +738,11 @@ export const activeRepo = derived(settings, ($settings) => {
 export const isAutoRepoSelected = derived(settings, ($settings) => {
   return $settings.auto_repo_mode;
 });
+
+export function getEffectiveTerminalMode(config: AppConfig): TerminalMode {
+  // OpenAI App Server mode is not yet integrated into the structured session flow.
+  // Route OpenAI sessions through SDK mode.
+  return config.sdk_provider === 'OpenAI'
+    ? 'Sdk'
+    : config.terminal_mode;
+}

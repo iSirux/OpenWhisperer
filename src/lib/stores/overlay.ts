@@ -6,6 +6,11 @@ import { emit } from '@tauri-apps/api/event';
 
 export type OverlayMode = 'session' | 'paste' | 'inline' | 'note';
 
+export interface OverlayActivityInfo {
+  activeSessions: number;
+  activeSequences: number;
+}
+
 interface OverlayStore {
   visible: boolean;
   position: { x: number; y: number };
@@ -21,6 +26,7 @@ interface OverlayStore {
     model: string | null;
     promptPreview: string | null;
   } | null;
+  activityInfo: OverlayActivityInfo;
 }
 
 function getOverlayWindow() {
@@ -38,6 +44,7 @@ function createOverlayStore() {
       creatingSession: false,
     },
     inlineSessionInfo: null,
+    activityInfo: { activeSessions: 0, activeSequences: 0 },
   });
 
   return {
@@ -170,6 +177,17 @@ function createOverlayStore() {
       update((s) => ({ ...s, inlineSessionInfo: null }));
       // Emit event to sync with overlay window
       emit('overlay-inline-session-info', null);
+    },
+
+    setActivityInfo(activeSessions: number, activeSequences: number) {
+      update((s) => ({ ...s, activityInfo: { activeSessions, activeSequences } }));
+      // Emit event to sync with overlay window
+      emit('overlay-activity-info', { activeSessions, activeSequences });
+    },
+
+    // Update activity info without emitting (used when receiving event from another window)
+    updateActivityInfoLocal(activeSessions: number, activeSequences: number) {
+      update((s) => ({ ...s, activityInfo: { activeSessions, activeSequences } }));
     },
   };
 }

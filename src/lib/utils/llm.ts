@@ -43,7 +43,6 @@ export interface RepoRecommendation {
 }
 
 export interface QuickAction {
-  label: string;
   prompt: string;
 }
 
@@ -426,15 +425,16 @@ export async function recommendRepo(
     return null;
   }
 
-  // Check if we have multiple repos configured
+  // Check if we have multiple active repos configured
   const currentSettings = get(settings);
-  if (currentSettings.repos.length <= 1) {
-    // No need to recommend if there's only 0 or 1 repo
+  const activeRepos = currentSettings.repos.filter((r) => r.active !== false);
+  if (activeRepos.length <= 1) {
+    // No need to recommend if there's only 0 or 1 active repo
     return null;
   }
 
-  // Check if any repos have descriptions
-  const hasDescriptions = currentSettings.repos.some((r) => r.description);
+  // Check if any active repos have descriptions
+  const hasDescriptions = activeRepos.some((r) => r.description);
   if (!hasDescriptions) {
     console.log('[llm] No repo descriptions found, skipping auto-select');
     return null;

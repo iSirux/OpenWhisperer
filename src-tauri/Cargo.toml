@@ -1,6 +1,6 @@
 [package]
 name = "claude-whisperer"
-version = "0.8.0"
+version = "0.9.0"
 description = "Voice-controlled interface for Claude Code"
 authors = ["iSirux"]
 edition = "2021"
@@ -39,3 +39,9 @@ sha2 = "0.10"
 url = "2"
 base64 = "0.22"
 rand = "0.9"
+serde_yaml = "0.9"
+minijinja = { version = "2", features = ["builtins"] }
+cron = "0.12"
+regex = "1"
+tauri-plugin-notification = "2"
+windows-sys = { version = "0.59", features = ["Win32_UI_Shell"] }

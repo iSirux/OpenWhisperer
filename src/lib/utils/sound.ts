@@ -165,3 +165,155 @@ export function playVoiceCommandSound(): void {
     console.warn('Failed to play voice command sound:', error);
   }
 }
+
+// =============================================================================
+// Sequence Notification Sounds (10 distinct beeps)
+// =============================================================================
+
+/** Sound names for the 10 notification beeps */
+export const NOTIFICATION_SOUND_NAMES: Record<number, string> = {
+  1: 'Chime',
+  2: 'Ping',
+  3: 'Bell',
+  4: 'Chirp',
+  5: 'Blip',
+  6: 'Ding',
+  7: 'Tone',
+  8: 'Alert',
+  9: 'Pop',
+  10: 'Gong',
+};
+
+/** Helper to create oscillator with envelope */
+function playTones(
+  specs: Array<{
+    freq: number;
+    start: number;
+    duration: number;
+    gain: number;
+    type: OscillatorType;
+  }>
+): void {
+  const ctx = getAudioContext();
+  const now = ctx.currentTime;
+  for (const s of specs) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.type = s.type;
+    osc.frequency.setValueAtTime(s.freq, now);
+    const t = now + s.start;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(s.gain, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.001, t + s.duration);
+    osc.start(t);
+    osc.stop(t + s.duration);
+  }
+}
+
+/** 1: Chime - gentle two-tone C5-E5 */
+function playNotifySound1(): void {
+  playTones([
+    { freq: 523.25, start: 0, duration: 0.2, gain: 0.3, type: 'sine' },
+    { freq: 659.25, start: 0.15, duration: 0.25, gain: 0.25, type: 'sine' },
+  ]);
+}
+
+/** 2: Ping - single bright ping at A5 */
+function playNotifySound2(): void {
+  playTones([
+    { freq: 880, start: 0, duration: 0.3, gain: 0.3, type: 'sine' },
+  ]);
+}
+
+/** 3: Bell - resonant bell with overtone */
+function playNotifySound3(): void {
+  playTones([
+    { freq: 660, start: 0, duration: 0.4, gain: 0.25, type: 'sine' },
+    { freq: 1320, start: 0, duration: 0.2, gain: 0.1, type: 'sine' },
+  ]);
+}
+
+/** 4: Chirp - quick ascending chirp */
+function playNotifySound4(): void {
+  playTones([
+    { freq: 600, start: 0, duration: 0.08, gain: 0.25, type: 'sine' },
+    { freq: 800, start: 0.06, duration: 0.08, gain: 0.25, type: 'sine' },
+    { freq: 1000, start: 0.12, duration: 0.12, gain: 0.2, type: 'sine' },
+  ]);
+}
+
+/** 5: Blip - soft square-wave blip */
+function playNotifySound5(): void {
+  playTones([
+    { freq: 440, start: 0, duration: 0.12, gain: 0.15, type: 'square' },
+  ]);
+}
+
+/** 6: Ding - classic doorbell ding */
+function playNotifySound6(): void {
+  playTones([
+    { freq: 740, start: 0, duration: 0.5, gain: 0.25, type: 'sine' },
+  ]);
+}
+
+/** 7: Tone - descending two-tone */
+function playNotifySound7(): void {
+  playTones([
+    { freq: 784, start: 0, duration: 0.15, gain: 0.25, type: 'sine' },
+    { freq: 587, start: 0.12, duration: 0.2, gain: 0.2, type: 'sine' },
+  ]);
+}
+
+/** 8: Alert - triple beep attention-getter */
+function playNotifySound8(): void {
+  playTones([
+    { freq: 932, start: 0, duration: 0.08, gain: 0.25, type: 'sine' },
+    { freq: 932, start: 0.12, duration: 0.08, gain: 0.25, type: 'sine' },
+    { freq: 932, start: 0.24, duration: 0.08, gain: 0.25, type: 'sine' },
+  ]);
+}
+
+/** 9: Pop - soft bubble pop */
+function playNotifySound9(): void {
+  playTones([
+    { freq: 350, start: 0, duration: 0.06, gain: 0.2, type: 'sine' },
+    { freq: 700, start: 0.03, duration: 0.15, gain: 0.15, type: 'triangle' },
+  ]);
+}
+
+/** 10: Gong - deep resonant gong */
+function playNotifySound10(): void {
+  playTones([
+    { freq: 220, start: 0, duration: 0.6, gain: 0.3, type: 'sine' },
+    { freq: 440, start: 0, duration: 0.3, gain: 0.12, type: 'sine' },
+    { freq: 330, start: 0.05, duration: 0.5, gain: 0.08, type: 'triangle' },
+  ]);
+}
+
+const NOTIFY_SOUND_FNS: Record<number, () => void> = {
+  1: playNotifySound1,
+  2: playNotifySound2,
+  3: playNotifySound3,
+  4: playNotifySound4,
+  5: playNotifySound5,
+  6: playNotifySound6,
+  7: playNotifySound7,
+  8: playNotifySound8,
+  9: playNotifySound9,
+  10: playNotifySound10,
+};
+
+/**
+ * Play a sequence notification sound by number (1-10).
+ * Defaults to sound 1 if the number is out of range.
+ */
+export function playNotificationSound(soundNumber?: number): void {
+  try {
+    const num = soundNumber && soundNumber >= 1 && soundNumber <= 10 ? soundNumber : 1;
+    NOTIFY_SOUND_FNS[num]();
+  } catch (error) {
+    console.warn('Failed to play notification sound:', error);
+  }
+}

@@ -590,7 +590,7 @@
                       >
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
-                      Analyze Claude's responses to detect when your input is
+                      Analyze AI responses to detect when your input is
                       required (questions, approvals, decisions)
                     </p>
                   </div>
@@ -660,7 +660,7 @@
                       >
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
-                      Generate contextual quick action buttons based on Claude's
+                      Generate contextual quick action buttons based on the AI
                       response to suggest helpful next steps
                     </p>
                   </div>
@@ -732,7 +732,7 @@
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
                       Fix homophones, technical terms, and punctuation in voice
-                      transcriptions before sending to Claude
+                      transcriptions before sending the prompt
                     </p>
                   </div>
                 </div>
@@ -874,9 +874,8 @@
                       >
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
-                      Automatically choose the best Claude model
-                      (Haiku/Sonnet/Opus) based on prompt complexity to optimize
-                      cost
+                      Automatically choose the best model based on prompt
+                      complexity to optimize cost
                     </p>
                   </div>
                 </div>
@@ -1060,7 +1059,7 @@
                       >Confirm Repo Selection</label
                     >
                     <p class="text-xs text-text-muted">
-                      Claude will question the repo selection if it seems wrong
+                      The AI will question the repo selection if it seems wrong
                     </p>
                   </div>
                   <input

@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { settings } from '$lib/stores/settings';
+  import { settings, isRepoActive } from '$lib/stores/settings';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {
     cwd: string;
@@ -12,7 +13,7 @@
 
   let showDropdown = $state(false);
 
-  const repos = $derived($settings.repos || []);
+  const repos = $derived(($settings.repos || []).filter(isRepoActive));
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
   // Treat empty string or '.' as auto mode
   const isAutoMode = $derived(!cwd || cwd === '.');
@@ -61,6 +62,8 @@
     {#if isAutoMode && autoRepoEnabled}
       <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500">{currentRepoName()}</span>
     {:else}
+      {@const selectedRepo = repos.find(r => r.path === cwd) ?? null}
+      <RepoIcon repo={selectedRepo} size="xs" />
       <span class="text-text-primary">{currentRepoName()}</span>
     {/if}
     <svg class="w-3 h-3 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -112,11 +115,14 @@
           onclick={() => handleRepoSelect(repo.path)}
           title={repo.path}
         >
-          <div class="flex-1 min-w-0">
-            <div class="font-medium truncate">{repo.name}</div>
-            {#if repo.description}
-              <div class="text-[10px] text-text-muted truncate">{repo.description}</div>
-            {/if}
+          <div class="flex items-center gap-2 flex-1 min-w-0">
+            <RepoIcon repo={repo} size="sm" />
+            <div class="flex-1 min-w-0">
+              <div class="font-medium truncate">{repo.name}</div>
+              {#if repo.description}
+                <div class="text-[10px] text-text-muted truncate">{repo.description}</div>
+              {/if}
+            </div>
           </div>
           {#if isSelected}
             <svg class="w-3 h-3 text-accent flex-shrink-0 ml-2" fill="currentColor" viewBox="0 0 20 20">

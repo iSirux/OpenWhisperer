@@ -1,93 +1,155 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import ModelSelector from './ModelSelector.svelte';
   import EffortToggle from './EffortToggle.svelte';
-  import UsagePreview from './UsagePreview.svelte';
   import OpenMicMarquee from './OpenMicMarquee.svelte';
-  import type { EffortLevel } from '$lib/stores/sdkSessions';
-  import type { AutoModelEffort } from '$lib/stores/settings';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
+  import { navigation } from '$lib/stores/navigation';
+  import { settings, activeRepo, isAutoRepoSelected, type AutoModelEffort } from '$lib/stores/settings';
+  import { isRecording, pendingTranscriptions } from '$lib/stores/recording';
+  import { isRecordingForNewSession, pendingHeaderAction } from '$lib/stores/headerRecording';
+  import { settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
+  import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
-  import { isAutoModel } from '$lib/utils/models';
+  import { DEFAULT_OPENAI_MODEL_ID, isAutoModel } from '$lib/utils/models';
 
-  interface Repo {
-    name: string;
-    path: string;
-    description?: string;
-  }
-
-  interface Props {
-    repos: Repo[];
-    activeRepoIndex: number;
-    activeRepo: Repo | null | undefined;
-    isAutoRepoSelected: boolean;
-    defaultModel: string;
-    defaultEffortLevel: EffortLevel;
-    autoModelEffort: AutoModelEffort;
-    isRecording: boolean;
-    isRecordingForNewSession: boolean;
-    pendingTranscriptions: number;
-    currentView: string;
-    onShowStart: () => void;
-    onShowSettings: () => void;
-    onShowSessions: () => void;
-    onOpenSettingsTab: (tab: string) => void;
-    onSelectRepo: (index: number) => void;
-    onEnableAutoRepo: () => void;
-    onChangeModel: (model: string) => void;
-    onChangeEffort: (level: EffortLevel) => void;
-    onChangeAutoModelEffort: (setting: AutoModelEffort) => void;
-    onStartRecording: () => void;
-    onStopRecording: () => void;
-  }
-
-  let {
-    repos,
-    activeRepoIndex,
-    activeRepo,
-    isAutoRepoSelected,
-    defaultModel,
-    defaultEffortLevel,
-    autoModelEffort,
-    isRecording,
-    isRecordingForNewSession,
-    pendingTranscriptions,
-    currentView,
-    onShowStart,
-    onShowSettings,
-    onShowSessions,
-    onOpenSettingsTab,
-    onSelectRepo,
-    onEnableAutoRepo,
-    onChangeModel,
-    onChangeEffort,
-    onChangeAutoModelEffort,
-    onStartRecording,
-    onStopRecording,
-  }: Props = $props();
+  // Derived state from stores
+  let repos = $derived($settings.repos.filter((r) => r.active !== false));
+  let activeRepoIndex = $derived($settings.active_repo_index);
+  let currentActiveRepo = $derived($activeRepo);
+  let autoRepoSelected = $derived($isAutoRepoSelected);
+  let sdkProvider = $derived($settings.sdk_provider);
+  let currentProvider = $derived(sdkProvider === 'OpenAI' ? 'openai' : 'claude');
+  let selectedModel = $derived(currentProvider === 'openai' ? $settings.openai_model : $settings.default_model);
+  let defaultEffortLevel = $derived(settingsToStoreEffort($settings.default_effort_level));
+  let autoModelEffort = $derived($settings.llm.features.auto_model_effort);
+  let recording = $derived($isRecording);
+  let recordingForNewSession = $derived($isRecordingForNewSession);
+  let pending = $derived($pendingTranscriptions);
+  let currentPath = $derived($page.url.pathname);
 
   // Check if current model is auto
-  const isAuto = $derived(isAutoModel(defaultModel));
+  const isAuto = $derived(currentProvider === 'claude' && isAutoModel(selectedModel));
 
   let showRepoSelector = $state(false);
+  let openaiAvailable = $state(false);
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
 
+  // Detect if we're on settings route
+  let isOnSettings = $derived(currentPath.startsWith('/settings'));
+
+  onMount(() => {
+    invoke<{ authenticated: boolean }>('check_openai_codex_auth')
+      .then((result) => {
+        openaiAvailable = result.authenticated;
+      })
+      .catch(() => {
+        openaiAvailable = false;
+      });
+  });
+
   function handleRepoSelect(index: number) {
-    onSelectRepo(index);
+    settings.setActiveRepo(index);
     showRepoSelector = false;
   }
 
   function handleAutoRepoClick() {
     if (isRepoAutoSelectEnabled()) {
-      onEnableAutoRepo();
+      settings.setAutoRepoMode(true);
       showRepoSelector = false;
     } else {
       showRepoSelector = false;
-      onOpenSettingsTab('llm');
+      goto('/settings?tab=llm');
     }
   }
 
   function handleAddRepo() {
     showRepoSelector = false;
-    onOpenSettingsTab('repos');
+    goto('/settings?tab=repos');
+  }
+
+  async function handleChangeModel(model: string) {
+    if (currentProvider === 'openai') {
+      settings.update((s) => ({ ...s, openai_model: model }));
+      await settings.save({ ...$settings, openai_model: model });
+      return;
+    }
+    settings.update((s) => ({ ...s, default_model: model }));
+    await settings.save({ ...$settings, default_model: model });
+  }
+
+  async function handleChangeProvider(provider: 'Claude' | 'OpenAI') {
+    const nextSettings = {
+      ...$settings,
+      sdk_provider: provider,
+      openai_model: $settings.openai_model || DEFAULT_OPENAI_MODEL_ID,
+    };
+    settings.update(() => nextSettings);
+    await settings.save(nextSettings);
+  }
+
+  async function handleChangeEffort(level: EffortLevel) {
+    const settingsLevel = level === null ? 'off' : level;
+    settings.update((s) => ({ ...s, default_effort_level: settingsLevel }));
+    await settings.save({ ...$settings, default_effort_level: settingsLevel });
+  }
+
+  async function handleChangeAutoModelEffort(newSetting: AutoModelEffort) {
+    settings.update((s) => ({
+      ...s,
+      llm: {
+        ...s.llm,
+        features: {
+          ...s.llm.features,
+          auto_model_effort: newSetting,
+        },
+      },
+    }));
+    await settings.save({
+      ...$settings,
+      llm: {
+        ...$settings.llm,
+        features: {
+          ...$settings.llm.features,
+          auto_model_effort: newSetting,
+        },
+      },
+    });
+  }
+
+  function handleShowStart() {
+    if (currentPath !== '/') {
+      goto('/');
+    }
+    navigation.setView('start');
+  }
+
+  function handleToggleSettings() {
+    if (isOnSettings) {
+      goto('/');
+    } else {
+      goto('/settings');
+    }
+  }
+
+  async function handleStartRecording() {
+    if (currentPath !== '/') {
+      pendingHeaderAction.set('start');
+      await goto('/');
+    } else {
+      window.dispatchEvent(new CustomEvent('app:header-start-recording'));
+    }
+  }
+
+  async function handleStopRecording() {
+    if (currentPath !== '/') {
+      pendingHeaderAction.set('stop');
+      await goto('/');
+    } else {
+      window.dispatchEvent(new CustomEvent('app:header-stop-recording'));
+    }
   }
 </script>
 
@@ -95,7 +157,7 @@
   <div class="flex items-center gap-4">
     <button
       class="text-lg font-semibold text-text-primary hover:text-accent transition-colors"
-      onclick={onShowStart}
+      onclick={handleShowStart}
       title="Go to start page"
     >
       Claude Whisperer
@@ -108,10 +170,11 @@
         onclick={() => showRepoSelector = !showRepoSelector}
         title="Select repository"
       >
-        {#if isAutoRepoSelected}
+        {#if autoRepoSelected}
           <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500">Auto</span>
-        {:else if activeRepo}
-          <span class="text-text-primary">{activeRepo.name}</span>
+        {:else if currentActiveRepo}
+          <RepoIcon repo={currentActiveRepo} size="xs" />
+          <span class="text-text-primary">{currentActiveRepo.name}</span>
         {:else}
           <span class="text-text-muted">No repo selected</span>
         {/if}
@@ -122,7 +185,7 @@
 
       {#if showRepoSelector}
         <div class="absolute top-full left-0 mt-1 w-64 bg-surface-elevated border border-border rounded shadow-lg z-50">
-          {#if isRecording}
+          {#if recording}
             <div class="px-3 py-2 border-b border-border bg-recording/10">
               <div class="flex items-center gap-2 text-xs text-recording">
                 <div class="w-1.5 h-1.5 bg-recording rounded-full animate-pulse-recording"></div>
@@ -134,10 +197,10 @@
           <!-- Auto repo option -->
           <button
             class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors relative"
-            class:bg-gradient-to-r={isAutoRepoSelected && autoRepoEnabled}
-            class:from-purple-500={isAutoRepoSelected && autoRepoEnabled}
-            class:to-amber-500={isAutoRepoSelected && autoRepoEnabled}
-            class:text-white={isAutoRepoSelected && autoRepoEnabled}
+            class:bg-gradient-to-r={autoRepoSelected && autoRepoEnabled}
+            class:from-purple-500={autoRepoSelected && autoRepoEnabled}
+            class:to-amber-500={autoRepoSelected && autoRepoEnabled}
+            class:text-white={autoRepoSelected && autoRepoEnabled}
             onclick={handleAutoRepoClick}
             title={autoRepoEnabled ? "Automatically select repository based on prompt content" : "Click to enable Auto Repo Selection in LLM settings"}
           >
@@ -145,14 +208,14 @@
               <div class="flex-1 min-w-0">
                 <div class="font-medium flex items-center gap-2">
                   <span
-                    class:text-transparent={!isAutoRepoSelected || !autoRepoEnabled}
-                    class:bg-clip-text={!isAutoRepoSelected || !autoRepoEnabled}
-                    class:bg-gradient-to-r={!isAutoRepoSelected || !autoRepoEnabled}
-                    class:from-purple-500={!isAutoRepoSelected || !autoRepoEnabled}
-                    class:to-amber-500={!isAutoRepoSelected || !autoRepoEnabled}
+                    class:text-transparent={!autoRepoSelected || !autoRepoEnabled}
+                    class:bg-clip-text={!autoRepoSelected || !autoRepoEnabled}
+                    class:bg-gradient-to-r={!autoRepoSelected || !autoRepoEnabled}
+                    class:from-purple-500={!autoRepoSelected || !autoRepoEnabled}
+                    class:to-amber-500={!autoRepoSelected || !autoRepoEnabled}
                     class:text-text-muted={!autoRepoEnabled}
                   >Auto</span>
-                  {#if isAutoRepoSelected && autoRepoEnabled}
+                  {#if autoRepoSelected && autoRepoEnabled}
                     <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                       <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
                     </svg>
@@ -160,8 +223,8 @@
                 </div>
                 <div
                   class="text-xs"
-                  class:text-text-muted={!isAutoRepoSelected || !autoRepoEnabled}
-                  class:opacity-80={isAutoRepoSelected && autoRepoEnabled}
+                  class:text-text-muted={!autoRepoSelected || !autoRepoEnabled}
+                  class:opacity-80={autoRepoSelected && autoRepoEnabled}
                 >
                   {autoRepoEnabled ? "Select repo based on prompt" : "Enable in LLM settings"}
                 </div>
@@ -174,14 +237,15 @@
           {/if}
 
           {#each repos as repo, index}
-            {@const isSelected = index === activeRepoIndex && !isAutoRepoSelected}
+            {@const isSelected = index === activeRepoIndex && !autoRepoSelected}
             <button
               class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors relative"
               class:bg-accent={isSelected}
               class:text-white={isSelected}
               onclick={() => handleRepoSelect(index)}
             >
-              <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <RepoIcon repo={repo} size="sm" />
                 <div class="flex-1 min-w-0">
                   <div class="font-medium flex items-center gap-2">
                     {repo.name}
@@ -218,21 +282,48 @@
     </div>
 
     <!-- Global Model Selector -->
+    {#if openaiAvailable}
+      <div class="flex items-center gap-0.5 px-1.5 py-0.5 bg-surface-elevated rounded">
+        <button
+          class="rounded px-2 py-0.5 text-[10px] font-medium transition-all"
+          class:bg-accent={sdkProvider === 'Claude'}
+          class:text-white={sdkProvider === 'Claude'}
+          class:text-text-secondary={sdkProvider !== 'Claude'}
+          class:bg-border={sdkProvider !== 'Claude'}
+          onclick={() => handleChangeProvider('Claude')}
+        >
+          Claude
+        </button>
+        <button
+          class="rounded px-2 py-0.5 text-[10px] font-medium transition-all"
+          class:bg-green-600={sdkProvider === 'OpenAI'}
+          class:text-white={sdkProvider === 'OpenAI'}
+          class:text-text-secondary={sdkProvider !== 'OpenAI'}
+          class:bg-border={sdkProvider !== 'OpenAI'}
+          onclick={() => handleChangeProvider('OpenAI')}
+        >
+          Codex
+        </button>
+      </div>
+    {/if}
+
+    <!-- Global Model Selector -->
     <ModelSelector
-      model={defaultModel}
-      onchange={onChangeModel}
+      model={selectedModel}
+      onchange={handleChangeModel}
       size="sm"
+      provider={currentProvider}
     />
 
     <!-- Global Effort Toggle -->
     <EffortToggle
       effortLevel={defaultEffortLevel}
-      onchange={onChangeEffort}
-      modelId={defaultModel}
+      onchange={handleChangeEffort}
+      modelId={selectedModel}
       size="sm"
       isAutoModel={isAuto}
       {autoModelEffort}
-      onChangeAutoModelEffort={onChangeAutoModelEffort}
+      onChangeAutoModelEffort={handleChangeAutoModelEffort}
     />
   </div>
 
@@ -240,31 +331,28 @@
     <!-- Open Mic Marquee (shows live transcription when listening) -->
     <OpenMicMarquee />
 
-    <!-- Usage Preview -->
-    <UsagePreview />
-
     <!-- Record Button -->
-    {#if isRecording && isRecordingForNewSession}
+    {#if recording && recordingForNewSession}
       <button
         class="px-3 py-1.5 text-sm bg-recording hover:bg-recording/90 text-white rounded transition-colors flex items-center gap-2"
-        onclick={onStopRecording}
+        onclick={handleStopRecording}
         title="Stop recording and send"
       >
         <div class="w-2 h-2 bg-white rounded-full animate-pulse"></div>
         Stop & Send
       </button>
-    {:else if !isRecording}
+    {:else if !recording}
       <div class="flex items-center gap-2">
         <!-- Pending transcriptions indicator -->
-        {#if pendingTranscriptions > 0}
+        {#if pending > 0}
           <div class="flex items-center gap-1.5 px-2 py-1 bg-warning/20 text-warning rounded text-xs" title="Transcriptions in progress">
             <div class="w-2 h-2 bg-warning rounded-full animate-pulse"></div>
-            <span>{pendingTranscriptions}</span>
+            <span>{pending}</span>
           </div>
         {/if}
         <button
           class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors flex items-center gap-2"
-          onclick={onStartRecording}
+          onclick={handleStartRecording}
           title="Record voice prompt"
         >
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
@@ -278,14 +366,8 @@
     <!-- Settings Button -->
     <button
       class="p-2 hover:bg-surface-elevated rounded transition-colors"
-      class:bg-surface-elevated={currentView === 'settings'}
-      onclick={() => {
-        if (currentView === 'settings') {
-          onShowSessions();
-        } else {
-          onShowSettings();
-        }
-      }}
+      class:bg-surface-elevated={isOnSettings}
+      onclick={handleToggleSettings}
       title="Settings"
     >
       <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">

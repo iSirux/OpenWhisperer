@@ -5,7 +5,9 @@ import type { TerminalSession } from '$lib/stores/sessions';
 import type { SdkSession } from '$lib/stores/sdkSessions';
 import type { SessionSortOrder } from '$lib/stores/settings';
 import type { DisplaySession } from '$lib/types/session';
+import type { SequenceExecution, ExecutionStatus } from '$lib/types/sequence';
 import { getStatusSortOrder, isFinishedStatus } from '$lib/utils/sessionStatus';
+import { getStatusString } from '$lib/stores/sequenceExecutions';
 
 // Cache for git branches to avoid repeated calls
 const branchCache = new Map<string, string>();
@@ -60,6 +62,11 @@ export function getSdkSmartStatus(session: SdkSession): {
   // Handle pending_repo status
   if (session.status === 'pending_repo') {
     return { status: 'pending_repo' };
+  }
+
+  // Handle prepared status
+  if (session.status === 'prepared') {
+    return { status: 'prepared' };
   }
 
   // Handle initializing status
@@ -171,12 +178,37 @@ export function getLatestTextMessage(messages: SdkSession['messages']): string |
 }
 
 /**
- * Transform PTY and SDK sessions into unified DisplaySession format
+ * Map a sequence ExecutionStatus to a display status string
+ */
+function mapExecutionStatus(status: ExecutionStatus): string {
+  const s = getStatusString(status);
+  switch (s) {
+    case 'running':
+    case 'initializing':
+      return 'seq_running';
+    case 'completed':
+      return 'seq_completed';
+    case 'failed':
+      return 'seq_failed';
+    case 'cancelled':
+      return 'seq_cancelled';
+    case 'paused':
+      return 'seq_paused';
+    case 'waiting_for_approval':
+      return 'seq_waiting';
+    default:
+      return 'seq_running';
+  }
+}
+
+/**
+ * Transform PTY, SDK sessions, and sequence executions into unified DisplaySession format
  */
 export function transformToDisplaySessions(
   ptySessions: TerminalSession[],
   sdkSessionsList: SdkSession[],
-  sortOrder: SessionSortOrder
+  sortOrder: SessionSortOrder,
+  sequenceExecutions: SequenceExecution[] = []
 ): DisplaySession[] {
   // Build base sessions
   const baseSessions: DisplaySession[] = [
@@ -204,6 +236,7 @@ export function transformToDisplaySessions(
         statusDetail: smartStatus.detail,
         prompt:
           s.messages.find((m) => m.type === 'user')?.content ||
+          s.preparedPrompt ||
           s.pendingPrompt ||
           s.pendingRepoSelection?.transcript ||
           s.pendingTranscription?.transcript ||
@@ -222,6 +255,31 @@ export function transformToDisplaySessions(
         planMode: s.planMode,
         noteMode: s.noteMode,
         provider: s.provider
+      };
+    }),
+    ...sequenceExecutions.map((exec) => {
+      const displayStatus = mapExecutionStatus(exec.status);
+      return {
+        id: exec.id,
+        type: 'sequence' as const,
+        status: displayStatus,
+        statusDetail: exec.total_nodes > 0
+          ? `${exec.completed_node_ids.length}/${exec.total_nodes}`
+          : undefined,
+        prompt: exec.sequence_name,
+        repoPath: '',
+        createdAt: Math.floor(new Date(exec.started_at).getTime() / 1000),
+        accumulatedDurationMs: exec.completed_at
+          ? new Date(exec.completed_at).getTime() - new Date(exec.started_at).getTime()
+          : 0,
+        currentWorkStartedAt: !exec.completed_at
+          ? new Date(exec.started_at).getTime()
+          : undefined,
+        isFinished: isFinishedStatus(displayStatus),
+        sequenceStatus: exec.status,
+        sequenceProgress: exec.total_nodes > 0
+          ? { completed: exec.completed_node_ids.length, total: exec.total_nodes }
+          : undefined,
       };
     })
   ];

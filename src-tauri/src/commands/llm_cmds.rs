@@ -2,7 +2,7 @@ use crate::commands::usage_cmds::UsageStatsState;
 use crate::config::{AppConfig, LlmProvider};
 use crate::llm::{
     ConnectionTestResult, InteractionAnalysis, LlmClient, ModelRecommendation,
-    QuickActionsResult, RepoDescriptionResult, RepoRecommendation, SessionNameResult,
+    QuickActionsResult, RepoRecommendation, SessionNameResult,
     SessionOutcomeResult, TranscriptionCleanupResult,
 };
 use parking_lot::Mutex;
@@ -327,45 +327,6 @@ pub async fn recommend_model(
     Ok(result.data)
 }
 
-/// Generate a description for a repository by reading its CLAUDE.md or README
-#[tauri::command]
-pub async fn generate_repo_description(
-    app: AppHandle,
-    config: State<'_, Mutex<AppConfig>>,
-    stats: State<'_, UsageStatsState>,
-    repo_path: String,
-    repo_name: String,
-) -> Result<RepoDescriptionResult, String> {
-    let cfg = config.lock().clone();
-
-    if !cfg.llm.enabled {
-        return Err("LLM integration is not enabled".to_string());
-    }
-
-    let client = create_client(&app, &cfg)?;
-
-    // Try to read CLAUDE.md first, then README.md
-    let repo_path = PathBuf::from(&repo_path);
-
-    let claude_md_content = fs::read_to_string(repo_path.join("CLAUDE.md")).ok();
-    let readme_content = if claude_md_content.is_none() {
-        fs::read_to_string(repo_path.join("README.md"))
-            .or_else(|_| fs::read_to_string(repo_path.join("readme.md")))
-            .ok()
-    } else {
-        None
-    };
-
-    let result = client
-        .generate_repo_description_with_usage(&repo_name, claude_md_content.as_deref(), readme_content.as_deref())
-        .await?;
-
-    // Track usage
-    track_usage(&stats, "repo_description", result.usage.input_tokens, result.usage.output_tokens);
-
-    Ok(result.data)
-}
-
 /// Recommend the best repository for a given prompt
 #[tauri::command]
 pub async fn recommend_repo(
@@ -387,11 +348,17 @@ pub async fn recommend_repo(
 
     let client = create_client(&app, &cfg)?;
 
-    // Build repos list with descriptions, keywords, and vocabulary
-    let repos: Vec<(String, String, Option<String>, Option<Vec<String>>, Option<Vec<String>>)> = cfg
+    // Build repos list with descriptions, keywords, and vocabulary (only active repos)
+    let active_repos_with_indices: Vec<(usize, &crate::config::RepoConfig)> = cfg
         .repos
         .iter()
-        .map(|r| (
+        .enumerate()
+        .filter(|(_, r)| r.active)
+        .collect();
+
+    let repos: Vec<(String, String, Option<String>, Option<Vec<String>>, Option<Vec<String>>)> = active_repos_with_indices
+        .iter()
+        .map(|(_, r)| (
             r.name.clone(),
             r.path.clone(),
             r.description.clone(),
@@ -407,7 +374,16 @@ pub async fn recommend_repo(
         track_usage(&stats, "repo_recommendation", result.usage.input_tokens, result.usage.output_tokens);
     }
 
-    Ok(result.data)
+    // Remap the returned index back to the original repos array index
+    let mut data = result.data;
+    if data.recommended_index >= 0 {
+        let active_idx = data.recommended_index as usize;
+        if active_idx < active_repos_with_indices.len() {
+            data.recommended_index = active_repos_with_indices[active_idx].0 as i64;
+        }
+    }
+
+    Ok(data)
 }
 
 /// Generate contextual quick actions based on the session's final message

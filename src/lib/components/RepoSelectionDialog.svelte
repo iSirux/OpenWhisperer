@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { RepoConfig } from '$lib/stores/settings';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {
     repos: RepoConfig[];
@@ -54,15 +55,9 @@
             onclick={() => onSelect(index)}
           >
             <div class="flex items-start gap-3">
-              {#if isRecommended}
-                <div class="shrink-0 mt-0.5">
-                  <svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-                  </svg>
-                </div>
-              {:else}
-                <div class="shrink-0 mt-0.5 w-4 h-4"></div>
-              {/if}
+              <div class="shrink-0 mt-0.5">
+                <RepoIcon repo={repo} size="xs" />
+              </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                   <span class="font-medium text-sm text-text-primary">{repo.name}</span>

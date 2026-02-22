@@ -36,11 +36,20 @@ pub fn create_terminal_session(
     };
 
     let model = Some(cfg.default_model.clone());
-    let terminal_mode = cfg.terminal_mode.clone();
+    let terminal_mode = cfg.get_effective_terminal_mode();
+    let sdk_provider = cfg.sdk_provider.clone();
     let skip_permissions = cfg.skip_permissions;
     drop(cfg);
 
-    terminal_manager.create_session(app, working_path, prompt, model, terminal_mode, skip_permissions)
+    terminal_manager.create_session(
+        app,
+        working_path,
+        prompt,
+        model,
+        terminal_mode,
+        sdk_provider,
+        skip_permissions,
+    )
 }
 
 #[tauri::command]
@@ -59,16 +68,25 @@ pub fn create_interactive_session(
 
     let working_path = repo.path.clone();
     let model = Some(cfg.default_model.clone());
+    let sdk_provider = cfg.sdk_provider.clone();
+    let effective_mode = cfg.get_effective_terminal_mode();
     let skip_permissions = cfg.skip_permissions;
     drop(cfg);
 
-    // Always use interactive mode with empty prompt - user will type directly
+    // Use provider-aware PTY mode. For Claude, keep interactive behavior.
+    // For OpenAI App Server mode, launch codex app-server.
+    let launch_mode = if effective_mode == TerminalMode::CodexAppServer {
+        TerminalMode::CodexAppServer
+    } else {
+        TerminalMode::Interactive
+    };
     terminal_manager.create_session(
         app,
         working_path,
         String::new(), // Empty prompt - user types directly
         model,
-        TerminalMode::Interactive,
+        launch_mode,
+        sdk_provider,
         skip_permissions,
     )
 }

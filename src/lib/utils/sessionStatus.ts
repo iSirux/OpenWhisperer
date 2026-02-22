@@ -24,11 +24,17 @@ export function getStatusCategory(status: string): StatusCategory {
     case 'thinking':
     case 'responding':
     case 'subagent':
+    case 'seq_running':
       return 'active';
 
     case 'Failed':
     case 'error':
+    case 'seq_failed':
+    case 'seq_cancelled':
       return 'error';
+
+    case 'prepared':
+      return 'ready';
 
     default:
       return 'ready';
@@ -47,6 +53,8 @@ export function getStatusColor(status: string): string {
       return 'text-yellow-400';
     case 'pending_transcription':
       return 'text-violet-400';
+    case 'prepared':
+      return 'text-teal-400';
     case 'pending_repo':
       return 'text-amber-400';
     case 'Running':
@@ -55,16 +63,23 @@ export function getStatusColor(status: string): string {
     case 'thinking':
     case 'responding':
     case 'subagent':
+    case 'seq_running':
       return 'text-emerald-400';
+    case 'seq_paused':
+    case 'seq_waiting':
+      return 'text-yellow-400';
     case 'Completed':
     case 'idle':
     case 'done':
+    case 'seq_completed':
       return 'text-blue-400';
     case 'new':
       return 'text-text-muted';
     case 'Failed':
     case 'error':
     case 'transcription_error':
+    case 'seq_failed':
+    case 'seq_cancelled':
       return 'text-red-400';
     default:
       return 'text-text-muted';
@@ -83,6 +98,8 @@ export function getStatusBgColor(status: string): string {
       return 'bg-yellow-400';
     case 'pending_transcription':
       return 'bg-violet-400';
+    case 'prepared':
+      return 'bg-teal-400';
     case 'pending_repo':
       return 'bg-amber-400';
     case 'Running':
@@ -91,16 +108,23 @@ export function getStatusBgColor(status: string): string {
     case 'thinking':
     case 'responding':
     case 'subagent':
+    case 'seq_running':
       return 'bg-emerald-400';
+    case 'seq_paused':
+    case 'seq_waiting':
+      return 'bg-yellow-400';
     case 'Completed':
     case 'idle':
     case 'done':
+    case 'seq_completed':
       return 'bg-blue-400';
     case 'new':
       return 'bg-slate-400';
     case 'Failed':
     case 'error':
     case 'transcription_error':
+    case 'seq_failed':
+    case 'seq_cancelled':
       return 'bg-red-400';
     default:
       return 'bg-text-muted';
@@ -122,6 +146,8 @@ export function getStatusLabel(status: string, detail?: string): string {
       return 'Pending';
     case 'transcription_error':
       return 'Retry?';
+    case 'prepared':
+      return 'Prepared';
     case 'pending_repo':
       return 'Select Repo';
     case 'initializing':
@@ -142,12 +168,23 @@ export function getStatusLabel(status: string, detail?: string): string {
       return 'Ready';
     case 'done':
     case 'Completed':
+    case 'seq_completed':
       return 'Done';
     case 'new':
       return 'New';
     case 'Failed':
     case 'error':
       return 'Error';
+    case 'seq_running':
+      return 'Running';
+    case 'seq_paused':
+      return 'Paused';
+    case 'seq_waiting':
+      return 'Waiting';
+    case 'seq_failed':
+      return 'Failed';
+    case 'seq_cancelled':
+      return 'Cancelled';
     default:
       return status;
   }
@@ -164,7 +201,8 @@ export function isStatusAnimating(status: string): boolean {
     'tool',
     'thinking',
     'responding',
-    'subagent'
+    'subagent',
+    'seq_running'
   ].includes(status);
 }
 
@@ -179,7 +217,8 @@ export function isActivelyWorking(status: string): boolean {
     'tool',
     'thinking',
     'responding',
-    'subagent'
+    'subagent',
+    'seq_running'
   ].includes(status);
 }
 
@@ -187,7 +226,7 @@ export function isActivelyWorking(status: string): boolean {
  * Check if a status indicates the session is finished
  */
 export function isFinishedStatus(status: string): boolean {
-  return ['done', 'idle', 'error', 'new', 'Completed', 'Failed'].includes(status);
+  return ['done', 'idle', 'error', 'new', 'Completed', 'Failed', 'seq_completed', 'seq_failed', 'seq_cancelled'].includes(status);
 }
 
 /**
@@ -202,6 +241,8 @@ export function getStatusSortOrder(status: string): number {
     case 'pending_transcription':
     case 'transcription_error':
       return -1;
+    case 'prepared':
+      return -0.5;
     case 'pending_repo':
     case 'initializing':
     case 'Starting':
@@ -211,15 +252,21 @@ export function getStatusSortOrder(status: string): number {
     case 'thinking':
     case 'responding':
     case 'subagent':
+    case 'seq_running':
+    case 'seq_waiting':
       return 0;
     case 'idle':
     case 'new':
+    case 'seq_paused':
       return 1;
     case 'Completed':
     case 'done':
+    case 'seq_completed':
       return 2;
     case 'Failed':
     case 'error':
+    case 'seq_failed':
+    case 'seq_cancelled':
       return 3;
     default:
       return 4;

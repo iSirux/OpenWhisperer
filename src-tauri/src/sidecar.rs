@@ -42,6 +42,8 @@ pub enum OutboundMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         provider: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        codex_mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
@@ -80,6 +82,12 @@ pub enum OutboundMessage {
     },
     /// Generate repository description using Claude SDK
     GenerateRepoDescription {
+        id: String,
+        repo_path: String,
+        repo_name: String,
+    },
+    /// Generate repository description using Codex SDK
+    GenerateRepoDescriptionWithCodex {
         id: String,
         repo_path: String,
         repo_name: String,
@@ -209,6 +217,8 @@ pub enum InboundMessage {
         description: String,
         keywords: Vec<String>,
         vocabulary: Vec<String>,
+        icon: Option<String>,
+        color: Option<String>,
     },
     /// Error from Claude SDK repo description generation
     RepoDescriptionError {
@@ -220,6 +230,11 @@ pub enum InboundMessage {
         id: String,
         #[serde(rename = "sdkSessionId")]
         sdk_session_id: String,
+    },
+    /// Notification that a parallel session was detected in the same CWD
+    ParallelSessionNotification {
+        id: String,
+        message: String,
     },
 }
 
@@ -598,6 +613,8 @@ impl SidecarManager {
                 description,
                 keywords,
                 vocabulary,
+                icon,
+                color,
             } => {
                 println!(
                     "[sidecar] Repo description result for {}: {}",
@@ -610,6 +627,8 @@ impl SidecarManager {
                         "description": description,
                         "keywords": keywords,
                         "vocabulary": vocabulary,
+                        "icon": icon,
+                        "color": color,
                     }),
                 );
             }
@@ -623,6 +642,16 @@ impl SidecarManager {
                     id, sdk_session_id
                 );
                 let _ = app.emit(&format!("sdk-session-id-{}", id), &sdk_session_id);
+            }
+            InboundMessage::ParallelSessionNotification { id, message } => {
+                println!(
+                    "[sidecar] Parallel session notification for {}: {}",
+                    id, message
+                );
+                let _ = app.emit(
+                    &format!("sdk-parallel-notification-{}", id),
+                    &message,
+                );
             }
         }
     }

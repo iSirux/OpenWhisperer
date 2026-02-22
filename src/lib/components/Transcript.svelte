@@ -3,7 +3,7 @@
   import { recording, isRecording, isProcessing, hasRecorded, realtimeTranscript } from '$lib/stores/recording';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo } from '$lib/stores/settings';
+  import { settings, activeRepo, getEffectiveTerminalMode } from '$lib/stores/settings';
   import { overlay } from '$lib/stores/overlay';
   import { resolveModelForApi } from '$lib/utils/models';
   import Waveform from './Waveform.svelte';
@@ -111,7 +111,7 @@
     try {
       const transcript = await recording.transcribeAndSend();
       if (transcript) {
-        if ($settings.terminal_mode === 'Sdk') {
+        if (getEffectiveTerminalMode($settings) === 'Sdk') {
           // SDK mode: create or reuse SDK session
           const repoPath = $activeRepo?.path || '.';
           const model = resolveModelForApi($settings.default_model, $settings.enabled_models);
@@ -153,7 +153,7 @@
     if (!prompt.trim()) return;
 
     try {
-      if ($settings.terminal_mode === 'Sdk') {
+      if (getEffectiveTerminalMode($settings) === 'Sdk') {
         // SDK mode: create or reuse SDK session
         const repoPath = $activeRepo?.path || '.';
         const model = resolveModelForApi($settings.default_model, $settings.enabled_models);
@@ -232,7 +232,7 @@
           onclick={async () => {
             const transcript = await recording.stopAndTranscribe();
             if (transcript) {
-              if ($settings.terminal_mode === 'Sdk') {
+              if (getEffectiveTerminalMode($settings) === 'Sdk') {
                 const repoPath = $activeRepo?.path || '.';
                 const model = resolveModelForApi($settings.default_model, $settings.enabled_models);
                 const effortLevel = settingsToStoreEffort($settings.default_effort_level);

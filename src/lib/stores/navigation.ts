@@ -1,20 +1,22 @@
 import { writable } from 'svelte/store';
 
 /**
- * Navigation store to persist view state across route changes.
- * This prevents the main page from resetting to 'start' when navigating
- * back from /usage or /sessions-view.
+ * Navigation store for the main page's internal view state.
+ * Only used for views rendered within the main page (sessions, start, sequence execution).
+ *
+ * Settings, sequences management, usage, and sessions-view all use SvelteKit routing
+ * (/settings, /sequences, /usage, /sessions-view) rather than internal navigation.
  */
 
-export type MainView = 'sessions' | 'settings' | 'start';
+export type MainView = 'sessions' | 'start' | 'sequences' | 'archive';
+
+interface NavigationState {
+  mainView: MainView;
+}
 
 function createNavigationStore() {
-  const { subscribe, set, update } = writable<{
-    mainView: MainView;
-    settingsTab: string;
-  }>({
+  const { subscribe, set, update } = writable<NavigationState>({
     mainView: 'start',
-    settingsTab: 'general',
   });
 
   return {
@@ -28,28 +30,10 @@ function createNavigationStore() {
     },
 
     /**
-     * Set the settings tab (for when returning to settings)
-     */
-    setSettingsTab(tab: string) {
-      update(state => ({ ...state, settingsTab: tab }));
-    },
-
-    /**
-     * Show settings with a specific tab
-     */
-    showSettings(tab?: string) {
-      update(state => ({
-        ...state,
-        mainView: 'settings',
-        settingsTab: tab ?? state.settingsTab,
-      }));
-    },
-
-    /**
      * Show sessions view
      */
     showSessions() {
-      set({ mainView: 'sessions', settingsTab: 'general' });
+      set({ mainView: 'sessions' });
     },
 
     /**
@@ -60,10 +44,24 @@ function createNavigationStore() {
     },
 
     /**
+     * Show sequence execution view
+     */
+    showSequences() {
+      update(state => ({ ...state, mainView: 'sequences' }));
+    },
+
+    /**
+     * Show archive view
+     */
+    showArchive() {
+      update(state => ({ ...state, mainView: 'archive' }));
+    },
+
+    /**
      * Reset to initial state (used on first launch)
      */
     reset() {
-      set({ mainView: 'start', settingsTab: 'general' });
+      set({ mainView: 'start' });
     },
   };
 }

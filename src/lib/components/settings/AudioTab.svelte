@@ -70,4 +70,142 @@
       </div>
     </div>
   </div>
+
+  <!-- Sequence Voice Commands Section -->
+    <div class="border-t border-border pt-4">
+      <h3 class="text-sm font-medium text-text-primary mb-3">Sequence Voice Commands</h3>
+      <p class="text-xs text-text-muted mb-3">
+        Voice commands for controlling sequences. Requires voice commands to be enabled above.
+      </p>
+
+      <div class="space-y-4">
+        <!-- Run Sequence Commands -->
+        <div>
+          <label class="text-xs font-medium text-text-secondary block mb-1">Run Sequence Commands</label>
+          <p class="text-[10px] text-text-muted mb-1.5">
+            Say these followed by a sequence name to start it (e.g., "run sequence deploy")
+          </p>
+          <div class="flex flex-wrap gap-1.5">
+            {#each $settings.audio.voice_commands.sequence_commands ?? [] as cmd}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-accent/10 text-accent rounded text-xs">
+                {cmd}
+                <button class="hover:text-red-400" onclick={() => {
+                  const cmds = ($settings.audio.voice_commands.sequence_commands ?? []).filter(c => c !== cmd);
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, sequence_commands: cmds } } });
+                }}>&times;</button>
+              </span>
+            {/each}
+            <input
+              type="text"
+              class="w-32 px-2 py-0.5 text-xs rounded border border-border bg-background focus:outline-none focus:border-accent"
+              placeholder="Add command..."
+              onkeydown={(e) => {
+                const input = e.currentTarget as HTMLInputElement;
+                if (e.key === 'Enter' && input.value.trim()) {
+                  const cmds = [...($settings.audio.voice_commands.sequence_commands ?? []), input.value.trim()];
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, sequence_commands: cmds } } });
+                  input.value = '';
+                }
+              }}
+            />
+          </div>
+        </div>
+
+        <!-- Approve Commands -->
+        <div>
+          <label class="text-xs font-medium text-text-secondary block mb-1">Approve Commands</label>
+          <p class="text-[10px] text-text-muted mb-1.5">
+            Say these to approve a pending approval node
+          </p>
+          <div class="flex flex-wrap gap-1.5">
+            {#each $settings.audio.voice_commands.approve_commands ?? [] as cmd}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 text-green-400 rounded text-xs">
+                {cmd}
+                <button class="hover:text-red-400" onclick={() => {
+                  const cmds = ($settings.audio.voice_commands.approve_commands ?? []).filter(c => c !== cmd);
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, approve_commands: cmds } } });
+                }}>&times;</button>
+              </span>
+            {/each}
+            <input
+              type="text"
+              class="w-32 px-2 py-0.5 text-xs rounded border border-border bg-background focus:outline-none focus:border-accent"
+              placeholder="Add command..."
+              onkeydown={(e) => {
+                const input = e.currentTarget as HTMLInputElement;
+                if (e.key === 'Enter' && input.value.trim()) {
+                  const cmds = [...($settings.audio.voice_commands.approve_commands ?? []), input.value.trim()];
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, approve_commands: cmds } } });
+                  input.value = '';
+                }
+              }}
+            />
+          </div>
+        </div>
+
+        <!-- Reject Commands -->
+        <div>
+          <label class="text-xs font-medium text-text-secondary block mb-1">Reject Commands</label>
+          <p class="text-[10px] text-text-muted mb-1.5">
+            Say these to reject a pending approval node
+          </p>
+          <div class="flex flex-wrap gap-1.5">
+            {#each $settings.audio.voice_commands.reject_commands ?? [] as cmd}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500/10 text-red-400 rounded text-xs">
+                {cmd}
+                <button class="hover:text-red-400" onclick={() => {
+                  const cmds = ($settings.audio.voice_commands.reject_commands ?? []).filter(c => c !== cmd);
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, reject_commands: cmds } } });
+                }}>&times;</button>
+              </span>
+            {/each}
+            <input
+              type="text"
+              class="w-32 px-2 py-0.5 text-xs rounded border border-border bg-background focus:outline-none focus:border-accent"
+              placeholder="Add command..."
+              onkeydown={(e) => {
+                const input = e.currentTarget as HTMLInputElement;
+                if (e.key === 'Enter' && input.value.trim()) {
+                  const cmds = [...($settings.audio.voice_commands.reject_commands ?? []), input.value.trim()];
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, reject_commands: cmds } } });
+                  input.value = '';
+                }
+              }}
+            />
+          </div>
+        </div>
+
+        <!-- Prepare Commands -->
+        <div>
+          <label class="text-xs font-medium text-text-secondary block mb-1">Prepare Commands</label>
+          <p class="text-[10px] text-text-muted mb-1.5">
+            Say these to prepare a session without starting it
+          </p>
+          <div class="flex flex-wrap gap-1.5">
+            {#each $settings.audio.voice_commands.prepare_commands ?? [] as cmd}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-teal-500/10 text-teal-400 rounded text-xs">
+                {cmd}
+                <button class="hover:text-red-400" onclick={() => {
+                  const cmds = ($settings.audio.voice_commands.prepare_commands ?? []).filter(c => c !== cmd);
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, prepare_commands: cmds } } });
+                }}>&times;</button>
+              </span>
+            {/each}
+            <input
+              type="text"
+              class="w-32 px-2 py-0.5 text-xs rounded border border-border bg-background focus:outline-none focus:border-accent"
+              placeholder="Add command..."
+              onkeydown={(e) => {
+                const input = e.currentTarget as HTMLInputElement;
+                if (e.key === 'Enter' && input.value.trim()) {
+                  const cmds = [...($settings.audio.voice_commands.prepare_commands ?? []), input.value.trim()];
+                  settings.save({ ...$settings, audio: { ...$settings.audio, voice_commands: { ...$settings.audio.voice_commands, prepare_commands: cmds } } });
+                  input.value = '';
+                }
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
 </div>

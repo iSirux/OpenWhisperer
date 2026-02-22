@@ -1,4 +1,4 @@
-use crate::config::TerminalMode;
+use crate::config::{SdkProvider, TerminalMode};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,7 @@ impl TerminalManager {
         prompt: String,
         model: Option<String>,
         terminal_mode: TerminalMode,
+        _sdk_provider: SdkProvider,
         skip_permissions: bool,
     ) -> Result<String, String> {
         let id = Uuid::new_v4().to_string();
@@ -91,24 +92,49 @@ impl TerminalManager {
             })
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-        let mut cmd = CommandBuilder::new("claude");
-
-        // Add skip permissions flag if enabled
-        if skip_permissions {
-            cmd.arg("--dangerously-skip-permissions");
-        }
-
-        if let Some(m) = model {
-            cmd.arg("--model");
-            cmd.arg(&m);
-        }
-
-        // In Prompt mode, pass the prompt directly via -p flag
+        let is_app_server_mode = terminal_mode == TerminalMode::CodexAppServer;
         let is_prompt_mode = terminal_mode == TerminalMode::Prompt;
-        if is_prompt_mode {
-            cmd.arg("-p");
-            cmd.arg(&prompt);
-        }
+
+        let mut cmd = if is_app_server_mode {
+            #[cfg(target_os = "windows")]
+            let c = {
+                // On Windows, codex may resolve to a cmd/npm shim. Launch through cmd.exe
+                // so CreateProcess doesn't try to execute "codex app-server" as one path.
+                let mut c = CommandBuilder::new("cmd");
+                c.arg("/C");
+                c.arg("codex");
+                c.arg("app-server");
+                c
+            };
+
+            #[cfg(not(target_os = "windows"))]
+            let c = {
+                let mut c = CommandBuilder::new("codex");
+                c.arg("app-server");
+                c
+            };
+
+            c
+        } else {
+            let mut c = CommandBuilder::new("claude");
+
+            // Add skip permissions flag if enabled
+            if skip_permissions {
+                c.arg("--dangerously-skip-permissions");
+            }
+
+            if let Some(m) = model {
+                c.arg("--model");
+                c.arg(&m);
+            }
+
+            // In Prompt mode, pass the prompt directly via -p flag
+            if is_prompt_mode {
+                c.arg("-p");
+                c.arg(&prompt);
+            }
+            c
+        };
 
         cmd.cwd(&repo_path);
 
@@ -119,7 +145,7 @@ impl TerminalManager {
         let _child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| format!("Failed to spawn claude: {}", e))?;
+            .map_err(|e| format!("Failed to spawn terminal command: {}", e))?;
 
         let mut reader = pair
             .master
@@ -155,9 +181,9 @@ impl TerminalManager {
         let session_id = id.clone();
         let app_clone = app.clone();
 
-        // In Interactive mode, spawn a thread to send the prompt after Claude initializes
+        // In Interactive mode, spawn a thread to send the prompt after CLI initializes
         // (only if there's actually a prompt to send)
-        if !is_prompt_mode && !prompt.is_empty() {
+        if !is_prompt_mode && !is_app_server_mode && !prompt.is_empty() {
             let pty_sessions_ref = Arc::clone(&self.pty_sessions);
             let session_id_for_prompt = id.clone();
             let initial_prompt = prompt.clone();

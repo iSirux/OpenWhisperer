@@ -9,6 +9,9 @@
   } from '$lib/utils/sessionStatus';
   import { getElapsedTime, getRepoName } from '$lib/utils/duration';
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
+  import { findRepoByPath } from '$lib/utils/repoIcons';
+  import { settings } from '$lib/stores/settings';
 
   interface Props {
     session: DisplaySession;
@@ -16,6 +19,7 @@
     isActive: boolean;
     now: number;
     showLatestMessage: boolean;
+    showSessionSummary: boolean;
     promptRows: number;
     responseRows: number;
     onselect: () => void;
@@ -28,6 +32,7 @@
     isActive,
     now,
     showLatestMessage,
+    showSessionSummary,
     promptRows,
     responseRows,
     onselect,
@@ -171,7 +176,7 @@
       <span class="{sizeClasses.title} font-medium text-text-primary">{session.aiMetadata.name}</span
       >
     </div>
-    {#if session.aiMetadata.outcome && size !== 'small'}
+    {#if showSessionSummary && session.aiMetadata.outcome && size !== 'small'}
       <p
         class="{sizeClasses.text} text-text-muted leading-snug mb-1.5"
         title={session.aiMetadata.outcome}
@@ -203,19 +208,7 @@
 
   <!-- Repo name, branch -->
   <div class="flex items-center gap-1.5 text-text-muted">
-    <svg
-      class="{sizeClasses.icon} flex-shrink-0"
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-    >
-      <path
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        stroke-width="2"
-        d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-      />
-    </svg>
+    <RepoIcon repo={findRepoByPath($settings.repos, session.repoPath)} size="xs" />
     <span class="{sizeClasses.text} truncate">{getRepoName(session.repoPath)}</span>
     {#if session.branch}
       <span class="{sizeClasses.text} text-text-muted">·</span>
