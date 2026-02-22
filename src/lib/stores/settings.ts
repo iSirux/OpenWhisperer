@@ -556,7 +556,7 @@ const defaultConfig: AppConfig = {
   show_session_summary: true,
   session_prompt_rows: 2,
   session_response_rows: 2,
-  sidebar_width: 256,
+  sidebar_width: 282,
   sessions_view: {
     layout: "grid",
     grid_columns: 3,

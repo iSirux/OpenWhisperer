@@ -64,16 +64,15 @@
   }
 </script>
 
-<div class="px-3 py-2 border-b border-border flex items-center justify-between gap-2">
+<div class="px-3 py-2 border-b border-border flex items-center justify-between gap-2 overflow-hidden">
   <button
-    class="h-9 shrink-0 hover:bg-surface-elevated transition-colors rounded px-2"
+    class="h-8 shrink-0 hover:bg-surface-elevated transition-colors rounded px-2"
     class:bg-surface-elevated={currentView === 'sessions'}
     onclick={onShowSessions}
   >
     <div class="flex items-center gap-2">
       {#if totalCount > 0}
         <div class="flex items-center gap-1">
-          <span class="text-[11px] text-text-muted">{totalCount}</span>
           {#if pendingCount > 0}
             <div class="flex items-center gap-1">
               <div class="w-1.5 h-1.5 rounded-full bg-amber-400"></div>
@@ -106,9 +105,9 @@
       </div>
     </div>
   </button>
-  <div class="flex items-center gap-1">
+  <div class="flex items-center gap-1 overflow-hidden">
     <button
-      class={`h-9 px-2.5 flex items-center gap-1.5 rounded text-[11px] font-medium border transition-colors ${
+      class={`h-8 px-2.5 flex items-center gap-1.5 rounded text-[11px] font-medium border transition-colors ${
         isOnSequences
           ? 'bg-accent/15 border-accent/40 text-accent'
           : 'bg-surface-elevated border-border text-text-secondary hover:bg-border'
@@ -122,7 +121,7 @@
       <span>Sequences</span>
     </button>
     <button
-      class="h-9 w-9 flex items-center justify-center hover:bg-surface-elevated rounded transition-colors text-text-muted hover:text-text-primary"
+      class="h-8 w-8 flex items-center justify-center hover:bg-surface-elevated rounded transition-colors text-text-muted hover:text-text-primary"
       class:bg-surface-elevated={isOnUsage}
       class:text-accent={isOnUsage}
       onclick={openUsage}
@@ -133,7 +132,7 @@
       </svg>
     </button>
     <button
-      class="h-9 w-9 flex items-center justify-center hover:bg-surface-elevated rounded transition-colors text-text-muted hover:text-accent"
+      class="h-8 w-8 flex items-center justify-center hover:bg-surface-elevated rounded transition-colors text-text-muted hover:text-accent"
       onclick={openCommandCenter}
       title="Open Sessions Command Center"
     >
