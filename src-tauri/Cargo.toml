@@ -43,3 +43,4 @@ serde_yaml = "0.9"
 minijinja = { version = "2", features = ["builtins"] }
 cron = "0.12"
 regex = "1"
+tauri-plugin-notification = "2"

@@ -38,7 +38,8 @@
       "Bash(head:*)",
       "Bash(wc:*)",
       "Bash(cd:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(tail:)"
     ],
     "deny": [],
     "ask": []

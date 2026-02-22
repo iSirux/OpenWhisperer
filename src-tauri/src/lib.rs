@@ -85,6 +85,7 @@ pub fn run() {
             Some(vec!["--minimized"]),
         ))
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_keyring::init())
         .plugin(
             tauri_plugin_window_state::Builder::new()

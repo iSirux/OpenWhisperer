@@ -2,6 +2,11 @@ import { writable, derived, get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { playNotificationSound } from "$lib/utils/sound";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import type {
   SequenceExecution,
   ExecutionSummary,
@@ -242,17 +247,20 @@ export async function setupListeners(executionId: string): Promise<void> {
         console.log(`[sequence][${executionId.slice(0, 8)}] notification event:`, event.payload);
         const { title, message, system_notification, play_sound, sound } = event.payload;
         if (system_notification) {
-          try {
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification(title, { body: message });
-            } else if ('Notification' in window && Notification.permission !== 'denied') {
-              Notification.requestPermission().then((perm) => {
-                if (perm === 'granted') new Notification(title, { body: message });
-              });
+          (async () => {
+            try {
+              let granted = await isPermissionGranted();
+              if (!granted) {
+                const perm = await requestPermission();
+                granted = perm === 'granted';
+              }
+              if (granted) {
+                sendNotification({ title, body: message });
+              }
+            } catch (e) {
+              console.warn('Failed to send system notification:', e);
             }
-          } catch (e) {
-            console.warn('Failed to send system notification:', e);
-          }
+          })();
         }
         if (play_sound) {
           playNotificationSound(sound);

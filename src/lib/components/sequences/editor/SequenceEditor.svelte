@@ -7,6 +7,7 @@
   import NodePalette from './NodePalette.svelte';
   import NodeCanvas from './NodeCanvas.svelte';
   import NodeInspector from './NodeInspector.svelte';
+  import SequenceInputDialog from '$lib/components/sequences/SequenceInputDialog.svelte';
 
   let { definition: initialDefinition }: { definition?: SequenceDefinition } = $props();
 
@@ -31,6 +32,7 @@
   let saveStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
   let aiGenerateDescription = $state('');
   let aiGenerating = $state(false);
+  let runSequenceDefinition = $state<SequenceDefinition | null>(null);
 
   // Initialize from definition
   if (initialDefinition) {
@@ -146,8 +148,7 @@
     try {
       const def = buildDefinition();
       await invoke('save_sequence', { definition: def });
-      // Navigate to sequences page which has the run dialog
-      goto('/sequences');
+      runSequenceDefinition = def;
     } catch (e) {
       console.error('Failed to save before run:', e);
     }
@@ -220,3 +221,7 @@
     <NodeInspector bind:selectedNode allNodes={nodes} onNodeUpdate={handleNodeUpdate} onNodeDelete={handleNodeDelete} bind:sequenceDescription bind:sequenceRepos bind:sequenceTags />
   </div>
 </div>
+
+{#if runSequenceDefinition}
+  <SequenceInputDialog sequence={runSequenceDefinition} onclose={() => runSequenceDefinition = null} />
+{/if}
