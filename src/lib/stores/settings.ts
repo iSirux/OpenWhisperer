@@ -258,7 +258,9 @@ export type SdkProvider = "Claude" | "OpenAI";
 export type OpenAiAuthMethod = "OAuth" | "ApiKey";
 export type ClaudeAuthMethod = "OAuth" | "ApiKey";
 
-export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
+export type ClaudeTerminalMode = "Interactive" | "Prompt" | "Sdk";
+export type CodexMode = "Sdk" | "AppServer";
+export type TerminalMode = ClaudeTerminalMode | CodexMode;
 
 export type Theme =
   | "Midnight"
@@ -397,7 +399,10 @@ export interface AppConfig {
   /** @deprecated Use default_effort_level instead */
   default_thinking_level?: string;
   enabled_models: string[];
-  terminal_mode: TerminalMode;
+  /** Terminal mode used when sdk_provider is Claude */
+  terminal_mode: ClaudeTerminalMode;
+  /** OpenAI Codex mode used when sdk_provider is OpenAI */
+  codex_mode: CodexMode;
   /** SDK provider for the main coding agent (Claude or OpenAI Codex) */
   sdk_provider: SdkProvider;
   /** Default OpenAI model for Codex SDK sessions */
@@ -526,6 +531,7 @@ const defaultConfig: AppConfig = {
     "claude-haiku-4-5-20251001",
   ],
   terminal_mode: "Interactive",
+  codex_mode: "Sdk",
   sdk_provider: "Claude",
   openai_model: "gpt-5.3-codex",
   enabled_openai_models: [
@@ -732,3 +738,11 @@ export const activeRepo = derived(settings, ($settings) => {
 export const isAutoRepoSelected = derived(settings, ($settings) => {
   return $settings.auto_repo_mode;
 });
+
+export function getEffectiveTerminalMode(config: AppConfig): TerminalMode {
+  // OpenAI App Server mode is not yet integrated into the structured session flow.
+  // Route OpenAI sessions through SDK mode.
+  return config.sdk_provider === 'OpenAI'
+    ? 'Sdk'
+    : config.terminal_mode;
+}

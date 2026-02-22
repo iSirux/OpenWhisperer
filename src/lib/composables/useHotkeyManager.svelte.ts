@@ -8,6 +8,7 @@ import { settings, type HotkeyEnabledConfig } from '$lib/stores/settings';
 import { isRecording } from '$lib/stores/recording';
 import { overlay } from '$lib/stores/overlay';
 import { isModelRecommendationEnabled, isRepoAutoSelectEnabled } from '$lib/utils/llm';
+import { DEFAULT_OPENAI_MODEL_ID } from '$lib/utils/models';
 import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -54,6 +55,14 @@ export function useHotkeyManager() {
 
   // Callbacks stored from setup
   let callbacks: HotkeyCallbacks | null = null;
+
+  function getSelectedToolbarModel(): string {
+    const currentSettings = get(settings);
+    const provider = currentSettings.sdk_provider === 'OpenAI' ? 'openai' : 'claude';
+    return provider === 'openai'
+      ? (currentSettings.openai_model || DEFAULT_OPENAI_MODEL_ID)
+      : currentSettings.default_model;
+  }
 
   /**
    * Setup the main toggle_recording and note_mode hotkeys
@@ -342,7 +351,7 @@ export function useHotkeyManager() {
           if (nextOption === 'auto') {
             // Switch to auto-repo mode
             await settings.setAutoRepoMode(true);
-            overlay.setSessionInfo(null, get(settings).default_model, false);
+            overlay.setSessionInfo(null, getSelectedToolbarModel(), false);
           } else {
             // Switch to specific repo
             if (s.auto_repo_mode) {
@@ -359,7 +368,7 @@ export function useHotkeyManager() {
               } catch (e) {
                 console.error('Failed to get git branch:', e);
               }
-              overlay.setSessionInfo(branch, get(settings).default_model, false);
+              overlay.setSessionInfo(branch, getSelectedToolbarModel(), false);
             }
           }
         } finally {

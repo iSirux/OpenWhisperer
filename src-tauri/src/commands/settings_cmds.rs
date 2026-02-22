@@ -3,6 +3,7 @@ use crate::ConfigLoadStatus;
 use crate::git::GitManager;
 use tauri::State;
 use parking_lot::Mutex;
+use std::fs;
 use std::process::Command;
 
 pub type ConfigState = Mutex<AppConfig>;
@@ -34,6 +35,18 @@ pub fn get_config_paths() -> (String, String) {
 #[tauri::command]
 pub fn open_config_file() -> Result<(), String> {
     let path = AppConfig::config_path();
+
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {}", e))?;
+        }
+
+        let content = serde_json::to_string_pretty(&AppConfig::default())
+            .map_err(|e| format!("Failed to serialize default config: {}", e))?;
+        fs::write(&path, content)
+            .map_err(|e| format!("Failed to create config file: {}", e))?;
+    }
 
     #[cfg(target_os = "windows")]
     {

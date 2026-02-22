@@ -42,6 +42,8 @@ pub enum OutboundMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         provider: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        codex_mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,

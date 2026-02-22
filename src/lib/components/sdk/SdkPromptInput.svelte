@@ -397,6 +397,7 @@
   }
 
   textarea {
+    display: block;
     width: 100%;
     background: var(--color-surface);
     color: var(--color-text-primary);
@@ -657,8 +658,9 @@
   /* Inline record button - positioned inside textarea */
   .inline-record-btn {
     position: absolute;
-    bottom: 6px;
+    top: 50%;
     right: 6px;
+    transform: translateY(-50%);
     width: 28px;
     height: 28px;
     min-width: unset;

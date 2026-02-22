@@ -2,7 +2,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo } from '$lib/stores/settings';
+  import { settings, activeRepo, getEffectiveTerminalMode } from '$lib/stores/settings';
   import { DEFAULT_OPENAI_MODEL_ID } from '$lib/utils/models';
   import type { DisplaySession } from '$lib/types/session';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
@@ -106,7 +106,8 @@
 
   // Session creation - creates a setup session that appears in the list
   function createNewSession() {
-    if ($settings.terminal_mode === 'Sdk') {
+    const terminalMode = getEffectiveTerminalMode($settings);
+    if (terminalMode === 'Sdk') {
       const provider = $settings.sdk_provider === 'OpenAI' ? 'openai' : 'claude';
       const model = provider === 'openai'
         ? ($settings.openai_model || DEFAULT_OPENAI_MODEL_ID)
@@ -257,7 +258,7 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
       </svg>
       <span class="text-sm font-medium">
-        {$settings.terminal_mode === 'Sdk' ? 'New Session' : 'New Terminal'}
+        {getEffectiveTerminalMode($settings) === 'Sdk' ? 'New Session' : 'New Terminal'}
       </span>
     </button>
 

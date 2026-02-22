@@ -10,11 +10,12 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { get } from 'svelte/store';
 import { recording, isRecording } from '$lib/stores/recording';
 import { sdkSessions, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-import { settings, activeRepo } from '$lib/stores/settings';
+import { settings, activeRepo, getEffectiveTerminalMode } from '$lib/stores/settings';
 import { overlay } from '$lib/stores/overlay';
 import { openMic } from '$lib/stores/openMic';
 import { navigation } from '$lib/stores/navigation';
 import { isRecordingForNewSession as headerRecordingStore } from '$lib/stores/headerRecording';
+import { DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
 
 export interface RecordingFlowCallbacks {
   /** Called when a recording stops with transcript ready to process */
@@ -105,6 +106,7 @@ export function useRecordingFlow() {
    */
   async function prepareRecording(): Promise<{
     repoPath: string;
+    provider: SdkProvider;
     model: string;
     effortLevel: ReturnType<typeof settingsToStoreEffort>;
     branch: string | null;
@@ -112,7 +114,10 @@ export function useRecordingFlow() {
     const currentSettings = get(settings);
     const currentActiveRepo = get(activeRepo);
     const repoPath = currentActiveRepo?.path || '.';
-    const model = currentSettings.default_model;
+    const provider: SdkProvider = currentSettings.sdk_provider === 'OpenAI' ? 'openai' : 'claude';
+    const model = provider === 'openai'
+      ? (currentSettings.openai_model || DEFAULT_OPENAI_MODEL_ID)
+      : currentSettings.default_model;
     const effortLevel = settingsToStoreEffort(currentSettings.default_effort_level);
 
     // Get current git branch for overlay display
@@ -123,7 +128,7 @@ export function useRecordingFlow() {
       console.error('Failed to get git branch:', e);
     }
 
-    return { repoPath, model, effortLevel, branch };
+    return { repoPath, provider, model, effortLevel, branch };
   }
 
   /**
@@ -131,9 +136,10 @@ export function useRecordingFlow() {
    */
   function createPendingSession(
     model: string,
-    effortLevel: ReturnType<typeof settingsToStoreEffort>
+    effortLevel: ReturnType<typeof settingsToStoreEffort>,
+    provider: SdkProvider
   ): string {
-    const sessionId = sdkSessions.createPendingTranscriptionSession(model, effortLevel);
+    const sessionId = sdkSessions.createPendingTranscriptionSession(model, effortLevel, provider);
     pendingTranscriptionSessionId = sessionId;
     return sessionId;
   }
@@ -148,7 +154,7 @@ export function useRecordingFlow() {
     // Stop open mic to avoid two Vosk sessions running simultaneously
     await openMic.stop();
 
-    const { model, effortLevel, branch } = await prepareRecording();
+    const { provider, model, effortLevel, branch } = await prepareRecording();
 
     // Set overlay info
     overlay.setMode('session');
@@ -156,8 +162,8 @@ export function useRecordingFlow() {
 
     // Create pending transcription session immediately (SDK mode only)
     const currentSettings = get(settings);
-    if (currentSettings.terminal_mode === 'Sdk') {
-      const sessionId = createPendingSession(model, effortLevel);
+    if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
+      const sessionId = createPendingSession(model, effortLevel, provider);
       sdkSessions.selectSession(sessionId);
       navigation.setView('sessions');
 
@@ -254,7 +260,7 @@ export function useRecordingFlow() {
     const mainWindow = getCurrentWindow();
     wasAppFocusedOnRecordStart = await mainWindow.isFocused();
 
-    const { model, effortLevel, branch } = await prepareRecording();
+    const { provider, model, effortLevel, branch } = await prepareRecording();
 
     // Set overlay info
     overlay.setMode('session');
@@ -262,8 +268,8 @@ export function useRecordingFlow() {
 
     // Create pending transcription session (SDK mode only)
     const currentSettings = get(settings);
-    if (currentSettings.terminal_mode === 'Sdk') {
-      createPendingSession(model, effortLevel);
+    if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
+      createPendingSession(model, effortLevel, provider);
       await setupAudioVisualizationListener();
     }
 
@@ -359,7 +365,7 @@ export function useRecordingFlow() {
     const mainWindow = getCurrentWindow();
     wasAppFocusedOnRecordStart = await mainWindow.isFocused();
 
-    const { model, effortLevel, branch } = await prepareRecording();
+    const { provider, model, effortLevel, branch } = await prepareRecording();
 
     // Set overlay info
     overlay.setMode('session');
@@ -367,8 +373,8 @@ export function useRecordingFlow() {
 
     // Create pending session (SDK mode)
     const currentSettings = get(settings);
-    if (currentSettings.terminal_mode === 'Sdk') {
-      createPendingSession(model, effortLevel);
+    if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
+      createPendingSession(model, effortLevel, provider);
       await setupAudioVisualizationListener();
     }
 
@@ -469,7 +475,7 @@ export function useRecordingFlow() {
 
     // Create pending note session
     const currentSettings = get(settings);
-    if (currentSettings.terminal_mode === 'Sdk') {
+    if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
       const sessionId = sdkSessions.createPendingNoteSession();
       pendingTranscriptionSessionId = sessionId;
       sdkSessions.selectSession(sessionId);

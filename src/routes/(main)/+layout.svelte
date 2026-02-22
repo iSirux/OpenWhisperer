@@ -1,16 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { revealItemInDir } from '@tauri-apps/plugin-opener';
+  import { open } from '@tauri-apps/plugin-shell';
   import AppHeader from '$lib/components/AppHeader.svelte';
   import { configLoadedOk } from '$lib/stores/settings';
 
   let configFilePath = $state<string>('');
+  let configDirPath = $state<string>('');
 
   onMount(async () => {
     try {
-      const [filePath] = await invoke<[string, string]>('get_config_paths');
+      const [filePath, dirPath] = await invoke<[string, string]>('get_config_paths');
       configFilePath = filePath;
+      configDirPath = dirPath;
     } catch { /* non-critical */ }
   });
 </script>
@@ -28,7 +30,7 @@
         <span class="text-red-400">|</span>
         <button
           class="underline hover:text-white cursor-pointer bg-transparent border-none text-red-200 text-sm p-0"
-          onclick={() => revealItemInDir(configFilePath)}
+          onclick={() => open(configDirPath)}
         >Open folder</button>
       {/if}
     </div>

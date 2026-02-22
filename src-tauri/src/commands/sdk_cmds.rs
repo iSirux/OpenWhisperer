@@ -18,6 +18,7 @@ pub fn create_sdk_session(
     cwd: String,
     model: String, // Per-session model (required)
     provider: Option<String>, // Optional provider override (e.g., "openai-codex")
+    codex_mode: Option<String>, // Optional OpenAI codex mode ("Sdk" | "AppServer")
     system_prompt: Option<String>, // Optional system prompt (e.g., for voice transcription context)
     messages: Option<Vec<HistoryMessage>>, // Optional conversation history for restored sessions (DEPRECATED - use sdk_session_id)
     sdk_session_id: Option<String>, // SDK session ID for proper resume (preferred over messages)
@@ -28,7 +29,7 @@ pub fn create_sdk_session(
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
     }
-    sidecar.send(OutboundMessage::Create { id, cwd, provider, model: Some(model), system_prompt, messages, sdk_session_id, plan_mode, note_mode, mcp_servers })
+    sidecar.send(OutboundMessage::Create { id, cwd, provider, codex_mode, model: Some(model), system_prompt, messages, sdk_session_id, plan_mode, note_mode, mcp_servers })
 }
 
 #[tauri::command]
@@ -139,7 +140,7 @@ pub fn generate_repo_description_with_codex(
 }
 
 /// Check if OpenAI Codex authentication is available
-/// Checks for ~/.codex/auth.json or the codex CLI
+/// Checks for ~/.codex/auth.json and codex CLI presence
 #[tauri::command]
 pub fn check_openai_codex_auth() -> Result<serde_json::Value, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
@@ -158,7 +159,8 @@ pub fn check_openai_codex_auth() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "hasAuthFile": has_auth_file,
         "hasCli": has_cli,
-        "authenticated": has_auth_file || has_cli,
+        // CLI presence means login is possible, not that the user is authenticated.
+        "authenticated": has_auth_file,
     }))
 }
 

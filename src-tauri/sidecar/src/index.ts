@@ -11,6 +11,7 @@ import {
   type HookCallback,
 } from "@anthropic-ai/claude-agent-sdk";
 import { Codex, type ThreadEvent, type Thread } from "@openai/codex-sdk";
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import * as readline from "readline";
 import * as fs from "fs";
 import * as os from "os";
@@ -253,6 +254,7 @@ interface CreateMessage {
   cwd: string;
   model?: string;
   provider?: "claude" | "openai"; // SDK provider (default: "claude")
+  codex_mode?: "Sdk" | "AppServer"; // OpenAI execution mode
   system_prompt?: string;
   messages?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED - use sdk_session_id instead)
   sdk_session_id?: string; // SDK session ID for proper resume (preferred over messages)
@@ -324,9 +326,51 @@ type InboundMessage =
   | GenerateRepoDescriptionMessage
   | GenerateRepoDescriptionWithCodexMessage;
 
+type OpenAiExecutionMode = "sdk" | "app_server";
+
+interface JsonRpcResponse {
+  id: number;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+}
+
+interface JsonRpcNotification {
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+interface AppServerState {
+  process: ChildProcessWithoutNullStreams;
+  rl: readline.Interface;
+  nextRequestId: number;
+  pendingRequests: Map<
+    number,
+    {
+      resolve: (result: unknown) => void;
+      reject: (error: Error) => void;
+    }
+  >;
+  pendingTurns: Map<
+    string,
+    {
+      resolve: () => void;
+      reject: (error: Error) => void;
+    }
+  >;
+  completedTurns: Map<
+    string,
+    {
+      status: string;
+      errorMessage?: string;
+    }
+  >;
+  initialized: boolean;
+}
+
 interface Session {
   cwd: string;
   provider: "claude" | "openai"; // SDK provider
+  openaiMode?: OpenAiExecutionMode; // OpenAI execution mode (SDK vs app-server)
   options: Options;
   abortController?: AbortController;
   queryIterator?: Query; // The active query iterator for interrupt() (Claude only)
@@ -341,6 +385,8 @@ interface Session {
   codexThread?: Thread; // Active Codex thread instance
   codexModel?: string; // OpenAI model to use
   codexSystemPrompt?: string; // System prompt to prepend to first Codex query (since ThreadOptions has no systemPrompt)
+  appServer?: AppServerState; // Active Codex app-server process state
+  appServerTurnId?: string; // Active app-server turn ID
   pendingParallelNotification?: string; // Queued notification to inject via PreToolUse hook when parallel session detected
 }
 
@@ -502,12 +548,651 @@ function sendRepoDescriptionError(id: string, error: string): void {
 
 // Singleton Codex instance (reused across sessions)
 let codexInstance: Codex | null = null;
+const sidecarRuntimeRoot = process.cwd();
 
 function getCodexInstance(): Codex {
   if (!codexInstance) {
     codexInstance = new Codex();
   }
   return codexInstance;
+}
+
+function setSessionSdkSessionId(session: Session, id: string, eventId: string): void {
+  if (!id) return;
+  if (session.sdkSessionId !== id) {
+    session.sdkSessionId = id;
+    sendSdkSessionId(eventId, id);
+  }
+}
+
+function resolveCodexExecutable(): string {
+  const ext = process.platform === "win32" ? ".cmd" : "";
+  const localBin = path.join(
+    sidecarRuntimeRoot,
+    "node_modules",
+    ".bin",
+    `codex${ext}`
+  );
+  if (fs.existsSync(localBin)) {
+    return localBin;
+  }
+  return "codex";
+}
+
+function appServerWriteJson(
+  state: AppServerState,
+  payload: Record<string, unknown>
+): void {
+  state.process.stdin.write(JSON.stringify(payload) + "\n");
+}
+
+function appServerNotify(
+  state: AppServerState,
+  method: string,
+  params?: Record<string, unknown>
+): void {
+  appServerWriteJson(state, params ? { method, params } : { method });
+}
+
+function appServerRequest(
+  state: AppServerState,
+  method: string,
+  params?: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<unknown> {
+  const id = state.nextRequestId++;
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Request aborted"));
+      return;
+    }
+
+    const abortHandler = () => {
+      state.pendingRequests.delete(id);
+      reject(new Error("Request aborted"));
+    };
+    signal?.addEventListener("abort", abortHandler, { once: true });
+
+    state.pendingRequests.set(id, {
+      resolve: (result: unknown) => {
+        signal?.removeEventListener("abort", abortHandler);
+        resolve(result);
+      },
+      reject: (error: Error) => {
+        signal?.removeEventListener("abort", abortHandler);
+        reject(error);
+      },
+    });
+
+    appServerWriteJson(state, params ? { method, id, params } : { method, id });
+  });
+}
+
+function extractTextDeltaFromParams(params: Record<string, unknown>): string {
+  const direct =
+    (typeof params.delta === "string" && params.delta) ||
+    (typeof params.text === "string" && params.text) ||
+    (typeof params.textDelta === "string" && params.textDelta);
+  if (direct) return direct;
+
+  const nestedDelta = params.delta as Record<string, unknown> | undefined;
+  if (nestedDelta && typeof nestedDelta.text === "string") {
+    return nestedDelta.text;
+  }
+  return "";
+}
+
+function normalizeItemType(rawType: string | undefined): string {
+  if (!rawType) return "";
+  return rawType.replace(/_/g, "").toLowerCase();
+}
+
+function handleAppServerItemEvent(
+  id: string,
+  item: Record<string, unknown>,
+  phase: "started" | "completed"
+): void {
+  const itemId = (item.id as string) || `item-${Date.now()}`;
+  const type = normalizeItemType(item.type as string | undefined);
+
+  if (type === "commandexecution") {
+    if (phase === "started") {
+      sendToolStart(id, "Bash", { command: item.command }, itemId);
+    } else {
+      const output =
+        (item.aggregatedOutput as string) ||
+        (item.aggregated_output as string) ||
+        (item.stdout as string) ||
+        (item.stderr as string) ||
+        `exit code: ${String(item.exitCode ?? item.exit_code ?? "unknown")}`;
+      sendToolResult(id, "Bash", output, itemId);
+    }
+    return;
+  }
+
+  if (type === "filechange") {
+    const changes = (item.changes as Array<Record<string, unknown>>) || [];
+    if (phase === "started") {
+      const files = changes.map((c) => c.path).filter(Boolean).join(", ");
+      sendToolStart(id, "Edit", { files: files || "unknown" }, itemId);
+    } else {
+      const summary =
+        changes
+          .map((c) => `${String(c.kind || "change")}: ${String(c.path || "")}`)
+          .join("\n") || "File changes applied";
+      sendToolResult(id, "Edit", summary, itemId);
+    }
+    return;
+  }
+
+  if (type === "mcptoolcall") {
+    const server = String(item.server || "");
+    const tool = String(item.tool || "");
+    const toolName = tool ? `mcp__${server}__${tool}` : `mcp__${server}`;
+    if (phase === "started") {
+      sendToolStart(id, toolName, item.arguments, itemId);
+    } else {
+      const err = item.error as Record<string, unknown> | undefined;
+      const result = item.result;
+      const output = err
+        ? `Error: ${String(err.message || "Unknown MCP error")}`
+        : typeof result === "string"
+          ? result
+          : JSON.stringify(result ?? "");
+      sendToolResult(id, toolName, output, itemId);
+    }
+    return;
+  }
+
+  if (type === "reasoning") {
+    if (phase === "started") {
+      sendThinkingStart(id, String(item.text || ""));
+    } else {
+      sendThinkingEnd(id, 0, String(item.text || ""));
+    }
+    return;
+  }
+
+  if (type === "agentmessage" && phase === "completed") {
+    const text = item.text;
+    if (typeof text === "string" && text) {
+      sendText(id, text);
+    }
+  }
+}
+
+function handleAppServerNotification(id: string, notification: JsonRpcNotification): void {
+  const session = sessions.get(id);
+  if (!session) return;
+
+  const params = (notification.params || {}) as Record<string, unknown>;
+  const turn = params.turn as Record<string, unknown> | undefined;
+  const item = params.item as Record<string, unknown> | undefined;
+  const turnId = typeof turn?.id === "string" ? turn.id : undefined;
+  const itemType = typeof item?.type === "string" ? item.type : undefined;
+  const itemId = typeof item?.id === "string" ? item.id : undefined;
+  const pendingTurnCount = session.appServer?.pendingTurns.size ?? 0;
+  const completedTurnCount = session.appServer?.completedTurns.size ?? 0;
+  send({
+    type: "debug",
+    id,
+    message:
+      `[app-server event] method=${notification.method}` +
+      (turnId ? ` turnId=${turnId}` : "") +
+      (itemType ? ` itemType=${itemType}` : "") +
+      (itemId ? ` itemId=${itemId}` : "") +
+      ` pendingTurns=${pendingTurnCount} completedTurns=${completedTurnCount}`,
+  });
+
+  switch (notification.method) {
+    case "thread/started": {
+      const thread = params.thread as Record<string, unknown> | undefined;
+      const threadId = thread?.id;
+      if (typeof threadId === "string" && threadId) {
+        setSessionSdkSessionId(session, threadId, id);
+      }
+      break;
+    }
+    case "item/agentMessage/delta": {
+      // Intentionally ignore deltas: emit only completed full assistant message.
+      break;
+    }
+    case "item/started": {
+      const item = params.item as Record<string, unknown> | undefined;
+      if (item) handleAppServerItemEvent(id, item, "started");
+      break;
+    }
+    case "item/completed": {
+      const item = params.item as Record<string, unknown> | undefined;
+      if (item) handleAppServerItemEvent(id, item, "completed");
+      break;
+    }
+    case "turn/completed": {
+      const turn = params.turn as Record<string, unknown> | undefined;
+      const turnId = turn?.id;
+      if (typeof turnId === "string") {
+        const wasActiveTurn = session.appServerTurnId === turnId;
+        if (session.appServerTurnId === turnId) {
+          session.appServerTurnId = undefined;
+        }
+        const pending = session.appServer?.pendingTurns.get(turnId);
+        const status = String(turn?.status || "");
+        const error = turn?.error as Record<string, unknown> | undefined;
+        const errorMessage = String(error?.message || "Turn failed");
+        send({
+          type: "debug",
+          id,
+          message:
+            `[app-server turn/completed] turnId=${turnId} status=${status} ` +
+            `hasPending=${pending ? "yes" : "no"} activeTurnId=${session.appServerTurnId || "none"}`,
+        });
+        if (pending) {
+          session.appServer?.pendingTurns.delete(turnId);
+          if (status === "failed") {
+            pending.reject(new Error(errorMessage));
+          } else {
+            pending.resolve();
+          }
+          send({
+            type: "debug",
+            id,
+            message:
+              `[app-server turn/completed] resolved pending turnId=${turnId} ` +
+              `pendingTurns=${session.appServer?.pendingTurns.size ?? 0}`,
+          });
+        } else if (session.appServer && wasActiveTurn) {
+          // turn/completed can race ahead of pendingTurns registration.
+          session.appServer.completedTurns.set(turnId, {
+            status,
+            ...(status === "failed" ? { errorMessage } : {}),
+          });
+          send({
+            type: "debug",
+            id,
+            message:
+              `[app-server turn/completed] cached completion turnId=${turnId} ` +
+              `completedTurns=${session.appServer.completedTurns.size}`,
+          });
+        }
+      }
+      break;
+    }
+    case "error": {
+      const error = params.error as Record<string, unknown> | undefined;
+      if (error?.message) {
+        sendError(id, String(error.message));
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+async function ensureCodexAppServer(
+  id: string,
+  session: Session
+): Promise<AppServerState> {
+  if (session.appServer) return session.appServer;
+
+  const codexExecutable = resolveCodexExecutable();
+  let child: ChildProcessWithoutNullStreams;
+  if (globalThis.process.platform === "win32") {
+    // On Windows, .cmd shims require launching via cmd.exe.
+    const cmd = codexExecutable === "codex"
+      ? "codex app-server"
+      : `"${codexExecutable}" app-server`;
+    child = spawn("cmd.exe", ["/d", "/s", "/c", cmd], {
+      cwd: session.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } else {
+    child = spawn(codexExecutable, ["app-server"], {
+      cwd: session.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  }
+  const rl = readline.createInterface({
+    input: child.stdout,
+    terminal: false,
+  });
+
+  const state: AppServerState = {
+    process: child,
+    rl,
+    nextRequestId: 1,
+    pendingRequests: new Map(),
+    pendingTurns: new Map(),
+    completedTurns: new Map(),
+    initialized: false,
+  };
+
+  child.stderr.on("data", (chunk: Buffer) => {
+    send({
+      type: "debug",
+      id,
+      message: `[app-server stderr] ${chunk.toString().trim()}`,
+    });
+  });
+
+  child.on("error", (err) => {
+    send({
+      type: "debug",
+      id,
+      message: `Failed to spawn codex app-server (${codexExecutable}): ${err.message}`,
+    });
+    for (const [, pending] of state.pendingRequests) {
+      pending.reject(err);
+    }
+    state.pendingRequests.clear();
+    for (const [, pending] of state.pendingTurns) {
+      pending.reject(err);
+    }
+    state.pendingTurns.clear();
+    state.completedTurns.clear();
+    if (session.appServer === state) {
+      session.appServer = undefined;
+      session.appServerTurnId = undefined;
+    }
+  });
+
+  child.on("close", (code) => {
+    for (const [, pending] of state.pendingRequests) {
+      pending.reject(new Error(`codex app-server exited (${code ?? "unknown"})`));
+    }
+    state.pendingRequests.clear();
+    for (const [, pending] of state.pendingTurns) {
+      pending.reject(new Error(`codex app-server exited (${code ?? "unknown"})`));
+    }
+    state.pendingTurns.clear();
+    state.completedTurns.clear();
+    if (session.appServer === state) {
+      session.appServer = undefined;
+      session.appServerTurnId = undefined;
+    }
+  });
+
+  rl.on("line", (line) => {
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      send({
+        type: "debug",
+        id,
+        message: `[app-server] Non-JSON line: ${line}`,
+      });
+      return;
+    }
+
+    if (
+      typeof msg.id === "number" &&
+      (Object.prototype.hasOwnProperty.call(msg, "result") ||
+        Object.prototype.hasOwnProperty.call(msg, "error"))
+    ) {
+      const response = msg as unknown as JsonRpcResponse;
+      const pending = state.pendingRequests.get(response.id);
+      if (!pending) return;
+      state.pendingRequests.delete(response.id);
+      if (response.error) {
+        pending.reject(
+          new Error(
+            `JSON-RPC ${response.error.code}: ${response.error.message}`
+          )
+        );
+      } else {
+        pending.resolve(response.result);
+      }
+      return;
+    }
+
+    if (typeof msg.method === "string") {
+      if (typeof msg.id === "number") {
+        // Server-initiated request not currently handled by this client.
+        appServerWriteJson(state, {
+          id: msg.id,
+          error: {
+            code: -32601,
+            message: `Method ${msg.method} not handled by client`,
+          },
+        });
+        return;
+      }
+      handleAppServerNotification(id, msg as unknown as JsonRpcNotification);
+    }
+  });
+
+  session.appServer = state;
+
+  const initResult = (await appServerRequest(state, "initialize", {
+    clientInfo: {
+      name: "claude_whisperer",
+      title: "Claude Whisperer",
+      version: "1.0.0",
+    },
+  })) as Record<string, unknown>;
+  appServerNotify(state, "initialized", {});
+  state.initialized = true;
+
+  const userAgent = initResult?.userAgent;
+  if (typeof userAgent === "string" && userAgent) {
+    send({
+      type: "debug",
+      id,
+      message: `Codex app-server initialized: ${userAgent}`,
+    });
+  } else {
+    send({
+      type: "debug",
+      id,
+      message: "Codex app-server initialized",
+    });
+  }
+
+  return state;
+}
+
+async function stopCodexAppServer(session: Session): Promise<void> {
+  const state = session.appServer;
+  if (!state) return;
+  session.appServer = undefined;
+  session.appServerTurnId = undefined;
+  state.rl.close();
+  state.process.kill();
+}
+
+async function handleCodexAppServerQuery(
+  msg: QueryMessage,
+  preassignedQueryId?: string
+): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, "Session not found");
+    return;
+  }
+
+  const queryId =
+    preassignedQueryId || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  session.currentQueryId = queryId;
+  const abortController = new AbortController();
+  session.abortController = abortController;
+
+  try {
+    const appServer = await ensureCodexAppServer(msg.id, session);
+    send({
+      type: "debug",
+      id: msg.id,
+      message:
+        `[app-server query] start queryId=${queryId} ` +
+        `resumeThreadId=${session.sdkSessionId || session.passedSdkSessionId || "none"}`,
+    });
+
+    let threadId = session.sdkSessionId || session.passedSdkSessionId;
+    if (threadId) {
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `[app-server query] thread/resume threadId=${threadId}`,
+      });
+      await appServerRequest(
+        appServer,
+        "thread/resume",
+        {
+          threadId,
+          ...(session.codexModel ? { model: session.codexModel } : {}),
+        },
+        abortController.signal
+      );
+    } else {
+      send({
+        type: "debug",
+        id: msg.id,
+        message: "[app-server query] thread/start",
+      });
+      const result = (await appServerRequest(
+        appServer,
+        "thread/start",
+        {
+          ...(session.codexModel ? { model: session.codexModel } : {}),
+          cwd: session.cwd,
+          approvalPolicy: "never",
+        },
+        abortController.signal
+      )) as Record<string, unknown>;
+      const thread = result?.thread as Record<string, unknown> | undefined;
+      const createdThreadId = thread?.id;
+      if (typeof createdThreadId === "string" && createdThreadId) {
+        threadId = createdThreadId;
+      }
+    }
+
+    if (!threadId) {
+      throw new Error("Failed to acquire thread ID from codex app-server");
+    }
+    setSessionSdkSessionId(session, threadId, msg.id);
+
+    const inputItems: Array<Record<string, unknown>> = [];
+    if (session.codexSystemPrompt) {
+      inputItems.push({ type: "text", text: session.codexSystemPrompt });
+    }
+    if (msg.images && msg.images.length > 0) {
+      for (const img of msg.images) {
+        const tmpDir = os.tmpdir();
+        const ext = img.mediaType.split("/")[1] || "png";
+        const tmpPath = path.join(
+          tmpDir,
+          `cw-codex-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+        );
+        fs.writeFileSync(tmpPath, Buffer.from(img.base64Data, "base64"));
+        inputItems.push({ type: "localImage", path: tmpPath });
+      }
+    }
+    if (msg.prompt.trim()) {
+      inputItems.push({ type: "text", text: msg.prompt });
+    }
+
+    const turnResult = (await appServerRequest(
+      appServer,
+      "turn/start",
+      {
+        threadId,
+        input: inputItems.length > 0 ? inputItems : [{ type: "text", text: "" }],
+      },
+      abortController.signal
+    )) as Record<string, unknown>;
+    const turn = turnResult?.turn as Record<string, unknown> | undefined;
+    const turnId = turn?.id;
+    if (typeof turnId !== "string" || !turnId) {
+      throw new Error("Failed to start turn: missing turn ID");
+    }
+    send({
+      type: "debug",
+      id: msg.id,
+      message:
+        `[app-server query] turn/start result turnId=${turnId} ` +
+        `status=${String(turn?.status || "unknown")}`,
+    });
+    session.appServerTurnId = turnId;
+
+    await new Promise<void>((resolve, reject) => {
+      appServer.pendingTurns.set(turnId, { resolve, reject });
+      send({
+        type: "debug",
+        id: msg.id,
+        message:
+          `[app-server query] waiter attached turnId=${turnId} ` +
+          `pendingTurns=${appServer.pendingTurns.size} completedTurns=${appServer.completedTurns.size}`,
+      });
+      const completed = appServer.completedTurns.get(turnId);
+      if (completed) {
+        appServer.completedTurns.delete(turnId);
+        appServer.pendingTurns.delete(turnId);
+        send({
+          type: "debug",
+          id: msg.id,
+          message:
+            `[app-server query] consumed cached completion turnId=${turnId} ` +
+            `status=${completed.status}`,
+        });
+        if (completed.status === "failed") {
+          reject(new Error(completed.errorMessage || "Turn failed"));
+        } else {
+          resolve();
+        }
+        return;
+      }
+      // If the turn already completed synchronously, settle now.
+      const status = String(turn?.status || "");
+      if (status === "completed" || status === "interrupted") {
+        appServer.pendingTurns.delete(turnId);
+        resolve();
+      } else if (status === "failed") {
+        appServer.pendingTurns.delete(turnId);
+        const error = turn?.error as Record<string, unknown> | undefined;
+        reject(new Error(String(error?.message || "Turn failed")));
+      }
+    });
+
+    session.appServerTurnId = undefined;
+    if (session.currentQueryId === queryId) {
+      if (session.codexSystemPrompt) {
+        session.codexSystemPrompt = undefined;
+      }
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `[app-server query] sendDone queryId=${queryId}`,
+      });
+      sendDone(msg.id);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    send({ type: "debug", id: msg.id, message: `App-server query error: ${errorMessage}` });
+
+    if (
+      session.currentQueryId === queryId &&
+      session.codexModel !== OPENAI_MODEL_FALLBACK &&
+      isUnsupportedChatGptAccountModelError(errorMessage)
+    ) {
+      session.codexModel = OPENAI_MODEL_FALLBACK;
+      session.sdkSessionId = undefined;
+      session.passedSdkSessionId = undefined;
+      return handleCodexAppServerQuery(msg);
+    }
+
+    if (session.currentQueryId === queryId) {
+      if (errorMessage.toLowerCase().includes("abort")) {
+        sendDone(msg.id);
+      } else {
+        sendError(msg.id, errorMessage);
+      }
+    }
+  } finally {
+    if (session.currentQueryId === queryId) {
+      session.abortController = undefined;
+      session.appServerTurnId = undefined;
+    }
+  }
 }
 
 // Map Codex thread events to our IPC protocol
@@ -789,60 +1474,34 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
       signal: abortController.signal,
     });
 
-    // Track streaming state per agent message item so we can handle both:
-    // - cumulative updates (full text each update), and
-    // - delta updates (only the newly generated fragment).
-    // Also guarantees we still emit text when only item.completed arrives.
-    const agentMessageTextById = new Map<string, string>();
-    const streamedAgentMessageIds = new Set<string>();
+    // Collect latest text per agent message item and emit only on completion.
+    const latestAgentMessageTextById = new Map<string, string>();
 
     for await (const event of events) {
-      // Stream agent_message text updates with compatibility for both
-      // cumulative and delta payload styles.
+      // Track latest agent_message text updates without streaming to UI.
       if (
         event.type === "item.updated" &&
         (event.item as { type: string }).type === "agent_message"
       ) {
         const itemId = (event.item as { id?: string }).id || "agent_message";
-        const currentText = (event.item as { text?: string }).text || "";
-
-        const previousText = agentMessageTextById.get(itemId) || "";
-        let delta = "";
-        let nextText = previousText;
-
-        if (!previousText) {
-          delta = currentText;
-          nextText = currentText;
-        } else if (currentText === previousText) {
-          // No new text.
-          delta = "";
-        } else if (currentText.startsWith(previousText)) {
-          // Cumulative payload.
-          delta = currentText.slice(previousText.length);
-          nextText = currentText;
-        } else {
-          // Delta payload (or non-monotonic update): emit as-is and append.
-          delta = currentText;
-          nextText = previousText + currentText;
-        }
-
-        if (delta) {
-          sendText(msg.id, delta);
-          streamedAgentMessageIds.add(itemId);
-        }
-        agentMessageTextById.set(itemId, nextText);
+        latestAgentMessageTextById.set(
+          itemId,
+          (event.item as { text?: string }).text || ""
+        );
         continue;
       }
 
-      // If an agent message completed without any stream updates,
-      // emit the final text so the UI always shows a response.
+      // Emit the completed full agent message exactly once.
       if (
         event.type === "item.completed" &&
         (event.item as { type: string }).type === "agent_message"
       ) {
         const itemId = (event.item as { id?: string }).id || "agent_message";
-        const finalText = (event.item as { text?: string }).text || "";
-        if (!streamedAgentMessageIds.has(itemId) && finalText) {
+        const finalText =
+          (event.item as { text?: string }).text ||
+          latestAgentMessageTextById.get(itemId) ||
+          "";
+        if (finalText) {
           sendText(msg.id, finalText);
         }
         continue;
@@ -1371,10 +2030,15 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   }
 
   const provider = msg.provider || "claude";
+  const openaiMode: OpenAiExecutionMode =
+    provider === "openai" && msg.codex_mode === "AppServer"
+      ? "app_server"
+      : "sdk";
 
   sessions.set(msg.id, {
     cwd: msg.cwd,
     provider,
+    openaiMode,
     options,
     passedSdkSessionId: msg.sdk_session_id, // SDK session ID for proper resume
     conversationHistory: msg.messages, // Store conversation history for restored sessions (DEPRECATED)
@@ -1383,6 +2047,14 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     codexModel: provider === "openai" ? msg.model : undefined,
     codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
   });
+
+  if (provider === "openai") {
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `OpenAI mode: ${openaiMode}`,
+    });
+  }
 
   if (msg.sdk_session_id) {
     send({
@@ -1578,6 +2250,21 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
 
   // Route to provider-specific handler
   if (session.provider === "openai") {
+    if (session.openaiMode === "app_server") {
+      const queryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      // Claim query ownership before preempting so stale completions can't close the new run.
+      session.currentQueryId = queryId;
+      if (session.abortController || session.appServerTurnId) {
+        send({
+          type: "debug",
+          id: msg.id,
+          message:
+            "[app-server query] previous query still in progress; stopping it before starting a new turn",
+        });
+        await handleStop({ type: "stop", id: msg.id });
+      }
+      return handleCodexAppServerQuery(msg, queryId);
+    }
     return handleCodexQuery(msg);
   }
 
@@ -2175,11 +2862,40 @@ async function handleStop(msg: StopMessage): Promise<void> {
 
   // OpenAI Codex: use AbortController to cancel
   if (session.provider === "openai") {
+    const interruptedTurnId = session.appServerTurnId;
+    if (
+      session.openaiMode === "app_server" &&
+      session.appServer &&
+      session.sdkSessionId &&
+      interruptedTurnId
+    ) {
+      try {
+        await appServerRequest(session.appServer, "turn/interrupt", {
+          threadId: session.sdkSessionId,
+          turnId: interruptedTurnId,
+        });
+      } catch (err) {
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `Failed to interrupt app-server turn: ${err}`,
+        });
+      }
+    }
     if (session.abortController) {
       send({ type: "debug", id: msg.id, message: "Aborting Codex query..." });
       session.abortController.abort();
       session.abortController = undefined;
     }
+    if (session.appServer && interruptedTurnId) {
+      const pending = session.appServer.pendingTurns.get(interruptedTurnId);
+      if (pending) {
+        session.appServer.pendingTurns.delete(interruptedTurnId);
+        pending.reject(new Error("Turn interrupted"));
+      }
+      session.appServer.completedTurns.delete(interruptedTurnId);
+    }
+    session.appServerTurnId = undefined;
     return;
   }
 
@@ -2234,8 +2950,10 @@ async function handleUpdateModel(msg: UpdateModelMessage): Promise<void> {
 
   if (session.provider === "openai") {
     session.codexModel = msg.model;
-    // Codex thread needs to be recreated with new model on next query
+    // OpenAI thread needs to be recreated with new model on next query.
     session.codexThread = undefined;
+    session.sdkSessionId = undefined;
+    session.passedSdkSessionId = undefined;
   } else {
     session.options.model = msg.model;
   }
@@ -2271,6 +2989,9 @@ async function handleClose(msg: CloseMessage): Promise<void> {
       // Abort any active Codex query
       if (session.abortController) {
         session.abortController.abort();
+      }
+      if (session.openaiMode === "app_server") {
+        await stopCodexAppServer(session);
       }
       session.codexThread = undefined;
     } else {

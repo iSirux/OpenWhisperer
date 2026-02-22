@@ -812,6 +812,7 @@ function createSdkSessionsStore() {
       id,
       cwd,
       model: resolvedModel,
+      codexMode: provider === 'openai' ? currentSettings.codex_mode : null,
       systemPrompt: systemPrompt ?? null,
       // Only send history messages if we don't have an SDK session ID (legacy fallback)
       messages: !usesSdkSessionId && historyMessages && historyMessages.length > 0 ? historyMessages : null,
@@ -1132,12 +1133,12 @@ function createSdkSessionsStore() {
       update(sessions => sessions.map(s => s.id === id ? { ...s, draftPrompt, draftImages } : s));
     },
 
-    createSetupSession(model: string, effortLevel: EffortLevel, planMode: boolean = false, provider?: SdkProvider): string {
+    createSetupSession(model: string, effortLevel: EffortLevel, planMode: boolean = false, provider?: SdkProvider, initialCwd: string = ''): string {
       const id = crypto.randomUUID();
 
       const session: SdkSession = {
         id,
-        cwd: '',
+        cwd: initialCwd,
         model,
         provider,
         effortLevel,

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SdkMessage } from "$lib/stores/sdkSessions";
+  import { formatToolCallInput, getToolCallSummary } from "$lib/utils/toolCallFormatting";
 
   let {
     tools,
@@ -41,58 +42,12 @@
 
     const tool = msg.tool || '';
     const input = msg.input;
-    if (!input) return "";
-
-    switch (tool) {
-      case "Read":
-        return formatPath(input.file_path as string);
-      case "Write":
-        return formatPath(input.file_path as string);
-      case "Edit":
-        return formatPath(input.file_path as string);
-      case "Bash":
-        return truncate(input.command as string, 40);
-      case "Grep":
-        return `"${truncate(input.pattern as string, 25)}"`;
-      case "Glob":
-        return truncate(input.pattern as string, 30);
-      case "WebFetch":
-        return truncate(input.url as string, 35);
-      case "WebSearch":
-        return `"${truncate(input.query as string, 30)}"`;
-      case "Task":
-        return truncate(input.description as string || input.prompt as string, 35);
-      case "TodoWrite":
-        const todos = input.todos as Array<{ content: string }>;
-        return todos?.length ? `${todos.length} item${todos.length > 1 ? 's' : ''}` : "";
-      case "NotebookEdit":
-        return formatPath(input.notebook_path as string);
-      default:
-        return "";
-    }
+    return getToolCallSummary(tool, input, 40);
   }
 
-  function formatPath(path: string | undefined): string {
-    if (!path) return "";
-    const parts = path.replace(/\\/g, "/").split("/");
-    const filename = parts.pop() || path;
-    return filename;
-  }
-
-  function truncate(str: string | undefined, maxLen: number): string {
-    if (!str) return "";
-    const normalized = str.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
-    if (normalized.length <= maxLen) return normalized;
-    return normalized.slice(0, maxLen) + "...";
-  }
-
-  function formatInput(input: Record<string, unknown> | undefined): string {
-    if (!input) return "";
-    try {
-      return JSON.stringify(input, null, 2);
-    } catch {
-      return String(input);
-    }
+  function formatInput(msg: SdkMessage): string {
+    if (msg.type === 'thinking') return '';
+    return formatToolCallInput(msg.tool, msg.input);
   }
 
   function formatDuration(ms: number | undefined): string {
@@ -243,7 +198,7 @@
         {#if modalContent.hasInput}
           <div class="modal-section">
             <div class="section-label">{modalContent.inputLabel}</div>
-            <pre class="section-content">{formatInput(expandedTool.input)}</pre>
+            <pre class="section-content">{formatInput(expandedTool)}</pre>
           </div>
         {/if}
         {#if modalContent.hasOutput}

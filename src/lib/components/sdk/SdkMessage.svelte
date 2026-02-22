@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SdkMessage, SdkImageContent } from "$lib/stores/sdkSessions";
   import { renderMarkdown } from "$lib/utils/markdown";
+  import { formatToolCallInput, getToolCallSummary } from "$lib/utils/toolCallFormatting";
   import RerunDropdown from "./RerunDropdown.svelte";
 
   let {
@@ -55,67 +56,8 @@
     return `data:${img.mediaType};base64,${img.base64Data}`;
   }
 
-  function formatInput(input: Record<string, unknown> | undefined): string {
-    if (!input) return "";
-    try {
-      return JSON.stringify(input, null, 2);
-    } catch {
-      return String(input);
-    }
-  }
-
-  // Get the key parameter to display prominently for each tool
-  function getToolSummary(tool: string, input: Record<string, unknown> | undefined): string {
-    if (!input) return "";
-
-    switch (tool) {
-      case "Read":
-        return formatPath(input.file_path as string);
-      case "Write":
-        return formatPath(input.file_path as string);
-      case "Edit":
-        return formatPath(input.file_path as string);
-      case "Bash":
-        return truncate(input.command as string, 80);
-      case "Grep":
-        return `"${truncate(input.pattern as string, 40)}"${input.path ? ` in ${formatPath(input.path as string)}` : ""}`;
-      case "Glob":
-        return `${input.pattern}${input.path ? ` in ${formatPath(input.path as string)}` : ""}`;
-      case "WebFetch":
-        return truncate(input.url as string, 60);
-      case "WebSearch":
-        return `"${truncate(input.query as string, 50)}"`;
-      case "Task":
-        return truncate(input.description as string || input.prompt as string, 60);
-      case "TodoWrite":
-        const todos = input.todos as Array<{ content: string }>;
-        return todos?.length ? `${todos.length} item${todos.length > 1 ? 's' : ''}` : "";
-      case "NotebookEdit":
-        return formatPath(input.notebook_path as string);
-      default:
-        return "";
-    }
-  }
-
-  function formatPath(path: string | undefined): string {
-    if (!path) return "";
-    // Get just the filename or last path segment for display
-    const parts = path.replace(/\\/g, "/").split("/");
-    const filename = parts.pop() || path;
-    // Show parent dir + filename if available
-    if (parts.length > 0) {
-      const parent = parts.pop();
-      return `${parent}/${filename}`;
-    }
-    return filename;
-  }
-
-  function truncate(str: string | undefined, maxLen: number): string {
-    if (!str) return "";
-    // Remove newlines and normalize whitespace
-    const normalized = str.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
-    if (normalized.length <= maxLen) return normalized;
-    return normalized.slice(0, maxLen) + "…";
+  function formatInput(input: Record<string, unknown> | undefined, tool: string | undefined): string {
+    return formatToolCallInput(tool, input);
   }
 
   // SVG icons for tools (16x16 viewBox)
@@ -146,7 +88,7 @@
   let isCopied = $derived(copiedMessageId === message.timestamp);
   let toolSummary = $derived(
     message.type === "tool_start" || message.type === "tool_result"
-      ? getToolSummary(message.tool || "", message.input)
+      ? getToolCallSummary(message.tool || "", message.input, 80)
       : ""
   );
   let thinkingDuration = $derived(formatDuration(message.thinkingDurationMs));
@@ -156,20 +98,22 @@
 <div class="message message-{message.type}">
   {#if message.type === "user"}
     <div class="user-message">
-      {#if message.images && message.images.length > 0}
-        <div class="message-images">
-          {#each message.images as img}
-            <img
-              src={createImagePreviewUrl(img)}
-              alt="Attached"
-              class="message-image"
-            />
-          {/each}
-        </div>
-      {/if}
-      {#if message.content}
-        <pre class="user-content">{message.content}</pre>
-      {/if}
+      <div class="user-message-body">
+        {#if message.images && message.images.length > 0}
+          <div class="message-images">
+            {#each message.images as img}
+              <img
+                src={createImagePreviewUrl(img)}
+                alt="Attached"
+                class="message-image"
+              />
+            {/each}
+          </div>
+        {/if}
+        {#if message.content}
+          <pre class="user-content">{message.content}</pre>
+        {/if}
+      </div>
       <div class="message-actions">
         {#if sessionCwd && sessionModel && message.content}
           <RerunDropdown
@@ -266,7 +210,7 @@
         </span>
       </summary>
       {#if message.input && Object.keys(message.input).length > 0}
-        <pre class="tool-params">{formatInput(message.input)}</pre>
+        <pre class="tool-params">{formatInput(message.input, message.tool)}</pre>
       {/if}
     </details>
   {:else if message.type === "tool_result"}
@@ -381,6 +325,13 @@
     background: var(--color-surface);
     border-radius: 8px;
     position: relative;
+  }
+
+  .user-message-body {
+    max-height: 24rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 0.25rem;
   }
 
   .user-message:hover .message-actions {
@@ -624,6 +575,15 @@
     margin-top: 0;
     margin-bottom: 0.75em;
     padding-left: 1.5em;
+    list-style-position: outside;
+  }
+
+  .markdown-body :global(ul) {
+    list-style-type: disc;
+  }
+
+  .markdown-body :global(ol) {
+    list-style-type: decimal;
   }
 
   .markdown-body :global(li) {

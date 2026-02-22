@@ -945,11 +945,26 @@ pub enum ClaudeAuthMethod {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub enum TerminalMode {
+pub enum ClaudeTerminalMode {
     Interactive,
     Prompt,
     #[default]
     Sdk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum CodexMode {
+    #[default]
+    Sdk,
+    AppServer,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TerminalMode {
+    Interactive,
+    Prompt,
+    Sdk,
+    CodexAppServer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1268,8 +1283,12 @@ pub struct AppConfig {
     pub default_effort_level: EffortLevel,
     #[serde(default = "default_enabled_models")]
     pub enabled_models: Vec<String>,
+    /// Terminal mode used when sdk_provider is Claude
     #[serde(default)]
-    pub terminal_mode: TerminalMode,
+    pub terminal_mode: ClaudeTerminalMode,
+    /// OpenAI Codex mode used when sdk_provider is OpenAI
+    #[serde(default, alias = "openai_terminal_mode")]
+    pub codex_mode: CodexMode,
     /// SDK provider for the main coding agent (Claude or OpenAI Codex)
     #[serde(default)]
     pub sdk_provider: SdkProvider,
@@ -1573,7 +1592,8 @@ impl Default for AppConfig {
             default_model: "claude-opus-4-6".to_string(),
             default_effort_level: default_effort_level(),
             enabled_models: default_enabled_models(),
-            terminal_mode: TerminalMode::default(),
+            terminal_mode: ClaudeTerminalMode::default(),
+            codex_mode: CodexMode::default(),
             sdk_provider: SdkProvider::default(),
             openai_model: default_openai_model(),
             enabled_openai_models: default_enabled_openai_models(),
@@ -1624,12 +1644,49 @@ impl AppConfig {
     /// false if we fell back to defaults entirely.
     pub fn load() -> (Self, bool) {
         let path = Self::config_path();
-        if !path.exists() {
-            println!("[config.load] No config file found, using defaults");
-            return (Self::default(), false);
-        }
+        let load_path = if path.exists() {
+            path.clone()
+        } else {
+            #[cfg(debug_assertions)]
+            {
+                let legacy_debug_path = Self::config_dir().join("config.dev");
+                if legacy_debug_path.exists() {
+                    eprintln!(
+                        "[config.load] Found legacy debug config at {:?}; attempting migration to {:?}",
+                        legacy_debug_path, path
+                    );
+                    match fs::rename(&legacy_debug_path, &path) {
+                        Ok(()) => path.clone(),
+                        Err(e) => {
+                            eprintln!(
+                                "[config.load] Failed to migrate legacy debug config: {}. Loading legacy file directly.",
+                                e
+                            );
+                            legacy_debug_path
+                        }
+                    }
+                } else {
+                    let release_path = Self::config_dir().join("config.json");
+                    if release_path.exists() {
+                        eprintln!(
+                            "[config.load] Debug config {:?} missing; loading {:?} instead.",
+                            path, release_path
+                        );
+                        release_path
+                    } else {
+                        println!("[config.load] No config file found, using defaults");
+                        return (Self::default(), true);
+                    }
+                }
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                println!("[config.load] No config file found, using defaults");
+                return (Self::default(), true);
+            }
+        };
 
-        let content = match fs::read_to_string(&path) {
+        let content = match fs::read_to_string(&load_path) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[config.load] Failed to read config: {}", e);
@@ -1728,6 +1785,41 @@ impl AppConfig {
                     eprintln!("[config.fix] enabled_openai_models was empty after migration; restored default");
                 }
             }
+
+            // Migrate legacy shared terminal mode into Codex-specific mode.
+            if !obj.contains_key("codex_mode") && !obj.contains_key("openai_terminal_mode") {
+                if let Some(serde_json::Value::String(mode)) = obj.get("terminal_mode") {
+                    if mode == "CodexAppServer" {
+                        eprintln!("[config.fix] Migrating legacy terminal_mode 'CodexAppServer' to codex_mode");
+                        obj.insert(
+                            "codex_mode".to_string(),
+                            serde_json::Value::String("AppServer".to_string()),
+                        );
+                        obj.insert(
+                            "terminal_mode".to_string(),
+                            serde_json::Value::String("Interactive".to_string()),
+                        );
+                    }
+                }
+            }
+
+            // Migrate transitional field name openai_terminal_mode -> codex_mode
+            if !obj.contains_key("codex_mode") {
+                if let Some(serde_json::Value::String(mode)) = obj.get("openai_terminal_mode") {
+                    let migrated = if mode == "CodexAppServer" || mode == "AppServer" {
+                        "AppServer"
+                    } else {
+                        "Sdk"
+                    };
+                    if mode == "CodexAppServer" || mode == "AppServer" {
+                        eprintln!("[config.fix] Migrating openai_terminal_mode '{}' to codex_mode=AppServer", mode);
+                    }
+                    obj.insert(
+                        "codex_mode".to_string(),
+                        serde_json::Value::String(migrated.to_string()),
+                    );
+                }
+            }
         }
     }
 
@@ -1774,5 +1866,20 @@ impl AppConfig {
 
     pub fn get_active_repo(&self) -> Option<&RepoConfig> {
         self.repos.get(self.active_repo_index).filter(|r| r.active)
+    }
+
+    pub fn get_effective_terminal_mode(&self) -> TerminalMode {
+        match self.sdk_provider {
+            SdkProvider::OpenAI => match self.codex_mode {
+                CodexMode::Sdk => TerminalMode::Sdk,
+                // OpenAI app-server runs inside the SDK-style session view (not PTY terminal mode).
+                CodexMode::AppServer => TerminalMode::Sdk,
+            },
+            SdkProvider::Claude => match self.terminal_mode {
+                ClaudeTerminalMode::Interactive => TerminalMode::Interactive,
+                ClaudeTerminalMode::Prompt => TerminalMode::Prompt,
+                ClaudeTerminalMode::Sdk => TerminalMode::Sdk,
+            },
+        }
     }
 }

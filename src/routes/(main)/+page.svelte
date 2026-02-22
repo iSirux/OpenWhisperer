@@ -43,7 +43,7 @@
     settingsToStoreEffort,
     settingsToStoreThinking,
   } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo, isAutoRepoSelected, isRepoActive } from '$lib/stores/settings';
+  import { settings, activeRepo, isAutoRepoSelected, isRepoActive, getEffectiveTerminalMode } from '$lib/stores/settings';
   import { recording, isRecording, pendingTranscriptions } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
@@ -318,7 +318,7 @@
       });
     }
 
-    if ($settings.terminal_mode === 'Sdk') {
+    if (getEffectiveTerminalMode($settings) === 'Sdk') {
       if (isNoteMode) {
         await processNoteTranscript(transcript, pendingSessionId);
       } else {
@@ -1259,13 +1259,22 @@
 
       {#if isSetupState}
         <SessionSetupView
+          sessionId={sessionId}
           initialModel={activeSession.model}
           initialProvider={activeSession.provider}
           initialEffortLevel={activeSession.effortLevel}
-          initialCwd={$activeRepo?.path || ''}
+          initialCwd={activeSession.cwd || $activeRepo?.path || ''}
           initialPlanMode={activeSession.planMode?.isActive || false}
+          initialDraftPrompt={activeSession.draftPrompt || ''}
+          initialDraftImages={activeSession.draftImages || []}
           isRecordingForSetup={recordingFlow.isRecordingForSetup}
           onStart={(config) => handleSetupSessionStart(sessionId, config)}
+          onDraftChange={(prompt, images) =>
+            sdkSessions.updateDraft(
+              sessionId,
+              prompt,
+              images.length > 0 ? images : undefined
+            )}
           onStartRecording={recordingFlow.startRecordingForSetup}
           onStopRecording={recordingFlow.stopRecordingForSetup}
           onCancel={() => handleSetupSessionCancel(sessionId)}

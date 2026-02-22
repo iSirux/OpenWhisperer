@@ -637,6 +637,7 @@ impl SequenceExecutor {
                 id: session_id.clone(),
                 cwd: cwd.clone(),
                 provider: prompt_node.provider.clone(),
+                codex_mode: None,
                 model: model.clone(),
                 system_prompt,
                 messages: None,

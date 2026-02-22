@@ -33,12 +33,15 @@
   } from '$lib/utils/image';
 
   interface Props {
+    sessionId: string;
     initialModel?: string;
     initialProvider?: SdkProvider;
     initialEffortLevel?: EffortLevel;
     initialCwd?: string;
     initialPlanMode?: boolean;
     initialNoteMode?: boolean;
+    initialDraftPrompt?: string;
+    initialDraftImages?: SdkImageContent[];
     isRecordingForSetup?: boolean;
     onStart: (config: {
       prompt: string;
@@ -50,33 +53,58 @@
       noteMode: boolean;
       provider?: SdkProvider;
     }) => void;
+    onDraftChange?: (prompt: string, images: SdkImageContent[]) => void;
     onStartRecording: () => void;
     onStopRecording: () => Promise<string | null>;
     onCancel?: () => void;
   }
 
   let {
+    sessionId,
     initialModel = DEFAULT_MODEL_ID,
     initialProvider = undefined,
     initialEffortLevel = null,
     initialCwd = '',
     initialPlanMode = false,
     initialNoteMode = false,
+    initialDraftPrompt = '',
+    initialDraftImages = [],
     isRecordingForSetup = false,
     onStart,
+    onDraftChange,
     onStartRecording,
     onStopRecording,
     onCancel,
   }: Props = $props();
 
+  function toImageData(images: SdkImageContent[]): ImageData[] {
+    return images.map((img) => ({
+      mediaType: img.mediaType,
+      base64Data: img.base64Data,
+      width: img.width ?? 0,
+      height: img.height ?? 0,
+      originalSize: 0,
+      compressedSize: 0,
+    }));
+  }
+
+  function toSdkImageContent(images: ImageData[]): SdkImageContent[] {
+    return images.map((img) => ({
+      mediaType: img.mediaType,
+      base64Data: img.base64Data,
+      width: img.width,
+      height: img.height,
+    }));
+  }
+
   // Local state
-  let prompt = $state('');
+  let prompt = $state(initialDraftPrompt);
   let model = $state(initialModel);
   let effortLevel = $state<EffortLevel>(initialEffortLevel);
   let cwd = $state(initialCwd);
   let planMode = $state(initialPlanMode);
   let noteMode = $state(initialNoteMode);
-  let pendingImages = $state<ImageData[]>([]);
+  let pendingImages = $state<ImageData[]>(toImageData(initialDraftImages));
   let isProcessingImages = $state(false);
   let showRepoDropdown = $state(false);
   let provider = $state<SdkProvider>(initialProvider ?? getProviderForModel(initialModel));
@@ -84,6 +112,7 @@
   let isStarting = $state(false);
   let isAwaitingTranscript = $state(false);
   let textareaEl: HTMLTextAreaElement;
+  let prevSessionId = $state(sessionId);
 
   // Derived state
   const repos = $derived(($settings.repos || []).filter((r) => r.active !== false));
@@ -110,6 +139,15 @@
   $effect(() => {
     if (textareaEl && !initialPlanMode) {
       textareaEl.focus();
+    }
+  });
+
+  // Restore draft when switching between setup sessions.
+  $effect(() => {
+    if (sessionId !== prevSessionId) {
+      prompt = initialDraftPrompt;
+      pendingImages = toImageData(initialDraftImages);
+      prevSessionId = sessionId;
     }
   });
 
@@ -160,18 +198,20 @@
     autoResize();
   });
 
+  // Persist setup draft per session so typed content survives session switching.
+  $effect(() => {
+    prompt;
+    pendingImages;
+    onDraftChange?.(prompt, toSdkImageContent(pendingImages));
+  });
+
   async function handleStart() {
     if (!canStart || isStarting) return;
 
     isStarting = true;
 
     const imageContent: SdkImageContent[] | undefined = pendingImages.length > 0
-      ? pendingImages.map(img => ({
-          mediaType: img.mediaType,
-          base64Data: img.base64Data,
-          width: img.width,
-          height: img.height,
-        }))
+      ? toSdkImageContent(pendingImages)
       : undefined;
 
     try {

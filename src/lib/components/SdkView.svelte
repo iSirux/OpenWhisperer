@@ -159,8 +159,10 @@
     | { type: 'tool_group'; tools: SdkMessage[] };
 
   let renderItems = $derived(() => {
-    // Filter out subagent_stop messages - they shouldn't be rendered
-    const msgs = processedMessages().filter(msg => msg.type !== 'subagent_stop');
+    // Filter out internal lifecycle markers that should not render in the chat body.
+    const msgs = processedMessages().filter(
+      (msg) => msg.type !== 'subagent_stop' && msg.type !== 'done'
+    );
     const isGridMode = $settings.tool_display_mode === 'grid';
 
     if (!isGridMode) {
