@@ -122,8 +122,8 @@ export function definitionToGraph(def: SequenceDefinition): { nodes: EditorNode[
     }
   });
 
-  // Synthesize trigger nodes from triggers[] if no trigger nodes exist in nodes[]
   if (!hasTriggerNodes && def.triggers.length > 0) {
+    // Synthesize trigger nodes from triggers[] if no trigger nodes exist in nodes[]
     const firstNonTriggerNode = def.nodes.find(n => n.type !== 'trigger');
     def.triggers.forEach((trigger, i) => {
       const triggerId = `trigger_${trigger.type}_${i}`;
@@ -176,6 +176,21 @@ export function definitionToGraph(def: SequenceDefinition): { nodes: EditorNode[
           id: `${triggerId}->${targetId}`,
           source: triggerId,
           target: targetId,
+          type: 'default',
+          style: 'stroke: #14b8a6',
+        });
+      }
+    });
+  } else if (hasTriggerNodes && def.triggers.length > 0) {
+    // Trigger nodes already exist in nodes[] - reconstruct edges from triggers[] entry_node_id
+    const triggerNodeIds = def.nodes.filter(n => n.type === 'trigger').map(n => n.id);
+    def.triggers.forEach((trigger, i) => {
+      if (trigger.entry_node_id && i < triggerNodeIds.length) {
+        const triggerId = triggerNodeIds[i];
+        edges.push({
+          id: `${triggerId}->${trigger.entry_node_id}`,
+          source: triggerId,
+          target: trigger.entry_node_id,
           type: 'default',
           style: 'stroke: #14b8a6',
         });
