@@ -1343,10 +1343,21 @@ pub struct AppConfig {
     /// Inject a system message notifying agents that other agents may be working in parallel
     #[serde(default = "default_notify_parallel_agents")]
     pub notify_parallel_agents: bool,
+    /// User-defined quick action prompts shown in SDK sessions
+    #[serde(default = "default_quick_actions")]
+    pub quick_actions: Vec<String>,
 }
 
 fn default_notify_parallel_agents() -> bool {
     true
+}
+
+fn default_quick_actions() -> Vec<String> {
+    vec![
+        "Implement this".to_string(),
+        "Fix the issues".to_string(),
+        "Keep going".to_string(),
+    ]
 }
 
 fn default_mark_sessions_unread() -> bool {
@@ -1617,6 +1628,7 @@ impl Default for AppConfig {
             mcp: McpConfig::default(),
             sequences: SequenceConfig::default(),
             notify_parallel_agents: true,
+            quick_actions: default_quick_actions(),
         }
     }
 }

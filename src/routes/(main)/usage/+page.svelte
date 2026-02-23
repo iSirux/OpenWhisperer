@@ -3,6 +3,7 @@
   import { usageStats, formatDuration, formatDate, formatRelativeTime, getWeeklyStats, getTotalForPeriod, formatTokens, formatCost } from '$lib/stores/usageStats';
   import { appSessionUsage } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
   import { rateLimits, rateLimitData, isRateLimitLoading, codexRateLimits, codexRateLimitData, isCodexRateLimitLoading, formatTimeRemaining, calculatePace, formatCents } from '$lib/stores/rateLimits';
 
   // App session usage - cumulative across all SDK sessions since app launch
@@ -87,7 +88,7 @@
 
   // Get repo name from path
   function getRepoName(path: string): string {
-    const repo = $settings.repos.find(r => r.path === path);
+    const repo = $repos.list.find(r => r.path === path);
     return repo?.name || path.split(/[/\\]/).pop() || path;
   }
 </script>

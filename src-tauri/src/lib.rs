@@ -185,9 +185,9 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Start minimized if configured (or launched with --minimized)
+            // Start minimized only when launched via autostart (--minimized flag)
             let args: Vec<String> = std::env::args().collect();
-            let should_minimize = start_minimized || args.contains(&"--minimized".to_string());
+            let should_minimize = start_minimized && args.contains(&"--minimized".to_string());
 
             if should_minimize {
                 if let Some(window) = app.get_webview_window("main") {

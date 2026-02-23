@@ -1,4 +1,4 @@
-import type { RepoConfig } from '$lib/stores/settings';
+import type { RepoConfig } from '$lib/stores/repos';
 
 /**
  * Curated icon map for repository icons.

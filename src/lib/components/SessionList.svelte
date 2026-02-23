@@ -2,7 +2,8 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo, getEffectiveTerminalMode } from '$lib/stores/settings';
+  import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
+  import { activeRepo } from '$lib/stores/repos';
   import { DEFAULT_OPENAI_MODEL_ID } from '$lib/utils/models';
   import type { DisplaySession } from '$lib/types/session';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
@@ -54,8 +55,8 @@
   // Unified session list
   let allSessions = $state<DisplaySession[]>([]);
 
-  // Track session IDs to detect when sessions are added/removed (not just updated)
-  let lastSessionIds = '';
+  // Track session IDs and repo paths to detect when sessions are added/removed or cwd changes
+  let lastSessionKey = '';
   let branchFetchTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Reactively update sessions when stores change
@@ -83,10 +84,10 @@
     }
     allSessions = sorted;
 
-    // Only fetch branches when session list changes (add/remove), not on every update
-    const currentSessionIds = sorted.map(s => s.id).sort().join(',');
-    if (currentSessionIds !== lastSessionIds) {
-      lastSessionIds = currentSessionIds;
+    // Fetch branches when session list changes (add/remove) or when a session's cwd changes
+    const currentSessionKey = sorted.map(s => `${s.id}:${s.repoPath || ''}`).sort().join(',');
+    if (currentSessionKey !== lastSessionKey) {
+      lastSessionKey = currentSessionKey;
 
       // Debounce branch fetching to avoid rapid IPC calls
       if (branchFetchTimeout) {
@@ -95,8 +96,8 @@
       branchFetchTimeout = setTimeout(() => {
         fetchBranchesForSessions(sorted, (updated) => {
           // Verify session list hasn't changed since we started
-          const stillCurrentIds = updated.map(s => s.id).sort().join(',');
-          if (stillCurrentIds === lastSessionIds) {
+          const stillCurrentKey = updated.map(s => `${s.id}:${s.repoPath || ''}`).sort().join(',');
+          if (stillCurrentKey === lastSessionKey) {
             allSessions = updated;
           }
         });

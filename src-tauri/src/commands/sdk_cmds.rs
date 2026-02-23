@@ -306,7 +306,10 @@ pub async fn fetch_claude_rate_limits() -> Result<ClaudeRateLimits, String> {
         .and_then(|t| t.as_str())
         .ok_or("OAuth access token not found in credentials")?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     let response = client
         .get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", format!("Bearer {}", token))
@@ -397,7 +400,10 @@ pub async fn fetch_codex_rate_limits() -> Result<ClaudeRateLimits, String> {
         .and_then(|t| t.as_str())
         .ok_or("OAuth token not found in ~/.codex/auth.json")?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     let response = client
         .get("https://chatgpt.com/backend-api/wham/usage")
         .header("Authorization", format!("Bearer {}", token))

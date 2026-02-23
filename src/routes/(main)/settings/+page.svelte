@@ -19,6 +19,7 @@
     OverlayTab,
     ReposTab,
     McpTab,
+    VoiceCommandsTab,
     SequencesTab,
   } from "$lib/components/settings";
 
@@ -103,6 +104,7 @@
     { id: "system", label: "System" },
     { id: "microphone", label: "Microphone" },
     { id: "audio", label: "Audio" },
+    { id: "voice-commands", label: "Voice Commands" },
     { id: "whisper", label: "Transcription (Whisper)" },
     { id: "vosk", label: "Real-time Transcription (Vosk)" },
     { id: "llm", label: "LLM" },
@@ -149,6 +151,8 @@
         <MicrophoneTab />
       {:else if activeTab === "audio"}
         <AudioTab />
+      {:else if activeTab === "voice-commands"}
+        <VoiceCommandsTab />
       {:else if activeTab === "whisper"}
         <WhisperTab />
       {:else if activeTab === "vosk"}

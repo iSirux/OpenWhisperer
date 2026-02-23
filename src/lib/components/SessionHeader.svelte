@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import type { TerminalSession } from '$lib/stores/sessions';
   import { sessions } from '$lib/stores/sessions';
-  import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
 
@@ -92,7 +92,7 @@
 
       <!-- Repo -->
       <div class="flex items-center gap-1.5 text-text-muted">
-        <RepoIcon repo={findRepoByPath($settings.repos, session.repo_path)} size="xs" />
+        <RepoIcon repo={findRepoByPath($repos.list, session.repo_path)} size="xs" />
         <span class="text-sm">{repoName}</span>
       </div>
     </div>

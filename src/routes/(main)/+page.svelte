@@ -43,7 +43,8 @@
     settingsToStoreEffort,
     settingsToStoreThinking,
   } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo, isAutoRepoSelected, isRepoActive, getEffectiveTerminalMode } from '$lib/stores/settings';
+  import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
+  import { repos, activeRepo, isAutoRepoSelected, isRepoActive } from '$lib/stores/repos';
   import { recording, isRecording, pendingTranscriptions } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
@@ -68,7 +69,7 @@
   // Tauri APIs
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { goto } from '$app/navigation';
+  import { goto, beforeNavigate } from '$app/navigation';
   import { get } from 'svelte/store';
 
   // Utils
@@ -81,6 +82,12 @@
   import { isAutoModel } from '$lib/utils/models';
   import { processVoiceCommand, type VoiceCommandType } from '$lib/utils/voiceCommands';
   import { playRepoSelectedSound } from '$lib/utils/sound';
+
+  // Track in-app navigation to preserve hotkeys across route changes
+  let isNavigatingAway = false;
+  beforeNavigate(() => {
+    isNavigatingAway = true;
+  });
 
   // Constants
   const PROMPT_PREVIEW_LENGTH = 80;
@@ -97,7 +104,7 @@
   let cleanupPeriodicSave: (() => void) | null = null;
 
   // Active repos only (excludes inactive repos from selectors/recommendations)
-  const activeReposList = $derived($settings.repos.filter(isRepoActive));
+  const activeReposList = $derived($repos.list.filter(isRepoActive));
 
   // Current view from navigation store
   let currentView = $derived($navigation.mainView);
@@ -192,6 +199,7 @@
 
   onMount(async () => {
     await settings.load();
+    await repos.load();
 
     // Apply saved theme
     document.documentElement.setAttribute('data-theme', $settings.theme);
@@ -279,7 +287,15 @@
     openMicLifecycle.cleanup();
     recordingFlow.cleanup();
     sidebar.cleanup();
-    hotkeyManager.cleanup();
+
+    // Only cleanup OS-level hotkeys when not navigating to another route
+    // (i.e., during HMR or window close). Keep hotkeys registered during
+    // in-app navigation so they work from settings, usage, sessions-view, etc.
+    // When the user navigates back, onMount calls setup() which re-registers
+    // with fresh callbacks (setup() calls unregisterAll() first).
+    if (!isNavigatingAway) {
+      hotkeyManager.cleanup();
+    }
 
     window.removeEventListener('app:header-start-recording', onHeaderStartRecording);
     window.removeEventListener('app:header-stop-recording', onHeaderStopRecording);
@@ -375,7 +391,7 @@
       }
 
       if (pendingSessionId && repoRecommendation) {
-        const recommendedRepo = $settings.repos[repoRecommendation.repoIndex];
+        const recommendedRepo = $repos.list[repoRecommendation.repoIndex];
         updatePendingWithRepoRecommendation(
           pendingSessionId,
           repoRecommendation,
@@ -385,7 +401,7 @@
     }
 
     const sessionRepo = repoRecommendation
-      ? $settings.repos[repoRecommendation.repoIndex]
+      ? $repos.list[repoRecommendation.repoIndex]
       : $activeRepo;
 
     // Check if approval is required
@@ -498,7 +514,7 @@
 
       if (repoRecommendation && !repoNeedsConfirmation(repoRecommendation.confidence)) {
         // High confidence - auto-select repo
-        sessionRepo = $settings.repos[repoRecommendation.repoIndex];
+        sessionRepo = $repos.list[repoRecommendation.repoIndex];
         sessionCwd = sessionRepo?.path || '';
         updatePendingWithRepoRecommendation(
           sessionId,
@@ -690,7 +706,7 @@
 
         if (repoRecommendation && !repoNeedsConfirmation(repoRecommendation.confidence)) {
           // High confidence - auto-select repo
-          sessionRepo = $settings.repos[repoRecommendation.repoIndex];
+          sessionRepo = $repos.list[repoRecommendation.repoIndex];
         } else {
           // Low/medium confidence - show repo selection UI
           const model = $settings.default_model;
@@ -782,7 +798,7 @@
 
         if (repoRecommendation && !repoNeedsConfirmation(repoRecommendation.confidence)) {
           // High confidence - auto-select repo
-          sessionRepo = $settings.repos[repoRecommendation.repoIndex];
+          sessionRepo = $repos.list[repoRecommendation.repoIndex];
           sessionCwd = sessionRepo?.path || '';
           updatePendingWithRepoRecommendation(
             sessionId,
@@ -1050,7 +1066,7 @@
 
     let systemPrompt = '';
     if ($settings.audio.include_transcription_notice) {
-      const repo = $settings.repos.find((r) => r.path === session!.cwd);
+      const repo = $repos.list.find((r) => r.path === session!.cwd);
       systemPrompt = `The following prompt was voice-transcribed and may contain minor errors or homophones. `;
       if (repo) {
         systemPrompt += `The user is working in the "${repo.name}" repository.`;
@@ -1072,7 +1088,7 @@
     const session = $sdkSessions.find((s) => s.id === sessionId);
     if (!session || session.status !== 'pending_repo') return;
 
-    const selectedRepo = $settings.repos[repoIndex];
+    const selectedRepo = $repos.list[repoIndex];
     if (!selectedRepo) return;
 
     const rawTranscript =
@@ -1084,7 +1100,7 @@
       playRepoSelectedSound();
     }
 
-    await settings.setActiveRepo(repoIndex);
+    await repos.setActiveRepo(repoIndex);
 
     let finalTranscript = rawTranscript;
     if (isTranscriptionCleanupEnabled() && rawTranscript) {
@@ -1171,12 +1187,12 @@
   ) {
     let repoPath = config.cwd;
     let needsAutoRepo = !repoPath || repoPath === '.';
-    let selectedRepo = needsAutoRepo ? null : $settings.repos.find((r) => r.path === repoPath);
+    let selectedRepo = needsAutoRepo ? null : $repos.list.find((r) => r.path === repoPath);
 
     if (needsAutoRepo && $isAutoRepoSelected && isRepoAutoSelectEnabled() && activeReposList.length > 1) {
       const recommendation = await getRepoRecommendation(config.prompt, activeReposList);
       if (recommendation) {
-        selectedRepo = $settings.repos[recommendation.repoIndex];
+        selectedRepo = $repos.list[recommendation.repoIndex];
         repoPath = selectedRepo?.path || '.';
       }
     }
@@ -1296,7 +1312,7 @@
           <div class="terminal-wrapper flex-1 overflow-hidden">
             <SessionPendingView
               status={activeSession.status as 'pending_repo' | 'initializing'}
-              repos={$settings.repos}
+              repos={$repos.list}
               pendingSelection={activeSession.pendingRepoSelection}
               pendingPrompt={activeSession.pendingPrompt}
               onSelectRepo={handlePendingRepoSelection}

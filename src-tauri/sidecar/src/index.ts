@@ -395,7 +395,8 @@ const sessions = new Map<string, Session>();
 // Track tool_use_id to tool_name mapping for matching tool results
 const toolUseIdToName = new Map<string, string>();
 
-// Track thinking state per session (session_id -> { startTime, content })
+// Track thinking state per session+context (key: "session_id-parentToolUseId" -> { startTime, content })
+// Uses composite key to support concurrent thinking in main thread and subagents
 const thinkingState = new Map<string, { startTime: number; content: string }>();
 
 function send(msg: object): void {
@@ -403,38 +404,41 @@ function send(msg: object): void {
   process.stdout.write(line);
 }
 
-function sendText(id: string, content: string): void {
-  send({ type: "text", id, content });
+function sendText(id: string, content: string, parentToolUseId?: string | null): void {
+  send({ type: "text", id, content, ...(parentToolUseId ? { parentToolUseId } : {}) });
 }
 
 function sendToolStart(
   id: string,
   tool: string,
   input: unknown,
-  toolUseId: string
+  toolUseId: string,
+  parentToolUseId?: string | null
 ): void {
-  send({ type: "tool_start", id, tool, input, toolUseId });
+  send({ type: "tool_start", id, tool, input, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}) });
 }
 
 function sendToolResult(
   id: string,
   tool: string,
   output: string,
-  toolUseId: string
+  toolUseId: string,
+  parentToolUseId?: string | null
 ): void {
-  send({ type: "tool_result", id, tool, output, toolUseId });
+  send({ type: "tool_result", id, tool, output, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}) });
 }
 
-function sendThinkingStart(id: string, content: string): void {
-  send({ type: "thinking_start", id, content, timestamp: Date.now() });
+function sendThinkingStart(id: string, content: string, parentToolUseId?: string | null): void {
+  send({ type: "thinking_start", id, content, timestamp: Date.now(), ...(parentToolUseId ? { parentToolUseId } : {}) });
 }
 
 function sendThinkingEnd(
   id: string,
   durationMs: number,
-  content: string
+  content: string,
+  parentToolUseId?: string | null
 ): void {
-  send({ type: "thinking_end", id, durationMs, content });
+  send({ type: "thinking_end", id, durationMs, content, ...(parentToolUseId ? { parentToolUseId } : {}) });
 }
 
 function sendDone(id: string): void {
@@ -489,6 +493,27 @@ function sendSubagentStop(
   transcriptPath: string
 ): void {
   send({ type: "subagent_stop", id, agentId, transcriptPath });
+}
+
+function sendTaskStarted(
+  id: string,
+  taskId: string,
+  toolUseId: string | undefined,
+  description: string,
+  taskType: string | undefined
+): void {
+  send({ type: "task_started", id, taskId, toolUseId, description, taskType });
+}
+
+function sendTaskCompleted(
+  id: string,
+  taskId: string,
+  toolUseId: string | undefined,
+  status: string,
+  summary: string,
+  usage?: { total_tokens: number; tool_uses: number; duration_ms: number }
+): void {
+  send({ type: "task_completed", id, taskId, toolUseId, status, summary, usage });
 }
 
 function sendSdkSessionId(id: string, sdkSessionId: string): void {
@@ -812,6 +837,42 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
             message:
               `[app-server turn/completed] cached completion turnId=${turnId} ` +
               `completedTurns=${session.appServer.completedTurns.size}`,
+          });
+        }
+      }
+      break;
+    }
+    case "thread/tokenUsage/updated": {
+      // TokenCountEvent: { info: TokenUsageInfo | null, rate_limits: ... }
+      // TokenUsageInfo: { total_token_usage: TokenUsage, last_token_usage: TokenUsage, model_context_window: number | null }
+      // TokenUsage: { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens }
+      const info = params.info as Record<string, unknown> | undefined;
+      if (info) {
+        const lastUsage = info.last_token_usage as Record<string, number> | undefined;
+        const totalUsage = info.total_token_usage as Record<string, number> | undefined;
+        const contextWindow = (info.model_context_window as number) || 200000;
+
+        if (lastUsage) {
+          sendUsage(id, {
+            inputTokens: lastUsage.input_tokens || 0,
+            outputTokens: lastUsage.output_tokens || 0,
+            cacheReadTokens: lastUsage.cached_input_tokens || 0,
+            cacheCreationTokens: 0,
+            totalCostUsd: 0, // App server doesn't report cost
+            durationMs: 0,
+            durationApiMs: 0,
+            numTurns: 1,
+            contextWindow,
+          });
+        }
+
+        // Also send progressive usage with cumulative totals for live context bar updates
+        if (totalUsage) {
+          sendProgressiveUsage(id, {
+            inputTokens: totalUsage.input_tokens || 0,
+            outputTokens: totalUsage.output_tokens || 0,
+            cacheReadTokens: totalUsage.cached_input_tokens || 0,
+            cacheCreationTokens: 0,
           });
         }
       }
@@ -2579,12 +2640,15 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
 
 function handleSdkMessage(id: string, message: SDKMessage): void {
   switch (message.type) {
-    case "assistant":
+    case "assistant": {
       // Assistant message with content blocks
+      // Extract parent_tool_use_id for task/subagent scoping
+      const parentToolUseId = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
+      const thinkingKey = `${id}-${parentToolUseId || "main"}`;
       send({
         type: "debug",
         id,
-        message: `Assistant message has ${message.message.content.length} content blocks`,
+        message: `Assistant message has ${message.message.content.length} content blocks (parent: ${parentToolUseId || "main"})`,
       });
       for (const block of message.message.content) {
         send({
@@ -2598,13 +2662,13 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           const thinkingBlock = block as { thinking?: string };
           const thinkingContent = thinkingBlock.thinking || "";
 
-          if (!thinkingState.has(id)) {
+          if (!thinkingState.has(thinkingKey)) {
             // First thinking block - start tracking
-            thinkingState.set(id, {
+            thinkingState.set(thinkingKey, {
               startTime: Date.now(),
               content: thinkingContent,
             });
-            sendThinkingStart(id, thinkingContent);
+            sendThinkingStart(id, thinkingContent, parentToolUseId);
             send({
               type: "debug",
               id,
@@ -2612,7 +2676,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
             });
           } else {
             // Additional thinking block - accumulate content
-            const state = thinkingState.get(id)!;
+            const state = thinkingState.get(thinkingKey)!;
             state.content += "\n\n" + thinkingContent;
             send({
               type: "debug",
@@ -2627,11 +2691,11 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         }
 
         // If we were thinking and now getting real content, end thinking
-        if (thinkingState.has(id)) {
-          const state = thinkingState.get(id)!;
+        if (thinkingState.has(thinkingKey)) {
+          const state = thinkingState.get(thinkingKey)!;
           const durationMs = Date.now() - state.startTime;
-          thinkingState.delete(id);
-          sendThinkingEnd(id, durationMs, state.content);
+          thinkingState.delete(thinkingKey);
+          sendThinkingEnd(id, durationMs, state.content, parentToolUseId);
           send({
             type: "debug",
             id,
@@ -2645,7 +2709,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
             id,
             message: `Text content: ${block.text.slice(0, 100)}`,
           });
-          sendText(id, block.text);
+          sendText(id, block.text, parentToolUseId);
         } else if (block.type === "tool_use") {
           // Track tool_use_id to name mapping for matching with tool_result
           const toolUseBlock = block as {
@@ -2657,7 +2721,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           if (toolUseBlock.id) {
             toolUseIdToName.set(toolUseBlock.id, toolUseBlock.name);
           }
-          sendToolStart(id, block.name, block.input, toolUseId);
+          sendToolStart(id, block.name, block.input, toolUseId, parentToolUseId);
 
           // Handle planning-specific tools (both direct names and MCP-prefixed names)
           const toolName = block.name;
@@ -2711,13 +2775,16 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         });
       }
       break;
+    }
 
-    case "partial_assistant":
+    case "partial_assistant": {
       // Streaming partial message
+      const partialParentToolUseId = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
       if (message.delta?.text) {
-        sendText(id, message.delta.text);
+        sendText(id, message.delta.text, partialParentToolUseId);
       }
       break;
+    }
 
     case "result":
       // Final result message - send usage data and handle errors
@@ -2770,8 +2837,10 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       // Don't send result.result as text - it duplicates the assistant message content
       break;
 
-    case "user":
+    case "user": {
       // User messages contain tool results
+      // Extract parent_tool_use_id for task/subagent scoping
+      const userParentToolUseId = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
       // The message.message.content array contains tool_result blocks
       if (message.message?.content && Array.isArray(message.message.content)) {
         for (const block of message.message.content) {
@@ -2807,7 +2876,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
                 100
               )}...`,
             });
-            sendToolResult(id, toolName, output, toolUseId);
+            sendToolResult(id, toolName, output, toolUseId, userParentToolUseId);
 
             // Clean up the mapping after use
             if (toolResultBlock.tool_use_id) {
@@ -2817,11 +2886,29 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         }
       }
       break;
+    }
 
-    case "system":
-      // System messages - don't send init to UI, we handle it above
-      // Could add other system message handling here if needed
+    case "system": {
+      // System messages - init is handled above in the message loop
+      // Handle task lifecycle messages from the SDK
+      const sysMsg = message as { subtype?: string; task_id?: string; tool_use_id?: string; description?: string; task_type?: string; status?: string; summary?: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } };
+      if (sysMsg.subtype === "task_started") {
+        send({
+          type: "debug",
+          id,
+          message: `Task started: ${sysMsg.task_id} (toolUseId: ${sysMsg.tool_use_id}, desc: ${sysMsg.description?.slice(0, 80)})`,
+        });
+        sendTaskStarted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.description || "", sysMsg.task_type);
+      } else if (sysMsg.subtype === "task_notification") {
+        send({
+          type: "debug",
+          id,
+          message: `Task completed: ${sysMsg.task_id} (status: ${sysMsg.status}, summary: ${sysMsg.summary?.slice(0, 80)})`,
+        });
+        sendTaskCompleted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.status || "completed", sysMsg.summary || "", sysMsg.usage);
+      }
       break;
+    }
 
     case "auth_status":
       // Authentication status
@@ -2833,13 +2920,16 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       }
       break;
 
-    case "tool_progress":
+    case "tool_progress": {
       // Tool is running
+      const progressParentToolUseId = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
       sendText(
         id,
-        `[${message.tool_name}: ${message.elapsed_time_seconds.toFixed(1)}s]`
+        `[${message.tool_name}: ${message.elapsed_time_seconds.toFixed(1)}s]`,
+        progressParentToolUseId
       );
       break;
+    }
 
     default:
       // Log unknown message types for debugging

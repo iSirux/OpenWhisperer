@@ -221,34 +221,9 @@ export interface SessionPersistenceConfig {
   max_archived_sessions: number;
 }
 
-export interface RepoConfig {
-  path: string;
-  name: string;
-  /** Auto-generated description of the repository for auto-selection */
-  description?: string;
-  /** Domain-specific keywords for matching prompts to this repository (around 20 keywords) */
-  keywords?: string[];
-  /** Project-specific vocabulary/lingo for transcription cleanup and repo matching (20-50 words).
-   * Unlike keywords which are categorical, vocabulary captures the actual terms/jargon used in the codebase */
-  vocabulary?: string[];
-  /** Icon key from the curated icon set (e.g., "globe", "terminal", "database") */
-  icon?: string;
-  /** Primary/brand color as hex string (e.g., "#6366f1") */
-  color?: string;
-  /** List of MCP server IDs to use for this repository (overrides global servers) */
-  mcp_servers?: string[];
-  /** List of MCP server IDs to use for note-taking mode in this repository */
-  note_mcp_servers?: string[];
-  /** Tags for multi-repo sequence filtering (e.g., "frontend", "backend", "infra") */
-  tags: string[];
-  /** Whether this repo is active (shown in selectors, eligible for auto-select). Defaults to true. */
-  active?: boolean;
-}
-
-/** Helper: treat undefined/missing active field as true for backward compatibility */
-export function isRepoActive(repo: RepoConfig): boolean {
-  return repo.active !== false;
-}
+// Import and re-export repo types from dedicated repos store
+import type { RepoConfig } from './repos';
+export { type RepoConfig, isRepoActive, activeRepo, isAutoRepoSelected } from './repos';
 
 // Import and re-export MCP types
 import type { McpServerType, McpServerConfig, McpConfig } from '$lib/types/mcp';
@@ -436,6 +411,8 @@ export interface AppConfig {
   sequences: SequenceConfig;
   /** Inject a system message notifying agents that other agents may be working in parallel */
   notify_parallel_agents: boolean;
+  /** User-defined quick action prompts shown in SDK sessions */
+  quick_actions: string[];
 }
 
 const defaultConfig: AppConfig = {
@@ -601,6 +578,11 @@ const defaultConfig: AppConfig = {
     default_provider_rpm: 50,
   },
   notify_parallel_agents: true,
+  quick_actions: [
+    "Implement this",
+    "Fix the issues",
+    "Keep going",
+  ],
 };
 
 /** Whether the config was successfully loaded from disk (vs fell back to defaults) */
@@ -649,95 +631,10 @@ function createSettingsStore() {
       }
     },
 
-    async addRepo(path: string, name: string) {
-      console.log(
-        "[settings.addRepo] Invoking backend add_repo with path:",
-        path,
-        "name:",
-        name
-      );
-      try {
-        await invoke("add_repo", { path, name });
-        console.log(
-          "[settings.addRepo] Backend add_repo succeeded, reloading config..."
-        );
-        await this.load();
-        console.log("[settings.addRepo] Config reloaded successfully");
-      } catch (error) {
-        console.error("[settings.addRepo] Failed to add repo:", error);
-        throw error;
-      }
-    },
-
-    async removeRepo(index: number) {
-      console.log(
-        "[settings.removeRepo] Invoking backend remove_repo with index:",
-        index
-      );
-      try {
-        await invoke("remove_repo", { index });
-        console.log(
-          "[settings.removeRepo] Backend remove_repo succeeded, reloading config..."
-        );
-        await this.load();
-        console.log("[settings.removeRepo] Config reloaded successfully");
-      } catch (error) {
-        console.error("[settings.removeRepo] Failed to remove repo:", error);
-        throw error;
-      }
-    },
-
-    async setActiveRepo(index: number) {
-      try {
-        await invoke("set_active_repo", { index });
-        await this.load();
-        // Notify other windows (e.g., overlay) that settings changed
-        emit("settings-changed");
-      } catch (error) {
-        console.error("Failed to set active repo:", error);
-        throw error;
-      }
-    },
-
-    async setRepoActive(index: number, active: boolean) {
-      try {
-        await invoke("set_repo_active", { index, active });
-        await this.load();
-        emit("settings-changed");
-      } catch (error) {
-        console.error("Failed to set repo active state:", error);
-        throw error;
-      }
-    },
-
-    async setAutoRepoMode(enabled: boolean) {
-      try {
-        await invoke("set_auto_repo_mode", { enabled });
-        await this.load();
-        // Notify other windows (e.g., overlay) that settings changed
-        emit("settings-changed");
-      } catch (error) {
-        console.error("Failed to set auto repo mode:", error);
-        throw error;
-      }
-    },
   };
 }
 
 export const settings = createSettingsStore();
-
-export const activeRepo = derived(settings, ($settings) => {
-  // If auto repo mode is enabled, return null (repo will be determined per-prompt)
-  if ($settings.auto_repo_mode) {
-    return null;
-  }
-  return $settings.repos[$settings.active_repo_index] || null;
-});
-
-// Check if auto repo selection is currently active
-export const isAutoRepoSelected = derived(settings, ($settings) => {
-  return $settings.auto_repo_mode;
-});
 
 export function getEffectiveTerminalMode(config: AppConfig): TerminalMode {
   // OpenAI App Server mode is not yet integrated into the structured session flow.

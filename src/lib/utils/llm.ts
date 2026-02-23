@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { settings } from '$lib/stores/settings';
+import { repos } from '$lib/stores/repos';
 import type { SessionAiMetadata, SdkMessage } from '$lib/stores/sdkSessions';
 
 export interface SessionNameResult {
@@ -427,7 +428,7 @@ export async function recommendRepo(
 
   // Check if we have multiple active repos configured
   const currentSettings = get(settings);
-  const activeRepos = currentSettings.repos.filter((r) => r.active !== false);
+  const activeRepos = get(repos).list.filter((r) => r.active !== false);
   if (activeRepos.length <= 1) {
     // No need to recommend if there's only 0 or 1 active repo
     return null;

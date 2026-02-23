@@ -2,6 +2,7 @@ import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
+import { repos } from './repos';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
@@ -38,17 +39,25 @@ export interface SdkImageContent {
 }
 
 export interface SdkMessage {
-  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking' | 'notification';
+  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking' | 'notification' | 'task_started' | 'task_completed';
   content?: string;
   images?: SdkImageContent[];
   tool?: string;
   toolUseId?: string;
+  parentToolUseId?: string | null;
   input?: Record<string, unknown>;
   output?: string;
   agentId?: string;
   agentType?: string;
   transcriptPath?: string;
   thinkingDurationMs?: number;
+  // Task lifecycle fields
+  taskId?: string;
+  description?: string;
+  taskType?: string;
+  taskStatus?: string;
+  summary?: string;
+  taskUsage?: { total_tokens: number; tool_uses: number; duration_ms: number };
   timestamp: number;
 }
 
@@ -380,9 +389,10 @@ function createSdkSessionsStore() {
   async function setupEventListeners(id: string): Promise<UnlistenFn[]> {
     const unlisteners: UnlistenFn[] = [];
 
-    // Text events
+    // Text events (payload includes parentToolUseId for task scoping)
     unlisteners.push(
-      await listen<string>(`sdk-text-${id}`, (e) => {
+      await listen<{ content: string; parentToolUseId?: string | null }>(`sdk-text-${id}`, (e) => {
+        const { content, parentToolUseId } = e.payload;
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -390,7 +400,7 @@ function createSdkSessionsStore() {
                   ...s,
                   startedAt: s.startedAt || Date.now(),
                   currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
-                  messages: [...s.messages, { type: 'text' as const, content: e.payload, timestamp: Date.now() }],
+                  messages: [...s.messages, { type: 'text' as const, content, parentToolUseId: parentToolUseId || undefined, timestamp: Date.now() }],
                 }
               : s
           )
@@ -401,7 +411,7 @@ function createSdkSessionsStore() {
 
     // Tool start events
     unlisteners.push(
-      await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string }>(
+      await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string; parentToolUseId?: string | null }>(
         `sdk-tool-start-${id}`,
         (e) => {
           usageStats.trackToolCall(e.payload.tool);
@@ -419,6 +429,7 @@ function createSdkSessionsStore() {
                         tool: e.payload.tool,
                         toolUseId: e.payload.toolUseId,
                         input: e.payload.input,
+                        parentToolUseId: e.payload.parentToolUseId || undefined,
                         timestamp: Date.now(),
                       },
                     ],
@@ -433,7 +444,7 @@ function createSdkSessionsStore() {
 
     // Tool result events
     unlisteners.push(
-      await listen<{ tool: string; output: string; toolUseId: string }>(`sdk-tool-result-${id}`, (e) => {
+      await listen<{ tool: string; output: string; toolUseId: string; parentToolUseId?: string | null }>(`sdk-tool-result-${id}`, (e) => {
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -446,6 +457,7 @@ function createSdkSessionsStore() {
                       tool: e.payload.tool,
                       toolUseId: e.payload.toolUseId,
                       output: e.payload.output,
+                      parentToolUseId: e.payload.parentToolUseId || undefined,
                       timestamp: Date.now(),
                     },
                   ],
@@ -459,7 +471,7 @@ function createSdkSessionsStore() {
 
     // Thinking start events
     unlisteners.push(
-      await listen<{ content: string; timestamp: number }>(`sdk-thinking-start-${id}`, (e) => {
+      await listen<{ content: string; timestamp: number; parentToolUseId?: string | null }>(`sdk-thinking-start-${id}`, (e) => {
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -467,7 +479,7 @@ function createSdkSessionsStore() {
                   ...s,
                   messages: [
                     ...s.messages,
-                    { type: 'thinking' as const, content: e.payload.content, timestamp: e.payload.timestamp },
+                    { type: 'thinking' as const, content: e.payload.content, parentToolUseId: e.payload.parentToolUseId || undefined, timestamp: e.payload.timestamp },
                   ],
                 }
               : s
@@ -478,13 +490,14 @@ function createSdkSessionsStore() {
 
     // Thinking end events
     unlisteners.push(
-      await listen<{ durationMs: number; content: string }>(`sdk-thinking-end-${id}`, (e) => {
+      await listen<{ durationMs: number; content: string; parentToolUseId?: string | null }>(`sdk-thinking-end-${id}`, (e) => {
+        const payloadParent = e.payload.parentToolUseId || undefined;
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
             const messages = [...s.messages];
             for (let i = messages.length - 1; i >= 0; i--) {
-              if (messages[i].type === 'thinking' && !messages[i].thinkingDurationMs) {
+              if (messages[i].type === 'thinking' && !messages[i].thinkingDurationMs && messages[i].parentToolUseId === payloadParent) {
                 messages[i] = { ...messages[i], thinkingDurationMs: e.payload.durationMs, content: e.payload.content };
                 break;
               }
@@ -629,6 +642,61 @@ function createSdkSessionsStore() {
       })
     );
 
+    // Task started events (from SDK task_started system messages)
+    unlisteners.push(
+      await listen<{ taskId: string; toolUseId?: string; description: string; taskType?: string }>(`sdk-task-started-${id}`, (e) => {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  messages: [
+                    ...s.messages,
+                    {
+                      type: 'task_started' as const,
+                      taskId: e.payload.taskId,
+                      toolUseId: e.payload.toolUseId,
+                      description: e.payload.description,
+                      taskType: e.payload.taskType,
+                      timestamp: Date.now(),
+                    },
+                  ],
+                }
+              : s
+          )
+        );
+        debouncedSave();
+      })
+    );
+
+    // Task completed events (from SDK task_notification system messages)
+    unlisteners.push(
+      await listen<{ taskId: string; toolUseId?: string; status: string; summary: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } }>(`sdk-task-completed-${id}`, (e) => {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  messages: [
+                    ...s.messages,
+                    {
+                      type: 'task_completed' as const,
+                      taskId: e.payload.taskId,
+                      toolUseId: e.payload.toolUseId,
+                      taskStatus: e.payload.status,
+                      summary: e.payload.summary,
+                      taskUsage: e.payload.usage,
+                      timestamp: Date.now(),
+                    },
+                  ],
+                }
+              : s
+          )
+        );
+        debouncedSave();
+      })
+    );
+
     // Planning questions events
     unlisteners.push(
       await listen<PlanningQuestion[]>(`sdk-planning-questions-${id}`, (e) => {
@@ -729,7 +797,7 @@ function createSdkSessionsStore() {
     let mcpServers = null;
     console.log('[MCP Debug] Total MCP servers in settings:', currentSettings.mcp?.servers?.length ?? 0);
     if (currentSettings.mcp?.servers?.length > 0) {
-      const repo = currentSettings.repos.find((r) => r.path === cwd);
+      const repo = get(repos).list.find((r) => r.path === cwd);
       console.log('[MCP Debug] Session cwd:', cwd);
       console.log('[MCP Debug] Found repo:', repo?.name, 'with mcp_servers:', repo?.mcp_servers, 'note_mcp_servers:', repo?.note_mcp_servers);
       let servers: McpServerConfig[];

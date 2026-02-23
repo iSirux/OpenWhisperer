@@ -357,8 +357,10 @@
 
   .go-to-top-button {
     position: sticky;
-    bottom: 0.75rem;
+    bottom: 2.5rem;
     float: right;
+    margin-top: -2.25rem;
+    margin-right: 0.5rem;
     display: flex;
     align-items: center;
     justify-content: center;

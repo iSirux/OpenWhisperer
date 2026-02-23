@@ -11,7 +11,7 @@
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
-  import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
 
   interface Props {
     session: DisplaySession;
@@ -208,7 +208,7 @@
 
   <!-- Repo name, branch -->
   <div class="flex items-center gap-1.5 text-text-muted">
-    <RepoIcon repo={findRepoByPath($settings.repos, session.repoPath)} size="xs" />
+    <RepoIcon repo={findRepoByPath($repos.list, session.repoPath)} size="xs" />
     <span class="{sizeClasses.text} truncate">{getRepoName(session.repoPath)}</span>
     {#if session.branch}
       <span class="{sizeClasses.text} text-text-muted">·</span>

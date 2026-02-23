@@ -1,8 +1,8 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import type { EffortLevel, SdkImageContent } from '$lib/stores/sdkSessions';
-  import type { RepoConfig } from '$lib/stores/settings';
   import { settings } from '$lib/stores/settings';
+  import { repos, type RepoConfig } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
   import { isRecording, isTranscribing } from '$lib/stores/recording';
@@ -115,7 +115,7 @@
   let prevSessionId = $state(sessionId);
 
   // Derived state
-  const repos = $derived(($settings.repos || []).filter((r) => r.active !== false));
+  const activeRepos = $derived(($repos.list || []).filter((r) => r.active !== false));
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
   const isAutoRepoMode = $derived(!cwd || cwd === '.');
   const isSmartModelEnabled = $derived(
@@ -129,7 +129,7 @@
 
   const currentRepoName = $derived(() => {
     if (!cwd || cwd === '.') return 'Auto';
-    const repo = repos.find(r => r.path === cwd);
+    const repo = activeRepos.find(r => r.path === cwd);
     return repo?.name || cwd.split(/[/\\]/).pop() || 'Unknown';
   });
 
@@ -499,7 +499,7 @@
           {#if isAutoRepoMode && autoRepoEnabled}
             <span class="auto-text">{currentRepoName()}</span>
           {:else}
-            <RepoIcon repo={findRepoByPath(repos, cwd)} size="sm" />
+            <RepoIcon repo={findRepoByPath(activeRepos, cwd)} size="sm" />
             <span>{currentRepoName()}</span>
           {/if}
           <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -530,11 +530,11 @@
               {/if}
             </button>
 
-            {#if repos.length > 0}
+            {#if activeRepos.length > 0}
               <div class="repo-divider"></div>
             {/if}
 
-            {#each repos as repo}
+            {#each activeRepos as repo}
               {@const isSelected = repo.path === cwd}
               <button
                 class="repo-option"
@@ -559,7 +559,7 @@
               </button>
             {/each}
 
-            {#if repos.length === 0}
+            {#if activeRepos.length === 0}
               <div class="px-3 py-2 text-xs text-text-muted">
                 No repositories configured
               </div>

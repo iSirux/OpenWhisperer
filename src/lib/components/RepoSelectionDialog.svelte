@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { RepoConfig } from '$lib/stores/settings';
+  import type { RepoConfig } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {

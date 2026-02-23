@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings, isRepoActive } from '$lib/stores/settings';
+  import { repos, isRepoActive } from '$lib/stores/repos';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
 
@@ -13,13 +13,13 @@
 
   let showDropdown = $state(false);
 
-  const repos = $derived(($settings.repos || []).filter(isRepoActive));
+  const activeRepos = $derived(($repos.list || []).filter(isRepoActive));
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
   // Treat empty string or '.' as auto mode
   const isAutoMode = $derived(!cwd || cwd === '.');
   const currentRepoName = $derived(() => {
     if (!cwd || cwd === '.') return 'Auto';
-    const repo = repos.find(r => r.path === cwd);
+    const repo = activeRepos.find(r => r.path === cwd);
     return repo?.name || cwd.split(/[/\\]/).pop() || 'Unknown';
   });
 
@@ -62,7 +62,7 @@
     {#if isAutoMode && autoRepoEnabled}
       <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500">{currentRepoName()}</span>
     {:else}
-      {@const selectedRepo = repos.find(r => r.path === cwd) ?? null}
+      {@const selectedRepo = activeRepos.find(r => r.path === cwd) ?? null}
       <RepoIcon repo={selectedRepo} size="xs" />
       <span class="text-text-primary">{currentRepoName()}</span>
     {/if}
@@ -103,11 +103,11 @@
         {/if}
       </button>
 
-      {#if repos.length > 0}
+      {#if activeRepos.length > 0}
         <div class="border-t border-border"></div>
       {/if}
 
-      {#each repos as repo}
+      {#each activeRepos as repo}
         {@const isSelected = repo.path === cwd}
         <button
           class="w-full px-3 py-2 text-left text-xs hover:bg-border transition-colors flex items-center justify-between"
@@ -132,7 +132,7 @@
         </button>
       {/each}
 
-      {#if repos.length === 0}
+      {#if activeRepos.length === 0}
         <div class="px-3 py-2 text-xs text-text-muted">
           No repositories configured
         </div>

@@ -9,7 +9,8 @@
     type PlanningAnswer,
   } from "$lib/stores/sdkSessions";
   import { recording, isRecording, isTranscribing } from "$lib/stores/recording";
-  import { settings, isAutoRepoSelected } from "$lib/stores/settings";
+  import { settings } from "$lib/stores/settings";
+  import { repos, isAutoRepoSelected } from "$lib/stores/repos";
   import { overlay } from "$lib/stores/overlay";
   import { invoke } from "@tauri-apps/api/core";
   import SdkUsageBar from "./sdk/SdkUsageBar.svelte";
@@ -21,6 +22,7 @@
   import PlanningWizard from "./sdk/PlanningWizard.svelte";
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
+  import SdkTaskBlock from "./sdk/SdkTaskBlock.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import EffortToggle from "./EffortToggle.svelte";
   import RepoSelector from "./RepoSelector.svelte";
@@ -153,10 +155,11 @@
   });
 
   // Group messages for rendering based on tool_display_mode setting
-  // Returns an array of render items: either single messages or tool groups
+  // Returns an array of render items: single messages, tool groups, or task blocks
   type RenderItem =
     | { type: 'message'; message: SdkMessage }
-    | { type: 'tool_group'; tools: SdkMessage[] };
+    | { type: 'tool_group'; tools: SdkMessage[] }
+    | { type: 'task'; taskStarted: SdkMessage; children: SdkMessage[]; taskCompleted?: SdkMessage };
 
   let renderItems = $derived(() => {
     // Filter out internal lifecycle markers that should not render in the chat body.
@@ -165,32 +168,88 @@
     );
     const isGridMode = $settings.tool_display_mode === 'grid';
 
-    if (!isGridMode) {
-      // List mode: each message is its own render item
-      return msgs.map(msg => ({ type: 'message' as const, message: msg }));
+    // Build task grouping data structures
+    // Maps toolUseId -> task_started message (the Task tool_use that spawned the subagent)
+    const taskStartMap = new Map<string, SdkMessage>();
+    // Maps toolUseId -> task_completed message
+    const taskCompletedMap = new Map<string, SdkMessage>();
+    // Maps toolUseId -> child messages (those with matching parentToolUseId)
+    const taskChildrenMap = new Map<string, SdkMessage[]>();
+    // Set of toolUseIds that have task_started messages (for quick lookup)
+    const knownTaskToolUseIds = new Set<string>();
+
+    for (const msg of msgs) {
+      if (msg.type === 'task_started' && msg.toolUseId) {
+        taskStartMap.set(msg.toolUseId, msg);
+        knownTaskToolUseIds.add(msg.toolUseId);
+        if (!taskChildrenMap.has(msg.toolUseId)) {
+          taskChildrenMap.set(msg.toolUseId, []);
+        }
+      }
+      if (msg.type === 'task_completed' && msg.toolUseId) {
+        taskCompletedMap.set(msg.toolUseId, msg);
+      }
     }
 
-    // Grid mode: group consecutive tool messages together
+    // Collect child messages into their parent task
+    for (const msg of msgs) {
+      if (msg.parentToolUseId && knownTaskToolUseIds.has(msg.parentToolUseId)) {
+        if (!taskChildrenMap.has(msg.parentToolUseId)) {
+          taskChildrenMap.set(msg.parentToolUseId, []);
+        }
+        taskChildrenMap.get(msg.parentToolUseId)!.push(msg);
+      }
+    }
+
+    // Build render items, excluding:
+    // - Messages that are children of a task (they'll be nested)
+    // - task_completed messages (merged into task render items)
+    // - subagent_start messages that have a corresponding task_started (avoid duplication)
+    const mainStreamMsgs = msgs.filter(msg => {
+      // Exclude child messages of tasks
+      if (msg.parentToolUseId && knownTaskToolUseIds.has(msg.parentToolUseId)) return false;
+      // Exclude task_completed (will be part of task render item)
+      if (msg.type === 'task_completed') return false;
+      // Exclude subagent_start if we have a corresponding task_started for the same time range
+      if (msg.type === 'subagent_start' && knownTaskToolUseIds.size > 0) return false;
+      return true;
+    });
+
     const items: RenderItem[] = [];
     let currentToolGroup: SdkMessage[] = [];
 
-    for (const msg of msgs) {
-      const isToolMessage = msg.type === 'tool_start' || msg.type === 'tool_result' || msg.type === 'thinking';
-
-      if (isToolMessage) {
-        currentToolGroup.push(msg);
-      } else {
+    for (const msg of mainStreamMsgs) {
+      if (msg.type === 'task_started' && msg.toolUseId) {
         // Flush any pending tool group
-        if (currentToolGroup.length > 0) {
+        if (currentToolGroup.length > 0 && isGridMode) {
           items.push({ type: 'tool_group', tools: [...currentToolGroup] });
           currentToolGroup = [];
         }
+        // Create a task render item with its children and completion info
+        items.push({
+          type: 'task',
+          taskStarted: msg,
+          children: taskChildrenMap.get(msg.toolUseId) || [],
+          taskCompleted: taskCompletedMap.get(msg.toolUseId),
+        });
+      } else if (isGridMode) {
+        const isToolMessage = msg.type === 'tool_start' || msg.type === 'tool_result' || msg.type === 'thinking';
+        if (isToolMessage) {
+          currentToolGroup.push(msg);
+        } else {
+          if (currentToolGroup.length > 0) {
+            items.push({ type: 'tool_group', tools: [...currentToolGroup] });
+            currentToolGroup = [];
+          }
+          items.push({ type: 'message', message: msg });
+        }
+      } else {
         items.push({ type: 'message', message: msg });
       }
     }
 
     // Flush remaining tool group
-    if (currentToolGroup.length > 0) {
+    if (currentToolGroup.length > 0 && isGridMode) {
       items.push({ type: 'tool_group', tools: currentToolGroup });
     }
 
@@ -235,6 +294,25 @@
         usage.progressiveInputTokens > 0 ||
         usage.progressiveOutputTokens > 0)
   );
+  // Determine if user is paying via API key (show cost) vs OAuth/subscription (hide cost)
+  let usesApiKey = $state(false);
+  $effect(() => {
+    const provider = session?.provider;
+    // Re-run when provider changes
+    (async () => {
+      try {
+        if (provider === 'openai') {
+          usesApiKey = await invoke<boolean>('has_openai_api_key');
+        } else {
+          const auth = await invoke<{ hasEnvKey: boolean; hasOAuth: boolean; hasKeyringKey: boolean }>('check_claude_auth');
+          usesApiKey = auth.hasEnvKey || auth.hasKeyringKey;
+        }
+      } catch {
+        usesApiKey = false;
+      }
+    })();
+  });
+
   let pendingRepoSelection = $derived(session?.pendingRepoSelection);
   let pendingTranscription = $derived(session?.pendingTranscription);
   let draftPrompt = $derived(session?.draftPrompt ?? "");
@@ -361,9 +439,15 @@
         const cwdChanged = found?.cwd !== session?.cwd;
         const modelChanged = found?.model !== session?.model;
         const usageChanged = found?.usage?.totalInputTokens !== session?.usage?.totalInputTokens ||
-                            found?.usage?.totalOutputTokens !== session?.usage?.totalOutputTokens;
+                            found?.usage?.totalOutputTokens !== session?.usage?.totalOutputTokens ||
+                            found?.usage?.progressiveInputTokens !== session?.usage?.progressiveInputTokens ||
+                            found?.usage?.progressiveOutputTokens !== session?.usage?.progressiveOutputTokens;
         const pendingChanged = found?.pendingTranscription?.status !== session?.pendingTranscription?.status ||
                               found?.pendingTranscription?.transcript !== session?.pendingTranscription?.transcript;
+        const aiMetadataChanged = found?.aiMetadata?.outcome !== session?.aiMetadata?.outcome ||
+                                 found?.aiMetadata?.category !== session?.aiMetadata?.category ||
+                                 found?.aiMetadata?.name !== session?.aiMetadata?.name ||
+                                 found?.aiMetadata?.quickActions?.length !== session?.aiMetadata?.quickActions?.length;
         const planModeChanged = found?.planMode?.isActive !== session?.planMode?.isActive ||
                               found?.planMode?.questions.length !== session?.planMode?.questions.length ||
                               found?.planMode?.answers.length !== session?.planMode?.answers.length ||
@@ -373,7 +457,7 @@
                               JSON.stringify(found?.planMode?.answers) !== JSON.stringify(session?.planMode?.answers);
 
         if (!session || statusChanged || messagesChanged || cwdChanged || modelChanged ||
-            usageChanged || pendingChanged || planModeChanged) {
+            usageChanged || pendingChanged || aiMetadataChanged || planModeChanged) {
           session = found || null;
         }
       }
@@ -578,7 +662,7 @@
       if (
         $isAutoRepoSelected &&
         isRepoAutoSelectEnabled() &&
-        $settings.repos.filter((r) => r.active !== false).length > 1 &&
+        $repos.list.filter((r) => r.active !== false).length > 1 &&
         (!cwd || cwd === "" || cwd === ".")
       ) {
         try {
@@ -603,7 +687,7 @@
           }
 
           // High confidence - update cwd and continue
-          const selectedRepo = $settings.repos[repoRecommendation.repoIndex];
+          const selectedRepo = $repos.list[repoRecommendation.repoIndex];
           if (selectedRepo) {
             console.log(
               "[SdkView] Auto selected repo:",
@@ -773,7 +857,7 @@
     if (isTranscriptionCleanupEnabled()) {
       // Get repo context for cleanup
       const currentRepo = cwd && cwd !== '.'
-        ? $settings.repos.find(r => r.path === cwd)
+        ? $repos.list.find(r => r.path === cwd)
         : null;
       const repoContext = currentRepo ? buildSingleRepoContext(currentRepo) : undefined;
 
@@ -830,7 +914,7 @@
 
       if (isTranscriptionCleanupEnabled()) {
         const currentRepo = cwd && cwd !== '.'
-          ? $settings.repos.find(r => r.path === cwd)
+          ? $repos.list.find(r => r.path === cwd)
           : null;
         const repoContext = currentRepo ? buildSingleRepoContext(currentRepo) : undefined;
 
@@ -969,11 +1053,9 @@
     <PlanModeBanner {planMode} />
   {/if}
 
-  <!-- Temporarily hidden - token counts and costs are not accurate
   {#if hasUsageData && usage}
-    <SdkUsageBar {usage} {isQuerying} />
+    <SdkUsageBar {usage} {isQuerying} showCost={usesApiKey} />
   {/if}
-  -->
 
   <div
     class="messages"
@@ -1017,7 +1099,7 @@
         {preparedPrompt}
         onLaunch={handleLaunchPrepared}
         onCancelPrepared={handleCancelPrepared}
-        repos={$settings.repos.filter((r) => r.active !== false)}
+        repos={$repos.list.filter((r) => r.active !== false)}
         {preparedRepoRecommendation}
         selectedRepoCwd={cwd}
         onSelectRepo={handleSelectPreparedRepo}
@@ -1035,7 +1117,7 @@
       />
     {/if}
 
-    {#each renderItems() as item, index (item.type === 'message' ? item.message.timestamp : `tool-group-${index}`)}
+    {#each renderItems() as item, index (item.type === 'message' ? item.message.timestamp : item.type === 'task' ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || index}` : `tool-group-${index}`)}
       {#if item.type === 'message'}
         <SdkMessageComponent
           message={item.message}
@@ -1046,6 +1128,16 @@
         />
       {:else if item.type === 'tool_group'}
         <SdkToolGrid tools={item.tools} />
+      {:else if item.type === 'task'}
+        <SdkTaskBlock
+          taskStarted={item.taskStarted}
+          children={item.children}
+          taskCompleted={item.taskCompleted}
+          {copiedMessageId}
+          onCopy={copyMessage}
+          sessionCwd={cwd}
+          {sessionModel}
+        />
       {/if}
     {/each}
 

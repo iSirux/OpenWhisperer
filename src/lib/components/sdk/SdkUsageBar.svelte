@@ -2,7 +2,7 @@
   import type { SdkSessionUsage } from '$lib/stores/sdkSessions';
   import { formatTokens, formatCost } from '$lib/stores/usageStats';
 
-  let { usage, isQuerying = false }: { usage: SdkSessionUsage; isQuerying?: boolean } = $props();
+  let { usage, isQuerying = false, showCost = true }: { usage: SdkSessionUsage; isQuerying?: boolean; showCost?: boolean } = $props();
 
   let liveInputTokens = $derived(usage.totalInputTokens + usage.progressiveInputTokens);
   let liveOutputTokens = $derived(usage.totalOutputTokens + usage.progressiveOutputTokens);
@@ -33,7 +33,7 @@
           {formatTokens(liveCacheReadTokens)}
         </span>
       {/if}
-      {#if usage.totalCostUsd > 0}
+      {#if showCost && usage.totalCostUsd > 0}
         <span class="usage-stat cost" title="Total cost">
           {formatCost(usage.totalCostUsd)}
         </span>

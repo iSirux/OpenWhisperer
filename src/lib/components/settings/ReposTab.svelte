@@ -1,5 +1,6 @@
 <script lang="ts">
   import { settings } from "$lib/stores/settings";
+  import { repos } from "$lib/stores/repos";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
@@ -59,7 +60,7 @@
       (event) => {
         const idx = pendingMap.get(requestId);
         if (idx !== undefined) {
-          const updatedRepos = [...$settings.repos];
+          const updatedRepos = [...$repos.list];
           updatedRepos[idx] = {
             ...updatedRepos[idx],
             description: event.payload.description,
@@ -68,7 +69,7 @@
             icon: event.payload.icon || updatedRepos[idx].icon,
             color: event.payload.color || updatedRepos[idx].color,
           };
-          settings.update((s) => ({ ...s, repos: updatedRepos }));
+          repos.updateList(updatedRepos);
           pendingMap.delete(requestId);
           setGenerating(new Set([...generatingSet].filter(i => i !== idx)));
         }
@@ -96,7 +97,7 @@
   }
 
   async function generateRepoDescriptionWithClaude(index: number) {
-    const repo = $settings.repos[index];
+    const repo = $repos.list[index];
     if (!repo || generatingClaudeIndices.has(index)) return false;
 
     const requestId = `claude-repo-${index}-${Date.now()}`;
@@ -128,7 +129,7 @@
   }
 
   async function generateRepoDescriptionWithCodex(index: number) {
-    const repo = $settings.repos[index];
+    const repo = $repos.list[index];
     if (!repo || generatingCodexIndices.has(index)) return false;
 
     const requestId = `codex-repo-${index}-${Date.now()}`;
@@ -162,7 +163,7 @@
   async function addRepo() {
     if (!newRepoPath || !newRepoName) return;
     try {
-      await settings.addRepo(newRepoPath, newRepoName);
+      await repos.addRepo(newRepoPath, newRepoName);
       newRepoPath = "";
       newRepoName = "";
     } catch (error) {
@@ -172,7 +173,7 @@
 
   async function removeRepo(index: number) {
     try {
-      await settings.removeRepo(index);
+      await repos.removeRepo(index);
     } catch (error) {
       console.error("[removeRepo] Failed to remove repo:", error);
     }
@@ -210,7 +211,7 @@
 
 <div class="space-y-4">
   <div class="space-y-3">
-    {#each $settings.repos as repo, index}
+    {#each $repos.list as repo, index}
       <div class="p-3 bg-surface-elevated rounded space-y-2 {repo.active === false ? 'opacity-50' : ''}">
         <div class="flex items-start gap-2">
           <RepoIcon repo={repo} size="md" />
@@ -226,7 +227,7 @@
             <!-- Active/Inactive toggle -->
             <button
               class="p-1.5 transition-colors rounded hover:bg-border {repo.active !== false ? 'text-emerald-400' : 'text-text-muted'}"
-              onclick={() => settings.setRepoActive(index, repo.active === false)}
+              onclick={() => repos.setRepoActive(index, repo.active === false)}
               title={repo.active !== false ? 'Active — click to deactivate' : 'Inactive — click to activate'}
             >
               {#if repo.active !== false}
@@ -361,7 +362,7 @@
                 <button
                   class="px-1.5 py-0.5 rounded text-[10px] transition-colors {isSelected ? 'bg-accent text-white' : 'bg-border text-text-muted hover:bg-border/80'}"
                   onclick={() => {
-                    const updatedRepos = [...$settings.repos];
+                    const updatedRepos = [...$repos.list];
                     const currentServers = repo.mcp_servers || [];
                     if (isSelected) {
                       updatedRepos[index] = {
@@ -374,7 +375,7 @@
                         mcp_servers: [...currentServers, server.id],
                       };
                     }
-                    settings.update((s) => ({ ...s, repos: updatedRepos }));
+                    repos.updateList(updatedRepos);
                   }}
                 >
                   {server.name}
@@ -399,7 +400,7 @@
                 <button
                   class="px-1.5 py-0.5 rounded text-[10px] transition-colors {isSelected ? 'bg-amber-600 text-white' : 'bg-border text-text-muted hover:bg-border/80'}"
                   onclick={() => {
-                    const updatedRepos = [...$settings.repos];
+                    const updatedRepos = [...$repos.list];
                     const currentServers = repo.note_mcp_servers || [];
                     if (isSelected) {
                       updatedRepos[index] = {
@@ -412,7 +413,7 @@
                         note_mcp_servers: [...currentServers, server.id],
                       };
                     }
-                    settings.update((s) => ({ ...s, repos: updatedRepos }));
+                    repos.updateList(updatedRepos);
                   }}
                 >
                   {server.name}
@@ -436,9 +437,9 @@
                   class="hover:text-red-400 transition-colors"
                   onclick={() => {
                     const newTags = (repo.tags || []).filter(t => t !== tag);
-                    const updatedRepos = [...$settings.repos];
+                    const updatedRepos = [...$repos.list];
                     updatedRepos[index] = { ...repo, tags: newTags };
-                    settings.save({ ...$settings, repos: updatedRepos });
+                    repos.updateList(updatedRepos);
                   }}
                 >&times;</button>
               </span>
@@ -453,9 +454,9 @@
                   const tag = input.value.trim().toLowerCase();
                   const currentTags = repo.tags || [];
                   if (!currentTags.includes(tag)) {
-                    const updatedRepos = [...$settings.repos];
+                    const updatedRepos = [...$repos.list];
                     updatedRepos[index] = { ...repo, tags: [...currentTags, tag] };
-                    settings.save({ ...$settings, repos: updatedRepos });
+                    repos.updateList(updatedRepos);
                   }
                   input.value = '';
                 }
@@ -473,9 +474,9 @@
                 class="px-2 py-1 bg-background border border-border rounded text-[10px] focus:outline-none focus:border-accent max-w-[120px]"
                 value={repo.icon || 'code'}
                 onchange={(e) => {
-                  const updatedRepos = [...$settings.repos];
+                  const updatedRepos = [...$repos.list];
                   updatedRepos[index] = { ...updatedRepos[index], icon: (e.currentTarget as HTMLSelectElement).value };
-                  settings.update((s) => ({ ...s, repos: updatedRepos }));
+                  repos.updateList(updatedRepos);
                 }}
               >
                 {#each REPO_ICON_NAMES as iconName}
@@ -490,18 +491,18 @@
                 class="w-6 h-6 rounded border border-border cursor-pointer bg-transparent"
                 value={repo.color || getDefaultRepoColor(repo.path)}
                 onchange={(e) => {
-                  const updatedRepos = [...$settings.repos];
+                  const updatedRepos = [...$repos.list];
                   updatedRepos[index] = { ...updatedRepos[index], color: (e.currentTarget as HTMLInputElement).value };
-                  settings.update((s) => ({ ...s, repos: updatedRepos }));
+                  repos.updateList(updatedRepos);
                 }}
               />
               {#if repo.color}
                 <button
                   class="text-text-muted hover:text-error transition-colors text-[10px]"
                   onclick={() => {
-                    const updatedRepos = [...$settings.repos];
+                    const updatedRepos = [...$repos.list];
                     updatedRepos[index] = { ...updatedRepos[index], color: undefined };
-                    settings.update((s) => ({ ...s, repos: updatedRepos }));
+                    repos.updateList(updatedRepos);
                   }}
                   title="Reset to default color"
                 >&times;</button>

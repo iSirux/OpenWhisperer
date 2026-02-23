@@ -1,7 +1,7 @@
 <script lang="ts">
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
-  import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
 
   interface Message {
     type: string;
@@ -35,7 +35,7 @@
     onCancel,
   }: Props = $props();
 
-  const repoConfig = $derived(findRepoByPath($settings.repos, repoPath));
+  const repoConfig = $derived(findRepoByPath($repos.list, repoPath));
 
   let isChatCopied = $state(false);
 
