@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import Overlay from '$lib/components/Overlay.svelte';
   import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
   import { primaryMonitor } from '@tauri-apps/api/window';
@@ -125,6 +126,7 @@
 
   onMount(async () => {
     await settings.load();
+    await repos.load();
 
     // Apply saved theme
     document.documentElement.setAttribute('data-theme', $settings.theme);
@@ -143,6 +145,7 @@
     unlistenSettings = await listen('settings-changed', async () => {
       console.log('[overlay] settings-changed event received, reloading settings');
       await settings.load();
+      await repos.load();
       document.documentElement.setAttribute('data-theme', $settings.theme);
       setTimeout(measureAndResize, 50);
     });

@@ -6,11 +6,8 @@
     isProcessing,
     type RecordingState,
   } from "$lib/stores/recording";
-  import {
-    settings,
-    activeRepo,
-    isAutoRepoSelected,
-  } from "$lib/stores/settings";
+  import { settings } from "$lib/stores/settings";
+  import { activeRepo, isAutoRepoSelected } from "$lib/stores/repos";
   import { isRepoAutoSelectEnabled } from "$lib/utils/llm";
   import { overlay } from "$lib/stores/overlay";
   import StatusBadge from "./StatusBadge.svelte";

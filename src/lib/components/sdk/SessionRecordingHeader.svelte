@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { PendingTranscriptionInfo } from "$lib/stores/sdkSessions";
-  import type { AutoModelEffort, RepoConfig } from "$lib/stores/settings";
+  import type { AutoModelEffort } from "$lib/stores/settings";
   import { settings } from "$lib/stores/settings";
+  import { repos as reposStore, type RepoConfig } from "$lib/stores/repos";
   import {
     getShortModelName,
     getModelBadgeBgColor,
@@ -73,7 +74,7 @@
   // Resolve the recommended repo path using full repos array (recommendation index is into full array)
   const recommendedRepoPath = $derived(
     preparedRepoRecommendation?.recommendedIndex != null
-      ? $settings.repos[preparedRepoRecommendation.recommendedIndex]?.path
+      ? $reposStore.list[preparedRepoRecommendation.recommendedIndex]?.path
       : null
   );
 
@@ -444,7 +445,7 @@
       <div class="prepared-repo">
         {#if selectedRepoCwd}
           <div class="prepared-repo-display">
-            <RepoIcon repo={findRepoByPath($settings.repos, selectedRepoCwd)} size="xs" />
+            <RepoIcon repo={findRepoByPath($reposStore.list, selectedRepoCwd)} size="xs" />
             <span class="repo-label">Repository:</span>
             <span class="repo-value">{getRepoNameFromPath(selectedRepoCwd)}</span>
           </div>
@@ -559,7 +560,7 @@
       <!-- Repository info -->
       {#if repoName}
         <div class="approval-repo">
-          <RepoIcon repo={$settings.repos.find(r => r.name === repoName) || null} size="xs" />
+          <RepoIcon repo={$reposStore.list.find(r => r.name === repoName) || null} size="xs" />
           <span class="repo-label">Repository:</span>
           <span class="repo-value">{repoName}</span>
         </div>

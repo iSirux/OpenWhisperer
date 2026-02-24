@@ -104,6 +104,8 @@ pub enum InboundMessage {
     Text {
         id: String,
         content: String,
+        #[serde(rename = "parentToolUseId")]
+        parent_tool_use_id: Option<String>,
     },
     ToolStart {
         id: String,
@@ -111,6 +113,8 @@ pub enum InboundMessage {
         input: serde_json::Value,
         #[serde(rename = "toolUseId")]
         tool_use_id: String,
+        #[serde(rename = "parentToolUseId")]
+        parent_tool_use_id: Option<String>,
     },
     ToolResult {
         id: String,
@@ -118,17 +122,23 @@ pub enum InboundMessage {
         output: String,
         #[serde(rename = "toolUseId")]
         tool_use_id: String,
+        #[serde(rename = "parentToolUseId")]
+        parent_tool_use_id: Option<String>,
     },
     ThinkingStart {
         id: String,
         content: String,
         timestamp: u64,
+        #[serde(rename = "parentToolUseId")]
+        parent_tool_use_id: Option<String>,
     },
     ThinkingEnd {
         id: String,
         #[serde(rename = "durationMs")]
         duration_ms: u64,
         content: String,
+        #[serde(rename = "parentToolUseId")]
+        parent_tool_use_id: Option<String>,
     },
     Done {
         id: String,
@@ -153,6 +163,15 @@ pub enum InboundMessage {
         num_turns: u64,
         #[serde(rename = "contextWindow")]
         context_window: u64,
+        // Main-agent-only tokens for accurate context bar (excludes subagent usage)
+        #[serde(rename = "mainAgentInputTokens", default)]
+        main_agent_input_tokens: Option<u64>,
+        #[serde(rename = "mainAgentOutputTokens", default)]
+        main_agent_output_tokens: Option<u64>,
+        #[serde(rename = "mainAgentCacheReadTokens", default)]
+        main_agent_cache_read_tokens: Option<u64>,
+        #[serde(rename = "mainAgentCacheCreationTokens", default)]
+        main_agent_cache_creation_tokens: Option<u64>,
     },
     ProgressiveUsage {
         id: String,
@@ -198,6 +217,26 @@ pub enum InboundMessage {
         agent_id: String,
         #[serde(rename = "transcriptPath")]
         transcript_path: String,
+    },
+    TaskStarted {
+        id: String,
+        #[serde(rename = "taskId")]
+        task_id: String,
+        #[serde(rename = "toolUseId")]
+        tool_use_id: Option<String>,
+        description: String,
+        #[serde(rename = "taskType")]
+        task_type: Option<String>,
+    },
+    TaskCompleted {
+        id: String,
+        #[serde(rename = "taskId")]
+        task_id: String,
+        #[serde(rename = "toolUseId")]
+        tool_use_id: Option<String>,
+        status: String,
+        summary: String,
+        usage: Option<serde_json::Value>,
     },
     PlanningQuestions {
         id: String,
@@ -432,35 +471,38 @@ impl SidecarManager {
                 println!("[sidecar] Emitting sdk-created-{}", id);
                 let _ = app.emit(&format!("sdk-created-{}", id), ());
             }
-            InboundMessage::Text { id, ref content } => {
+            InboundMessage::Text { id, ref content, ref parent_tool_use_id } => {
                 println!("[sidecar] Emitting sdk-text-{} with {} bytes", id, content.len());
-                let result = app.emit(&format!("sdk-text-{}", id), content);
+                let result = app.emit(
+                    &format!("sdk-text-{}", id),
+                    serde_json::json!({ "content": content, "parentToolUseId": parent_tool_use_id }),
+                );
                 if let Err(e) = result {
                     eprintln!("[sidecar] Failed to emit text event: {}", e);
                 }
             }
-            InboundMessage::ToolStart { id, tool, input, tool_use_id } => {
+            InboundMessage::ToolStart { id, tool, input, tool_use_id, parent_tool_use_id } => {
                 let _ = app.emit(
                     &format!("sdk-tool-start-{}", id),
-                    serde_json::json!({ "tool": tool, "input": input, "toolUseId": tool_use_id }),
+                    serde_json::json!({ "tool": tool, "input": input, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id }),
                 );
             }
-            InboundMessage::ToolResult { id, tool, output, tool_use_id } => {
+            InboundMessage::ToolResult { id, tool, output, tool_use_id, parent_tool_use_id } => {
                 let _ = app.emit(
                     &format!("sdk-tool-result-{}", id),
-                    serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id }),
+                    serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id }),
                 );
             }
-            InboundMessage::ThinkingStart { id, content, timestamp } => {
+            InboundMessage::ThinkingStart { id, content, timestamp, parent_tool_use_id } => {
                 let _ = app.emit(
                     &format!("sdk-thinking-start-{}", id),
-                    serde_json::json!({ "content": content, "timestamp": timestamp }),
+                    serde_json::json!({ "content": content, "timestamp": timestamp, "parentToolUseId": parent_tool_use_id }),
                 );
             }
-            InboundMessage::ThinkingEnd { id, duration_ms, content } => {
+            InboundMessage::ThinkingEnd { id, duration_ms, content, parent_tool_use_id } => {
                 let _ = app.emit(
                     &format!("sdk-thinking-end-{}", id),
-                    serde_json::json!({ "durationMs": duration_ms, "content": content }),
+                    serde_json::json!({ "durationMs": duration_ms, "content": content, "parentToolUseId": parent_tool_use_id }),
                 );
             }
             InboundMessage::Done { id } => {
@@ -481,24 +523,42 @@ impl SidecarManager {
                 duration_api_ms,
                 num_turns,
                 context_window,
+                main_agent_input_tokens,
+                main_agent_output_tokens,
+                main_agent_cache_read_tokens,
+                main_agent_cache_creation_tokens,
             } => {
                 println!(
                     "[sidecar] Emitting sdk-usage-{}: {} input, {} output, ${:.4}",
                     id, input_tokens, output_tokens, total_cost_usd
                 );
+                let mut payload = serde_json::json!({
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                    "cacheReadTokens": cache_read_tokens,
+                    "cacheCreationTokens": cache_creation_tokens,
+                    "totalCostUsd": total_cost_usd,
+                    "durationMs": duration_ms,
+                    "durationApiMs": duration_api_ms,
+                    "numTurns": num_turns,
+                    "contextWindow": context_window,
+                });
+                // Conditionally include main-agent-only tokens for accurate context bar
+                if let Some(v) = main_agent_input_tokens {
+                    payload["mainAgentInputTokens"] = serde_json::json!(v);
+                }
+                if let Some(v) = main_agent_output_tokens {
+                    payload["mainAgentOutputTokens"] = serde_json::json!(v);
+                }
+                if let Some(v) = main_agent_cache_read_tokens {
+                    payload["mainAgentCacheReadTokens"] = serde_json::json!(v);
+                }
+                if let Some(v) = main_agent_cache_creation_tokens {
+                    payload["mainAgentCacheCreationTokens"] = serde_json::json!(v);
+                }
                 let _ = app.emit(
                     &format!("sdk-usage-{}", id),
-                    serde_json::json!({
-                        "inputTokens": input_tokens,
-                        "outputTokens": output_tokens,
-                        "cacheReadTokens": cache_read_tokens,
-                        "cacheCreationTokens": cache_creation_tokens,
-                        "totalCostUsd": total_cost_usd,
-                        "durationMs": duration_ms,
-                        "durationApiMs": duration_api_ms,
-                        "numTurns": num_turns,
-                        "contextWindow": context_window,
-                    }),
+                    payload,
                 );
             }
             InboundMessage::ProgressiveUsage {
@@ -562,6 +622,50 @@ impl SidecarManager {
                     serde_json::json!({
                         "agentId": agent_id,
                         "transcriptPath": transcript_path,
+                    }),
+                );
+            }
+            InboundMessage::TaskStarted {
+                id,
+                task_id,
+                tool_use_id,
+                description,
+                task_type,
+            } => {
+                println!(
+                    "[sidecar] Task started: {} (toolUseId: {:?}) for session {}",
+                    task_id, tool_use_id, id
+                );
+                let _ = app.emit(
+                    &format!("sdk-task-started-{}", id),
+                    serde_json::json!({
+                        "taskId": task_id,
+                        "toolUseId": tool_use_id,
+                        "description": description,
+                        "taskType": task_type,
+                    }),
+                );
+            }
+            InboundMessage::TaskCompleted {
+                id,
+                task_id,
+                tool_use_id,
+                status,
+                summary,
+                usage,
+            } => {
+                println!(
+                    "[sidecar] Task completed: {} ({}) for session {}",
+                    task_id, status, id
+                );
+                let _ = app.emit(
+                    &format!("sdk-task-completed-{}", id),
+                    serde_json::json!({
+                        "taskId": task_id,
+                        "toolUseId": tool_use_id,
+                        "status": status,
+                        "summary": summary,
+                        "usage": usage,
                     }),
                 );
             }

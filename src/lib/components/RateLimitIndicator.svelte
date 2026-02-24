@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { rateLimits, rateLimitData, codexRateLimits, codexRateLimitData, calculatePace, formatTimeRemaining } from '$lib/stores/rateLimits';
+  import { rateLimits, rateLimitData, codexRateLimits, codexRateLimitData, calculatePace, formatTimeRemaining, registerVisibilityHandler } from '$lib/stores/rateLimits';
   import { settings } from '$lib/stores/settings';
   import { goto } from '$app/navigation';
 
@@ -56,6 +56,7 @@
   onMount(() => {
     rateLimits.startAutoRefresh();
     codexRateLimits.startAutoRefresh();
+    registerVisibilityHandler();
   });
 
   onDestroy(() => {

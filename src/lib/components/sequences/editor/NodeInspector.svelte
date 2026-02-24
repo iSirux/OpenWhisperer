@@ -3,6 +3,7 @@
   import type { NodeDefinition } from '$lib/types/sequence';
   import type { EditorNode } from '$lib/utils/sequenceConverter';
   import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
   import { sequences } from '$lib/stores/sequences';
   import { playNotificationSound } from '$lib/utils/sound';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
@@ -174,11 +175,11 @@
             {sequenceRepos.length === 0 ? '(all)' : `(${sequenceRepos.length})`}
           </span>
         </label>
-        {#if $settings.repos.length === 0}
+        {#if $repos.list.length === 0}
           <p class="text-[10px] text-text-muted italic">No repos configured.</p>
         {:else}
           <div class="flex flex-wrap gap-1">
-            {#each $settings.repos as repo}
+            {#each $repos.list as repo}
               <button
                 class="flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-full border transition-colors {sequenceRepos.includes(repo.path)
                   ? 'bg-accent/20 border-accent text-accent'

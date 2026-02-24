@@ -67,7 +67,7 @@ impl Default for WhisperConfig {
         Self {
             provider: WhisperProvider::default(),
             endpoint: "http://localhost:8000/v1/audio/transcriptions".to_string(),
-            model: "Systran/faster-whisper-large-v3-turbo".to_string(),
+            model: "mobiuslabsgmbh/faster-whisper-large-v3-turbo".to_string(),
             language: "en".to_string(),
             api_key: None,
             docker: DockerConfig::default(),
@@ -381,10 +381,15 @@ pub struct LlmTokenStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct ModelUsageStats {
     pub opus_sessions: u64,
     pub sonnet_sessions: u64,
     pub haiku_sessions: u64,
+    pub codex_53_sessions: u64,
+    pub codex_53_spark_sessions: u64,
+    pub codex_52_sessions: u64,
+    pub codex_51_mini_sessions: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -524,6 +529,14 @@ impl UsageStats {
             self.model_usage.sonnet_sessions += 1;
         } else if model_lower.contains("haiku") {
             self.model_usage.haiku_sessions += 1;
+        } else if model_lower == "gpt-5.3-codex-spark" {
+            self.model_usage.codex_53_spark_sessions += 1;
+        } else if model_lower == "gpt-5.3-codex" {
+            self.model_usage.codex_53_sessions += 1;
+        } else if model_lower == "gpt-5.2-codex" {
+            self.model_usage.codex_52_sessions += 1;
+        } else if model_lower == "gpt-5.1-codex-mini" {
+            self.model_usage.codex_51_mini_sessions += 1;
         }
 
         // Track repo usage
@@ -974,6 +987,11 @@ pub enum Theme {
     Slate,
     Void,
     Ember,
+    Forest,
+    Ocean,
+    Rose,
+    Storm,
+    Aurora,
     Pearl,
     Latte,
 }
@@ -1343,10 +1361,21 @@ pub struct AppConfig {
     /// Inject a system message notifying agents that other agents may be working in parallel
     #[serde(default = "default_notify_parallel_agents")]
     pub notify_parallel_agents: bool,
+    /// User-defined quick action prompts shown in SDK sessions
+    #[serde(default = "default_quick_actions")]
+    pub quick_actions: Vec<String>,
 }
 
 fn default_notify_parallel_agents() -> bool {
     true
+}
+
+fn default_quick_actions() -> Vec<String> {
+    vec![
+        "Implement this".to_string(),
+        "Fix the issues".to_string(),
+        "Keep going".to_string(),
+    ]
 }
 
 fn default_mark_sessions_unread() -> bool {
@@ -1617,6 +1646,7 @@ impl Default for AppConfig {
             mcp: McpConfig::default(),
             sequences: SequenceConfig::default(),
             notify_parallel_agents: true,
+            quick_actions: default_quick_actions(),
         }
     }
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { settings } from '$lib/stores/settings';
-  import { sdkSessions, activeSdkSessionId, type SdkImageContent, settingsToStoreEffort } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId, type SdkImageContent, type EffortLevel, settingsToStoreEffort } from '$lib/stores/sdkSessions';
   import { activeSessionId } from '$lib/stores/sessions';
 
   interface Props {
@@ -12,14 +12,16 @@
     currentCwd: string;
     /** Current session's model */
     currentModel: string;
+    /** Current session's effort level */
+    currentEffortLevel?: EffortLevel;
   }
 
-  let { prompt, images, currentCwd, currentModel }: Props = $props();
+  let { prompt, images, currentCwd, currentModel, currentEffortLevel = null }: Props = $props();
 
   function handleRerun() {
     const model = currentModel || $settings.default_model;
     const repoPath = currentCwd || '.';
-    const effortLevel = settingsToStoreEffort($settings.default_effort_level);
+    const effortLevel = currentEffortLevel ?? settingsToStoreEffort($settings.default_effort_level);
 
     // Open a fresh setup session and prefill the prompt for editing/reuse.
     const newSessionId = sdkSessions.createSetupSession(

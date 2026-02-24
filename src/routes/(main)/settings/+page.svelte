@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { settings } from "$lib/stores/settings";
+  import { settings, settingsLoaded } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy } from "svelte";
+  import { get } from "svelte/store";
   import { page } from "$app/stores";
   import {
     GeneralTab,
@@ -19,7 +20,9 @@
     OverlayTab,
     ReposTab,
     McpTab,
+    VoiceCommandsTab,
     SequencesTab,
+    AboutTab,
   } from "$lib/components/settings";
 
   // Read initial tab from URL query param (e.g. /settings?tab=llm)
@@ -76,11 +79,16 @@
     }, 500);
   }
 
-  // Subscribe to settings changes for auto-save
-  let isInitialLoad = true;
+  // Subscribe to settings changes for auto-save.
+  // Skip auto-save until settings have actually been loaded from disk,
+  // otherwise reloading on /settings would show defaults and risk overwriting the real config.
+  let hasReceivedLoadedSettings = false;
   const unsubscribe = settings.subscribe(() => {
-    if (isInitialLoad) {
-      isInitialLoad = false;
+    if (!hasReceivedLoadedSettings) {
+      if (get(settingsLoaded)) {
+        // Settings just loaded from disk - mark as ready but don't auto-save the loaded values
+        hasReceivedLoadedSettings = true;
+      }
       return;
     }
     autoSave();
@@ -103,6 +111,7 @@
     { id: "system", label: "System" },
     { id: "microphone", label: "Microphone" },
     { id: "audio", label: "Audio" },
+    { id: "voice-commands", label: "Voice Commands" },
     { id: "whisper", label: "Transcription (Whisper)" },
     { id: "vosk", label: "Real-time Transcription (Vosk)" },
     { id: "llm", label: "LLM" },
@@ -112,6 +121,7 @@
     { id: "overlay", label: "Overlay" },
     { id: "repos", label: "Repositories" },
     { id: "sequences", label: "Sequences" },
+    { id: "about", label: "About" },
   ];
 </script>
 
@@ -149,6 +159,8 @@
         <MicrophoneTab />
       {:else if activeTab === "audio"}
         <AudioTab />
+      {:else if activeTab === "voice-commands"}
+        <VoiceCommandsTab />
       {:else if activeTab === "whisper"}
         <WhisperTab />
       {:else if activeTab === "vosk"}
@@ -167,6 +179,8 @@
         <ReposTab />
       {:else if activeTab === "sequences"}
         <SequencesTab />
+      {:else if activeTab === "about"}
+        <AboutTab />
       {/if}
     </div>
   </div>

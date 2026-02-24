@@ -5,6 +5,7 @@
 
 import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
 import { settings, type HotkeyEnabledConfig } from '$lib/stores/settings';
+import { repos } from '$lib/stores/repos';
 import { isRecording } from '$lib/stores/recording';
 import { overlay } from '$lib/stores/overlay';
 import { isModelRecommendationEnabled, isRepoAutoSelectEnabled } from '$lib/utils/llm';
@@ -292,7 +293,7 @@ export function useHotkeyManager() {
     const autoRepoEnabled = isRepoAutoSelectEnabled();
 
     // Need at least 2 options to cycle: with auto-repo enabled, 1 repo is enough (auto + repo)
-    const activeRepoCount = currentSettings.repos.filter((r) => r.active !== false).length;
+    const activeRepoCount = get(repos).list.filter((r) => r.active !== false).length;
     const minRepos = autoRepoEnabled ? 1 : 2;
     if (activeRepoCount < minRepos) {
       console.log(
@@ -331,8 +332,8 @@ export function useHotkeyManager() {
           if (autoRepoEnabled) {
             cyclableOptions.push('auto');
           }
-          for (let i = 0; i < s.repos.length; i++) {
-            if (s.repos[i].active !== false) {
+          for (let i = 0; i < get(repos).list.length; i++) {
+            if (get(repos).list[i].active !== false) {
               cyclableOptions.push(i);
             }
           }
@@ -341,7 +342,7 @@ export function useHotkeyManager() {
           if (cyclableOptions.length < 2) return;
 
           // Determine current position
-          const currentOption: 'auto' | number = s.auto_repo_mode ? 'auto' : s.active_repo_index;
+          const currentOption: 'auto' | number = get(repos).autoMode ? 'auto' : get(repos).activeIndex;
           const currentIndex = cyclableOptions.indexOf(currentOption);
           const nextIndex = (currentIndex + 1) % cyclableOptions.length;
           const nextOption = cyclableOptions[nextIndex];
@@ -350,17 +351,17 @@ export function useHotkeyManager() {
 
           if (nextOption === 'auto') {
             // Switch to auto-repo mode
-            await settings.setAutoRepoMode(true);
+            await repos.setAutoRepoMode(true);
             overlay.setSessionInfo(null, getSelectedToolbarModel(), false);
           } else {
             // Switch to specific repo
-            if (s.auto_repo_mode) {
-              await settings.setAutoRepoMode(false);
+            if (get(repos).autoMode) {
+              await repos.setAutoRepoMode(false);
             }
-            await settings.setActiveRepo(nextOption);
+            await repos.setActiveRepo(nextOption);
 
             // Update overlay with new repo info
-            const newRepo = s.repos[nextOption];
+            const newRepo = get(repos).list[nextOption];
             if (newRepo) {
               let branch: string | null = null;
               try {

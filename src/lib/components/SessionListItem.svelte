@@ -18,7 +18,7 @@
   } from "$lib/utils/modelColors";
   import RepoIcon from "$lib/components/RepoIcon.svelte";
   import { findRepoByPath } from "$lib/utils/repoIcons";
-  import { settings } from "$lib/stores/settings";
+  import { repos } from "$lib/stores/repos";
 
   interface Props {
     session: DisplaySession;
@@ -213,9 +213,7 @@
         <span
           class="text-xs font-medium flex items-center gap-1 {urgency === 'high'
             ? 'text-orange-400'
-            : urgency === 'medium'
-              ? 'text-yellow-400'
-              : 'text-blue-400'}"
+            : 'text-yellow-400'}"
           title={session.aiMetadata.interactionReason || "Needs your input"}
         >
           <svg
@@ -240,12 +238,6 @@
       {/if}
     </div>
     <div class="flex items-center gap-2">
-      {#if session.unread}
-        <div
-          class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"
-          title="Unread"
-        ></div>
-      {/if}
       {#if getDisplayedDuration() !== null}
         <span class="text-xs text-text-muted font-mono tabular-nums">
           {getDisplayedDuration()}
@@ -327,6 +319,27 @@
     </div>
   {/if}
 
+  <!-- Todo progress (SDK sessions with TodoWrite calls) -->
+  {#if session.type === "sdk" && session.todoProgress}
+    <div class="flex items-center gap-2 mb-1.5">
+      <div class="flex-1 h-1 bg-border rounded-full overflow-hidden">
+        <div
+          class="h-full bg-emerald-400 rounded-full transition-all"
+          style="width:{Math.round(
+            (session.todoProgress.completed /
+              session.todoProgress.total) *
+              100,
+          )}%"
+        ></div>
+      </div>
+      <span
+        class="text-[10px] text-text-muted font-mono tabular-nums flex-shrink-0"
+      >
+        {session.todoProgress.completed}/{session.todoProgress.total}
+      </span>
+    </div>
+  {/if}
+
   <!-- Latest message preview (SDK sessions only, hide when showing outcome) -->
   {#if showLatestMessage && session.type === "sdk" && session.latestMessage && !session.aiMetadata?.outcome}
     <p
@@ -342,7 +355,7 @@
   {#if session.status !== "pending_repo" && session.status !== "setup" && session.repoPath && session.repoPath !== "."}
     <div class="flex items-center gap-1.5 text-text-muted">
       <RepoIcon
-        repo={findRepoByPath($settings.repos, session.repoPath)}
+        repo={findRepoByPath($repos.list, session.repoPath)}
         size="xs"
       />
       <span class="text-xs truncate">{getRepoName(session.repoPath)}</span>
@@ -365,15 +378,18 @@
     position: relative;
   }
 
-  /* Active/focused session - purple accent highlight */
+  /* Active/focused session - white background */
   .session-item.active {
-    background-color: rgba(99, 102, 241, 0.15);
-    border-left: 3px solid var(--color-accent);
+    background-color: rgba(255, 255, 255, 0.12);
   }
 
-  /* Unread session - no border/background, uses bold text + dot indicator instead */
+  /* Unread session - background highlight */
   .session-item.unread {
-    /* Intentionally no border or background — unread uses a different visual language
-       (bold text + blue dot) to clearly distinguish from active state */
+    background-color: rgba(99, 102, 241, 0.15);
+  }
+
+  /* Both active and unread */
+  .session-item.active.unread {
+    background-color: rgba(255, 255, 255, 0.12);
   }
 </style>

@@ -185,10 +185,6 @@
       "open-mic-realtime-transcript",
       (event) => {
         const text = event.payload?.text ?? "";
-        console.log("[OpenMicMarquee] received", {
-          text,
-          prevTranscript: transcript,
-        });
         // Always update transcript - empty string clears it
         transcript = text;
         // Reset the inactivity timer on each update (only for non-empty text)
@@ -254,13 +250,15 @@
   .open-mic-marquee {
     position: relative;
     width: 200px;
+    min-width: 50px;
+    flex-shrink: 1;
     height: 28px;
     background: var(--color-surface-elevated);
     border: 1px solid var(--color-border);
     border-radius: 6px;
     overflow: hidden;
     cursor: pointer;
-    transition: opacity 0.15s ease, border-color 0.15s ease;
+    transition: opacity 0.15s ease, border-color 0.15s ease, width 0.2s ease;
   }
 
   .open-mic-marquee:hover {

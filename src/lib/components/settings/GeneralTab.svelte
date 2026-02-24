@@ -1,6 +1,37 @@
 <script lang="ts">
   import { settings, type SdkProvider, type ToolDisplayMode } from "$lib/stores/settings";
   import "./toggle.css";
+
+  let newAction = $state("");
+  let actionError = $state("");
+
+  function addQuickAction() {
+    const trimmed = newAction.trim();
+    if (!trimmed) {
+      actionError = "";
+      return;
+    }
+
+    if (trimmed.length > 60) {
+      actionError = "Quick action must be 60 characters or fewer";
+      return;
+    }
+
+    // Check for duplicates (case-insensitive)
+    const existing = ($settings.quick_actions ?? []).map((a) => a.toLowerCase());
+    if (existing.includes(trimmed.toLowerCase())) {
+      actionError = "Quick action already exists";
+      return;
+    }
+
+    $settings.quick_actions = [...($settings.quick_actions ?? []), trimmed];
+    newAction = "";
+    actionError = "";
+  }
+
+  function removeQuickAction(index: number) {
+    $settings.quick_actions = ($settings.quick_actions ?? []).filter((_, i) => i !== index);
+  }
 </script>
 
 <div class="space-y-4">
@@ -190,5 +221,79 @@
         </p>
       </div>
     </div>
+  </div>
+
+  <!-- Quick Actions -->
+  <div class="border-t border-border pt-4 mt-4">
+    <h3 class="text-sm font-medium text-text-primary mb-1">Quick Actions</h3>
+    <p class="text-xs text-text-muted mb-3">
+      Custom prompts shown as quick action buttons after each session response. Add, remove, or reorder to suit your workflow.
+    </p>
+
+    <!-- Existing actions as removable chips -->
+    {#if ($settings.quick_actions ?? []).length > 0}
+      <div class="flex flex-wrap gap-2 mb-3">
+        {#each $settings.quick_actions ?? [] as action, i}
+          <div
+            class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-surface border border-border text-text-secondary"
+          >
+            <span>{action}</span>
+            <button
+              type="button"
+              class="ml-1 hover:text-red-400 rounded-full p-0.5 transition-colors"
+              onclick={() => removeQuickAction(i)}
+              title="Remove quick action"
+            >
+              <svg
+                class="w-3 h-3"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Add new action -->
+    <div class="flex gap-2">
+      <input
+        type="text"
+        placeholder="Add quick action..."
+        class="flex-1 px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+        bind:value={newAction}
+        onkeydown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            addQuickAction();
+          }
+        }}
+      />
+      <button
+        type="button"
+        class="px-3 py-1.5 bg-accent text-white rounded text-sm hover:bg-accent/90 transition-colors disabled:opacity-50"
+        onclick={addQuickAction}
+        disabled={!newAction.trim()}
+      >
+        Add
+      </button>
+    </div>
+    {#if actionError}
+      <p class="text-xs text-red-500 mt-1">{actionError}</p>
+    {/if}
+
+    {#if ($settings.quick_actions ?? []).length === 0}
+      <p class="text-xs text-text-muted mt-2 italic">
+        No quick actions configured. Only AI-suggested actions will appear (if LLM is enabled).
+      </p>
+    {/if}
   </div>
 </div>

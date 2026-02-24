@@ -3,7 +3,8 @@
   import { recording, isRecording, isProcessing, hasRecorded, realtimeTranscript } from '$lib/stores/recording';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo, getEffectiveTerminalMode } from '$lib/stores/settings';
+  import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
+  import { activeRepo } from '$lib/stores/repos';
   import { overlay } from '$lib/stores/overlay';
   import { resolveModelForApi } from '$lib/utils/models';
   import Waveform from './Waveform.svelte';

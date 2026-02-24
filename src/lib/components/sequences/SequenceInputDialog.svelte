@@ -2,6 +2,7 @@
   import type { SequenceDefinition } from '$lib/types/sequence';
   import { startExecution } from '$lib/stores/sequenceExecutions';
   import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {
@@ -127,7 +128,7 @@
             {:else if input.type === 'repo_list'}
               <!-- Multi-select repo picker with tag filter -->
               {@const selectedRepos = Array.isArray(values[input.name]) ? values[input.name] as string[] : []}
-              {@const allTags = [...new Set($settings.repos.flatMap(r => r.tags || []))]}
+              {@const allTags = [...new Set($repos.list.flatMap(r => r.tags || []))]}
               <div class="space-y-1.5">
                 {#if allTags.length > 0}
                   <div class="flex flex-wrap gap-1 mb-1">
@@ -136,7 +137,7 @@
                       <button
                         class="px-1.5 py-0.5 text-[10px] rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
                         onclick={() => {
-                          const taggedPaths = $settings.repos.filter(r => (r.tags || []).includes(tag)).map(r => r.path);
+                          const taggedPaths = $repos.list.filter(r => (r.tags || []).includes(tag)).map(r => r.path);
                           const current = new Set(selectedRepos);
                           taggedPaths.forEach(p => current.add(p));
                           values[input.name] = [...current];
@@ -145,7 +146,7 @@
                     {/each}
                   </div>
                 {/if}
-                {#each $settings.repos as repo}
+                {#each $repos.list as repo}
                   <label class="flex items-center gap-2 cursor-pointer p-1 rounded hover:bg-surface-elevated/50">
                     <input type="checkbox"
                       checked={selectedRepos.includes(repo.path)}

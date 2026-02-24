@@ -17,7 +17,8 @@ export interface DisplaySession {
   repoPath: string;
   model?: string; // model name for SDK sessions
   provider?: SdkProvider; // SDK provider (claude or openai)
-  createdAt: number; // When the session was created (for sorting)
+  createdAt: number; // When the session was created
+  lastActivityAt: number; // When the session last had activity (for sorting)
   branch?: string; // git branch name
 
   // Timer-based duration tracking (SDK sessions)
@@ -53,4 +54,7 @@ export interface DisplaySession {
   // Sequence execution fields
   sequenceStatus?: ExecutionStatus;
   sequenceProgress?: { completed: number; total: number };
+
+  // SDK todo/task progress (from TodoWrite tool calls)
+  todoProgress?: { completed: number; total: number };
 }

@@ -31,6 +31,36 @@ interface RateLimitState {
 }
 
 const REFRESH_INTERVAL_MS = 60_000; // 60 seconds
+const INVOKE_TIMEOUT_MS = 15_000; // 15 seconds — JS safety net in case Rust hangs
+
+/** Wrap an invoke call with a timeout so it never hangs forever */
+function invokeWithTimeout<T>(command: string, timeoutMs: number): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (!settled) {
+				settled = true;
+				reject(new Error(`Invoke '${command}' timed out after ${timeoutMs}ms`));
+			}
+		}, timeoutMs);
+
+		invoke<T>(command)
+			.then((result) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timer);
+					resolve(result);
+				}
+			})
+			.catch((err) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timer);
+					reject(err);
+				}
+			});
+	});
+}
 
 function createProviderRateLimitStore(commandName: string) {
 	const { subscribe, set, update } = writable<RateLimitState>({
@@ -41,15 +71,25 @@ function createProviderRateLimitStore(commandName: string) {
 	});
 
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
+	let fetchInFlight = false; // guard against concurrent fetches
 
 	const store = {
 		subscribe,
 
 		async fetch() {
+			// Skip if a fetch is already in-flight (prevents stacking after sleep/wake)
+			if (fetchInFlight) {
+				console.log(`[RateLimits] Skipping ${commandName} — fetch already in-flight`);
+				return;
+			}
+			fetchInFlight = true;
 			console.log(`[RateLimits] Fetching ${commandName}...`);
 			update((s) => ({ ...s, loading: true, error: null }));
 			try {
-				const data = await invoke<ProviderRateLimits>(commandName);
+				const data = await invokeWithTimeout<ProviderRateLimits>(
+					commandName,
+					INVOKE_TIMEOUT_MS
+				);
 				console.log(`[RateLimits] ${commandName} OK:`, data);
 				set({
 					data,
@@ -64,6 +104,8 @@ function createProviderRateLimitStore(commandName: string) {
 					loading: false,
 					error: String(error)
 				}));
+			} finally {
+				fetchInFlight = false;
 			}
 		},
 
@@ -99,9 +141,16 @@ function createProviderRateLimitStore(commandName: string) {
 			}
 		},
 
+		/** Restart the auto-refresh interval (e.g. after sleep/wake) */
+		restartAutoRefresh() {
+			store.stopAutoRefresh();
+			store.startAutoRefresh();
+		},
+
 		/** Reset state */
 		reset() {
 			store.stopAutoRefresh();
+			fetchInFlight = false;
 			set({ data: null, loading: false, error: null, lastFetched: null });
 		}
 	};
@@ -120,6 +169,25 @@ export const codexRateLimits = createProviderRateLimitStore('fetch_codex_rate_li
 export const codexRateLimitData = derived(codexRateLimits, ($rl) => $rl.data);
 export const codexRateLimitError = derived(codexRateLimits, ($rl) => $rl.error);
 export const isCodexRateLimitLoading = derived(codexRateLimits, ($rl) => $rl.loading);
+
+// --- Visibility change handler ---
+// When the app regains focus (e.g. after sleep/wake or tab switch), restart
+// the refresh timers and force an immediate fetch so data is never stale.
+
+let visibilityHandlerRegistered = false;
+
+export function registerVisibilityHandler() {
+	if (visibilityHandlerRegistered) return;
+	visibilityHandlerRegistered = true;
+
+	document.addEventListener('visibilitychange', () => {
+		if (!document.hidden) {
+			console.log('[RateLimits] App became visible — restarting auto-refresh');
+			rateLimits.restartAutoRefresh();
+			codexRateLimits.restartAutoRefresh();
+		}
+	});
+}
 
 // --- Shared helpers ---
 

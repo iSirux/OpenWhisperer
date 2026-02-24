@@ -1,8 +1,8 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import type { EffortLevel, SdkImageContent } from '$lib/stores/sdkSessions';
-  import type { RepoConfig } from '$lib/stores/settings';
   import { settings } from '$lib/stores/settings';
+  import { repos, type RepoConfig } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
   import { isRecording, isTranscribing } from '$lib/stores/recording';
@@ -115,7 +115,7 @@
   let prevSessionId = $state(sessionId);
 
   // Derived state
-  const repos = $derived(($settings.repos || []).filter((r) => r.active !== false));
+  const activeRepos = $derived(($repos.list || []).filter((r) => r.active !== false));
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
   const isAutoRepoMode = $derived(!cwd || cwd === '.');
   const isSmartModelEnabled = $derived(
@@ -129,7 +129,7 @@
 
   const currentRepoName = $derived(() => {
     if (!cwd || cwd === '.') return 'Auto';
-    const repo = repos.find(r => r.path === cwd);
+    const repo = activeRepos.find(r => r.path === cwd);
     return repo?.name || cwd.split(/[/\\]/).pop() || 'Unknown';
   });
 
@@ -499,7 +499,7 @@
           {#if isAutoRepoMode && autoRepoEnabled}
             <span class="auto-text">{currentRepoName()}</span>
           {:else}
-            <RepoIcon repo={findRepoByPath(repos, cwd)} size="sm" />
+            <RepoIcon repo={findRepoByPath(activeRepos, cwd)} size="sm" />
             <span>{currentRepoName()}</span>
           {/if}
           <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -530,11 +530,11 @@
               {/if}
             </button>
 
-            {#if repos.length > 0}
+            {#if activeRepos.length > 0}
               <div class="repo-divider"></div>
             {/if}
 
-            {#each repos as repo}
+            {#each activeRepos as repo}
               {@const isSelected = repo.path === cwd}
               <button
                 class="repo-option"
@@ -559,7 +559,7 @@
               </button>
             {/each}
 
-            {#if repos.length === 0}
+            {#if activeRepos.length === 0}
               <div class="px-3 py-2 text-xs text-text-muted">
                 No repositories configured
               </div>
@@ -635,14 +635,11 @@
       {#if isAwaitingTranscript || $isTranscribing}
         <button class="record-btn transcribing" disabled>
           <div class="transcribing-spinner"></div>
-          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
-          </svg>
           Transcribing...
         </button>
       {:else if $isRecording && isRecordingForSetup}
         <button class="record-btn recording" onclick={handleStopRecording}>
-          <div class="recording-pulse"></div>
+          <div class="recording-dot"></div>
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
           </svg>
@@ -1097,23 +1094,20 @@
     border-radius: 0.5rem;
     font-size: 0.9rem;
     font-weight: 500;
-    color: var(--color-text-secondary);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
+    color: white;
+    background: var(--color-recording);
+    border: none;
     transition: all 0.15s ease;
     position: relative;
   }
 
   .record-btn:hover {
-    background: var(--color-surface-elevated);
-    border-color: var(--color-error);
-    color: var(--color-error);
+    background: color-mix(in srgb, var(--color-recording) 85%, black);
   }
 
   .record-btn.recording {
-    background: var(--color-error);
+    background: var(--color-recording);
     color: white;
-    border-color: var(--color-error);
   }
 
   .record-btn.transcribing {
@@ -1128,19 +1122,21 @@
   }
 
   .transcribing-spinner {
-    position: absolute;
-    inset: 4px;
-    border: 2px solid transparent;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    border: 2px solid rgba(255, 255, 255, 0.3);
     border-top-color: white;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
 
-  .recording-pulse {
-    position: absolute;
-    inset: 0;
-    background: var(--color-error);
-    border-radius: 0.5rem;
+  .recording-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: white;
+    flex-shrink: 0;
     animation: pulse-recording 1.5s ease-in-out infinite;
   }
 
@@ -1150,8 +1146,8 @@
       transform: scale(1);
     }
     50% {
-      opacity: 0.7;
-      transform: scale(1.02);
+      opacity: 0.4;
+      transform: scale(0.8);
     }
   }
 

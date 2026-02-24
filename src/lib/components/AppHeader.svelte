@@ -6,9 +6,10 @@
   import OpenMicMarquee from './OpenMicMarquee.svelte';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { navigation } from '$lib/stores/navigation';
-  import { settings, activeRepo, isAutoRepoSelected, type AutoModelEffort } from '$lib/stores/settings';
+  import { settings, type AutoModelEffort } from '$lib/stores/settings';
+  import { repos, activeRepo, isAutoRepoSelected } from '$lib/stores/repos';
   import { isRecording, pendingTranscriptions } from '$lib/stores/recording';
-  import { isRecordingForNewSession, pendingHeaderAction } from '$lib/stores/headerRecording';
+  import { recordingFlow, isRecordingForNewSession } from '$lib/stores/recordingFlow';
   import { settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
@@ -17,8 +18,8 @@
   import RateLimitIndicator from './RateLimitIndicator.svelte';
 
   // Derived state from stores
-  let repos = $derived($settings.repos.filter((r) => r.active !== false));
-  let activeRepoIndex = $derived($settings.active_repo_index);
+  let activeRepos = $derived($repos.list.filter((r) => r.active !== false));
+  let activeRepoIndex = $derived($repos.activeIndex);
   let currentActiveRepo = $derived($activeRepo);
   let autoRepoSelected = $derived($isAutoRepoSelected);
   let sdkProvider = $derived($settings.sdk_provider);
@@ -52,13 +53,13 @@
   });
 
   function handleRepoSelect(index: number) {
-    settings.setActiveRepo(index);
+    repos.setActiveRepo(index);
     showRepoSelector = false;
   }
 
   function handleAutoRepoClick() {
     if (isRepoAutoSelectEnabled()) {
-      settings.setAutoRepoMode(true);
+      repos.setAutoRepoMode(true);
       showRepoSelector = false;
     } else {
       showRepoSelector = false;
@@ -136,26 +137,16 @@
   }
 
   async function handleStartRecording() {
-    if (currentPath !== '/') {
-      pendingHeaderAction.set('start');
-      await goto('/');
-    } else {
-      window.dispatchEvent(new CustomEvent('app:header-start-recording'));
-    }
+    recordingFlow.startRecordingNewSession();
   }
 
   async function handleStopRecording() {
-    if (currentPath !== '/') {
-      pendingHeaderAction.set('stop');
-      await goto('/');
-    } else {
-      window.dispatchEvent(new CustomEvent('app:header-stop-recording'));
-    }
+    recordingFlow.stopRecordingNewSession();
   }
 </script>
 
 <header class="header flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
-  <div class="flex items-center gap-4">
+  <div class="flex items-center gap-4 flex-shrink-0">
     <button
       class="text-lg font-semibold text-text-primary hover:text-accent transition-colors"
       onclick={handleShowStart}
@@ -233,11 +224,11 @@
             </div>
           </button>
 
-          {#if repos.length > 0}
+          {#if activeRepos.length > 0}
             <div class="border-t border-border"></div>
           {/if}
 
-          {#each repos as repo, index}
+          {#each activeRepos as repo, index}
             {@const isSelected = index === activeRepoIndex && !autoRepoSelected}
             <button
               class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors relative"
@@ -264,7 +255,7 @@
             </button>
           {/each}
 
-          {#if repos.length === 0}
+          {#if activeRepos.length === 0}
             <div class="px-3 py-2 text-sm text-text-muted">
               No repositories configured
             </div>
@@ -328,7 +319,7 @@
     />
   </div>
 
-  <div class="flex items-center gap-2">
+  <div class="flex items-center gap-2 min-w-0">
     <!-- Rate Limit Indicator -->
     <RateLimitIndicator />
 

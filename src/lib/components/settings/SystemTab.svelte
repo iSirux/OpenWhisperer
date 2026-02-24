@@ -26,7 +26,7 @@
         >Start Minimized</label
       >
       <p class="text-xs text-text-muted">
-        Start app minimized to system tray
+        Start minimized to system tray when launched on login
       </p>
     </div>
     <input

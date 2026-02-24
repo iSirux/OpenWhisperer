@@ -1,4 +1,6 @@
-use crate::session_persistence::{PersistedSdkSession, PersistedSessions, PersistedTerminalSession};
+use crate::session_persistence::{
+    PersistedSdkSession, PersistedSessions, PersistedTerminalSession, SessionIndex,
+};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -10,7 +12,8 @@ pub struct SaveSessionsResult {
 
 #[tauri::command]
 pub fn get_persisted_sessions() -> PersistedSessions {
-    PersistedSessions::load()
+    let index = SessionIndex::load();
+    index.load_all_sessions()
 }
 
 #[tauri::command]
@@ -19,12 +22,24 @@ pub fn save_persisted_sessions(
     max_sessions: usize,
 ) -> Result<SaveSessionsResult, String> {
     let mut sessions = sessions;
-    let (overflow_sdk, overflow_terminal) = sessions.separate_overflow(max_sessions);
     sessions.saved_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    sessions.save()?;
+
+    let mut index = SessionIndex::load();
+
+    // Write all sessions to individual files and rebuild index
+    index.save_from_bulk(&sessions)?;
+
+    // Handle overflow: extract sessions beyond max, load their data, delete their files
+    let (overflow_sdk, overflow_terminal) = index.separate_overflow(max_sessions);
+
+    // Save index again after overflow removal
+    if !overflow_sdk.is_empty() || !overflow_terminal.is_empty() {
+        index.save()?;
+    }
+
     Ok(SaveSessionsResult {
         overflow_sdk_sessions: overflow_sdk,
         overflow_terminal_sessions: overflow_terminal,
@@ -33,6 +48,6 @@ pub fn save_persisted_sessions(
 
 #[tauri::command]
 pub fn clear_persisted_sessions() -> Result<(), String> {
-    let sessions = PersistedSessions::default();
-    sessions.save()
+    let mut index = SessionIndex::load();
+    index.clear()
 }

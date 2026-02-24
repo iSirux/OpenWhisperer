@@ -354,7 +354,7 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession) -> ArchiveEntry {
         created_at: session.created_at,
         archived_at: now_millis(),
         duration_ms: session.accumulated_duration_ms,
-        total_cost: session.usage.as_ref().map(|u| u.total_cost),
+        total_cost: session.usage.as_ref().map(|u| u.total_cost_usd),
         message_count,
     }
 }

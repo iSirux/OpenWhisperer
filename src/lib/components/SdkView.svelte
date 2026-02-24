@@ -8,8 +8,13 @@
     type EffortLevel,
     type PlanningAnswer,
   } from "$lib/stores/sdkSessions";
-  import { recording, isRecording, isTranscribing } from "$lib/stores/recording";
-  import { settings, isAutoRepoSelected } from "$lib/stores/settings";
+  import {
+    recording,
+    isRecording,
+    isTranscribing,
+  } from "$lib/stores/recording";
+  import { settings } from "$lib/stores/settings";
+  import { repos, isAutoRepoSelected } from "$lib/stores/repos";
   import { overlay } from "$lib/stores/overlay";
   import { invoke } from "@tauri-apps/api/core";
   import SdkUsageBar from "./sdk/SdkUsageBar.svelte";
@@ -21,6 +26,7 @@
   import PlanningWizard from "./sdk/PlanningWizard.svelte";
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
+  import SdkTaskBlock from "./sdk/SdkTaskBlock.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import EffortToggle from "./EffortToggle.svelte";
   import RepoSelector from "./RepoSelector.svelte";
@@ -101,7 +107,9 @@
           // Skip tool_results here - they're output at tool_start position above
           // (Unless it wasn't matched, which shouldn't happen but handle gracefully)
           if (!msg.toolUseId || !outputToolIds.has(msg.toolUseId)) {
-            const input = msg.toolUseId ? toolInputs.get(msg.toolUseId) : undefined;
+            const input = msg.toolUseId
+              ? toolInputs.get(msg.toolUseId)
+              : undefined;
             result.push({ ...msg, input });
           }
         } else {
@@ -153,45 +161,183 @@
   });
 
   // Group messages for rendering based on tool_display_mode setting
-  // Returns an array of render items: either single messages or tool groups
+  // Returns an array of render items: single messages, tool groups, or task blocks
   type RenderItem =
-    | { type: 'message'; message: SdkMessage }
-    | { type: 'tool_group'; tools: SdkMessage[] };
+    | { type: "message"; message: SdkMessage }
+    | { type: "tool_group"; tools: SdkMessage[] }
+    | {
+        type: "task";
+        taskStarted: SdkMessage;
+        children: SdkMessage[];
+        taskCompleted?: SdkMessage;
+      };
 
   let renderItems = $derived(() => {
     // Filter out internal lifecycle markers that should not render in the chat body.
     const msgs = processedMessages().filter(
-      (msg) => msg.type !== 'subagent_stop' && msg.type !== 'done'
+      (msg) => msg.type !== "subagent_stop" && msg.type !== "done",
     );
-    const isGridMode = $settings.tool_display_mode === 'grid';
+    const isGridMode = $settings.tool_display_mode === "grid";
 
-    if (!isGridMode) {
-      // List mode: each message is its own render item
-      return msgs.map(msg => ({ type: 'message' as const, message: msg }));
+    // Build task grouping data structures
+    // The SDK sends task_started system messages AFTER the task completes, so we
+    // cannot rely on them for grouping. Instead, we use the Task tool call itself
+    // (tool_start/tool_result with tool === "Task") which arrives immediately.
+    // task_started/task_completed are merged in for metadata (description, usage).
+
+    // Maps toolUseId -> task_started system message (arrives late, used for metadata)
+    const taskStartMap = new Map<string, SdkMessage>();
+    // Maps toolUseId -> task_completed system message
+    const taskCompletedMap = new Map<string, SdkMessage>();
+    // Maps toolUseId -> child messages (those with matching parentToolUseId)
+    const taskChildrenMap = new Map<string, SdkMessage[]>();
+    // Set of toolUseIds that are task containers (for quick lookup)
+    const knownTaskToolUseIds = new Set<string>();
+
+    // Step 1: Find top-level Task tool calls (tool_start or merged tool_result for "Task")
+    // These arrive immediately when the agent calls the Task tool, unlike task_started
+    for (const msg of msgs) {
+      if (
+        (msg.type === "tool_start" || msg.type === "tool_result") &&
+        msg.tool === "Task" &&
+        !msg.parentToolUseId &&
+        msg.toolUseId
+      ) {
+        knownTaskToolUseIds.add(msg.toolUseId);
+        if (!taskChildrenMap.has(msg.toolUseId)) {
+          taskChildrenMap.set(msg.toolUseId, []);
+        }
+      }
     }
 
-    // Grid mode: group consecutive tool messages together
+    // Step 2: Also register task_started/task_completed for metadata enrichment
+    for (const msg of msgs) {
+      if (msg.type === "task_started" && msg.toolUseId) {
+        taskStartMap.set(msg.toolUseId, msg);
+        // Also register as task container (fallback if Task tool call was missed)
+        knownTaskToolUseIds.add(msg.toolUseId);
+        if (!taskChildrenMap.has(msg.toolUseId)) {
+          taskChildrenMap.set(msg.toolUseId, []);
+        }
+      }
+      if (msg.type === "task_completed" && msg.toolUseId) {
+        taskCompletedMap.set(msg.toolUseId, msg);
+      }
+    }
+
+    // Step 3: Collect child messages into their parent task
+    for (const msg of msgs) {
+      if (msg.parentToolUseId && knownTaskToolUseIds.has(msg.parentToolUseId)) {
+        if (!taskChildrenMap.has(msg.parentToolUseId)) {
+          taskChildrenMap.set(msg.parentToolUseId, []);
+        }
+        taskChildrenMap.get(msg.parentToolUseId)!.push(msg);
+      }
+    }
+
+    // Step 4: Filter main stream messages
+    const mainStreamMsgs = msgs.filter((msg) => {
+      // Exclude child messages of tasks
+      if (msg.parentToolUseId && knownTaskToolUseIds.has(msg.parentToolUseId))
+        return false;
+      // Exclude task_started (consumed by task block at Task tool position)
+      if (msg.type === "task_started") return false;
+      // Exclude task_completed (merged into task render items)
+      if (msg.type === "task_completed") return false;
+      // Exclude subagent_start (redundant with task blocks)
+      if (msg.type === "subagent_start" && knownTaskToolUseIds.size > 0)
+        return false;
+      return true;
+    });
+
+    // Step 5: Build render items
     const items: RenderItem[] = [];
     let currentToolGroup: SdkMessage[] = [];
 
-    for (const msg of msgs) {
-      const isToolMessage = msg.type === 'tool_start' || msg.type === 'tool_result' || msg.type === 'thinking';
+    for (const msg of mainStreamMsgs) {
+      // Detect Task tool calls and render as task blocks
+      const isTaskToolCall =
+        (msg.type === "tool_start" || msg.type === "tool_result") &&
+        msg.tool === "Task" &&
+        !msg.parentToolUseId &&
+        msg.toolUseId;
 
-      if (isToolMessage) {
-        currentToolGroup.push(msg);
-      } else {
+      if (isTaskToolCall) {
         // Flush any pending tool group
-        if (currentToolGroup.length > 0) {
-          items.push({ type: 'tool_group', tools: [...currentToolGroup] });
+        if (currentToolGroup.length > 0 && isGridMode) {
+          items.push({ type: "tool_group", tools: [...currentToolGroup] });
           currentToolGroup = [];
         }
-        items.push({ type: 'message', message: msg });
+
+        const toolUseId = msg.toolUseId!;
+        const taskStartMsg = taskStartMap.get(toolUseId);
+        const taskCompletedMsg = taskCompletedMap.get(toolUseId);
+        const taskInput = msg.input as Record<string, unknown> | undefined;
+
+        // Build taskStarted: merge real task_started with tool input data.
+        // The SDK's task_type is internal (e.g. "local_agent") - prefer subagent_type from tool input.
+        const inputTaskType = taskInput?.subagent_type as string | undefined;
+        const inputDescription =
+          (taskInput?.description as string) ||
+          (taskInput?.prompt as string) ||
+          "";
+        const effectiveTaskStarted: SdkMessage = taskStartMsg
+          ? {
+              ...taskStartMsg,
+              taskType: inputTaskType || taskStartMsg.taskType,
+              description: taskStartMsg.description || inputDescription,
+            }
+          : {
+              type: "task_started" as const,
+              toolUseId,
+              description: inputDescription,
+              taskType: inputTaskType,
+              taskId: toolUseId,
+              timestamp: msg.timestamp,
+            };
+
+        // Build taskCompleted: use real task_completed if available,
+        // else if the Task tool has a result (tool_result), it's done
+        const effectiveTaskCompleted: SdkMessage | undefined =
+          taskCompletedMsg ||
+          (msg.type === "tool_result"
+            ? {
+                type: "task_completed" as const,
+                toolUseId,
+                taskStatus: "completed",
+                summary: "",
+                timestamp: msg.timestamp,
+              }
+            : undefined);
+
+        items.push({
+          type: "task",
+          taskStarted: effectiveTaskStarted,
+          children: taskChildrenMap.get(toolUseId) || [],
+          taskCompleted: effectiveTaskCompleted,
+        });
+      } else if (isGridMode) {
+        const isToolMessage =
+          msg.type === "tool_start" ||
+          msg.type === "tool_result" ||
+          msg.type === "thinking";
+        if (isToolMessage) {
+          currentToolGroup.push(msg);
+        } else {
+          if (currentToolGroup.length > 0) {
+            items.push({ type: "tool_group", tools: [...currentToolGroup] });
+            currentToolGroup = [];
+          }
+          items.push({ type: "message", message: msg });
+        }
+      } else {
+        items.push({ type: "message", message: msg });
       }
     }
 
     // Flush remaining tool group
-    if (currentToolGroup.length > 0) {
-      items.push({ type: 'tool_group', tools: currentToolGroup });
+    if (currentToolGroup.length > 0 && isGridMode) {
+      items.push({ type: "tool_group", tools: currentToolGroup });
     }
 
     return items;
@@ -205,7 +351,9 @@
   let isPendingApproval = $derived(status === "pending_approval");
   let isPrepared = $derived(status === "prepared");
   let preparedPrompt = $derived(session?.preparedPrompt ?? "");
-  let preparedRepoRecommendation = $derived(session?.preparedRepoRecommendation);
+  let preparedRepoRecommendation = $derived(
+    session?.preparedRepoRecommendation,
+  );
   let isLoading = $derived(isQuerying || isInitializing);
 
   // Plan mode state (must be defined before showQuickActions which uses isPlanMode)
@@ -218,7 +366,7 @@
       !isPendingRepo &&
       !isPendingTranscription &&
       !isPendingApproval &&
-      !isPlanMode
+      !isPlanMode,
   );
   let generatedQuickActions = $derived(session?.aiMetadata?.quickActions);
   let sessionOutcome = $derived(session?.aiMetadata?.outcome);
@@ -233,8 +381,31 @@
       (usage.totalInputTokens > 0 ||
         usage.totalOutputTokens > 0 ||
         usage.progressiveInputTokens > 0 ||
-        usage.progressiveOutputTokens > 0)
+        usage.progressiveOutputTokens > 0),
   );
+  // Determine if user is paying via API key (show cost) vs OAuth/subscription (hide cost)
+  let usesApiKey = $state(false);
+  $effect(() => {
+    const provider = session?.provider;
+    // Re-run when provider changes
+    (async () => {
+      try {
+        if (provider === "openai") {
+          usesApiKey = await invoke<boolean>("has_openai_api_key");
+        } else {
+          const auth = await invoke<{
+            hasEnvKey: boolean;
+            hasOAuth: boolean;
+            hasKeyringKey: boolean;
+          }>("check_claude_auth");
+          usesApiKey = auth.hasEnvKey || auth.hasKeyringKey;
+        }
+      } catch {
+        usesApiKey = false;
+      }
+    })();
+  });
+
   let pendingRepoSelection = $derived(session?.pendingRepoSelection);
   let pendingTranscription = $derived(session?.pendingTranscription);
   let draftPrompt = $derived(session?.draftPrompt ?? "");
@@ -243,7 +414,7 @@
     isPlanMode &&
       planMode?.questions.length &&
       planMode.questions.length > 0 &&
-      !planMode.isComplete
+      !planMode.isComplete,
   );
 
   // Show completed recording header when we have recording data but session is no longer pending
@@ -253,7 +424,7 @@
       (pendingTranscription.audioVisualizationHistory?.length ||
         pendingTranscription.transcript ||
         pendingTranscription.modelRecommendation ||
-        pendingTranscription.repoRecommendation)
+        pendingTranscription.repoRecommendation),
   );
 
   // Reference to prompt input for focus and draft access
@@ -288,7 +459,7 @@
           sdkSessions.updateDraft(
             prevSessionId,
             draft.prompt,
-            draft.images.length > 0 ? draft.images : undefined
+            draft.images.length > 0 ? draft.images : undefined,
           );
         }
       }
@@ -315,11 +486,11 @@
   let cwd = $derived(session?.cwd ?? "");
   // Return empty for auto mode (no cwd or cwd is '.')
   let repoName = $derived(
-    !cwd || cwd === "." ? "" : cwd.split(/[/\\]/).pop() || cwd
+    !cwd || cwd === "." ? "" : cwd.split(/[/\\]/).pop() || cwd,
   );
   let sessionModel = $derived(session?.model ?? "");
   let branch = $state<string | null>(null);
-  let lastFetchedBranchCwd = '';
+  let lastFetchedBranchCwd = "";
 
   // Fetch git branch when cwd actually changes (skip for auto mode)
   $effect(() => {
@@ -357,23 +528,53 @@
       if (found !== session) {
         // Check if key fields actually changed
         const statusChanged = found?.status !== session?.status;
-        const messagesChanged = found?.messages.length !== session?.messages.length;
+        const messagesChanged =
+          found?.messages.length !== session?.messages.length;
         const cwdChanged = found?.cwd !== session?.cwd;
         const modelChanged = found?.model !== session?.model;
-        const usageChanged = found?.usage?.totalInputTokens !== session?.usage?.totalInputTokens ||
-                            found?.usage?.totalOutputTokens !== session?.usage?.totalOutputTokens;
-        const pendingChanged = found?.pendingTranscription?.status !== session?.pendingTranscription?.status ||
-                              found?.pendingTranscription?.transcript !== session?.pendingTranscription?.transcript;
-        const planModeChanged = found?.planMode?.isActive !== session?.planMode?.isActive ||
-                              found?.planMode?.questions.length !== session?.planMode?.questions.length ||
-                              found?.planMode?.answers.length !== session?.planMode?.answers.length ||
-                              found?.planMode?.currentQuestionIndex !== session?.planMode?.currentQuestionIndex ||
-                              found?.planMode?.isComplete !== session?.planMode?.isComplete ||
-                              // Deep check for answer changes (selectedOptions)
-                              JSON.stringify(found?.planMode?.answers) !== JSON.stringify(session?.planMode?.answers);
+        const usageChanged =
+          found?.usage?.totalInputTokens !== session?.usage?.totalInputTokens ||
+          found?.usage?.totalOutputTokens !==
+            session?.usage?.totalOutputTokens ||
+          found?.usage?.progressiveInputTokens !==
+            session?.usage?.progressiveInputTokens ||
+          found?.usage?.progressiveOutputTokens !==
+            session?.usage?.progressiveOutputTokens;
+        const pendingChanged =
+          found?.pendingTranscription?.status !==
+            session?.pendingTranscription?.status ||
+          found?.pendingTranscription?.transcript !==
+            session?.pendingTranscription?.transcript;
+        const aiMetadataChanged =
+          found?.aiMetadata?.outcome !== session?.aiMetadata?.outcome ||
+          found?.aiMetadata?.category !== session?.aiMetadata?.category ||
+          found?.aiMetadata?.name !== session?.aiMetadata?.name ||
+          found?.aiMetadata?.quickActions?.length !==
+            session?.aiMetadata?.quickActions?.length;
+        const planModeChanged =
+          found?.planMode?.isActive !== session?.planMode?.isActive ||
+          found?.planMode?.questions.length !==
+            session?.planMode?.questions.length ||
+          found?.planMode?.answers.length !==
+            session?.planMode?.answers.length ||
+          found?.planMode?.currentQuestionIndex !==
+            session?.planMode?.currentQuestionIndex ||
+          found?.planMode?.isComplete !== session?.planMode?.isComplete ||
+          // Deep check for answer changes (selectedOptions)
+          JSON.stringify(found?.planMode?.answers) !==
+            JSON.stringify(session?.planMode?.answers);
 
-        if (!session || statusChanged || messagesChanged || cwdChanged || modelChanged ||
-            usageChanged || pendingChanged || planModeChanged) {
+        if (
+          !session ||
+          statusChanged ||
+          messagesChanged ||
+          cwdChanged ||
+          modelChanged ||
+          usageChanged ||
+          pendingChanged ||
+          aiMetadataChanged ||
+          planModeChanged
+        ) {
           session = found || null;
         }
       }
@@ -387,6 +588,8 @@
   // Auto-scroll on new messages, but only if user is near the bottom
   let prevMessageCount = $state(0);
   let userIsNearBottom = $state(true);
+  let showGoToTop = $state(false);
+  const GO_TO_TOP_SCROLL_THRESHOLD = 300;
 
   function checkIfNearBottom() {
     if (!messagesEl) return;
@@ -394,6 +597,11 @@
     const distanceFromBottom =
       messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
     userIsNearBottom = distanceFromBottom < threshold;
+    showGoToTop = messagesEl.scrollTop > GO_TO_TOP_SCROLL_THRESHOLD;
+  }
+
+  function scrollToTop() {
+    messagesEl?.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   // Mark session as read when user interacts with the view
@@ -450,7 +658,7 @@
     if (status === "querying") {
       // Check if we have any response content yet
       const hasAnyResponse = msgs.some(
-        (m) => m.type === "text" || m.type === "tool_start"
+        (m) => m.type === "text" || m.type === "tool_start",
       );
 
       if (!hasAnyResponse) {
@@ -578,7 +786,7 @@
       if (
         $isAutoRepoSelected &&
         isRepoAutoSelectEnabled() &&
-        $settings.repos.filter((r) => r.active !== false).length > 1 &&
+        $repos.list.filter((r) => r.active !== false).length > 1 &&
         (!cwd || cwd === "" || cwd === ".")
       ) {
         try {
@@ -603,13 +811,13 @@
           }
 
           // High confidence - update cwd and continue
-          const selectedRepo = $settings.repos[repoRecommendation.repoIndex];
+          const selectedRepo = $repos.list[repoRecommendation.repoIndex];
           if (selectedRepo) {
             console.log(
               "[SdkView] Auto selected repo:",
               selectedRepo.name,
               "-",
-              repoRecommendation.reasoning
+              repoRecommendation.reasoning,
             );
             // Update session cwd and reinitialize backend with new cwd
             await sdkSessions.updateSessionCwd(sessionId, selectedRepo.path);
@@ -644,13 +852,13 @@
             if ($settings.enabled_models.includes(recommendation.modelId)) {
               await sdkSessions.updateSessionModel(
                 sessionId,
-                recommendation.modelId
+                recommendation.modelId,
               );
               console.log(
                 "[SdkView] Auto selected model:",
                 recommendation.modelId,
                 "-",
-                recommendation.reasoning
+                recommendation.reasoning,
               );
               // Store for display
               storedModelRecommendation = {
@@ -661,25 +869,25 @@
             } else {
               console.warn(
                 "[SdkView] Recommended model not in enabled_models (settings may have changed), keeping current:",
-                recommendation.modelId
+                recommendation.modelId,
               );
             }
             // Apply effort level recommendation if provided (regardless of model)
             if (recommendation.effortLevel) {
               await sdkSessions.updateSessionEffort(
                 sessionId,
-                recommendation.effortLevel as EffortLevel
+                recommendation.effortLevel as EffortLevel,
               );
               console.log(
                 "[SdkView] Using recommended effort level:",
-                recommendation.effortLevel
+                recommendation.effortLevel,
               );
             }
           }
         } catch (error) {
           console.error(
             "[SdkView] Model recommendation failed, using current model:",
-            error
+            error,
           );
         }
       }
@@ -704,6 +912,8 @@
 
   // Recording for current session
   let isRecordingForCurrentSession = $state(false);
+  // Tracks post-transcription processing (LLM cleanup, sending prompt)
+  let isProcessingRecording = $state(false);
 
   async function handleStartRecording() {
     if ($isRecording) return;
@@ -740,65 +950,77 @@
     }
 
     isRecordingForCurrentSession = false;
+    isProcessingRecording = true;
 
-    // Process voice commands first
-    const processed = processVoiceCommands(whisperTranscript, capturedVoskTranscript);
+    try {
+      // Process voice commands first
+      const processed = processVoiceCommands(
+        whisperTranscript,
+        capturedVoskTranscript,
+      );
 
-    // Handle cancel command
-    if (processed.detectedCommand === 'cancel') {
-      console.log('[SdkView] Cancel command detected, discarding recording');
-      recording.clearTranscript();
-      return;
-    }
+      // Handle cancel command
+      if (processed.detectedCommand === "cancel") {
+        console.log("[SdkView] Cancel command detected, discarding recording");
+        recording.clearTranscript();
+        return;
+      }
 
-    // Handle transcribe command (paste instead of send)
-    if (processed.detectedCommand === 'transcribe') {
-      console.log('[SdkView] Transcribe command detected, pasting to input');
-      // Update draft with the transcript instead of sending
-      sdkSessions.updateDraft(sessionId, processed.transcript, undefined);
-      recording.clearTranscript();
-      return;
-    }
+      // Handle transcribe command (paste instead of send)
+      if (processed.detectedCommand === "transcribe") {
+        console.log("[SdkView] Transcribe command detected, pasting to input");
+        // Update draft with the transcript instead of sending
+        sdkSessions.updateDraft(sessionId, processed.transcript, undefined);
+        recording.clearTranscript();
+        return;
+      }
 
-    // Check if transcript is empty after voice command processing
-    if (processed.isEmpty) {
-      console.log('[SdkView] Transcript empty after voice command processing');
-      recording.clearTranscript();
-      return;
-    }
+      // Check if transcript is empty after voice command processing
+      if (processed.isEmpty) {
+        console.log("[SdkView] Transcript empty after voice command processing");
+        recording.clearTranscript();
+        return;
+      }
 
-    // Run LLM transcription cleanup with dual-source support
-    let finalTranscript = processed.transcript;
+      // Run LLM transcription cleanup with dual-source support
+      let finalTranscript = processed.transcript;
 
-    if (isTranscriptionCleanupEnabled()) {
-      // Get repo context for cleanup
-      const currentRepo = cwd && cwd !== '.'
-        ? $settings.repos.find(r => r.path === cwd)
-        : null;
-      const repoContext = currentRepo ? buildSingleRepoContext(currentRepo) : undefined;
+      if (isTranscriptionCleanupEnabled()) {
+        // Get repo context for cleanup
+        const currentRepo =
+          cwd && cwd !== "." ? $repos.list.find((r) => r.path === cwd) : null;
+        const repoContext = currentRepo
+          ? buildSingleRepoContext(currentRepo)
+          : undefined;
 
-      try {
-        const cleanupResult = await cleanupTranscript(
-          processed.transcript,
-          processed.voskTranscript,
-          repoContext
-        );
-        finalTranscript = cleanupResult.text;
+        try {
+          const cleanupResult = await cleanupTranscript(
+            processed.transcript,
+            processed.voskTranscript,
+            repoContext,
+          );
+          finalTranscript = cleanupResult.text;
 
-        if (cleanupResult.wasCleanedUp) {
-          console.log(
-            '[SdkView] Transcription cleaned up:',
-            cleanupResult.corrections,
-            cleanupResult.usedDualSource ? '(dual-source)' : ''
+          if (cleanupResult.wasCleanedUp) {
+            console.log(
+              "[SdkView] Transcription cleaned up:",
+              cleanupResult.corrections,
+              cleanupResult.usedDualSource ? "(dual-source)" : "",
+            );
+          }
+        } catch (error) {
+          console.error(
+            "[SdkView] Transcription cleanup failed, using original:",
+            error,
           );
         }
-      } catch (error) {
-        console.error('[SdkView] Transcription cleanup failed, using original:', error);
       }
-    }
 
-    await sdkSessions.sendPrompt(sessionId, finalTranscript);
-    recording.clearTranscript();
+      await sdkSessions.sendPrompt(sessionId, finalTranscript);
+      recording.clearTranscript();
+    } finally {
+      isProcessingRecording = false;
+    }
   }
 
   // Inline recording (record and append to prompt, does not send)
@@ -829,28 +1051,32 @@
       let finalTranscript = whisperTranscript;
 
       if (isTranscriptionCleanupEnabled()) {
-        const currentRepo = cwd && cwd !== '.'
-          ? $settings.repos.find(r => r.path === cwd)
-          : null;
-        const repoContext = currentRepo ? buildSingleRepoContext(currentRepo) : undefined;
+        const currentRepo =
+          cwd && cwd !== "." ? $repos.list.find((r) => r.path === cwd) : null;
+        const repoContext = currentRepo
+          ? buildSingleRepoContext(currentRepo)
+          : undefined;
 
         try {
           const cleanupResult = await cleanupTranscript(
             whisperTranscript,
             capturedVoskTranscript,
-            repoContext
+            repoContext,
           );
           finalTranscript = cleanupResult.text;
 
           if (cleanupResult.wasCleanedUp) {
             console.log(
-              '[SdkView] Inline transcription cleaned up:',
+              "[SdkView] Inline transcription cleaned up:",
               cleanupResult.corrections,
-              cleanupResult.usedDualSource ? '(dual-source)' : ''
+              cleanupResult.usedDualSource ? "(dual-source)" : "",
             );
           }
         } catch (error) {
-          console.error('[SdkView] Inline transcription cleanup failed, using original:', error);
+          console.error(
+            "[SdkView] Inline transcription cleanup failed, using original:",
+            error,
+          );
         }
       }
 
@@ -866,7 +1092,7 @@
   function handleRetryTranscription() {
     // Dispatch event to parent to retry transcription
     window.dispatchEvent(
-      new CustomEvent("retry-transcription", { detail: { sessionId } })
+      new CustomEvent("retry-transcription", { detail: { sessionId } }),
     );
   }
 
@@ -889,7 +1115,7 @@
     window.dispatchEvent(
       new CustomEvent("approve-transcription", {
         detail: { sessionId, editedPrompt },
-      })
+      }),
     );
   }
 
@@ -902,7 +1128,7 @@
     window.dispatchEvent(
       new CustomEvent("launch-prepared", {
         detail: { sessionId, editedPrompt },
-      })
+      }),
     );
   }
 
@@ -931,7 +1157,7 @@
     sdkSessions.updateDraft(
       sessionId,
       prompt,
-      images.length > 0 ? images : undefined
+      images.length > 0 ? images : undefined,
     );
   }
 
@@ -956,7 +1182,7 @@
       window.dispatchEvent(
         new CustomEvent("switch-to-session", {
           detail: { sessionId: implSessionId },
-        })
+        }),
       );
     }
   }
@@ -969,135 +1195,163 @@
     <PlanModeBanner {planMode} />
   {/if}
 
-  <!-- Temporarily hidden - token counts and costs are not accurate
   {#if hasUsageData && usage}
-    <SdkUsageBar {usage} {isQuerying} />
+    <SdkUsageBar {usage} {isQuerying} showCost={usesApiKey} />
   {/if}
-  -->
 
-  <div
-    class="messages"
-    bind:this={messagesEl}
-    onscroll={() => {
-      checkIfNearBottom();
-      markAsReadOnInteraction();
-    }}
-  >
-    <!-- Recording/transcription header for pending sessions -->
-    {#if isPendingTranscription && pendingTranscription}
-      <SessionRecordingHeader
-        {pendingTranscription}
-        {sessionId}
-        onRetry={handleRetryTranscription}
-        onCancel={handleCancelPendingTranscription}
-        autoModelEffort={$settings.llm?.features?.auto_model_effort}
-      />
-    {/if}
-
-    <!-- Approval UI for pending_approval sessions -->
-    {#if isPendingApproval && pendingTranscription && pendingApprovalPrompt}
-      <SessionRecordingHeader
-        {pendingTranscription}
-        {sessionId}
-        showApproval={true}
-        approvalPrompt={pendingApprovalPrompt}
-        {repoName}
-        onApprove={handleApprove}
-        onCancelApproval={handleCancelApproval}
-        autoModelEffort={$settings.llm?.features?.auto_model_effort}
-      />
-    {/if}
-
-    <!-- Prepared session UI -->
-    {#if isPrepared && pendingTranscription}
-      <SessionRecordingHeader
-        {pendingTranscription}
-        {sessionId}
-        showPrepared={true}
-        {preparedPrompt}
-        onLaunch={handleLaunchPrepared}
-        onCancelPrepared={handleCancelPrepared}
-        repos={$settings.repos.filter((r) => r.active !== false)}
-        {preparedRepoRecommendation}
-        selectedRepoCwd={cwd}
-        onSelectRepo={handleSelectPreparedRepo}
-        autoModelEffort={$settings.llm?.features?.auto_model_effort}
-      />
-    {/if}
-
-    <!-- Completed recording context shown at the top of active sessions -->
-    {#if hasCompletedRecordingData && pendingTranscription && !isPendingApproval && !isPrepared}
-      <SessionRecordingHeader
-        {pendingTranscription}
-        {sessionId}
-        completed={true}
-        autoModelEffort={$settings.llm?.features?.auto_model_effort}
-      />
-    {/if}
-
-    {#each renderItems() as item, index (item.type === 'message' ? item.message.timestamp : `tool-group-${index}`)}
-      {#if item.type === 'message'}
-        <SdkMessageComponent
-          message={item.message}
-          {copiedMessageId}
-          onCopy={copyMessage}
-          sessionCwd={cwd}
-          {sessionModel}
+  <div class="messages-wrapper">
+    <div
+      class="messages"
+      bind:this={messagesEl}
+      onscroll={() => {
+        checkIfNearBottom();
+        markAsReadOnInteraction();
+      }}
+    >
+      <!-- Recording/transcription header for pending sessions -->
+      {#if isPendingTranscription && pendingTranscription}
+        <SessionRecordingHeader
+          {pendingTranscription}
+          {sessionId}
+          onRetry={handleRetryTranscription}
+          onCancel={handleCancelPendingTranscription}
+          autoModelEffort={$settings.llm?.features?.auto_model_effort}
         />
-      {:else if item.type === 'tool_group'}
-        <SdkToolGrid tools={item.tools} />
       {/if}
-    {/each}
 
-    {#if isLoading}
-      <SdkLoadingIndicator {statusMessage} />
-    {/if}
+      <!-- Approval UI for pending_approval sessions -->
+      {#if isPendingApproval && pendingTranscription && pendingApprovalPrompt}
+        <SessionRecordingHeader
+          {pendingTranscription}
+          {sessionId}
+          showApproval={true}
+          approvalPrompt={pendingApprovalPrompt}
+          {repoName}
+          onApprove={handleApprove}
+          onCancelApproval={handleCancelApproval}
+          autoModelEffort={$settings.llm?.features?.auto_model_effort}
+        />
+      {/if}
 
-    {#if showQuickActions && sessionOutcome}
-      <div class="session-outcome">
-        {#if sessionCategory}
-          <span class="outcome-category">{sessionCategory}</span>
+      <!-- Prepared session UI -->
+      {#if isPrepared && pendingTranscription}
+        <SessionRecordingHeader
+          {pendingTranscription}
+          {sessionId}
+          showPrepared={true}
+          {preparedPrompt}
+          onLaunch={handleLaunchPrepared}
+          onCancelPrepared={handleCancelPrepared}
+          repos={$repos.list.filter((r) => r.active !== false)}
+          {preparedRepoRecommendation}
+          selectedRepoCwd={cwd}
+          onSelectRepo={handleSelectPreparedRepo}
+          autoModelEffort={$settings.llm?.features?.auto_model_effort}
+        />
+      {/if}
+
+      <!-- Completed recording context shown at the top of active sessions -->
+      {#if hasCompletedRecordingData && pendingTranscription && !isPendingApproval && !isPrepared}
+        <SessionRecordingHeader
+          {pendingTranscription}
+          {sessionId}
+          completed={true}
+          autoModelEffort={$settings.llm?.features?.auto_model_effort}
+        />
+      {/if}
+
+      {#each renderItems() as item, index (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || index}` : `tool-group-${index}`)}
+        {#if item.type === "message"}
+          <SdkMessageComponent
+            message={item.message}
+            {copiedMessageId}
+            onCopy={copyMessage}
+            sessionCwd={cwd}
+            {sessionModel}
+            {sessionEffortLevel}
+          />
+        {:else if item.type === "tool_group"}
+          <SdkToolGrid tools={item.tools} />
+        {:else if item.type === "task"}
+          <SdkTaskBlock
+            taskStarted={item.taskStarted}
+            children={item.children}
+            taskCompleted={item.taskCompleted}
+            {copiedMessageId}
+            onCopy={copyMessage}
+            sessionCwd={cwd}
+            {sessionModel}
+            {sessionEffortLevel}
+          />
         {/if}
-        <span class="outcome-text">{sessionOutcome}</span>
-      </div>
-    {/if}
+      {/each}
 
-    {#if showQuickActions}
-      <SdkQuickActions
-        onSendPrompt={(prompt) => handleSendPrompt(prompt)}
-        generatedActions={generatedQuickActions}
-        hasOutcomeAbove={!!sessionOutcome}
-      />
-    {/if}
+      {#if isLoading}
+        <SdkLoadingIndicator {statusMessage} />
+      {/if}
 
-    {#if hasPlanningQuestions && planMode}
-      <PlanningWizard
-        questions={planMode.questions}
-        answers={planMode.answers}
-        currentQuestionIndex={planMode.currentQuestionIndex}
-        isComplete={planMode.isComplete}
-        planFilePath={planMode.planFilePath}
-        featureName={planMode.featureName}
-        planSummary={planMode.planSummary}
-        onAnswerChange={handlePlanningAnswerChange}
-        onNavigate={handlePlanningNavigate}
-        onSubmit={handlePlanningSubmit}
-        onImplement={handleImplementPlan}
-      />
-    {:else if planMode?.isComplete}
-      <PlanningWizard
-        questions={planMode.questions}
-        answers={planMode.answers}
-        currentQuestionIndex={planMode.currentQuestionIndex}
-        isComplete={true}
-        planFilePath={planMode.planFilePath}
-        featureName={planMode.featureName}
-        planSummary={planMode.planSummary}
-        onAnswerChange={handlePlanningAnswerChange}
-        onNavigate={handlePlanningNavigate}
-        onSubmit={handlePlanningSubmit}
-        onImplement={handleImplementPlan}
-      />
+      {#if showQuickActions && sessionOutcome}
+        <div class="session-outcome">
+          {#if sessionCategory}
+            <span class="outcome-category">{sessionCategory}</span>
+          {/if}
+          <span class="outcome-text">{sessionOutcome}</span>
+        </div>
+      {/if}
+
+      {#if showQuickActions}
+        <SdkQuickActions
+          onSendPrompt={(prompt) => handleSendPrompt(prompt)}
+          generatedActions={generatedQuickActions}
+          hasOutcomeAbove={!!sessionOutcome}
+        />
+      {/if}
+
+      {#if hasPlanningQuestions && planMode}
+        <PlanningWizard
+          questions={planMode.questions}
+          answers={planMode.answers}
+          currentQuestionIndex={planMode.currentQuestionIndex}
+          isComplete={planMode.isComplete}
+          planFilePath={planMode.planFilePath}
+          featureName={planMode.featureName}
+          planSummary={planMode.planSummary}
+          onAnswerChange={handlePlanningAnswerChange}
+          onNavigate={handlePlanningNavigate}
+          onSubmit={handlePlanningSubmit}
+          onImplement={handleImplementPlan}
+        />
+      {:else if planMode?.isComplete}
+        <PlanningWizard
+          questions={planMode.questions}
+          answers={planMode.answers}
+          currentQuestionIndex={planMode.currentQuestionIndex}
+          isComplete={true}
+          planFilePath={planMode.planFilePath}
+          featureName={planMode.featureName}
+          planSummary={planMode.planSummary}
+          onAnswerChange={handlePlanningAnswerChange}
+          onNavigate={handlePlanningNavigate}
+          onSubmit={handlePlanningSubmit}
+          onImplement={handleImplementPlan}
+        />
+      {/if}
+    </div>
+
+    {#if showGoToTop}
+      <button
+        class="go-to-top-button"
+        onclick={scrollToTop}
+        title="Scroll to top"
+      >
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path
+            fill-rule="evenodd"
+            d="M8 15a.5.5 0 0 0 .5-.5V2.707l3.146 3.147a.5.5 0 0 0 .708-.708l-4-4a.5.5 0 0 0-.708 0l-4 4a.5.5 0 1 0 .708.708L7.5 2.707V14.5a.5.5 0 0 0 .5.5z"
+          />
+        </svg>
+        <span>Top</span>
+      </button>
     {/if}
   </div>
 
@@ -1107,7 +1361,7 @@
       {sessionId}
       {isQuerying}
       isRecording={$isRecording}
-      isTranscribing={$isTranscribing && isRecordingForCurrentSession}
+      isTranscribing={($isTranscribing && isRecordingForCurrentSession) || isProcessingRecording}
       {isRecordingForCurrentSession}
       isInlineRecording={isInlineRecordingForCurrentSession && $isRecording}
       {isInlineTranscribing}
@@ -1135,14 +1389,67 @@
       monospace;
   }
 
-  .messages {
+  .messages-wrapper {
+    position: relative;
     flex: 1;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .messages {
+    height: 100%;
     overflow-y: auto;
     padding: 1rem;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
     user-select: text;
+  }
+
+  .go-to-top-button {
+    position: absolute;
+    bottom: 1rem;
+    right: 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 0.375rem 0.625rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition:
+      background 0.2s,
+      color 0.2s,
+      box-shadow 0.2s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 10;
+    animation: fadeInUp 0.2s ease-out;
+  }
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .go-to-top-button:hover {
+    background: var(--color-border);
+    color: var(--color-text-primary);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  }
+
+  .go-to-top-button svg {
+    width: 14px;
+    height: 14px;
   }
 
   .new-chat-selectors {
@@ -1159,8 +1466,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.75rem 0 0;
-    margin-top: 0.5rem;
+    padding: 0.375rem 0 0;
     border-top: 1px dashed var(--color-border);
     font-size: 0.8rem;
     color: var(--color-text-muted);

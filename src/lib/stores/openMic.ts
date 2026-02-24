@@ -313,8 +313,6 @@ function createOpenMicStore() {
           const delta = now - lastPartialTime;
           lastPartialTime = now;
 
-          console.log("[open-mic][partial]", { partial, deltaMs: delta });
-
           update((s) => ({ ...s, lastTranscript: partial }));
           emit("open-mic-realtime-transcript", { text: partial });
 

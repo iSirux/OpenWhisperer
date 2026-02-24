@@ -3,6 +3,7 @@
   import { usageStats, formatDuration, formatDate, formatRelativeTime, getWeeklyStats, getTotalForPeriod, formatTokens, formatCost } from '$lib/stores/usageStats';
   import { appSessionUsage } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
   import { rateLimits, rateLimitData, isRateLimitLoading, codexRateLimits, codexRateLimitData, isCodexRateLimitLoading, formatTimeRemaining, calculatePace, formatCents } from '$lib/stores/rateLimits';
 
   // App session usage - cumulative across all SDK sessions since app launch
@@ -18,6 +19,11 @@
   let appCacheRead = $derived(appUsage.totalCacheReadTokens);
   let appCacheCreation = $derived(appUsage.totalCacheCreationTokens);
   let hasAppUsage = $derived(appTotalTokens > 0 || appCost > 0);
+
+  // Model usage totals by provider
+  let totalClaude = $derived($usageStats.model_usage.opus_sessions + $usageStats.model_usage.sonnet_sessions + $usageStats.model_usage.haiku_sessions);
+  let totalCodex = $derived(($usageStats.model_usage.codex_53_sessions || 0) + ($usageStats.model_usage.codex_53_spark_sessions || 0) + ($usageStats.model_usage.codex_52_sessions || 0) + ($usageStats.model_usage.codex_51_mini_sessions || 0));
+  let totalModelsAll = $derived(totalClaude + totalCodex);
 
   let resettingStats = $state(false);
 
@@ -87,7 +93,7 @@
 
   // Get repo name from path
   function getRepoName(path: string): string {
-    const repo = $settings.repos.find(r => r.path === path);
+    const repo = $repos.list.find(r => r.path === path);
     return repo?.name || path.split(/[/\\]/).pop() || path;
   }
 </script>
@@ -672,32 +678,75 @@
         </div>
 
         <!-- Model Usage -->
-        {#if $usageStats.model_usage.opus_sessions + $usageStats.model_usage.sonnet_sessions + $usageStats.model_usage.haiku_sessions > 0}
-          {@const totalModels = $usageStats.model_usage.opus_sessions + $usageStats.model_usage.sonnet_sessions + $usageStats.model_usage.haiku_sessions}
+        {#if totalModelsAll > 0}
           <div>
             <h3 class="text-sm font-medium text-text-primary mb-3">Model Usage</h3>
             <div class="p-3 bg-surface-elevated rounded-lg space-y-3">
-              <div class="flex items-center gap-3">
-                <div class="w-16 text-sm text-text-secondary">Opus</div>
-                <div class="flex-1 bg-border rounded-full h-2">
-                  <div class="bg-purple-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.opus_sessions, totalModels)}%"></div>
+              {#if totalClaude > 0}
+                <div class="text-xs font-medium text-text-muted uppercase tracking-wider">Claude</div>
+                <div class="flex items-center gap-3">
+                  <div class="w-20 text-sm text-text-secondary">Opus</div>
+                  <div class="flex-1 bg-border rounded-full h-2">
+                    <div class="bg-purple-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.opus_sessions, totalModelsAll)}%"></div>
+                  </div>
+                  <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.opus_sessions}</div>
                 </div>
-                <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.opus_sessions}</div>
-              </div>
-              <div class="flex items-center gap-3">
-                <div class="w-16 text-sm text-text-secondary">Sonnet</div>
-                <div class="flex-1 bg-border rounded-full h-2">
-                  <div class="bg-blue-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.sonnet_sessions, totalModels)}%"></div>
+                <div class="flex items-center gap-3">
+                  <div class="w-20 text-sm text-text-secondary">Sonnet</div>
+                  <div class="flex-1 bg-border rounded-full h-2">
+                    <div class="bg-blue-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.sonnet_sessions, totalModelsAll)}%"></div>
+                  </div>
+                  <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.sonnet_sessions}</div>
                 </div>
-                <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.sonnet_sessions}</div>
-              </div>
-              <div class="flex items-center gap-3">
-                <div class="w-16 text-sm text-text-secondary">Haiku</div>
-                <div class="flex-1 bg-border rounded-full h-2">
-                  <div class="bg-green-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.haiku_sessions, totalModels)}%"></div>
+                <div class="flex items-center gap-3">
+                  <div class="w-20 text-sm text-text-secondary">Haiku</div>
+                  <div class="flex-1 bg-border rounded-full h-2">
+                    <div class="bg-emerald-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.haiku_sessions, totalModelsAll)}%"></div>
+                  </div>
+                  <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.haiku_sessions}</div>
                 </div>
-                <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.haiku_sessions}</div>
-              </div>
+              {/if}
+
+              {#if totalCodex > 0}
+                {#if totalClaude > 0}<div class="border-t border-border my-1"></div>{/if}
+                <div class="text-xs font-medium text-text-muted uppercase tracking-wider">Codex</div>
+                {#if ($usageStats.model_usage.codex_53_sessions || 0) > 0}
+                  <div class="flex items-center gap-3">
+                    <div class="w-20 text-sm text-text-secondary">5.3 Codex</div>
+                    <div class="flex-1 bg-border rounded-full h-2">
+                      <div class="bg-green-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_53_sessions || 0, totalModelsAll)}%"></div>
+                    </div>
+                    <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_53_sessions || 0}</div>
+                  </div>
+                {/if}
+                {#if ($usageStats.model_usage.codex_53_spark_sessions || 0) > 0}
+                  <div class="flex items-center gap-3">
+                    <div class="w-20 text-sm text-text-secondary">5.3 Spark</div>
+                    <div class="flex-1 bg-border rounded-full h-2">
+                      <div class="bg-green-400 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_53_spark_sessions || 0, totalModelsAll)}%"></div>
+                    </div>
+                    <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_53_spark_sessions || 0}</div>
+                  </div>
+                {/if}
+                {#if ($usageStats.model_usage.codex_52_sessions || 0) > 0}
+                  <div class="flex items-center gap-3">
+                    <div class="w-20 text-sm text-text-secondary">5.2 Codex</div>
+                    <div class="flex-1 bg-border rounded-full h-2">
+                      <div class="bg-green-600 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_52_sessions || 0, totalModelsAll)}%"></div>
+                    </div>
+                    <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_52_sessions || 0}</div>
+                  </div>
+                {/if}
+                {#if ($usageStats.model_usage.codex_51_mini_sessions || 0) > 0}
+                  <div class="flex items-center gap-3">
+                    <div class="w-20 text-sm text-text-secondary">5.1 Mini</div>
+                    <div class="flex-1 bg-border rounded-full h-2">
+                      <div class="bg-green-300 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_51_mini_sessions || 0, totalModelsAll)}%"></div>
+                    </div>
+                    <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_51_mini_sessions || 0}</div>
+                  </div>
+                {/if}
+              {/if}
             </div>
           </div>
         {/if}
@@ -771,10 +820,10 @@
           <div class="p-3 bg-surface-elevated rounded-lg">
             <div class="flex items-end justify-between gap-2 h-24">
               {#each weeklyStats as day}
-                <div class="flex-1 flex flex-col items-center gap-1">
+                <div class="flex-1 flex flex-col items-center justify-end gap-1">
                   <div
-                    class="w-full bg-accent rounded-t transition-all min-h-[4px]"
-                    style="height: {(day.sessions / maxSessions) * 100}%"
+                    class="w-full bg-accent rounded-t transition-all"
+                    style="height: {Math.max(4, Math.round((day.sessions / maxSessions) * 72))}px"
                     title="{day.sessions} sessions, {day.prompts} prompts"
                   ></div>
                   <div class="text-[10px] text-text-muted">{day.date.slice(-2)}</div>

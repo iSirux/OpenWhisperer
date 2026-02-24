@@ -2,6 +2,7 @@ import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
+import { repos } from './repos';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
@@ -38,17 +39,25 @@ export interface SdkImageContent {
 }
 
 export interface SdkMessage {
-  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking' | 'notification';
+  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking' | 'notification' | 'task_started' | 'task_completed';
   content?: string;
   images?: SdkImageContent[];
   tool?: string;
   toolUseId?: string;
+  parentToolUseId?: string | null;
   input?: Record<string, unknown>;
   output?: string;
   agentId?: string;
   agentType?: string;
   transcriptPath?: string;
   thinkingDurationMs?: number;
+  // Task lifecycle fields
+  taskId?: string;
+  description?: string;
+  taskType?: string;
+  taskStatus?: string;
+  summary?: string;
+  taskUsage?: { total_tokens: number; tool_uses: number; duration_ms: number };
   timestamp: number;
 }
 
@@ -62,6 +71,11 @@ export interface SdkUsage {
   durationApiMs: number;
   numTurns: number;
   contextWindow: number;
+  // Main-agent-only tokens for accurate context bar (excludes subagent usage)
+  mainAgentInputTokens?: number;
+  mainAgentOutputTokens?: number;
+  mainAgentCacheReadTokens?: number;
+  mainAgentCacheCreationTokens?: number;
 }
 
 export interface SdkProgressiveUsage {
@@ -212,6 +226,7 @@ export interface SdkSession {
   messages: SdkMessage[];
   status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'prepared' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
+  lastActivityAt: number;
   startedAt?: number;
   accumulatedDurationMs: number;
   currentWorkStartedAt?: number;
@@ -315,10 +330,16 @@ function calculateWorkPeriod(session: SdkSession): { accumulatedDurationMs: numb
 function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: SdkUsage): SdkSessionUsage {
   const prev = prevUsage || createDefaultUsage(queryUsage.contextWindow);
   const contextWindow = queryUsage.contextWindow || prev.contextWindow || 200000;
+  // For context bar: use main-agent-only tokens if available (excludes subagent usage)
+  // Falls back to total tokens for backward compatibility (no subagents or old sidecar)
+  const contextInputTokens = queryUsage.mainAgentInputTokens ?? queryUsage.inputTokens;
+  const contextOutputTokens = queryUsage.mainAgentOutputTokens ?? queryUsage.outputTokens;
+  const contextCacheReadTokens = queryUsage.mainAgentCacheReadTokens ?? queryUsage.cacheReadTokens;
+  const contextCacheCreationTokens = queryUsage.mainAgentCacheCreationTokens ?? queryUsage.cacheCreationTokens;
   // Total input tokens includes uncached + cached tokens (cache_read + cache_creation)
   // See: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
-  const totalInputTokens = queryUsage.inputTokens + queryUsage.cacheReadTokens + queryUsage.cacheCreationTokens;
-  const currentContextTokens = totalInputTokens + queryUsage.outputTokens;
+  const totalContextInputTokens = contextInputTokens + contextCacheReadTokens + contextCacheCreationTokens;
+  const currentContextTokens = totalContextInputTokens + contextOutputTokens;
   const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
   return {
@@ -380,9 +401,10 @@ function createSdkSessionsStore() {
   async function setupEventListeners(id: string): Promise<UnlistenFn[]> {
     const unlisteners: UnlistenFn[] = [];
 
-    // Text events
+    // Text events (payload includes parentToolUseId for task scoping)
     unlisteners.push(
-      await listen<string>(`sdk-text-${id}`, (e) => {
+      await listen<{ content: string; parentToolUseId?: string | null }>(`sdk-text-${id}`, (e) => {
+        const { content, parentToolUseId } = e.payload;
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -390,7 +412,7 @@ function createSdkSessionsStore() {
                   ...s,
                   startedAt: s.startedAt || Date.now(),
                   currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
-                  messages: [...s.messages, { type: 'text' as const, content: e.payload, timestamp: Date.now() }],
+                  messages: [...s.messages, { type: 'text' as const, content, parentToolUseId: parentToolUseId || undefined, timestamp: Date.now() }],
                 }
               : s
           )
@@ -401,7 +423,7 @@ function createSdkSessionsStore() {
 
     // Tool start events
     unlisteners.push(
-      await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string }>(
+      await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string; parentToolUseId?: string | null }>(
         `sdk-tool-start-${id}`,
         (e) => {
           usageStats.trackToolCall(e.payload.tool);
@@ -419,6 +441,7 @@ function createSdkSessionsStore() {
                         tool: e.payload.tool,
                         toolUseId: e.payload.toolUseId,
                         input: e.payload.input,
+                        parentToolUseId: e.payload.parentToolUseId || undefined,
                         timestamp: Date.now(),
                       },
                     ],
@@ -433,7 +456,7 @@ function createSdkSessionsStore() {
 
     // Tool result events
     unlisteners.push(
-      await listen<{ tool: string; output: string; toolUseId: string }>(`sdk-tool-result-${id}`, (e) => {
+      await listen<{ tool: string; output: string; toolUseId: string; parentToolUseId?: string | null }>(`sdk-tool-result-${id}`, (e) => {
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -446,6 +469,7 @@ function createSdkSessionsStore() {
                       tool: e.payload.tool,
                       toolUseId: e.payload.toolUseId,
                       output: e.payload.output,
+                      parentToolUseId: e.payload.parentToolUseId || undefined,
                       timestamp: Date.now(),
                     },
                   ],
@@ -459,7 +483,7 @@ function createSdkSessionsStore() {
 
     // Thinking start events
     unlisteners.push(
-      await listen<{ content: string; timestamp: number }>(`sdk-thinking-start-${id}`, (e) => {
+      await listen<{ content: string; timestamp: number; parentToolUseId?: string | null }>(`sdk-thinking-start-${id}`, (e) => {
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -467,7 +491,7 @@ function createSdkSessionsStore() {
                   ...s,
                   messages: [
                     ...s.messages,
-                    { type: 'thinking' as const, content: e.payload.content, timestamp: e.payload.timestamp },
+                    { type: 'thinking' as const, content: e.payload.content, parentToolUseId: e.payload.parentToolUseId || undefined, timestamp: e.payload.timestamp },
                   ],
                 }
               : s
@@ -478,13 +502,14 @@ function createSdkSessionsStore() {
 
     // Thinking end events
     unlisteners.push(
-      await listen<{ durationMs: number; content: string }>(`sdk-thinking-end-${id}`, (e) => {
+      await listen<{ durationMs: number; content: string; parentToolUseId?: string | null }>(`sdk-thinking-end-${id}`, (e) => {
+        const payloadParent = e.payload.parentToolUseId || undefined;
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
             const messages = [...s.messages];
             for (let i = messages.length - 1; i >= 0; i--) {
-              if (messages[i].type === 'thinking' && !messages[i].thinkingDurationMs) {
+              if (messages[i].type === 'thinking' && !messages[i].thinkingDurationMs && messages[i].parentToolUseId === payloadParent) {
                 messages[i] = { ...messages[i], thinkingDurationMs: e.payload.durationMs, content: e.payload.content };
                 break;
               }
@@ -629,6 +654,61 @@ function createSdkSessionsStore() {
       })
     );
 
+    // Task started events (from SDK task_started system messages)
+    unlisteners.push(
+      await listen<{ taskId: string; toolUseId?: string; description: string; taskType?: string }>(`sdk-task-started-${id}`, (e) => {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  messages: [
+                    ...s.messages,
+                    {
+                      type: 'task_started' as const,
+                      taskId: e.payload.taskId,
+                      toolUseId: e.payload.toolUseId,
+                      description: e.payload.description,
+                      taskType: e.payload.taskType,
+                      timestamp: Date.now(),
+                    },
+                  ],
+                }
+              : s
+          )
+        );
+        debouncedSave();
+      })
+    );
+
+    // Task completed events (from SDK task_notification system messages)
+    unlisteners.push(
+      await listen<{ taskId: string; toolUseId?: string; status: string; summary: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } }>(`sdk-task-completed-${id}`, (e) => {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  messages: [
+                    ...s.messages,
+                    {
+                      type: 'task_completed' as const,
+                      taskId: e.payload.taskId,
+                      toolUseId: e.payload.toolUseId,
+                      taskStatus: e.payload.status,
+                      summary: e.payload.summary,
+                      taskUsage: e.payload.usage,
+                      timestamp: Date.now(),
+                    },
+                  ],
+                }
+              : s
+          )
+        );
+        debouncedSave();
+      })
+    );
+
     // Planning questions events
     unlisteners.push(
       await listen<PlanningQuestion[]>(`sdk-planning-questions-${id}`, (e) => {
@@ -680,22 +760,29 @@ function createSdkSessionsStore() {
     );
 
     // Parallel session notification - another session was started in the same CWD
+    // Deduplicate: if the last message is already a parallel notification, update its timestamp instead of spamming
     unlisteners.push(
       await listen<string>(`sdk-parallel-notification-${id}`, (e) => {
         console.log(`[sdkSessions] Parallel session notification for ${id}: ${e.payload}`);
         update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  messages: [...s.messages, {
-                    type: 'notification' as const,
-                    content: e.payload,
-                    timestamp: Date.now(),
-                  }],
-                }
-              : s
-          )
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            const lastMsg = s.messages[s.messages.length - 1];
+            if (lastMsg && lastMsg.type === 'notification' && lastMsg.content === e.payload) {
+              // Already showing this notification - just update timestamp
+              const updatedMessages = [...s.messages];
+              updatedMessages[updatedMessages.length - 1] = { ...lastMsg, timestamp: Date.now() };
+              return { ...s, messages: updatedMessages };
+            }
+            return {
+              ...s,
+              messages: [...s.messages, {
+                type: 'notification' as const,
+                content: e.payload,
+                timestamp: Date.now(),
+              }],
+            };
+          })
         );
         debouncedSave();
       })
@@ -729,7 +816,7 @@ function createSdkSessionsStore() {
     let mcpServers = null;
     console.log('[MCP Debug] Total MCP servers in settings:', currentSettings.mcp?.servers?.length ?? 0);
     if (currentSettings.mcp?.servers?.length > 0) {
-      const repo = currentSettings.repos.find((r) => r.path === cwd);
+      const repo = get(repos).list.find((r) => r.path === cwd);
       console.log('[MCP Debug] Session cwd:', cwd);
       console.log('[MCP Debug] Found repo:', repo?.name, 'with mcp_servers:', repo?.mcp_servers, 'note_mcp_servers:', repo?.note_mcp_servers);
       let servers: McpServerConfig[];
@@ -862,6 +949,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
       };
 
@@ -889,16 +977,27 @@ function createSdkSessionsStore() {
             'Re-check the current state of any files before modifying them to avoid conflicts.\n' +
             '</system-message>';
 
+          const notificationContent = 'Another agent session was started in this repository. Multiple agents are now working here simultaneously.';
+
           update(sessions =>
             sessions.map(s => {
               if (parallelCodexSessions.some(p => p.id === s.id)) {
+                // Deduplicate: if the last message is already this notification, update timestamp instead of spamming
+                const lastMsg = s.messages[s.messages.length - 1];
+                let messages: typeof s.messages;
+                if (lastMsg && lastMsg.type === 'notification' && lastMsg.content === notificationContent) {
+                  messages = [...s.messages];
+                  messages[messages.length - 1] = { ...lastMsg, timestamp: Date.now() };
+                } else {
+                  messages = [...s.messages, {
+                    type: 'notification' as const,
+                    content: notificationContent,
+                    timestamp: Date.now(),
+                  }];
+                }
                 return {
                   ...s,
-                  messages: [...s.messages, {
-                    type: 'notification' as const,
-                    content: 'Another agent session was started in this repository. Multiple agents are now working here simultaneously.',
-                    timestamp: Date.now(),
-                  }],
+                  messages,
                   pendingSystemNotifications: [
                     ...(s.pendingSystemNotifications || []),
                     notificationText,
@@ -960,6 +1059,7 @@ function createSdkSessionsStore() {
             ? {
                 ...s,
                 status: 'querying' as const,
+                lastActivityAt: Date.now(),
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: Date.now() }],
                 aiMetadata: s.aiMetadata ? { ...s.aiMetadata, needsInteraction: undefined, interactionReason: undefined, interactionUrgency: undefined, waitingFor: undefined } : s.aiMetadata,
               }
@@ -1145,6 +1245,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'setup',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         planMode: planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
       };
@@ -1230,6 +1331,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'pending_transcription',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         pendingTranscription: { status: 'recording', audioVisualizationHistory: [], recordingStartedAt: Date.now() },
       };
@@ -1442,6 +1544,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'pending_repo',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         pendingRepoSelection,
         pendingPrompt: pendingRepoSelection.transcript,
@@ -1469,6 +1572,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'initializing',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         pendingPrompt,
       };
@@ -1576,6 +1680,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         noteMode: { isActive: true, noteCreated: false },
       };
@@ -1618,6 +1723,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'pending_transcription',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         noteMode: { isActive: true, noteCreated: false },
         pendingTranscription: { status: 'recording', audioVisualizationHistory: [], recordingStartedAt: Date.now() },
