@@ -399,6 +399,14 @@ const toolUseIdToName = new Map<string, string>();
 // Uses composite key to support concurrent thinking in main thread and subagents
 const thinkingState = new Map<string, { startTime: number; content: string }>();
 
+// Track last main-agent-only usage per session for accurate context bar (excludes subagent usage)
+const lastMainAgentUsage = new Map<string, {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}>();
+
 function send(msg: object): void {
   const line = JSON.stringify(msg) + "\n";
   process.stdout.write(line);
@@ -457,6 +465,10 @@ function sendUsage(
     durationApiMs: number;
     numTurns: number;
     contextWindow: number;
+    mainAgentInputTokens?: number;
+    mainAgentOutputTokens?: number;
+    mainAgentCacheReadTokens?: number;
+    mainAgentCacheCreationTokens?: number;
   }
 ): void {
   send({ type: "usage", id, ...usage });
@@ -2765,14 +2777,17 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         }
       }
       // Send progressive usage data from assistant message if available
-      if (message.message.usage) {
+      // Only emit for main agent messages (not subagents) to keep context bar accurate
+      if (message.message.usage && !parentToolUseId) {
         const usage = message.message.usage;
-        sendProgressiveUsage(id, {
+        const mainUsage = {
           inputTokens: usage.input_tokens ?? 0,
           outputTokens: usage.output_tokens ?? 0,
           cacheReadTokens: usage.cache_read_input_tokens ?? 0,
           cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
-        });
+        };
+        lastMainAgentUsage.set(id, mainUsage);
+        sendProgressiveUsage(id, mainUsage);
       }
       break;
     }
@@ -2786,8 +2801,18 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       break;
     }
 
-    case "result":
+    case "result": {
       // Final result message - send usage data and handle errors
+      // Retrieve main-agent-only usage for accurate context bar (excludes subagent tokens)
+      const mainAgentUsage = lastMainAgentUsage.get(id);
+      const mainAgentFields = mainAgentUsage ? {
+        mainAgentInputTokens: mainAgentUsage.inputTokens,
+        mainAgentOutputTokens: mainAgentUsage.outputTokens,
+        mainAgentCacheReadTokens: mainAgentUsage.cacheReadTokens,
+        mainAgentCacheCreationTokens: mainAgentUsage.cacheCreationTokens,
+      } : {};
+      lastMainAgentUsage.delete(id);
+
       if (message.subtype === "success") {
         // Extract usage data from successful result
         const modelUsageValues = Object.values(message.modelUsage || {});
@@ -2806,6 +2831,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           durationApiMs: message.duration_api_ms || 0,
           numTurns: message.num_turns || 0,
           contextWindow,
+          ...mainAgentFields,
         });
       } else if (
         message.subtype === "error" ||
@@ -2830,12 +2856,14 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
             durationApiMs: message.duration_api_ms || 0,
             numTurns: message.num_turns || 0,
             contextWindow,
+            ...mainAgentFields,
           });
         }
         sendError(id, message.error || "Unknown error");
       }
       // Don't send result.result as text - it duplicates the assistant message content
       break;
+    }
 
     case "user": {
       // User messages contain tool results
@@ -3097,6 +3125,7 @@ async function handleClose(msg: CloseMessage): Promise<void> {
       }
     }
   }
+  lastMainAgentUsage.delete(msg.id);
   sessions.delete(msg.id);
   send({ type: "closed", id: msg.id });
 }

@@ -165,6 +165,26 @@ export function getSdkSmartStatus(session: SdkSession): {
 }
 
 /**
+ * Extract todo progress from the latest TodoWrite tool_start message.
+ * Scans backwards for efficiency - stops at first match since it represents
+ * the most recent todo state.
+ */
+export function getTodoProgress(messages: SdkSession['messages']):
+  { completed: number; total: number } | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.type === 'tool_start' && msg.tool === 'TodoWrite' && msg.input) {
+      const todos = msg.input.todos as Array<{ status: string }> | undefined;
+      if (todos && Array.isArray(todos) && todos.length > 0) {
+        const completed = todos.filter(t => t.status === 'completed').length;
+        return { completed, total: todos.length };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Get the latest assistant text message from SDK messages
  */
 export function getLatestTextMessage(messages: SdkSession['messages']): string | undefined {
@@ -220,6 +240,7 @@ export function transformToDisplaySessions(
       prompt: s.prompt,
       repoPath: s.repo_path,
       createdAt: s.created_at,
+      lastActivityAt: s.created_at,
       startedAt: s.created_at,
       accumulatedDurationMs: 0,
       currentWorkStartedAt: undefined,
@@ -228,6 +249,7 @@ export function transformToDisplaySessions(
     ...sdkSessionsList.map((s) => {
       const smartStatus = getSdkSmartStatus(s);
       const finished = isFinishedStatus(smartStatus.status);
+      const todoProgress = getTodoProgress(s.messages);
 
       return {
         id: s.id,
@@ -244,6 +266,7 @@ export function transformToDisplaySessions(
         repoPath: s.cwd,
         model: s.model,
         createdAt: Math.floor(s.createdAt / 1000),
+        lastActivityAt: Math.floor(s.lastActivityAt / 1000),
         startedAt: s.startedAt ? Math.floor(s.startedAt / 1000) : undefined,
         accumulatedDurationMs: s.accumulatedDurationMs || 0,
         currentWorkStartedAt: s.currentWorkStartedAt,
@@ -254,7 +277,8 @@ export function transformToDisplaySessions(
         pendingRepoSelection: s.pendingRepoSelection,
         planMode: s.planMode,
         noteMode: s.noteMode,
-        provider: s.provider
+        provider: s.provider,
+        todoProgress
       };
     }),
     ...sequenceExecutions.map((exec) => {
@@ -269,6 +293,7 @@ export function transformToDisplaySessions(
         prompt: exec.sequence_name,
         repoPath: '',
         createdAt: Math.floor(new Date(exec.started_at).getTime() / 1000),
+        lastActivityAt: Math.floor(new Date(exec.started_at).getTime() / 1000),
         accumulatedDurationMs: exec.completed_at
           ? new Date(exec.completed_at).getTime() - new Date(exec.started_at).getTime()
           : 0,
@@ -290,8 +315,8 @@ export function transformToDisplaySessions(
       const statusDiff = getStatusSortOrder(a.status) - getStatusSortOrder(b.status);
       if (statusDiff !== 0) return statusDiff;
     }
-    // Chronological: newest first
-    return b.createdAt - a.createdAt;
+    // Chronological: most recently active first
+    return b.lastActivityAt - a.lastActivityAt;
   });
 }
 

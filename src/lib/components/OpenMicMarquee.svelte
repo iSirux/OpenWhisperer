@@ -185,10 +185,6 @@
       "open-mic-realtime-transcript",
       (event) => {
         const text = event.payload?.text ?? "";
-        console.log("[OpenMicMarquee] received", {
-          text,
-          prevTranscript: transcript,
-        });
         // Always update transcript - empty string clears it
         transcript = text;
         // Reset the inactivity timer on each update (only for non-empty text)

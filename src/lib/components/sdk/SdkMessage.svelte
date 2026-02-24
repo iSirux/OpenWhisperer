@@ -1,7 +1,8 @@
 <script lang="ts">
-  import type { SdkMessage, SdkImageContent } from "$lib/stores/sdkSessions";
+  import type { SdkMessage, SdkImageContent, EffortLevel } from "$lib/stores/sdkSessions";
   import { renderMarkdown } from "$lib/utils/markdown";
   import { formatToolCallInput, getToolCallSummary } from "$lib/utils/toolCallFormatting";
+  import { getModelType } from "$lib/utils/modelColors";
   import RerunDropdown from "./RerunDropdown.svelte";
 
   let {
@@ -10,47 +11,15 @@
     onCopy,
     sessionCwd = "",
     sessionModel = "",
+    sessionEffortLevel = null,
   }: {
     message: SdkMessage;
     copiedMessageId?: number | null;
     onCopy: (msg: SdkMessage) => void;
     sessionCwd?: string;
     sessionModel?: string;
+    sessionEffortLevel?: EffortLevel;
   } = $props();
-
-  // Track if message top is scrolled out of view (for "go to top" button)
-  let messageEl: HTMLDivElement | undefined = $state();
-  let topSentinelEl: HTMLDivElement | undefined = $state();
-  let showGoToTop = $state(false);
-
-  // Height threshold for showing the button (only show if message is tall enough)
-  const MIN_HEIGHT_FOR_BUTTON = 400;
-
-  $effect(() => {
-    if (!topSentinelEl || message.type !== "text") return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        // Show button when top sentinel is NOT visible AND message is tall enough
-        const isTallEnough = messageEl && messageEl.offsetHeight > MIN_HEIGHT_FOR_BUTTON;
-        showGoToTop = !entry.isIntersecting && !!isTallEnough;
-      },
-      {
-        root: null, // Use viewport
-        rootMargin: "0px",
-        threshold: 0,
-      }
-    );
-
-    observer.observe(topSentinelEl);
-
-    return () => observer.disconnect();
-  });
-
-  function scrollToTop() {
-    topSentinelEl?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
 
   function createImagePreviewUrl(img: SdkImageContent): string {
     return `data:${img.mediaType};base64,${img.base64Data}`;
@@ -121,6 +90,7 @@
             images={message.images}
             currentCwd={sessionCwd}
             currentModel={sessionModel}
+            currentEffortLevel={sessionEffortLevel}
           />
         {/if}
         <button
@@ -149,9 +119,7 @@
       </div>
     </div>
   {:else if message.type === "text"}
-    <div class="text-message-container" bind:this={messageEl}>
-      <!-- Sentinel element at the top for intersection observer -->
-      <div class="top-sentinel" bind:this={topSentinelEl}></div>
+    <div class="text-message-container">
       <div class="text-content markdown-body">
         {@html renderMarkdown(message.content ?? "")}
       </div>
@@ -178,18 +146,6 @@
           </svg>
         {/if}
       </button>
-      {#if showGoToTop}
-        <button
-          class="go-to-top-button"
-          onclick={scrollToTop}
-          title="Go to top of message"
-        >
-          <svg viewBox="0 0 16 16" fill="currentColor">
-            <path fill-rule="evenodd" d="M8 15a.5.5 0 0 0 .5-.5V2.707l3.146 3.147a.5.5 0 0 0 .708-.708l-4-4a.5.5 0 0 0-.708 0l-4 4a.5.5 0 1 0 .708.708L7.5 2.707V14.5a.5.5 0 0 0 .5.5z"/>
-          </svg>
-          <span>Top</span>
-        </button>
-      {/if}
     </div>
   {:else if message.type === "tool_start"}
     <details class="tool-call tool-running">
@@ -256,16 +212,17 @@
       <span class="notification-text">{message.content}</span>
     </div>
   {:else if message.type === "subagent_start"}
-    <div class="subagent-call">
+    {@const modelType = getModelType(sessionModel)}
+    <div class="subagent-call" style="background: color-mix(in srgb, var(--color-model-{modelType}) 8%, var(--color-surface));">
       <div class="subagent-header">
-        <div class="subagent-icon-wrapper">
+        <div class="subagent-icon-wrapper" style="color: var(--color-model-{modelType});">
           <svg viewBox="0 0 16 16" fill="currentColor">
             <path d="M1.5 3.25c0-.966.784-1.75 1.75-1.75h2.5c.966 0 1.75.784 1.75 1.75v2.5A1.75 1.75 0 0 1 5.75 7.5H5v1.5h.25a1.75 1.75 0 0 1 1.75 1.75v2.5A1.75 1.75 0 0 1 5.25 15h-2.5A1.75 1.75 0 0 1 1 13.25v-2.5C1 9.784 1.784 9 2.75 9H3V7.5h-.25A1.75 1.75 0 0 1 1 5.75v-2.5Zm9.75 0A1.75 1.75 0 0 0 9.5 5v6a1.75 1.75 0 0 0 1.75 1.75h1a.75.75 0 0 1 .75.75v1.19l2.72-2.72a.75.75 0 0 1 .53-.22h.5a.25.25 0 0 0 .25-.25V5a.25.25 0 0 0-.25-.25h-5.5Z"/>
           </svg>
         </div>
         <span class="subagent-name">Task</span>
         <span class="subagent-type-label">{message.agentType}</span>
-        <span class="subagent-badge">
+        <span class="subagent-badge" style="background: color-mix(in srgb, var(--color-model-{modelType}) 15%, transparent); color: var(--color-model-{modelType});">
           <span class="spinner"></span>
           Running
         </span>
@@ -346,60 +303,6 @@
     opacity: 1;
   }
 
-  .top-sentinel {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 1px;
-    height: 1px;
-    pointer-events: none;
-  }
-
-  .go-to-top-button {
-    position: sticky;
-    bottom: 2.5rem;
-    float: right;
-    margin-top: -2.25rem;
-    margin-right: 0.5rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.375rem;
-    background: var(--color-surface-elevated);
-    color: var(--color-text-secondary);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    padding: 0.375rem 0.625rem;
-    font-size: 0.75rem;
-    cursor: pointer;
-    transition: background 0.2s, color 0.2s, box-shadow 0.2s;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-    z-index: 10;
-    animation: fadeInUp 0.2s ease-out;
-  }
-
-  @keyframes fadeInUp {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  .go-to-top-button:hover {
-    background: var(--color-border);
-    color: var(--color-text-primary);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  }
-
-  .go-to-top-button svg {
-    width: 14px;
-    height: 14px;
-  }
-
   .message-actions {
     position: absolute;
     bottom: 0.5rem;
@@ -432,9 +335,11 @@
 
   /* For text messages that don't use message-actions wrapper */
   .text-message-container .copy-message-button {
-    position: absolute;
+    position: sticky;
     bottom: 0.5rem;
-    right: 0.5rem;
+    float: right;
+    margin-top: -1.75rem;
+    margin-right: 0.25rem;
     opacity: 0;
   }
 
@@ -900,7 +805,6 @@
   .subagent-call {
     padding: 0.375rem 0.5rem;
     border-radius: 6px;
-    background: color-mix(in srgb, var(--color-model-opus) 8%, var(--color-surface));
   }
 
   .subagent-header {
@@ -916,7 +820,6 @@
     justify-content: center;
     width: 18px;
     height: 18px;
-    color: var(--color-model-opus);
     flex-shrink: 0;
   }
 
@@ -937,6 +840,7 @@
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
 
+
   .subagent-badge {
     display: inline-flex;
     align-items: center;
@@ -949,8 +853,6 @@
     letter-spacing: 0.025em;
     flex-shrink: 0;
     margin-left: auto;
-    background: color-mix(in srgb, var(--color-model-opus) 15%, transparent);
-    color: var(--color-model-opus);
   }
 
   /* Message images */

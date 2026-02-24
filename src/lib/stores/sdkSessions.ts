@@ -71,6 +71,11 @@ export interface SdkUsage {
   durationApiMs: number;
   numTurns: number;
   contextWindow: number;
+  // Main-agent-only tokens for accurate context bar (excludes subagent usage)
+  mainAgentInputTokens?: number;
+  mainAgentOutputTokens?: number;
+  mainAgentCacheReadTokens?: number;
+  mainAgentCacheCreationTokens?: number;
 }
 
 export interface SdkProgressiveUsage {
@@ -221,6 +226,7 @@ export interface SdkSession {
   messages: SdkMessage[];
   status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'prepared' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
+  lastActivityAt: number;
   startedAt?: number;
   accumulatedDurationMs: number;
   currentWorkStartedAt?: number;
@@ -324,10 +330,16 @@ function calculateWorkPeriod(session: SdkSession): { accumulatedDurationMs: numb
 function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: SdkUsage): SdkSessionUsage {
   const prev = prevUsage || createDefaultUsage(queryUsage.contextWindow);
   const contextWindow = queryUsage.contextWindow || prev.contextWindow || 200000;
+  // For context bar: use main-agent-only tokens if available (excludes subagent usage)
+  // Falls back to total tokens for backward compatibility (no subagents or old sidecar)
+  const contextInputTokens = queryUsage.mainAgentInputTokens ?? queryUsage.inputTokens;
+  const contextOutputTokens = queryUsage.mainAgentOutputTokens ?? queryUsage.outputTokens;
+  const contextCacheReadTokens = queryUsage.mainAgentCacheReadTokens ?? queryUsage.cacheReadTokens;
+  const contextCacheCreationTokens = queryUsage.mainAgentCacheCreationTokens ?? queryUsage.cacheCreationTokens;
   // Total input tokens includes uncached + cached tokens (cache_read + cache_creation)
   // See: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
-  const totalInputTokens = queryUsage.inputTokens + queryUsage.cacheReadTokens + queryUsage.cacheCreationTokens;
-  const currentContextTokens = totalInputTokens + queryUsage.outputTokens;
+  const totalContextInputTokens = contextInputTokens + contextCacheReadTokens + contextCacheCreationTokens;
+  const currentContextTokens = totalContextInputTokens + contextOutputTokens;
   const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
   return {
@@ -748,22 +760,29 @@ function createSdkSessionsStore() {
     );
 
     // Parallel session notification - another session was started in the same CWD
+    // Deduplicate: if the last message is already a parallel notification, update its timestamp instead of spamming
     unlisteners.push(
       await listen<string>(`sdk-parallel-notification-${id}`, (e) => {
         console.log(`[sdkSessions] Parallel session notification for ${id}: ${e.payload}`);
         update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  messages: [...s.messages, {
-                    type: 'notification' as const,
-                    content: e.payload,
-                    timestamp: Date.now(),
-                  }],
-                }
-              : s
-          )
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            const lastMsg = s.messages[s.messages.length - 1];
+            if (lastMsg && lastMsg.type === 'notification' && lastMsg.content === e.payload) {
+              // Already showing this notification - just update timestamp
+              const updatedMessages = [...s.messages];
+              updatedMessages[updatedMessages.length - 1] = { ...lastMsg, timestamp: Date.now() };
+              return { ...s, messages: updatedMessages };
+            }
+            return {
+              ...s,
+              messages: [...s.messages, {
+                type: 'notification' as const,
+                content: e.payload,
+                timestamp: Date.now(),
+              }],
+            };
+          })
         );
         debouncedSave();
       })
@@ -930,6 +949,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
       };
 
@@ -957,16 +977,27 @@ function createSdkSessionsStore() {
             'Re-check the current state of any files before modifying them to avoid conflicts.\n' +
             '</system-message>';
 
+          const notificationContent = 'Another agent session was started in this repository. Multiple agents are now working here simultaneously.';
+
           update(sessions =>
             sessions.map(s => {
               if (parallelCodexSessions.some(p => p.id === s.id)) {
+                // Deduplicate: if the last message is already this notification, update timestamp instead of spamming
+                const lastMsg = s.messages[s.messages.length - 1];
+                let messages: typeof s.messages;
+                if (lastMsg && lastMsg.type === 'notification' && lastMsg.content === notificationContent) {
+                  messages = [...s.messages];
+                  messages[messages.length - 1] = { ...lastMsg, timestamp: Date.now() };
+                } else {
+                  messages = [...s.messages, {
+                    type: 'notification' as const,
+                    content: notificationContent,
+                    timestamp: Date.now(),
+                  }];
+                }
                 return {
                   ...s,
-                  messages: [...s.messages, {
-                    type: 'notification' as const,
-                    content: 'Another agent session was started in this repository. Multiple agents are now working here simultaneously.',
-                    timestamp: Date.now(),
-                  }],
+                  messages,
                   pendingSystemNotifications: [
                     ...(s.pendingSystemNotifications || []),
                     notificationText,
@@ -1028,6 +1059,7 @@ function createSdkSessionsStore() {
             ? {
                 ...s,
                 status: 'querying' as const,
+                lastActivityAt: Date.now(),
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: Date.now() }],
                 aiMetadata: s.aiMetadata ? { ...s.aiMetadata, needsInteraction: undefined, interactionReason: undefined, interactionUrgency: undefined, waitingFor: undefined } : s.aiMetadata,
               }
@@ -1213,6 +1245,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'setup',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         planMode: planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
       };
@@ -1298,6 +1331,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'pending_transcription',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         pendingTranscription: { status: 'recording', audioVisualizationHistory: [], recordingStartedAt: Date.now() },
       };
@@ -1510,6 +1544,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'pending_repo',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         pendingRepoSelection,
         pendingPrompt: pendingRepoSelection.transcript,
@@ -1537,6 +1572,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'initializing',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         pendingPrompt,
       };
@@ -1644,6 +1680,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         noteMode: { isActive: true, noteCreated: false },
       };
@@ -1686,6 +1723,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'pending_transcription',
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         noteMode: { isActive: true, noteCreated: false },
         pendingTranscription: { status: 'recording', audioVisualizationHistory: [], recordingStartedAt: Date.now() },

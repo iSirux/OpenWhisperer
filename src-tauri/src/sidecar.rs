@@ -163,6 +163,15 @@ pub enum InboundMessage {
         num_turns: u64,
         #[serde(rename = "contextWindow")]
         context_window: u64,
+        // Main-agent-only tokens for accurate context bar (excludes subagent usage)
+        #[serde(rename = "mainAgentInputTokens", default)]
+        main_agent_input_tokens: Option<u64>,
+        #[serde(rename = "mainAgentOutputTokens", default)]
+        main_agent_output_tokens: Option<u64>,
+        #[serde(rename = "mainAgentCacheReadTokens", default)]
+        main_agent_cache_read_tokens: Option<u64>,
+        #[serde(rename = "mainAgentCacheCreationTokens", default)]
+        main_agent_cache_creation_tokens: Option<u64>,
     },
     ProgressiveUsage {
         id: String,
@@ -514,24 +523,42 @@ impl SidecarManager {
                 duration_api_ms,
                 num_turns,
                 context_window,
+                main_agent_input_tokens,
+                main_agent_output_tokens,
+                main_agent_cache_read_tokens,
+                main_agent_cache_creation_tokens,
             } => {
                 println!(
                     "[sidecar] Emitting sdk-usage-{}: {} input, {} output, ${:.4}",
                     id, input_tokens, output_tokens, total_cost_usd
                 );
+                let mut payload = serde_json::json!({
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                    "cacheReadTokens": cache_read_tokens,
+                    "cacheCreationTokens": cache_creation_tokens,
+                    "totalCostUsd": total_cost_usd,
+                    "durationMs": duration_ms,
+                    "durationApiMs": duration_api_ms,
+                    "numTurns": num_turns,
+                    "contextWindow": context_window,
+                });
+                // Conditionally include main-agent-only tokens for accurate context bar
+                if let Some(v) = main_agent_input_tokens {
+                    payload["mainAgentInputTokens"] = serde_json::json!(v);
+                }
+                if let Some(v) = main_agent_output_tokens {
+                    payload["mainAgentOutputTokens"] = serde_json::json!(v);
+                }
+                if let Some(v) = main_agent_cache_read_tokens {
+                    payload["mainAgentCacheReadTokens"] = serde_json::json!(v);
+                }
+                if let Some(v) = main_agent_cache_creation_tokens {
+                    payload["mainAgentCacheCreationTokens"] = serde_json::json!(v);
+                }
                 let _ = app.emit(
                     &format!("sdk-usage-{}", id),
-                    serde_json::json!({
-                        "inputTokens": input_tokens,
-                        "outputTokens": output_tokens,
-                        "cacheReadTokens": cache_read_tokens,
-                        "cacheCreationTokens": cache_creation_tokens,
-                        "totalCostUsd": total_cost_usd,
-                        "durationMs": duration_ms,
-                        "durationApiMs": duration_api_ms,
-                        "numTurns": num_turns,
-                        "contextWindow": context_window,
-                    }),
+                    payload,
                 );
             }
             InboundMessage::ProgressiveUsage {

@@ -242,6 +242,11 @@ export type Theme =
   | "Slate"
   | "Void"
   | "Ember"
+  | "Forest"
+  | "Ocean"
+  | "Rose"
+  | "Storm"
+  | "Aurora"
   | "Pearl"
   | "Latte";
 
@@ -419,7 +424,7 @@ const defaultConfig: AppConfig = {
   whisper: {
     provider: "Local",
     endpoint: "http://localhost:8000/v1/audio/transcriptions",
-    model: "Systran/faster-whisper-large-v3-turbo",
+    model: "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
     language: "en",
     api_key: null,
     docker: {
@@ -588,6 +593,9 @@ const defaultConfig: AppConfig = {
 /** Whether the config was successfully loaded from disk (vs fell back to defaults) */
 export const configLoadedOk = writable<boolean>(true);
 
+/** Whether settings have been loaded from disk at least once this session */
+export const settingsLoaded = writable<boolean>(false);
+
 function createSettingsStore() {
   const { subscribe, set, update } = writable<AppConfig>(defaultConfig);
 
@@ -600,6 +608,7 @@ function createSettingsStore() {
       try {
         const config = await invoke<AppConfig>("get_config");
         set(config);
+        settingsLoaded.set(true);
 
         // Check if config was loaded successfully from disk
         try {

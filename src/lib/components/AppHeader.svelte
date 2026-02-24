@@ -9,7 +9,7 @@
   import { settings, type AutoModelEffort } from '$lib/stores/settings';
   import { repos, activeRepo, isAutoRepoSelected } from '$lib/stores/repos';
   import { isRecording, pendingTranscriptions } from '$lib/stores/recording';
-  import { isRecordingForNewSession, pendingHeaderAction } from '$lib/stores/headerRecording';
+  import { recordingFlow, isRecordingForNewSession } from '$lib/stores/recordingFlow';
   import { settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
@@ -137,21 +137,11 @@
   }
 
   async function handleStartRecording() {
-    if (currentPath !== '/') {
-      pendingHeaderAction.set('start');
-      await goto('/');
-    } else {
-      window.dispatchEvent(new CustomEvent('app:header-start-recording'));
-    }
+    recordingFlow.startRecordingNewSession();
   }
 
   async function handleStopRecording() {
-    if (currentPath !== '/') {
-      pendingHeaderAction.set('stop');
-      await goto('/');
-    } else {
-      window.dispatchEvent(new CustomEvent('app:header-stop-recording'));
-    }
+    recordingFlow.stopRecordingNewSession();
   }
 </script>
 

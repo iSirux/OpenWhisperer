@@ -88,6 +88,86 @@
   --color-model-haiku: #34d399;
 }
 
+/* Theme: Forest (green-tinted, Slate-brightness) */
+[data-theme="Forest"] {
+  --color-background: #1c3329;
+  --color-surface: #2f4f40;
+  --color-surface-elevated: #426554;
+  --color-border: #5f8571;
+  --color-text-primary: #eef5f1;
+  --color-text-secondary: #b8d4c5;
+  --color-text-muted: #7ba393;
+  --color-accent: #10b981;
+  --color-accent-hover: #34d399;
+  --color-model-opus: #a78bfa;
+  --color-model-sonnet: #fcd34d;
+  --color-model-haiku: #6ee7b7;
+}
+
+/* Theme: Ocean (teal-tinted, Slate-brightness) */
+[data-theme="Ocean"] {
+  --color-background: #1a3040;
+  --color-surface: #2d4b5a;
+  --color-surface-elevated: #3f6170;
+  --color-border: #5a8090;
+  --color-text-primary: #edf5f8;
+  --color-text-secondary: #b5d2dc;
+  --color-text-muted: #7aa3b0;
+  --color-accent: #06b6d4;
+  --color-accent-hover: #22d3ee;
+  --color-model-opus: #a78bfa;
+  --color-model-sonnet: #fcd34d;
+  --color-model-haiku: #6ee7b7;
+}
+
+/* Theme: Rose (pink-tinted, Slate-brightness) */
+[data-theme="Rose"] {
+  --color-background: #351c2c;
+  --color-surface: #503545;
+  --color-surface-elevated: #654a5b;
+  --color-border: #8a6878;
+  --color-text-primary: #f7eef3;
+  --color-text-secondary: #d6b8cc;
+  --color-text-muted: #ad7a98;
+  --color-accent: #ec4899;
+  --color-accent-hover: #f472b6;
+  --color-model-opus: #c084fc;
+  --color-model-sonnet: #fcd34d;
+  --color-model-haiku: #4ade80;
+}
+
+/* Theme: Storm (indigo-tinted, Slate-brightness) */
+[data-theme="Storm"] {
+  --color-background: #1c1f3a;
+  --color-surface: #303556;
+  --color-surface-elevated: #454b6c;
+  --color-border: #636a8c;
+  --color-text-primary: #edeefa;
+  --color-text-secondary: #b8bbda;
+  --color-text-muted: #7e83ad;
+  --color-accent: #6366f1;
+  --color-accent-hover: #818cf8;
+  --color-model-opus: #a78bfa;
+  --color-model-sonnet: #fcd34d;
+  --color-model-haiku: #4ade80;
+}
+
+/* Theme: Aurora (teal-green tinted, Slate-brightness) */
+[data-theme="Aurora"] {
+  --color-background: #1a3230;
+  --color-surface: #2e4f4b;
+  --color-surface-elevated: #416562;
+  --color-border: #5c8582;
+  --color-text-primary: #edf7f6;
+  --color-text-secondary: #b5d6d3;
+  --color-text-muted: #7aadaa;
+  --color-accent: #2dd4bf;
+  --color-accent-hover: #5eead4;
+  --color-model-opus: #c084fc;
+  --color-model-sonnet: #fcd34d;
+  --color-model-haiku: #86efac;
+}
+
 /* Theme: Pearl (clean silver-white light) */
 [data-theme="Pearl"] {
   --color-background: #f8f9fc;

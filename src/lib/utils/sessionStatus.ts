@@ -132,6 +132,29 @@ export function getStatusBgColor(status: string): string {
 }
 
 /**
+ * Map raw Claude SDK agent types to friendly activity-style labels.
+ */
+function getSubagentLabel(agentType: string): string {
+  switch (agentType.toLowerCase()) {
+    case 'explore':
+      return 'Exploring';
+    case 'plan':
+      return 'Planning';
+    case 'general-purpose':
+      return 'Researching';
+    case 'bash':
+      return 'Running';
+    case 'statusline-setup':
+      return 'Configuring';
+    default:
+      if (agentType && agentType.length > 0) {
+        return agentType.charAt(0).toUpperCase() + agentType.slice(1);
+      }
+      return 'Agent';
+  }
+}
+
+/**
  * Get the human-readable label for a status
  */
 export function getStatusLabel(status: string, detail?: string): string {
@@ -159,7 +182,7 @@ export function getStatusLabel(status: string, detail?: string): string {
     case 'tool':
       return detail || 'Tool';
     case 'subagent':
-      return detail || 'Agent';
+      return detail ? getSubagentLabel(detail) : 'Agent';
     case 'thinking':
       return 'Thinking';
     case 'responding':

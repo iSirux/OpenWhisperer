@@ -2,6 +2,8 @@
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
   import { repos } from '$lib/stores/repos';
+  import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
+  import type { EffortLevel } from '$lib/stores/sdkSessions';
 
   interface Message {
     type: string;
@@ -17,6 +19,8 @@
     isPending?: boolean;
     repoName?: string;
     repoPath?: string;
+    model?: string | null;
+    effortLevel?: EffortLevel;
     branch?: string | null;
     firstPrompt?: string | null;
     onClose: () => void;
@@ -29,6 +33,8 @@
     isPending = false,
     repoName = '',
     repoPath = '',
+    model = null,
+    effortLevel = null,
     branch = null,
     firstPrompt = null,
     onClose,
@@ -36,6 +42,11 @@
   }: Props = $props();
 
   const repoConfig = $derived(findRepoByPath($repos.list, repoPath));
+
+  const effortLabel = $derived.by(() => {
+    const labels: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', max: 'Max' };
+    return effortLevel ? labels[effortLevel] ?? null : null;
+  });
 
   let isChatCopied = $state(false);
 
@@ -76,11 +87,19 @@
       <span class="repo-name">{repoName}</span>
       {#if branch}
         <span class="separator">·</span>
-        <svg class="branch-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-        </svg>
         <span class="branch-name">{branch}</span>
       {/if}
+    {/if}
+    {#if model}
+      {#if sessionTime || repoName}<span class="separator">·</span>{/if}
+      <span class="px-1.5 py-0.5 text-[10px] font-medium {getModelBadgeBgColor(model)} {getModelTextColor(model)} rounded flex-shrink-0">
+        {getShortModelName(model)}
+      </span>
+    {/if}
+    {#if effortLabel}
+      <span class="px-1.5 py-0.5 text-[10px] font-medium bg-cyan-600/20 text-cyan-400 rounded flex-shrink-0">
+        {effortLabel}
+      </span>
     {/if}
     {#if firstPrompt}
       {#if sessionTime || repoName}<span class="separator">·</span>{/if}
@@ -155,13 +174,6 @@
     font-size: 0.8rem;
     color: var(--color-text-secondary);
     font-weight: 500;
-    flex-shrink: 0;
-  }
-
-  .branch-icon {
-    width: 0.75rem;
-    height: 0.75rem;
-    color: rgb(96, 165, 250);
     flex-shrink: 0;
   }
 

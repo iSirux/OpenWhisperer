@@ -54,12 +54,12 @@
           $settings.whisper.endpoint =
             "http://localhost:8000/v1/audio/transcriptions";
           $settings.whisper.model =
-            "Systran/faster-whisper-large-v3-turbo";
+            "mobiuslabsgmbh/faster-whisper-large-v3-turbo";
           $settings.whisper.api_key = null;
         } else if (provider === "OpenAI") {
           $settings.whisper.endpoint =
             "https://api.openai.com/v1/audio/transcriptions";
-          $settings.whisper.model = "whisper-1";
+          $settings.whisper.model = "gpt-4o-mini-transcribe";
         } else if (provider === "Groq") {
           $settings.whisper.endpoint =
             "https://api.groq.com/openai/v1/audio/transcriptions";
@@ -167,7 +167,7 @@
           <option value="Systran/faster-whisper-large-v3"
             >large-v3 (1550M) - Best accuracy</option
           >
-          <option value="Systran/faster-whisper-large-v3-turbo"
+          <option value="mobiuslabsgmbh/faster-whisper-large-v3-turbo"
             >large-v3-turbo (809M) - Recommended</option
           >
         </optgroup>
@@ -191,7 +191,13 @@
         class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
         bind:value={$settings.whisper.model}
       >
-        <option value="whisper-1">whisper-1 (default)</option>
+        <option value="gpt-4o-mini-transcribe"
+          >gpt-4o-mini-transcribe (recommended, cheapest)</option
+        >
+        <option value="gpt-4o-transcribe"
+          >gpt-4o-transcribe (best accuracy)</option
+        >
+        <option value="whisper-1">whisper-1 (legacy)</option>
       </select>
     {:else if $settings.whisper.provider === "Groq"}
       <select

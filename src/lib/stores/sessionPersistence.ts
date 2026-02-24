@@ -167,11 +167,21 @@ export interface PersistedSdkMessage {
     height?: number;
   }>;
   tool?: string;
+  toolUseId?: string;
+  parentToolUseId?: string | null;
   input?: Record<string, unknown>;
   output?: string;
   agentId?: string;
   agentType?: string;
   transcriptPath?: string;
+  thinkingDurationMs?: number;
+  // Task lifecycle fields
+  taskId?: string;
+  description?: string;
+  taskType?: string;
+  taskStatus?: string;
+  summary?: string;
+  taskUsage?: { total_tokens: number; tool_uses: number; duration_ms: number };
   timestamp: number;
 }
 
@@ -220,6 +230,7 @@ export interface PersistedSdkSession {
   messages: PersistedSdkMessage[];
   status: string;
   createdAt: number;
+  lastActivityAt?: number;
   startedAt?: number;
   accumulatedDurationMs?: number;
   usage?: SdkSessionUsage;
@@ -311,6 +322,11 @@ function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
         mediaType: img.mediaType as SdkImageContent['mediaType'],
       })),
     }));
+  }
+
+  // Migrate old sessions without lastActivityAt
+  if (!session.lastActivityAt) {
+    session.lastActivityAt = session.createdAt;
   }
 
   // Migrate old thinkingLevel to effortLevel

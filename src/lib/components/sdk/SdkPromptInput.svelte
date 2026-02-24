@@ -288,7 +288,6 @@
         onclick={onStopInlineRecording}
         title="Stop and append to prompt"
       >
-        <div class="inline-recording-pulse"></div>
         <svg class="inline-mic-icon" fill="currentColor" viewBox="0 0 20 20">
           <path
             fill-rule="evenodd"
@@ -346,7 +345,7 @@
         onclick={onStopRecording}
         title="Stop recording and send"
       >
-        <div class="recording-pulse"></div>
+        <div class="recording-dot"></div>
         <svg class="mic-icon" fill="currentColor" viewBox="0 0 20 20">
           <path
             fill-rule="evenodd"
@@ -482,8 +481,8 @@
   }
 
   .record-button {
-    background: var(--color-surface-elevated);
-    color: var(--color-text-secondary);
+    background: var(--color-recording);
+    color: white;
     border: none;
     border-radius: 6px;
     padding: 0.75rem;
@@ -492,18 +491,19 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 0.375rem;
     position: relative;
     min-width: unset;
   }
 
   .record-button:hover {
-    background: var(--color-border);
-    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-recording) 85%, black);
+    color: white;
   }
 
   .record-button.recording {
     background: var(--color-recording);
-    color: var(--color-background);
+    color: white;
   }
 
   .record-button.recording:hover {
@@ -513,15 +513,14 @@
   .mic-icon {
     width: 18px;
     height: 18px;
-    position: relative;
-    z-index: 1;
   }
 
-  .recording-pulse {
-    position: absolute;
-    inset: 0;
-    background: var(--color-recording);
-    border-radius: 6px;
+  .recording-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: white;
+    flex-shrink: 0;
     animation: pulse-recording 1.5s ease-in-out infinite;
   }
 
@@ -532,8 +531,8 @@
       transform: scale(1);
     }
     50% {
-      opacity: 0.7;
-      transform: scale(1.05);
+      opacity: 0.4;
+      transform: scale(0.8);
     }
   }
 
@@ -683,12 +682,13 @@
   }
 
   .inline-record-btn.recording {
-    background: var(--color-accent);
-    color: var(--color-background);
+    background: var(--color-recording);
+    color: white;
+    animation: pulse-inline 1.5s ease-in-out infinite;
   }
 
   .inline-record-btn.recording:hover {
-    background: var(--color-accent-hover);
+    background: color-mix(in srgb, var(--color-recording) 80%, black);
   }
 
   .inline-record-btn.transcribing {
@@ -703,27 +703,15 @@
   .inline-mic-icon {
     width: 14px;
     height: 14px;
-    position: relative;
-    z-index: 1;
-  }
-
-  .inline-recording-pulse {
-    position: absolute;
-    inset: 0;
-    background: var(--color-accent);
-    border-radius: 50%;
-    animation: pulse-inline 1.5s ease-in-out infinite;
   }
 
   @keyframes pulse-inline {
     0%,
     100% {
       opacity: 1;
-      transform: scale(1);
     }
     50% {
-      opacity: 0.7;
-      transform: scale(1.1);
+      opacity: 0.55;
     }
   }
 

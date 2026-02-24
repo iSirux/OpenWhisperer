@@ -1,6 +1,8 @@
 <script lang="ts">
-  import type { SdkMessage } from "$lib/stores/sdkSessions";
+  import type { SdkMessage, EffortLevel } from "$lib/stores/sdkSessions";
+  import { settings } from "$lib/stores/settings";
   import SdkMessageComponent from "./SdkMessage.svelte";
+  import SdkToolGrid from "./SdkToolGrid.svelte";
 
   let {
     taskStarted,
@@ -10,6 +12,7 @@
     onCopy,
     sessionCwd = "",
     sessionModel = "",
+    sessionEffortLevel = null,
   }: {
     taskStarted: SdkMessage;
     children: SdkMessage[];
@@ -18,6 +21,7 @@
     onCopy: (msg: SdkMessage) => void;
     sessionCwd?: string;
     sessionModel?: string;
+    sessionEffortLevel?: EffortLevel;
   } = $props();
 
   let isRunning = $derived(!taskCompleted);
@@ -33,12 +37,20 @@
     taskCompleted?.taskStatus || 'Done'
   );
 
-  // Process children to merge tool_start/tool_result pairs (same logic as SdkView)
+  // Process children to merge tool_start/tool_result pairs.
+  // Children arrive from SdkView's renderItems which already runs processedMessages(),
+  // so completed tools are already merged (tool_start replaced by tool_result with input).
+  // We only need to re-merge if there are still unmerged tool_start messages (running tools).
   let processedChildren = $derived(() => {
     const msgs = children;
-    const result: SdkMessage[] = [];
 
-    // Check if this session has toolUseIds (new format)
+    // If no tool_starts remain, children are fully processed - return as-is.
+    // This avoids double-processing which would wipe the already-merged input data.
+    const hasToolStarts = msgs.some(m => m.type === 'tool_start');
+    if (!hasToolStarts) return msgs;
+
+    // There are still-running tools (tool_start without tool_result) - merge completed pairs
+    const result: SdkMessage[] = [];
     const hasToolUseIds = msgs.some(m => m.toolUseId);
 
     if (hasToolUseIds) {
@@ -70,7 +82,8 @@
           }
         } else if (msg.type === 'tool_result') {
           if (!msg.toolUseId || !outputToolIds.has(msg.toolUseId)) {
-            const input = msg.toolUseId ? toolInputs.get(msg.toolUseId) : undefined;
+            // Preserve existing input from pre-merged results (fallback to msg.input)
+            const input = msg.toolUseId ? (toolInputs.get(msg.toolUseId) ?? msg.input) : msg.input;
             result.push({ ...msg, input });
           }
         } else {
@@ -82,6 +95,52 @@
     }
 
     return result;
+  });
+
+  // Derive the display label: use taskType if available (e.g. "Explore"), else "Task"
+  let taskLabel = $derived(taskStarted.taskType || 'Task');
+
+  let isGridMode = $derived($settings.tool_display_mode === 'grid');
+
+  // Group processed children into render items respecting grid/list setting
+  type ChildRenderItem =
+    | { type: 'message'; message: SdkMessage }
+    | { type: 'tool_group'; tools: SdkMessage[] };
+
+  let childRenderItems = $derived(() => {
+    const msgs = processedChildren();
+    if (msgs.length === 0) return [];
+
+    if (!isGridMode) {
+      return msgs.map((m): ChildRenderItem => ({ type: 'message', message: m }));
+    }
+
+    // Grid mode: group consecutive tool/thinking messages into tool_groups
+    const items: ChildRenderItem[] = [];
+    let currentToolGroup: SdkMessage[] = [];
+
+    for (const msg of msgs) {
+      const isToolMessage =
+        msg.type === 'tool_start' ||
+        msg.type === 'tool_result' ||
+        msg.type === 'thinking';
+
+      if (isToolMessage) {
+        currentToolGroup.push(msg);
+      } else {
+        if (currentToolGroup.length > 0) {
+          items.push({ type: 'tool_group', tools: [...currentToolGroup] });
+          currentToolGroup = [];
+        }
+        items.push({ type: 'message', message: msg });
+      }
+    }
+
+    if (currentToolGroup.length > 0) {
+      items.push({ type: 'tool_group', tools: currentToolGroup });
+    }
+
+    return items;
   });
 
   // Format duration nicely
@@ -96,22 +155,14 @@
 </script>
 
 <div class="task-block" class:task-running={isRunning} class:task-completed={isCompleted} class:task-failed={isFailed} class:task-stopped={isStopped}>
-  <details open={isRunning || children.length <= 6}>
+  <details open>
     <summary class="task-header">
       <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
         <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
       </svg>
-      <div class="task-icon-wrapper">
-        <svg viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1.5 3.25c0-.966.784-1.75 1.75-1.75h2.5c.966 0 1.75.784 1.75 1.75v2.5A1.75 1.75 0 0 1 5.75 7.5H5v1.5h.25a1.75 1.75 0 0 1 1.75 1.75v2.5A1.75 1.75 0 0 1 5.25 15h-2.5A1.75 1.75 0 0 1 1 13.25v-2.5C1 9.784 1.784 9 2.75 9H3V7.5h-.25A1.75 1.75 0 0 1 1 5.75v-2.5Zm9.75 0A1.75 1.75 0 0 0 9.5 5v6a1.75 1.75 0 0 0 1.75 1.75h1a.75.75 0 0 1 .75.75v1.19l2.72-2.72a.75.75 0 0 1 .53-.22h.5a.25.25 0 0 0 .25-.25V5a.25.25 0 0 0-.25-.25h-5.5Z"/>
-        </svg>
-      </div>
-      <span class="task-label">Task</span>
+      <span class="task-label">{taskLabel}</span>
       {#if taskStarted.description}
         <span class="task-description">{taskStarted.description}</span>
-      {/if}
-      {#if taskStarted.taskType}
-        <span class="task-type-badge">{taskStarted.taskType}</span>
       {/if}
       <span class="task-status-badge" class:running={isRunning} class:completed={isCompleted} class:failed={isFailed} class:stopped={isStopped}>
         {#if isRunning}
@@ -133,34 +184,43 @@
       </span>
     </summary>
 
-    <div class="task-children">
-      {#each processedChildren() as childMsg (childMsg.timestamp)}
-        <SdkMessageComponent
-          message={childMsg}
-          {copiedMessageId}
-          {onCopy}
-          {sessionCwd}
-          {sessionModel}
-        />
-      {/each}
-    </div>
+    <div class="task-body">
+      {#if childRenderItems().length > 0}
+        <div class="task-children">
+          {#each childRenderItems() as item, index (item.type === 'tool_group' ? `tool-group-${index}` : item.message.timestamp)}
+            {#if item.type === 'tool_group'}
+              <SdkToolGrid tools={item.tools} />
+            {:else}
+              <SdkMessageComponent
+                message={item.message}
+                {copiedMessageId}
+                {onCopy}
+                {sessionCwd}
+                {sessionModel}
+                {sessionEffortLevel}
+              />
+            {/if}
+          {/each}
+        </div>
+      {/if}
 
-    {#if taskCompleted}
-      <div class="task-footer">
-        {#if taskCompleted.summary}
-          <div class="task-summary">{taskCompleted.summary}</div>
-        {/if}
-        {#if taskCompleted.taskUsage}
-          <div class="task-usage">
-            <span class="usage-item">{taskCompleted.taskUsage.tool_uses} tool calls</span>
-            <span class="usage-separator">&middot;</span>
-            <span class="usage-item">{taskCompleted.taskUsage.total_tokens.toLocaleString()} tokens</span>
-            <span class="usage-separator">&middot;</span>
-            <span class="usage-item">{formatDuration(taskCompleted.taskUsage.duration_ms)}</span>
-          </div>
-        {/if}
-      </div>
-    {/if}
+      {#if taskCompleted?.summary || taskCompleted?.taskUsage}
+        <div class="task-footer">
+          {#if taskCompleted.summary}
+            <div class="task-summary">{taskCompleted.summary}</div>
+          {/if}
+          {#if taskCompleted.taskUsage}
+            <div class="task-usage">
+              <span class="usage-item">{taskCompleted.taskUsage.tool_uses} tool calls</span>
+              <span class="usage-separator">&middot;</span>
+              <span class="usage-item">{taskCompleted.taskUsage.total_tokens.toLocaleString()} tokens</span>
+              <span class="usage-separator">&middot;</span>
+              <span class="usage-item">{formatDuration(taskCompleted.taskUsage.duration_ms)}</span>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </details>
 </div>
 
@@ -221,21 +281,6 @@
     transform: rotate(90deg);
   }
 
-  .task-icon-wrapper {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    color: var(--color-model-opus);
-    flex-shrink: 0;
-  }
-
-  .task-icon-wrapper svg {
-    width: 14px;
-    height: 14px;
-  }
-
   .task-label {
     font-size: 0.8rem;
     font-weight: 600;
@@ -282,24 +327,16 @@
     height: 12px;
   }
 
-  .task-status-badge.running {
+  .task-status-badge.running,
+  .task-status-badge.completed,
+  .task-status-badge.stopped {
     background: color-mix(in srgb, var(--color-model-opus) 15%, transparent);
     color: var(--color-model-opus);
-  }
-
-  .task-status-badge.completed {
-    background: color-mix(in srgb, var(--color-success) 15%, transparent);
-    color: var(--color-success);
   }
 
   .task-status-badge.failed {
     background: color-mix(in srgb, var(--color-error) 15%, transparent);
     color: var(--color-error);
-  }
-
-  .task-status-badge.stopped {
-    background: color-mix(in srgb, var(--color-text-muted) 15%, transparent);
-    color: var(--color-text-muted);
   }
 
   .spinner {
@@ -315,12 +352,20 @@
     to { transform: rotate(360deg); }
   }
 
+  .task-body {
+    max-height: 500px;
+    overflow-y: auto;
+    border-top: 1px solid color-mix(in srgb, var(--color-model-opus) 10%, var(--color-border));
+  }
+
   .task-children {
     display: flex;
     flex-direction: column;
     gap: 0.375rem;
-    padding: 0.375rem 0.75rem;
-    border-top: 1px solid color-mix(in srgb, var(--color-model-opus) 10%, var(--color-border));
+    padding: 0.5rem 0.75rem 0.5rem 1rem;
+    border-left: 2px solid color-mix(in srgb, var(--color-model-opus) 25%, var(--color-border));
+    margin-left: 0.75rem;
+    background: color-mix(in srgb, var(--color-model-opus) 2%, transparent);
   }
 
   .task-footer {

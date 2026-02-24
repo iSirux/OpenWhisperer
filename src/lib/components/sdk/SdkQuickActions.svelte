@@ -31,7 +31,6 @@
 {#if hasAnyActions}
 <div class="quick-actions" class:no-border={hasOutcomeAbove}>
   {#if customActions.length > 0}
-    <span class="quick-actions-label">Quick actions:</span>
     <div class="quick-actions-buttons">
       {#each customActions as action}
         <button
@@ -45,12 +44,6 @@
   {/if}
 
   {#if contextualActions.length > 0}
-    <span class="quick-actions-label contextual-label">
-      <svg class="contextual-icon" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 2L9.19 8.63L2 9.24l5.46 4.73L5.82 21L12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2z"/>
-      </svg>
-      Suggested:
-    </span>
     <div class="quick-actions-buttons">
       {#each contextualActions as action}
         <button
@@ -70,35 +63,13 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.5rem;
-    padding: 0.75rem 0;
-    margin-top: 0.5rem;
+    gap: 0.375rem;
+    padding: 0.375rem 0 0.25rem;
     border-top: 1px dashed var(--color-border);
   }
 
   .quick-actions.no-border {
     border-top: none;
-    margin-top: 0;
-    padding-top: 0.5rem;
-  }
-
-  .quick-actions-label {
-    font-size: 0.75rem;
-    color: var(--color-text-muted);
-    white-space: nowrap;
-  }
-
-  .contextual-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    color: var(--color-accent);
-    opacity: 0.8;
-  }
-
-  .contextual-icon {
-    width: 0.75rem;
-    height: 0.75rem;
   }
 
   .quick-actions-buttons {

@@ -206,6 +206,27 @@
     </p>
   {/if}
 
+  <!-- Todo progress (SDK sessions with TodoWrite calls) -->
+  {#if session.type === "sdk" && session.todoProgress && size !== 'small'}
+    <div class="flex items-center gap-2 mb-1.5">
+      <div class="flex-1 h-1 bg-border rounded-full overflow-hidden">
+        <div
+          class="h-full bg-emerald-400 rounded-full transition-all"
+          style="width:{Math.round(
+            (session.todoProgress.completed /
+              session.todoProgress.total) *
+              100,
+          )}%"
+        ></div>
+      </div>
+      <span
+        class="{sizeClasses.text} text-text-muted font-mono tabular-nums flex-shrink-0"
+      >
+        {session.todoProgress.completed}/{session.todoProgress.total}
+      </span>
+    </div>
+  {/if}
+
   <!-- Repo name, branch -->
   <div class="flex items-center gap-1.5 text-text-muted">
     <RepoIcon repo={findRepoByPath($repos.list, session.repoPath)} size="xs" />

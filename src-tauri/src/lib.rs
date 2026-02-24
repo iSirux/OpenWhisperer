@@ -256,6 +256,7 @@ pub fn run() {
             settings_cmds::get_config_load_status,
             settings_cmds::get_config_paths,
             settings_cmds::open_config_file,
+            settings_cmds::open_config_folder,
             settings_cmds::save_config,
             settings_cmds::add_repo,
             settings_cmds::remove_repo,

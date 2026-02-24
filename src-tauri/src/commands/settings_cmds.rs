@@ -31,6 +31,43 @@ pub fn get_config_paths() -> (String, String) {
     )
 }
 
+/// Opens the config directory in the system's file explorer.
+#[tauri::command]
+pub fn open_config_folder() -> Result<(), String> {
+    let dir = AppConfig::config_dir();
+
+    if !dir.exists() {
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open config folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open config folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open config folder: {}", e))?;
+    }
+
+    Ok(())
+}
+
 /// Opens the config file in the system's default editor.
 #[tauri::command]
 pub fn open_config_file() -> Result<(), String> {

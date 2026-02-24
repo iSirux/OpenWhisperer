@@ -213,9 +213,7 @@
         <span
           class="text-xs font-medium flex items-center gap-1 {urgency === 'high'
             ? 'text-orange-400'
-            : urgency === 'medium'
-              ? 'text-yellow-400'
-              : 'text-blue-400'}"
+            : 'text-yellow-400'}"
           title={session.aiMetadata.interactionReason || "Needs your input"}
         >
           <svg
@@ -321,6 +319,27 @@
     </div>
   {/if}
 
+  <!-- Todo progress (SDK sessions with TodoWrite calls) -->
+  {#if session.type === "sdk" && session.todoProgress}
+    <div class="flex items-center gap-2 mb-1.5">
+      <div class="flex-1 h-1 bg-border rounded-full overflow-hidden">
+        <div
+          class="h-full bg-emerald-400 rounded-full transition-all"
+          style="width:{Math.round(
+            (session.todoProgress.completed /
+              session.todoProgress.total) *
+              100,
+          )}%"
+        ></div>
+      </div>
+      <span
+        class="text-[10px] text-text-muted font-mono tabular-nums flex-shrink-0"
+      >
+        {session.todoProgress.completed}/{session.todoProgress.total}
+      </span>
+    </div>
+  {/if}
+
   <!-- Latest message preview (SDK sessions only, hide when showing outcome) -->
   {#if showLatestMessage && session.type === "sdk" && session.latestMessage && !session.aiMetadata?.outcome}
     <p
@@ -359,9 +378,9 @@
     position: relative;
   }
 
-  /* Active/focused session - accent border only */
+  /* Active/focused session - white background */
   .session-item.active {
-    border-left: 3px solid var(--color-accent);
+    background-color: rgba(255, 255, 255, 0.12);
   }
 
   /* Unread session - background highlight */
@@ -371,7 +390,6 @@
 
   /* Both active and unread */
   .session-item.active.unread {
-    background-color: rgba(99, 102, 241, 0.15);
-    border-left: 3px solid var(--color-accent);
+    background-color: rgba(255, 255, 255, 0.12);
   }
 </style>

@@ -15,3 +15,4 @@ export { default as ReposTab } from "./ReposTab.svelte";
 export { default as McpTab } from "./McpTab.svelte";
 export { default as VoiceCommandsTab } from "./VoiceCommandsTab.svelte";
 export { default as SequencesTab } from "./SequencesTab.svelte";
+export { default as AboutTab } from "./AboutTab.svelte";
