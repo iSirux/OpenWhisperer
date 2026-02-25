@@ -103,7 +103,137 @@
   <!-- Header row -->
   <div class="flex items-center justify-between mb-2">
     <div class="flex items-center {sizeClasses.gap}">
-      {#if session.type === 'sdk' && session.model}
+      {#if session.noteMode?.isActive}
+        <!-- Note mode badge takes priority -->
+        <span
+          class="{sizeClasses.badge} font-medium bg-amber-500/20 text-amber-400 rounded flex items-center gap-1"
+          title={session.noteMode.noteCreated
+            ? "Note created"
+            : "Taking note..."}
+        >
+          <svg
+            class="w-2.5 h-2.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+            />
+          </svg>
+          Note
+        </span>
+      {:else if session.planMode?.isActive}
+        <!-- Planning badge - changes color when awaiting plan approval -->
+        <span
+          class="{sizeClasses.badge} font-medium rounded flex items-center gap-1 {
+            session.pendingPlanApproval
+              ? 'bg-orange-500/20 text-orange-400'
+              : 'bg-cyan-500/20 text-cyan-400'
+          }"
+          title={session.pendingPlanApproval
+            ? "Plan ready for review"
+            : session.planMode.isComplete
+              ? "Planning complete"
+              : "Planning in progress"}
+        >
+          <svg
+            class="w-2.5 h-2.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            {#if session.pendingPlanApproval}
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            {:else}
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+              />
+            {/if}
+          </svg>
+          {session.pendingPlanApproval ? "Review Plan" : session.planMode.isComplete ? "Plan" : "Planning"}
+        </span>
+      {:else if session.askUserQuestion}
+        <!-- AskUserQuestion badge -->
+        <span
+          class="{sizeClasses.badge} font-medium bg-orange-500/20 text-orange-400 rounded flex items-center gap-1"
+          title="Claude is asking a question"
+        >
+          <svg
+            class="w-2.5 h-2.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+          Input Needed
+        </span>
+      {:else if session.status === "prepared"}
+        <!-- Prepared badge (teal) -->
+        <span
+          class="{sizeClasses.badge} font-medium bg-teal-500/20 text-teal-400 rounded flex items-center gap-1"
+          title="Session prepared - ready to launch"
+        >
+          <svg
+            class="w-2.5 h-2.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+            />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+          Prepared
+        </span>
+      {:else if session.type === "sequence"}
+        <!-- Sequence badge -->
+        <span
+          class="{sizeClasses.badge} font-medium bg-indigo-500/20 text-indigo-400 rounded flex items-center gap-1"
+          title="Sequence execution"
+        >
+          <svg
+            class="w-2.5 h-2.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M13 10V3L4 14h7v7l9-11h-7z"
+            />
+          </svg>
+          Sequence
+        </span>
+      {:else if session.type === 'sdk' && session.model}
         <span
           class="{sizeClasses.badge} font-medium {getModelBadgeBgColor(session.model)} {getModelTextColor(session.model)} rounded"
         >

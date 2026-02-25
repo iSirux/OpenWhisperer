@@ -1030,6 +1030,78 @@
                   </div>
                 </div>
               </button>
+
+              <!-- Generate Branch Names -->
+              <button
+                class="w-full flex items-center justify-between p-3 rounded border-2 transition-all text-left {$settings
+                  .llm.features.generate_branch_names
+                  ? 'border-accent bg-accent/10'
+                  : 'border-border hover:border-border/80'}"
+                onclick={() =>
+                  settings.update((s) => ({
+                    ...s,
+                    llm: {
+                      ...s.llm,
+                      features: {
+                        ...s.llm.features,
+                        generate_branch_names:
+                          !s.llm.features.generate_branch_names,
+                      },
+                    },
+                  }))}
+              >
+                <div class="flex items-center gap-3">
+                  <div
+                    class="w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0"
+                    class:border-accent={$settings.llm.features
+                      .generate_branch_names}
+                    class:bg-accent={$settings.llm.features
+                      .generate_branch_names}
+                    class:border-border={!$settings.llm.features
+                      .generate_branch_names}
+                  >
+                    {#if $settings.llm.features.generate_branch_names}
+                      <svg
+                        class="w-3 h-3 text-white"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="3"
+                          d="M5 13l4 4L19 7"
+                        />
+                      </svg>
+                    {/if}
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <svg
+                        class="w-4 h-4 text-text-secondary"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"
+                        />
+                      </svg>
+                      <span class="text-sm font-medium text-text-primary"
+                        >Generate Branch Names</span
+                      >
+                    </div>
+                    <p class="text-xs text-text-muted mt-0.5">
+                      Use AI to generate descriptive branch names when creating
+                      new worktrees
+                    </p>
+                  </div>
+                </div>
+              </button>
             </div>
 
             <!-- Sub-options for auto-select repo -->

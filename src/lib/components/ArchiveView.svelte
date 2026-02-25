@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { archive } from '$lib/stores/archive';
+  import { navigation } from '$lib/stores/navigation';
   import ArchiveEntryItem from './ArchiveEntryItem.svelte';
 
   interface Props {
@@ -13,6 +14,7 @@
   let activeFilter = $state<string | null>(null);
   let searchTimeout: ReturnType<typeof setTimeout> | null = null;
   let confirmClear = $state(false);
+  let restoringId = $state<string | null>(null);
 
   const entries = archive.entries;
   const totalCount = archive.totalCount;
@@ -39,6 +41,21 @@
 
   async function handleDelete(id: string) {
     await archive.deleteEntry(id);
+  }
+
+  async function handleRestore(id: string) {
+    if (restoringId) return;
+    restoringId = id;
+    try {
+      const result = await archive.unarchiveEntry(id);
+      if (result) {
+        navigation.showSessions();
+      }
+    } catch (error) {
+      console.error('[archive] Failed to restore entry:', error);
+    } finally {
+      restoringId = null;
+    }
   }
 
   async function handleClearAll() {
@@ -190,7 +207,12 @@
       </div>
     {:else}
       {#each $entries as entry (entry.id)}
-        <ArchiveEntryItem {entry} ondelete={handleDelete} />
+        <ArchiveEntryItem
+          {entry}
+          ondelete={handleDelete}
+          onrestore={handleRestore}
+          restoring={restoringId === entry.id}
+        />
       {/each}
 
       <!-- Load more / status -->

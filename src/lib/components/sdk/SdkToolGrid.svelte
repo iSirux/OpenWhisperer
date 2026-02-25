@@ -220,6 +220,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 0.375rem;
+    min-width: 0;
   }
 
   .tool-card {

@@ -26,6 +26,12 @@ export interface RepoConfig {
   tags: string[];
   /** Whether this repo is active (shown in selectors, eligible for auto-select). Defaults to true. */
   active?: boolean;
+  /** Files to copy from main worktree when creating a new worktree (e.g., ".env", "settings.local.json") */
+  worktree_copy_files?: string[];
+  /** Commands to run in a new worktree after creation (e.g., "npm install") */
+  worktree_post_create_commands?: string[];
+  /** Last selected worktree mode for this repo: "main", "new", or "existing" */
+  worktree_mode?: 'main' | 'new' | 'existing';
 }
 
 /** Helper: treat undefined/missing active field as true for backward compatibility */

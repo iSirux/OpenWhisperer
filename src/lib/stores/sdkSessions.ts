@@ -7,7 +7,7 @@ import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
-import { isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
+import { getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import type { McpServerConfig } from '$lib/types/mcp';
 
 // =============================================================================
@@ -16,6 +16,17 @@ import type { McpServerConfig } from '$lib/types/mcp';
 
 let saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const SAVE_DEBOUNCE_MS = 2000;
+
+function normalizeSdkProvider(provider: unknown, model: string): SdkProvider {
+  const modelProvider = getProviderForModel(model);
+  if (provider === 'openai' || provider === 'OpenAI') {
+    return modelProvider === 'openai' ? 'openai' : modelProvider;
+  }
+  if (provider === 'claude' || provider === 'Claude') {
+    return modelProvider === 'claude' ? 'claude' : modelProvider;
+  }
+  return modelProvider;
+}
 
 function debouncedSave(): void {
   if (saveDebounceTimer) {
@@ -151,6 +162,10 @@ export interface AskUserQuestionState {
   currentQuestionIndex: number;
 }
 
+export interface PlanApprovalState {
+  allowedPrompts: Array<{ tool: string; prompt: string }>;
+}
+
 export interface NoteModeState {
   isActive: boolean;
   /** Track if the initial note was created */
@@ -231,6 +246,7 @@ export interface SdkSession {
   currentBranch?: string | null;
   model: string;
   provider?: SdkProvider;
+  readOnlyMode?: boolean;
   autoModelRequested?: boolean;
   effortLevel: EffortLevel;
   /** @deprecated Use effortLevel */
@@ -252,6 +268,7 @@ export interface SdkSession {
   planMode?: PlanModeState;
   noteMode?: NoteModeState;
   askUserQuestion?: AskUserQuestionState;
+  pendingPlanApproval?: PlanApprovalState;
   draftPrompt?: string;
   draftImages?: SdkImageContent[];
   /** SDK session ID for proper resume after app restart (persisted) */
@@ -405,22 +422,16 @@ function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progres
   };
 }
 
-/** Clear progressive ("live") usage values once a query is no longer running */
+/** Clear progressive ("live") usage values once a query is no longer running.
+ *  Preserves the contextUsagePercent already set by processQueryUsage() —
+ *  that value is based on the last query's tokens which already represent
+ *  the full conversation context (Claude includes all history in each API call).
+ *  Recalculating from accumulated totals across all queries would overcount. */
 function clearProgressiveUsage(prevUsage: SdkSessionUsage | undefined): SdkSessionUsage | undefined {
   if (!prevUsage) return prevUsage;
-  const totalContextTokens =
-    prevUsage.totalInputTokens +
-    prevUsage.totalCacheReadTokens +
-    prevUsage.totalCacheCreationTokens +
-    prevUsage.totalOutputTokens;
-  const contextUsagePercent =
-    prevUsage.contextWindow > 0
-      ? Math.min(100, (totalContextTokens / prevUsage.contextWindow) * 100)
-      : 0;
 
   return {
     ...prevUsage,
-    contextUsagePercent,
     progressiveInputTokens: 0,
     progressiveOutputTokens: 0,
     progressiveCacheReadTokens: 0,
@@ -889,6 +900,23 @@ function createSdkSessionsStore() {
       })
     );
 
+    // Plan approval request - ExitPlanMode intercepted, waiting for user decision
+    unlisteners.push(
+      await listen<{ allowedPrompts: Array<{ tool: string; prompt: string }> }>(
+        `sdk-plan-approval-request-${id}`, (e) => {
+          update(sessions => sessions.map(s => {
+            if (s.id !== id) return s;
+            return {
+              ...s,
+              pendingPlanApproval: {
+                allowedPrompts: e.payload.allowedPrompts,
+              },
+            };
+          }));
+        }
+      )
+    );
+
     // SDK session ID events - capture for proper resume after app restart
     unlisteners.push(
       await listen<string>(`sdk-session-id-${id}`, (e) => {
@@ -901,18 +929,26 @@ function createSdkSessionsStore() {
     );
 
     // Parallel session notification - another session was started in the same CWD
-    // Deduplicate: if the last message is already a parallel notification, update its timestamp instead of spamming
+    // Deduplicate within the whole chat session: if already present anywhere, refresh timestamp.
     unlisteners.push(
       await listen<string>(`sdk-parallel-notification-${id}`, (e) => {
         console.log(`[sdkSessions] Parallel session notification for ${id}: ${e.payload}`);
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
-            const lastMsg = s.messages[s.messages.length - 1];
-            if (lastMsg && lastMsg.type === 'notification' && lastMsg.content === e.payload) {
-              // Already showing this notification - just update timestamp
+            let existingIndex = -1;
+            for (let i = s.messages.length - 1; i >= 0; i--) {
+              const m = s.messages[i];
+              if (m.type === 'notification' && m.content === e.payload) {
+                existingIndex = i;
+                break;
+              }
+            }
+            if (existingIndex !== -1) {
+              // Already shown in this chat - just update timestamp.
               const updatedMessages = [...s.messages];
-              updatedMessages[updatedMessages.length - 1] = { ...lastMsg, timestamp: Date.now() };
+              const existingMsg = updatedMessages[existingIndex];
+              updatedMessages[existingIndex] = { ...existingMsg, timestamp: Date.now() };
               return { ...s, messages: updatedMessages };
             }
             return {
@@ -948,10 +984,12 @@ function createSdkSessionsStore() {
     noteMode?: boolean,
     provider?: string,
     forkFromSdkSessionId?: string | null, // SDK session ID to fork from
-    forkAtMessageUuid?: string | null // Message UUID to fork at (resumeSessionAt)
+    forkAtMessageUuid?: string | null, // Message UUID to fork at (resumeSessionAt)
+    readOnlyMode?: boolean
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
+    const resolvedProvider = normalizeSdkProvider(provider, resolvedModel);
 
     // Determine which MCP servers to use
     // For note mode: use note_mcp_servers from repo config
@@ -1042,15 +1080,16 @@ function createSdkSessionsStore() {
       id,
       cwd,
       model: resolvedModel,
-      codexMode: provider === 'openai' ? currentSettings.codex_mode : null,
+      codexMode: resolvedProvider === 'openai' ? currentSettings.codex_mode : null,
       systemPrompt: systemPrompt ?? null,
       // Only send history messages if we don't have an SDK session ID (legacy fallback)
       messages: !usesSdkSessionId && historyMessages && historyMessages.length > 0 ? historyMessages : null,
       sdkSessionId: usesSdkSessionId ? sdkSessionId : null,
       planMode: planMode ?? null,
       noteMode: noteMode ?? null,
+      readOnlyMode: readOnlyMode ?? null,
       mcpServers: mcpServers && mcpServers.length > 0 ? mcpServers : null,
-      provider: provider ?? null,
+      provider: resolvedProvider,
       forkFromSdkSessionId: forkFromSdkSessionId ?? null,
       forkAtMessageUuid: forkAtMessageUuid ?? null,
     });
@@ -1108,6 +1147,7 @@ function createSdkSessionsStore() {
 
       const id = crypto.randomUUID();
       const autoModelRequested = isAutoModel(model);
+      const resolvedProvider = normalizeSdkProvider(provider, model);
 
       const effectiveEffort = modelSupportsEffort(model) ? effortLevel : null;
 
@@ -1115,7 +1155,7 @@ function createSdkSessionsStore() {
         id,
         cwd,
         model,
-        provider,
+        provider: resolvedProvider,
         autoModelRequested,
         effortLevel: effectiveEffort,
         messages: [],
@@ -1130,7 +1170,7 @@ function createSdkSessionsStore() {
       // For Codex sessions in the same CWD, queue pending notifications
       // (Claude sessions are handled by the sidecar via PreToolUse hook + parallel_session_notification event)
       const currentSettings = get(settings);
-      if (currentSettings.notify_parallel_agents && provider === 'openai') {
+      if (currentSettings.notify_parallel_agents && resolvedProvider === 'openai') {
         let currentSessions: SdkSession[] = [];
         subscribe(s => { currentSessions = s; })();
 
@@ -1154,12 +1194,20 @@ function createSdkSessionsStore() {
           update(sessions =>
             sessions.map(s => {
               if (parallelCodexSessions.some(p => p.id === s.id)) {
-                // Deduplicate: if the last message is already this notification, update timestamp instead of spamming
-                const lastMsg = s.messages[s.messages.length - 1];
+                // Deduplicate within the whole chat session.
+                let existingIndex = -1;
+                for (let i = s.messages.length - 1; i >= 0; i--) {
+                  const m = s.messages[i];
+                  if (m.type === 'notification' && m.content === notificationContent) {
+                    existingIndex = i;
+                    break;
+                  }
+                }
                 let messages: typeof s.messages;
-                if (lastMsg && lastMsg.type === 'notification' && lastMsg.content === notificationContent) {
+                if (existingIndex !== -1) {
                   messages = [...s.messages];
-                  messages[messages.length - 1] = { ...lastMsg, timestamp: Date.now() };
+                  const existingMsg = messages[existingIndex];
+                  messages[existingIndex] = { ...existingMsg, timestamp: Date.now() };
                 } else {
                   messages = [...s.messages, {
                     type: 'notification' as const,
@@ -1167,13 +1215,13 @@ function createSdkSessionsStore() {
                     timestamp: Date.now(),
                   }];
                 }
+                const pendingSystemNotifications = s.pendingSystemNotifications || [];
                 return {
                   ...s,
                   messages,
-                  pendingSystemNotifications: [
-                    ...(s.pendingSystemNotifications || []),
-                    notificationText,
-                  ],
+                  pendingSystemNotifications: pendingSystemNotifications.includes(notificationText)
+                    ? pendingSystemNotifications
+                    : [...pendingSystemNotifications, notificationText],
                 };
               }
               return s;
@@ -1185,7 +1233,7 @@ function createSdkSessionsStore() {
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
-      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, planMode, undefined, provider);
+      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, planMode, undefined, resolvedProvider);
       await syncSessionBranchMetadata(id, cwd);
 
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1214,7 +1262,7 @@ function createSdkSessionsStore() {
         id, session.cwd, session.model, session.effortLevel,
         null, historyMessages, session.sdkSessionId,
         undefined, undefined, session.provider,
-        session.forkFromSdkSessionId, session.forkAtMessageUuid
+        session.forkFromSdkSessionId, session.forkAtMessageUuid, session.readOnlyMode
       );
     },
 
@@ -1251,7 +1299,8 @@ function createSdkSessionsStore() {
             sourceSession.effortLevel,
             false,
             sourceSession.provider,
-            sourceSession.cwd
+            sourceSession.cwd,
+            sourceSession.readOnlyMode ?? false
           );
           this.updateDraft(newId, targetMessage.content || '', targetMessage.images);
           return newId;
@@ -1287,6 +1336,7 @@ function createSdkSessionsStore() {
         cwd: sourceSession.cwd,
         model: sourceSession.model,
         provider: sourceSession.provider,
+        readOnlyMode: sourceSession.readOnlyMode,
         effortLevel: sourceSession.effortLevel,
         messages: parentMessages,
         status: 'idle',
@@ -1309,7 +1359,7 @@ function createSdkSessionsStore() {
         id, sourceSession.cwd, sourceSession.model, sourceSession.effortLevel,
         null, null, null,
         undefined, undefined, sourceSession.provider,
-        sourceSession.sdkSessionId, forkAtUuid
+        sourceSession.sdkSessionId, forkAtUuid, sourceSession.readOnlyMode
       );
 
       return id;
@@ -1494,7 +1544,7 @@ function createSdkSessionsStore() {
       if (liveSessions.has(id)) {
         try {
           await invoke('close_sdk_session', { id });
-          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, undefined, undefined, session.provider);
+          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, undefined, undefined, session.provider, undefined, undefined, session.readOnlyMode);
         } catch (error) {
           console.error('[sdkSessions] Failed to reinitialize backend session:', error);
         }
@@ -1509,14 +1559,16 @@ function createSdkSessionsStore() {
       update(sessions => sessions.map(s => s.id === id ? { ...s, draftPrompt, draftImages } : s));
     },
 
-    createSetupSession(model: string, effortLevel: EffortLevel, planMode: boolean = false, provider?: SdkProvider, initialCwd: string = ''): string {
+    createSetupSession(model: string, effortLevel: EffortLevel, planMode: boolean = false, provider?: SdkProvider, initialCwd: string = '', readOnlyMode: boolean = false): string {
       const id = crypto.randomUUID();
+      const resolvedProvider = normalizeSdkProvider(provider, model);
 
       const session: SdkSession = {
         id,
         cwd: initialCwd,
         model,
-        provider,
+        provider: resolvedProvider,
+        readOnlyMode,
         effortLevel,
         messages: [],
         status: 'setup',
@@ -1530,7 +1582,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; systemPrompt?: string; provider?: SdkProvider }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -1542,6 +1594,7 @@ function createSdkSessionsStore() {
                 cwd: config.cwd,
                 model: config.noteMode ? 'claude-haiku-4-5-20251001' : config.model, // Note mode always uses Haiku
                 effortLevel: config.noteMode ? null : config.effortLevel, // Note mode doesn't use effort
+                readOnlyMode: config.noteMode ? false : (config.readOnlyMode ?? false),
                 status: 'initializing' as const,
                 planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
                 noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
@@ -1568,8 +1621,9 @@ function createSdkSessionsStore() {
         // Note mode uses Haiku and no effort
         const finalModel = config.noteMode ? 'claude-haiku-4-5-20251001' : config.model;
         const finalEffort = config.noteMode ? null : config.effortLevel;
+        const finalProvider = normalizeSdkProvider(config.provider, finalModel);
 
-        await registerSessionWithBackend(id, config.cwd, finalModel, finalEffort, finalSystemPrompt, null, null, config.planMode, config.noteMode, config.provider);
+        await registerSessionWithBackend(id, config.cwd, finalModel, finalEffort, finalSystemPrompt, null, null, config.planMode, config.noteMode, finalProvider, undefined, undefined, config.noteMode ? false : (config.readOnlyMode ?? false));
         await syncSessionBranchMetadata(id, config.cwd);
 
         const currentSettings = get(settings);
@@ -1598,12 +1652,13 @@ function createSdkSessionsStore() {
 
     createPendingTranscriptionSession(model: string, effortLevel: EffortLevel, provider?: SdkProvider): string {
       const id = crypto.randomUUID();
+      const resolvedProvider = normalizeSdkProvider(provider, model);
 
       const session: SdkSession = {
         id,
         cwd: '',
         model,
-        provider,
+        provider: resolvedProvider,
         effortLevel: modelSupportsEffort(model) ? effortLevel : null,
         messages: [],
         status: 'pending_transcription',
@@ -1818,12 +1873,13 @@ function createSdkSessionsStore() {
 
     createPendingRepoSession(model: string, effortLevel: EffortLevel, pendingRepoSelection: PendingRepoSelection, provider?: SdkProvider): string {
       const id = crypto.randomUUID();
+      const resolvedProvider = normalizeSdkProvider(provider, model);
 
       const session: SdkSession = {
         id,
         cwd: '',
         model,
-        provider,
+        provider: resolvedProvider,
         effortLevel,
         messages: [],
         status: 'pending_repo',
@@ -1846,12 +1902,13 @@ function createSdkSessionsStore() {
 
     createInitializingSession(cwd: string, model: string, effortLevel: EffortLevel, pendingPrompt: string, provider?: SdkProvider): string {
       const id = crypto.randomUUID();
+      const resolvedProvider = normalizeSdkProvider(provider, model);
 
       const session: SdkSession = {
         id,
         cwd,
         model,
-        provider,
+        provider: resolvedProvider,
         effortLevel,
         messages: [],
         status: 'initializing',
@@ -2242,6 +2299,44 @@ function createSdkSessionsStore() {
           return { ...s, askUserQuestion: undefined };
         })
       );
+    },
+
+    // --- Plan Approval (ExitPlanMode interception) ---
+
+    async approvePlan(id: string): Promise<void> {
+      this.clearPlanApproval(id);
+      await invoke('answer_plan_approval', { id, action: 'approve', feedback: null });
+    },
+
+    async approvePlanNewSession(id: string): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
+
+      this.clearPlanApproval(id);
+      // Allow ExitPlanMode so the planning session completes cleanly
+      await invoke('answer_plan_approval', { id, action: 'approve_new_session', feedback: null });
+
+      // Mark planning session as done
+      update(sessions => sessions.map(s =>
+        s.id === id ? { ...s, status: 'done' as const } : s
+      ));
+
+      // Spawn implementation session (reuses existing spawnImplementationSession pattern)
+      if (session) {
+        await this.spawnImplementationSession(id);
+      }
+    },
+
+    async denyPlan(id: string, feedback: string): Promise<void> {
+      this.clearPlanApproval(id);
+      await invoke('answer_plan_approval', { id, action: 'deny', feedback });
+    },
+
+    clearPlanApproval(id: string): void {
+      update(sessions => sessions.map(s => {
+        if (s.id !== id) return s;
+        return { ...s, pendingPlanApproval: undefined };
+      }));
     },
 
     completePlanMode(id: string, planFilePath: string, featureName: string, planSummary: string): void {

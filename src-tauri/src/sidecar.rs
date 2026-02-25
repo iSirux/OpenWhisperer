@@ -57,6 +57,8 @@ pub enum OutboundMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         note_mode: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        read_only_mode: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         mcp_servers: Option<Vec<McpServerConfig>>,
         /// SDK session ID to fork from (creates a new branch from parent session)
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,6 +104,13 @@ pub enum OutboundMessage {
     AnswerAskUserQuestion {
         id: String,
         answers: std::collections::HashMap<String, String>,
+    },
+    /// User's decision on ExitPlanMode plan approval
+    AnswerPlanApproval {
+        id: String,
+        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        feedback: Option<String>,
     },
 }
 
@@ -275,6 +284,12 @@ pub enum InboundMessage {
     AskUserQuestions {
         id: String,
         questions: Vec<PlanningQuestion>,
+    },
+    /// ExitPlanMode intercepted - plan ready for user approval
+    PlanApprovalRequest {
+        id: String,
+        #[serde(rename = "allowedPrompts")]
+        allowed_prompts: Vec<serde_json::Value>,
     },
     /// Result from Claude SDK repo description generation
     RepoDescriptionResult {
@@ -747,6 +762,22 @@ impl SidecarManager {
                 let _ = app.emit(
                     &format!("sdk-ask-user-questions-{}", id),
                     serde_json::to_value(&questions).unwrap_or_default(),
+                );
+            }
+            InboundMessage::PlanApprovalRequest {
+                id,
+                allowed_prompts,
+            } => {
+                println!(
+                    "[sidecar] Plan approval request for session {}: {} allowed prompts",
+                    id,
+                    allowed_prompts.len()
+                );
+                let _ = app.emit(
+                    &format!("sdk-plan-approval-request-{}", id),
+                    serde_json::json!({
+                        "allowedPrompts": allowed_prompts,
+                    }),
                 );
             }
             InboundMessage::RepoDescriptionResult {

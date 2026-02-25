@@ -10,7 +10,6 @@
   import { activeRepo, isAutoRepoSelected } from "$lib/stores/repos";
   import { isRepoAutoSelectEnabled } from "$lib/utils/llm";
   import { overlay } from "$lib/stores/overlay";
-  import StatusBadge from "./StatusBadge.svelte";
   import RepoIcon from "./RepoIcon.svelte";
   import Waveform from "./Waveform.svelte";
   import TranscriptMarquee from "./TranscriptMarquee.svelte";
@@ -275,12 +274,6 @@
             <span class="text-text-secondary truncate"
               >{$activeRepo.name}</span
             >
-          {/if}
-          {#if $activeRepo && !($isAutoRepoSelected && isRepoAutoSelectEnabled())}
-            <StatusBadge
-              createBranch={$settings.git.create_branch}
-              autoMerge={$settings.git.auto_merge}
-            />
           {/if}
         </div>
       {/if}

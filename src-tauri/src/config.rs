@@ -329,23 +329,18 @@ impl Default for VoskConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// @deprecated Legacy GitConfig kept only for deserialization of old configs.
+/// New worktree settings are per-repo on `RepoConfig`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitConfig {
+    #[serde(default)]
     pub create_branch: bool,
+    #[serde(default)]
     pub auto_merge: bool,
+    #[serde(default)]
     pub create_pr: bool,
+    #[serde(default)]
     pub use_worktrees: bool,
-}
-
-impl Default for GitConfig {
-    fn default() -> Self {
-        Self {
-            create_branch: false,
-            auto_merge: false,
-            create_pr: false,
-            use_worktrees: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1119,10 +1114,23 @@ pub struct RepoConfig {
     /// Defaults to true for backward compatibility with existing configs.
     #[serde(default = "default_true")]
     pub active: bool,
+    /// Files to copy from main worktree when creating a new worktree (e.g., ".env", "settings.local.json")
+    #[serde(default)]
+    pub worktree_copy_files: Vec<String>,
+    /// Commands to run in a new worktree after creation (e.g., "npm install")
+    #[serde(default)]
+    pub worktree_post_create_commands: Vec<String>,
+    /// Last selected worktree mode for this repo: "main", "new", or "existing"
+    #[serde(default = "default_worktree_mode")]
+    pub worktree_mode: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_worktree_mode() -> String {
+    "main".to_string()
 }
 
 /// SDK provider for the main coding agent (Claude or OpenAI Codex)
@@ -1705,6 +1713,9 @@ pub struct LlmFeaturesConfig {
     /// Auto-select repository based on prompt content
     #[serde(default)]
     pub auto_select_repo: bool,
+    /// Use LLM to generate descriptive branch names for new worktrees
+    #[serde(default = "default_true")]
+    pub generate_branch_names: bool,
 }
 
 impl Default for LlmFeaturesConfig {
@@ -1718,6 +1729,7 @@ impl Default for LlmFeaturesConfig {
             recommend_model: true,
             auto_model_effort: AutoModelEffort::default(),
             auto_select_repo: true,
+            generate_branch_names: true,
         }
     }
 }

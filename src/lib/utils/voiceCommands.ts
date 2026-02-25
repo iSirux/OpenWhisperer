@@ -1,5 +1,5 @@
 import { get } from "svelte/store";
-import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS, NOTE_COMMAND_PRESETS, SEQUENCE_COMMAND_PRESETS, APPROVE_COMMAND_PRESETS, REJECT_COMMAND_PRESETS, PREPARE_COMMAND_PRESETS } from "$lib/stores/settings";
+import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS, NOTE_COMMAND_PRESETS, SEQUENCE_COMMAND_PRESETS, APPROVE_COMMAND_PRESETS, REJECT_COMMAND_PRESETS, PREPARE_COMMAND_PRESETS, isNoteModeAvailable } from "$lib/stores/settings";
 
 /** Type of voice command action */
 export type VoiceCommandType = 'send' | 'transcribe' | 'cancel' | 'note' | 'sequence' | 'approve' | 'reject' | 'prepare' | null;
@@ -69,6 +69,9 @@ export function getActiveCancelCommands(): string[] {
  * Get the list of active note commands
  */
 export function getActiveNoteCommands(): string[] {
+  if (!isNoteModeAvailable()) {
+    return [];
+  }
   const currentSettings = get(settings);
   return currentSettings.audio.voice_commands.note_commands ?? [];
 }

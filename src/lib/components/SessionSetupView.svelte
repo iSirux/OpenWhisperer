@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import type { EffortLevel, SdkImageContent } from '$lib/stores/sdkSessions';
-  import { settings } from '$lib/stores/settings';
+  import { settings, isNoteModeAvailable } from '$lib/stores/settings';
   import { repos, type RepoConfig } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
@@ -40,6 +40,7 @@
     initialCwd?: string;
     initialPlanMode?: boolean;
     initialNoteMode?: boolean;
+    initialReadOnlyMode?: boolean;
     initialDraftPrompt?: string;
     initialDraftImages?: SdkImageContent[];
     isRecordingForSetup?: boolean;
@@ -51,7 +52,11 @@
       cwd: string;
       planMode: boolean;
       noteMode: boolean;
+      readOnlyMode: boolean;
       provider?: SdkProvider;
+      worktreeMode?: 'main' | 'new' | 'existing';
+      worktreeBranch?: string;
+      worktreeRepoPath?: string;
     }) => void;
     onDraftChange?: (prompt: string, images: SdkImageContent[]) => void;
     onStartRecording: () => void;
@@ -67,6 +72,7 @@
     initialCwd = '',
     initialPlanMode = false,
     initialNoteMode = false,
+    initialReadOnlyMode = false,
     initialDraftPrompt = '',
     initialDraftImages = [],
     isRecordingForSetup = false,
@@ -104,6 +110,7 @@
   let cwd = $state(initialCwd);
   let planMode = $state(initialPlanMode);
   let noteMode = $state(initialNoteMode);
+  let readOnlyMode = $state(initialReadOnlyMode);
   let pendingImages = $state<ImageData[]>(toImageData(initialDraftImages));
   let isProcessingImages = $state(false);
   let showRepoDropdown = $state(false);
@@ -114,8 +121,29 @@
   let textareaEl: HTMLTextAreaElement;
   let prevSessionId = $state(sessionId);
 
+  // Worktree state
+  interface WorktreeInfo {
+    path: string;
+    branch: string | null;
+    is_main: boolean;
+    is_detached: boolean;
+  }
+
+  interface WorktreeCreationResult {
+    worktree_path: string;
+    branch: string;
+  }
+
+  let worktreeMode = $state<'main' | 'new' | 'existing'>('main');
+  let existingWorktrees = $state<WorktreeInfo[]>([]);
+  let selectedWorktreePath = $state<string>('');
+  let isLoadingWorktrees = $state(false);
+  let isCreatingWorktree = $state(false);
+  let showWorktreeDropdown = $state(false);
+
   // Derived state
   const activeRepos = $derived(($repos.list || []).filter((r) => r.active !== false));
+  const noteModeAvailable = $derived(isNoteModeAvailable());
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
   const isAutoRepoMode = $derived(!cwd || cwd === '.');
   const isSmartModelEnabled = $derived(
@@ -133,6 +161,8 @@
     return repo?.name || cwd.split(/[/\\]/).pop() || 'Unknown';
   });
 
+  const currentRepo = $derived(activeRepos.find(r => r.path === cwd));
+  const currentRepoIndex = $derived($repos.list.findIndex(r => r.path === cwd));
   const canStart = $derived(prompt.trim() || pendingImages.length > 0);
 
   // Focus textarea on mount
@@ -148,6 +178,18 @@
       prompt = initialDraftPrompt;
       pendingImages = toImageData(initialDraftImages);
       prevSessionId = sessionId;
+    }
+  });
+
+  $effect(() => {
+    if (!noteModeAvailable && noteMode) {
+      noteMode = false;
+    }
+  });
+
+  $effect(() => {
+    if (noteMode && readOnlyMode) {
+      readOnlyMode = false;
     }
   });
 
@@ -168,6 +210,25 @@
           model = $settings.default_model || DEFAULT_MODEL_ID;
         }
       });
+  });
+
+  // Initialize worktreeMode from repo config when cwd changes
+  $effect(() => {
+    const repo = currentRepo;
+    if (repo) {
+      worktreeMode = repo.worktree_mode || 'main';
+      selectedWorktreePath = '';
+    } else {
+      worktreeMode = 'main';
+      selectedWorktreePath = '';
+    }
+  });
+
+  // Load existing worktrees when "existing" mode is selected
+  $effect(() => {
+    if (worktreeMode === 'existing' && cwd && cwd !== '.') {
+      loadWorktrees(cwd);
+    }
   });
 
   // Keep selected model aligned with current provider and enabled model list.
@@ -215,15 +276,62 @@
       : undefined;
 
     try {
+      const effectiveNoteMode = noteModeAvailable ? noteMode : false;
+      const effectiveReadOnlyMode = effectiveNoteMode ? false : readOnlyMode;
+
+      let effectiveCwd = cwd;
+      let worktreeBranch: string | undefined;
+      let worktreeRepoPath: string | undefined;
+
+      if (worktreeMode === 'new' && cwd && cwd !== '.') {
+        // Create a new worktree
+        isCreatingWorktree = true;
+        try {
+          const branchName = await invoke<string>('generate_worktree_branch_name', {
+            prompt: prompt.trim(),
+            repoPath: cwd,
+          });
+
+          const repo = currentRepo;
+          const result = await invoke<WorktreeCreationResult>('create_git_worktree_with_setup', {
+            repoPath: cwd,
+            branchName,
+            worktreePath: null,
+            copyFiles: repo?.worktree_copy_files || [],
+            postCreateCommands: repo?.worktree_post_create_commands || [],
+          });
+
+          worktreeRepoPath = cwd;
+          effectiveCwd = result.worktree_path;
+          worktreeBranch = result.branch;
+        } catch (err) {
+          console.error('[SessionSetupView] Failed to create worktree:', err);
+          isCreatingWorktree = false;
+          isStarting = false;
+          return;
+        } finally {
+          isCreatingWorktree = false;
+        }
+      } else if (worktreeMode === 'existing' && selectedWorktreePath) {
+        worktreeRepoPath = cwd;
+        effectiveCwd = selectedWorktreePath;
+        const selectedWt = existingWorktrees.find(w => w.path === selectedWorktreePath);
+        worktreeBranch = selectedWt?.branch || undefined;
+      }
+
       await onStart({
         prompt: prompt.trim(),
         images: imageContent,
         model,
         effortLevel,
-        cwd,
+        cwd: effectiveCwd,
         planMode,
-        noteMode,
-        provider: noteMode ? 'claude' : provider,
+        noteMode: effectiveNoteMode,
+        readOnlyMode: effectiveReadOnlyMode,
+        provider: effectiveNoteMode ? 'claude' : provider,
+        worktreeMode: worktreeMode !== 'main' ? worktreeMode : undefined,
+        worktreeBranch,
+        worktreeRepoPath,
       });
     } finally {
       isStarting = false;
@@ -348,10 +456,51 @@
     }
   }
 
+  // Worktree handling
+  async function loadWorktrees(repoPath: string) {
+    isLoadingWorktrees = true;
+    try {
+      const worktrees = await invoke<WorktreeInfo[]>('list_git_worktrees', { repoPath });
+      existingWorktrees = worktrees.filter(w => !w.is_main);
+    } catch (err) {
+      console.error('[SessionSetupView] Failed to list worktrees:', err);
+      existingWorktrees = [];
+    } finally {
+      isLoadingWorktrees = false;
+    }
+  }
+
+  function handleWorktreeModeChange(mode: 'main' | 'new' | 'existing') {
+    worktreeMode = mode;
+    selectedWorktreePath = '';
+    showWorktreeDropdown = false;
+
+    // Persist to repo config
+    if (currentRepoIndex >= 0) {
+      repos.updateRepo(currentRepoIndex, { worktree_mode: mode });
+    }
+  }
+
+  function handleWorktreeSelect(path: string) {
+    selectedWorktreePath = path;
+    showWorktreeDropdown = false;
+  }
+
+  function getWorktreeLabel(wt: WorktreeInfo): string {
+    const branch = wt.branch || '(detached)';
+    // Show last two path segments for context
+    const parts = wt.path.replace(/\\/g, '/').split('/');
+    const relativePath = parts.slice(-2).join('/');
+    return `${branch} (${relativePath})`;
+  }
+
   function handleClickOutside(event: MouseEvent) {
     const target = event.target as HTMLElement;
     if (!target.closest('.repo-selector-container')) {
       showRepoDropdown = false;
+    }
+    if (!target.closest('.worktree-selector-container')) {
+      showWorktreeDropdown = false;
     }
   }
 </script>
@@ -382,202 +531,328 @@
         <h3 class="header-title">
           {noteMode ? 'New Note' : planMode ? 'Start Planning Session' : 'New Session'}
         </h3>
-        <p class="header-description">
-          {noteMode
-            ? 'Capture a voice note. The AI will create a note using your configured note-taking tools.'
-            : planMode
-              ? 'Describe the feature you want to plan. The AI will help you flesh out the requirements.'
-              : 'Enter your prompt to start a new session'}
-        </p>
+        {#if noteMode || planMode}
+          <p class="header-description">
+            {noteMode
+              ? 'Capture a voice note. The AI will create a note using your configured note-taking tools.'
+              : 'Describe the feature you want to plan. The AI will help you flesh out the requirements.'}
+          </p>
+        {/if}
       </div>
     </div>
 
-    <!-- Mode Toggle -->
-    <div class="option-row">
-      <label class="option-label">Mode</label>
-      <div class="mode-toggle">
-        <button
-          class="mode-btn"
-          class:active={!planMode && !noteMode}
-          onclick={() => { planMode = false; noteMode = false; }}
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-          Execute
-        </button>
-        <button
-          class="mode-btn plan"
-          class:active={planMode}
-          onclick={() => { planMode = true; noteMode = false; }}
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-          </svg>
-          Plan
-        </button>
-        <button
-          class="mode-btn note"
-          class:active={noteMode}
-          onclick={() => { noteMode = true; planMode = false; }}
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-          Note
-        </button>
-      </div>
-    </div>
-
-    <!-- Provider Toggle (only show when both providers are available) -->
-    {#if openaiAvailable && !noteMode}
+    <div class="options-grid">
+      <!-- Mode Toggle -->
       <div class="option-row">
-        <label class="option-label">Provider</label>
+        <label class="option-label">Mode</label>
         <div class="mode-toggle">
           <button
             class="mode-btn"
-            class:active={provider === 'claude'}
-            onclick={() => handleProviderSwitch('claude')}
-            style={provider === 'claude' ? 'background: var(--color-accent);' : ''}
+            class:active={!planMode && !noteMode}
+            onclick={() => { planMode = false; noteMode = false; }}
           >
-            Claude
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            Execute
           </button>
           <button
-            class="mode-btn"
-            class:active={provider === 'openai'}
-            onclick={() => handleProviderSwitch('openai')}
-            style={provider === 'openai' ? 'background: #16a34a;' : ''}
+            class="mode-btn plan"
+            class:active={planMode}
+            onclick={() => { planMode = true; noteMode = false; }}
           >
-            Codex
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+            </svg>
+            Plan
           </button>
+          {#if noteModeAvailable}
+            <button
+              class="mode-btn note"
+              class:active={noteMode}
+              onclick={() => { noteMode = true; planMode = false; }}
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              Note
+            </button>
+          {/if}
         </div>
       </div>
-    {/if}
 
-    <!-- Model Selector -->
-    <div class="option-row">
-      <label class="option-label">Model</label>
-      <div class="model-selector">
-        {#each models as { id, label, title }}
-          <button
-            class={getModelButtonClasses(id, model === id)}
-            onclick={() => handleModelClick(id)}
-            title={isAutoModel(id) && !isSmartModelEnabled ? 'Enable in LLM settings' : title}
-          >
-            {label}
-          </button>
-        {/each}
-      </div>
-    </div>
-
-    <!-- Effort Level -->
-    {#if modelSupportsEffort(model) || isAutoModel(model)}
-      <div class="option-row">
-        <label class="option-label">Effort</label>
-        <div class="flex items-center gap-2">
-          {#each (['off', 'low', 'medium', 'high', ...(getMaxEffort(model) === 'max' ? ['max'] : [])] as const) as level}
+      <!-- Provider Toggle (only show when both providers are available) -->
+      {#if openaiAvailable && !noteMode}
+        <div class="option-row">
+          <label class="option-label">Provider</label>
+          <div class="mode-toggle">
             <button
-              class="effort-option-btn"
-              class:active={level === 'off' ? effortLevel === null : effortLevel === level}
-              onclick={() => effortLevel = level === 'off' ? null : level as EffortLevel}
+              class="mode-btn"
+              class:active={provider === 'claude'}
+              onclick={() => handleProviderSwitch('claude')}
+              style={provider === 'claude' ? 'background: var(--color-accent);' : ''}
             >
-              {level === 'off' ? 'Off' : level.charAt(0).toUpperCase() + level.slice(1)}
+              Claude
+            </button>
+            <button
+              class="mode-btn"
+              class:active={provider === 'openai'}
+              onclick={() => handleProviderSwitch('openai')}
+              style={provider === 'openai' ? 'background: #16a34a;' : ''}
+            >
+              Codex
+            </button>
+          </div>
+        </div>
+      {/if}
+
+      <!-- Model Selector -->
+      <div class="option-row">
+        <label class="option-label">Model</label>
+        <div class="model-selector">
+          {#each models as { id, label, title }}
+            <button
+              class={getModelButtonClasses(id, model === id)}
+              onclick={() => handleModelClick(id)}
+              title={isAutoModel(id) && !isSmartModelEnabled ? 'Enable in LLM settings' : title}
+            >
+              {label}
             </button>
           {/each}
         </div>
       </div>
-    {/if}
 
-    <!-- Repository Selector -->
-    <div class="option-row">
-      <label class="option-label">Repository</label>
-      <div class="repo-selector-container relative">
-        <button
-          class="repo-btn"
-          onclick={() => showRepoDropdown = !showRepoDropdown}
-        >
-          {#if isAutoRepoMode && autoRepoEnabled}
-            <span class="auto-text">{currentRepoName()}</span>
-          {:else}
-            <RepoIcon repo={findRepoByPath(activeRepos, cwd)} size="sm" />
-            <span>{currentRepoName()}</span>
-          {/if}
-          <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-
-        {#if showRepoDropdown}
-          <div class="repo-dropdown">
-            <!-- Auto option -->
-            <button
-              class="repo-option"
-              class:selected={isAutoRepoMode && autoRepoEnabled}
-              onclick={handleAutoRepoClick}
-            >
-              <span class="flex items-center gap-2">
-                <span class:auto-text={autoRepoEnabled && !isAutoRepoMode} class:text-text-muted={!autoRepoEnabled}>
-                  Auto
-                </span>
-                {#if !autoRepoEnabled}
-                  <span class="text-text-muted text-[10px]">(enable in settings)</span>
-                {/if}
-              </span>
-              {#if isAutoRepoMode && autoRepoEnabled}
-                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                </svg>
-              {/if}
-            </button>
-
-            {#if activeRepos.length > 0}
-              <div class="repo-divider"></div>
-            {/if}
-
-            {#each activeRepos as repo}
-              {@const isSelected = repo.path === cwd}
+      <!-- Effort Level -->
+      {#if modelSupportsEffort(model) || isAutoModel(model)}
+        <div class="option-row">
+          <label class="option-label">Effort</label>
+          <div class="effort-options">
+            {#each (['off', 'low', 'medium', 'high', ...(getMaxEffort(model) === 'max' ? ['max'] : [])] as const) as level}
               <button
-                class="repo-option"
-                class:selected={isSelected}
-                onclick={() => handleRepoSelect(repo.path)}
-                title={repo.path}
+                class="effort-option-btn"
+                class:active={level === 'off' ? effortLevel === null : effortLevel === level}
+                onclick={() => effortLevel = level === 'off' ? null : level as EffortLevel}
               >
-                <div class="repo-option-left">
-                  <RepoIcon repo={repo} size="sm" />
-                  <div class="repo-info">
-                    <div class="repo-name">{repo.name}</div>
-                    {#if repo.description}
-                      <div class="repo-desc">{repo.description}</div>
-                    {/if}
-                  </div>
-                </div>
-                {#if isSelected}
-                  <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                  </svg>
-                {/if}
+                {level === 'off' ? 'Off' : level.charAt(0).toUpperCase() + level.slice(1)}
               </button>
             {/each}
+          </div>
+        </div>
+      {/if}
 
-            {#if activeRepos.length === 0}
-              <div class="px-3 py-2 text-xs text-text-muted">
-                No repositories configured
+      <!-- Repository Selector -->
+      <div class="option-row option-row--wide">
+        <div class="repo-access-grid">
+          <div class="repo-access-cell">
+            <label class="option-label">Repository</label>
+            <div class="repo-selector-container relative">
+              <button
+                class="repo-btn"
+                onclick={() => showRepoDropdown = !showRepoDropdown}
+              >
+                {#if isAutoRepoMode && autoRepoEnabled}
+                  <span class="auto-text">{currentRepoName()}</span>
+                {:else}
+                  <RepoIcon repo={findRepoByPath(activeRepos, cwd)} size="sm" />
+                  <span>{currentRepoName()}</span>
+                {/if}
+                <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+
+              {#if showRepoDropdown}
+                <div class="repo-dropdown">
+                  <!-- Auto option -->
+                  <button
+                    class="repo-option"
+                    class:selected={isAutoRepoMode && autoRepoEnabled}
+                    onclick={handleAutoRepoClick}
+                  >
+                    <span class="flex items-center gap-2">
+                      <span class:auto-text={autoRepoEnabled && !isAutoRepoMode} class:text-text-muted={!autoRepoEnabled}>
+                        Auto
+                      </span>
+                      {#if !autoRepoEnabled}
+                        <span class="text-text-muted text-[10px]">(enable in settings)</span>
+                      {/if}
+                    </span>
+                    {#if isAutoRepoMode && autoRepoEnabled}
+                      <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                      </svg>
+                    {/if}
+                  </button>
+
+                  {#if activeRepos.length > 0}
+                    <div class="repo-divider"></div>
+                  {/if}
+
+                  {#each activeRepos as repo}
+                    {@const isSelected = repo.path === cwd}
+                    <button
+                      class="repo-option"
+                      class:selected={isSelected}
+                      onclick={() => handleRepoSelect(repo.path)}
+                      title={repo.path}
+                    >
+                      <div class="repo-option-left">
+                        <RepoIcon repo={repo} size="sm" />
+                        <div class="repo-info">
+                          <div class="repo-name">{repo.name}</div>
+                          {#if repo.description}
+                            <div class="repo-desc">{repo.description}</div>
+                          {/if}
+                        </div>
+                      </div>
+                      {#if isSelected}
+                        <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                          <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                        </svg>
+                      {/if}
+                    </button>
+                  {/each}
+
+                  {#if activeRepos.length === 0}
+                    <div class="px-3 py-2 text-xs text-text-muted">
+                      No repositories configured
+                    </div>
+                  {/if}
+
+                  <div class="repo-divider"></div>
+                  <button
+                    class="repo-option add-repo"
+                    onclick={() => {
+                      showRepoDropdown = false;
+                      window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'repos' } }));
+                    }}
+                  >
+                    + Add repository
+                  </button>
+                </div>
+              {/if}
+            </div>
+          </div>
+
+          {#if !noteMode}
+            <div class="repo-access-cell">
+              <label class="option-label">Access</label>
+              <div class="mode-toggle">
+                <button
+                  class="mode-btn"
+                  class:active={!readOnlyMode}
+                  onclick={() => { readOnlyMode = false; }}
+                >
+                  Full
+                </button>
+                <button
+                  class="mode-btn readonly"
+                  class:active={readOnlyMode}
+                  onclick={() => { readOnlyMode = true; }}
+                  title="Read-only tools (Read, Glob, Grep) + WebSearch"
+                >
+                  Readonly
+                </button>
+              </div>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Worktree Toggle - only show when a specific repo is selected -->
+      {#if !isAutoRepoMode}
+        <div class="option-row option-row--wide">
+          <div class="worktree-grid">
+            <div class="worktree-cell">
+              <label class="option-label">Worktree</label>
+              <div class="mode-toggle">
+                <button
+                  class="mode-btn worktree"
+                  class:active={worktreeMode === 'main'}
+                  onclick={() => handleWorktreeModeChange('main')}
+                >
+                  Main
+                </button>
+                <button
+                  class="mode-btn worktree"
+                  class:active={worktreeMode === 'new'}
+                  onclick={() => handleWorktreeModeChange('new')}
+                >
+                  New
+                </button>
+                <button
+                  class="mode-btn worktree"
+                  class:active={worktreeMode === 'existing'}
+                  onclick={() => handleWorktreeModeChange('existing')}
+                >
+                  Existing
+                </button>
+              </div>
+            </div>
+
+            {#if worktreeMode === 'existing'}
+              <div class="worktree-cell">
+                <label class="option-label">Existing Worktree</label>
+                <div class="worktree-selector-container relative">
+                  <button
+                    class="worktree-btn"
+                    onclick={() => showWorktreeDropdown = !showWorktreeDropdown}
+                    disabled={isLoadingWorktrees}
+                  >
+                    {#if isLoadingWorktrees}
+                      <span class="text-text-muted">Loading worktrees...</span>
+                    {:else if selectedWorktreePath}
+                      {@const selectedWt = existingWorktrees.find(w => w.path === selectedWorktreePath)}
+                      <span>{selectedWt ? getWorktreeLabel(selectedWt) : 'Select worktree'}</span>
+                    {:else}
+                      <span class="text-text-muted">Select a worktree</span>
+                    {/if}
+                    <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+
+                  {#if showWorktreeDropdown}
+                    <div class="worktree-dropdown">
+                      {#if existingWorktrees.length === 0}
+                        <div class="px-3 py-2 text-xs text-text-muted">
+                          No worktrees found
+                        </div>
+                      {:else}
+                        {#each existingWorktrees as wt}
+                          {@const isSelected = wt.path === selectedWorktreePath}
+                          <button
+                            class="worktree-option"
+                            class:selected={isSelected}
+                            onclick={() => handleWorktreeSelect(wt.path)}
+                            title={wt.path}
+                          >
+                            <div class="worktree-option-info">
+                              <div class="worktree-option-branch">
+                                <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                                </svg>
+                                {wt.branch || '(detached)'}
+                              </div>
+                              <div class="worktree-option-path">{wt.path}</div>
+                            </div>
+                            {#if isSelected}
+                              <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                              </svg>
+                            {/if}
+                          </button>
+                        {/each}
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
               </div>
             {/if}
-
-            <div class="repo-divider"></div>
-            <button
-              class="repo-option add-repo"
-              onclick={() => {
-                showRepoDropdown = false;
-                window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'repos' } }));
-              }}
-            >
-              + Add repository
-            </button>
           </div>
-        {/if}
-      </div>
+        </div>
+      {/if}
+
     </div>
 
     <!-- Prompt Input -->
@@ -622,7 +897,7 @@
           : planMode
             ? 'Describe the feature you want to plan...'
             : 'Enter your prompt... (Ctrl+V to paste images)'}
-        rows="3"
+        rows="1"
       ></textarea>
 
       <div class="prompt-hint">
@@ -664,7 +939,7 @@
       >
         {#if isStarting}
           <div class="start-spinner"></div>
-          {noteMode ? 'Creating Note...' : planMode ? 'Starting Planning...' : 'Starting Session...'}
+          {isCreatingWorktree ? 'Creating worktree...' : noteMode ? 'Creating Note...' : planMode ? 'Starting Planning...' : 'Starting Session...'}
         {:else if noteMode}
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -710,27 +985,33 @@
     flex-direction: column;
     gap: 1.25rem;
     padding: 1.5rem;
-    max-width: 40rem;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     width: 100%;
   }
 
   .setup-header {
     display: flex;
     align-items: flex-start;
-    gap: 1rem;
-    padding: 1rem;
+    gap: 0.625rem;
+    padding: 0.625rem 0.75rem;
     background: var(--color-surface-elevated);
-    border-radius: 0.75rem;
+    border-radius: 0.5rem;
     border: 1px solid var(--color-border);
   }
 
   .header-icon {
     flex-shrink: 0;
     color: var(--color-accent);
-    padding: 0.5rem;
+    padding: 0.35rem;
     background: color-mix(in srgb, var(--color-accent) 10%, transparent);
-    border-radius: 0.5rem;
+    border-radius: 0.375rem;
+    line-height: 0;
+  }
+
+  .header-icon :global(svg) {
+    width: 16px;
+    height: 16px;
   }
 
   .header-icon.note {
@@ -743,34 +1024,84 @@
   }
 
   .header-title {
-    font-size: 1.1rem;
+    font-size: 0.95rem;
     font-weight: 600;
     color: var(--color-text-primary);
     margin: 0;
   }
 
   .header-description {
-    font-size: 0.875rem;
+    font-size: 0.75rem;
     color: var(--color-text-muted);
-    margin: 0.25rem 0 0;
+    margin: 0.15rem 0 0;
+  }
+
+  .options-grid {
+    --control-columns: repeat(2, minmax(18rem, 34rem));
+    --control-column-gap: 1rem;
+    display: grid;
+    grid-template-columns: var(--control-columns);
+    gap: 0.85rem var(--control-column-gap);
+    justify-content: start;
+    width: fit-content;
+    max-width: 100%;
   }
 
   .option-row {
     display: flex;
-    align-items: center;
-    gap: 1rem;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .option-row--wide {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .worktree-grid {
+    display: grid;
+    grid-template-columns: var(--control-columns);
+    column-gap: var(--control-column-gap);
+    row-gap: 0.85rem;
+    width: 100%;
+  }
+
+  .worktree-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .repo-access-grid {
+    display: grid;
+    grid-template-columns: var(--control-columns);
+    column-gap: var(--control-column-gap);
+    row-gap: 0.85rem;
+    width: 100%;
+  }
+
+  .repo-access-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+    min-width: 0;
   }
 
   .option-label {
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     color: var(--color-text-muted);
-    min-width: 80px;
-    flex-shrink: 0;
+    margin: 0;
   }
 
   /* Mode Toggle */
   .mode-toggle {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.25rem;
     padding: 0.25rem;
     background: var(--color-surface);
@@ -808,14 +1139,26 @@
     background: #f59e0b;
   }
 
+  .mode-btn.readonly.active {
+    background: #475569;
+  }
+
   /* Model Selector */
   .model-selector {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.25rem;
     padding: 0.25rem;
     background: var(--color-surface);
     border-radius: 0.5rem;
     border: 1px solid var(--color-border);
+  }
+
+  .effort-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   /* Effort Option Button */
@@ -842,9 +1185,14 @@
   }
 
   /* Repo Selector */
+  .repo-selector-container {
+    width: auto;
+  }
+
   .repo-btn {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 0.5rem;
     padding: 0.5rem 1rem;
     border-radius: 0.5rem;
@@ -1229,6 +1577,121 @@
   @keyframes spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  /* Worktree toggle */
+  .mode-btn.worktree.active {
+    background: #059669;
+  }
+
+  /* Worktree selector */
+  .worktree-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--color-text-primary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    transition: all 0.15s ease;
+    width: auto;
+    min-width: 16rem;
+    justify-content: space-between;
+  }
+
+  .worktree-selector-container {
+    width: auto;
+  }
+
+  .worktree-btn:hover:not(:disabled) {
+    background: var(--color-surface-elevated);
+    border-color: var(--color-accent);
+  }
+
+  .worktree-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+
+  .worktree-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 0.25rem;
+    width: 22rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 50;
+    max-height: 16rem;
+    overflow-y: auto;
+  }
+
+  .worktree-option {
+    width: 100%;
+    padding: 0.625rem 0.875rem;
+    text-align: left;
+    font-size: 0.8rem;
+    color: var(--color-text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: background 0.15s ease;
+  }
+
+  .worktree-option:hover {
+    background: var(--color-border);
+  }
+
+  .worktree-option.selected {
+    background: #059669;
+    color: white;
+  }
+
+  .worktree-option-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .worktree-option-branch {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .worktree-option-path {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 0.125rem;
+  }
+
+  .worktree-option.selected .worktree-option-path {
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  @media (max-width: 900px) {
+    .options-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .worktree-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .repo-access-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

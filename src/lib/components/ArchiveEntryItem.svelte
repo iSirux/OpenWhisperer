@@ -5,9 +5,11 @@
   interface Props {
     entry: ArchiveEntry;
     ondelete: (id: string) => void;
+    onrestore: (id: string) => void;
+    restoring?: boolean;
   }
 
-  let { entry, ondelete }: Props = $props();
+  let { entry, ondelete, onrestore, restoring = false }: Props = $props();
 
   function formatDate(timestamp: number): string {
     const date = new Date(timestamp);
@@ -59,6 +61,7 @@
   }
 
   const typeBadge = $derived(getTypeBadge(entry.sessionType));
+  const isRestorable = $derived(entry.sessionType === 'sdk' || entry.sessionType === 'pty');
 </script>
 
 <div class="archive-entry p-3 border-b border-border/50 hover:bg-surface-elevated/50 transition-all group">
@@ -100,19 +103,44 @@
       {/if}
     </div>
 
-    <!-- Delete button -->
-    <button
-      class="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-error/20 hover:text-error transition-all shrink-0"
-      title="Delete from archive"
-      onclick={(e) => {
-        e.stopPropagation();
-        ondelete(entry.id);
-      }}
-    >
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-      </svg>
-    </button>
+    <!-- Action buttons -->
+    <div class="flex items-center gap-1">
+      <!-- Restore button (SDK and PTY only) -->
+      {#if isRestorable}
+        <button
+          class="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-accent/20 hover:text-accent transition-all shrink-0"
+          title="Restore to active sessions"
+          disabled={restoring}
+          onclick={(e) => {
+            e.stopPropagation();
+            onrestore(entry.id);
+          }}
+        >
+          {#if restoring}
+            <div class="w-3.5 h-3.5 border-2 border-accent/30 border-t-accent rounded-full animate-spin"></div>
+          {:else}
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M3 10h10a5 5 0 010 10H9m-6-10l4-4m-4 4l4 4" />
+            </svg>
+          {/if}
+        </button>
+      {/if}
+
+      <!-- Delete button -->
+      <button
+        class="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-error/20 hover:text-error transition-all shrink-0"
+        title="Delete from archive"
+        onclick={(e) => {
+          e.stopPropagation();
+          ondelete(entry.id);
+        }}
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+      </button>
+    </div>
   </div>
 
   <!-- Name / prompt -->

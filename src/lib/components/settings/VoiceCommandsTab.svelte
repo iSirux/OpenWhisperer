@@ -10,6 +10,7 @@
     APPROVE_COMMAND_PRESETS,
     REJECT_COMMAND_PRESETS,
     PREPARE_COMMAND_PRESETS,
+    isNoteModeAvailable,
   } from "$lib/stores/settings";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { isValidVoiceCommand } from "$lib/utils/voiceCommands";
@@ -64,6 +65,7 @@
   let customNoteCommandError = $state("");
   let customWakeCommand = $state("");
   let customWakeCommandError = $state("");
+  const noteModeAvailable = $derived(isNoteModeAvailable());
 
   // Send prompt command functions
   function toggleVoiceCommand(command: string) {
@@ -740,115 +742,117 @@
           {/if}
         </div>
 
-        <!-- Note Commands Section -->
-        <div class="border-t border-border/50 pt-4 mt-4">
-          <div class="mb-3">
-            <label class="text-sm font-medium text-text-secondary"
-              >Note-Taking Commands</label
-            >
-            <p class="text-xs text-text-muted mt-0.5">
-              Say these commands to enter note-taking mode instead of sending as a prompt
-            </p>
-          </div>
-
-          <!-- Preset Note Commands -->
-          <div>
-            <label class="block text-xs font-medium text-text-muted mb-2"
-              >Preset Commands</label
-            >
-            <div class="flex flex-wrap gap-2">
-              {#each NOTE_COMMAND_PRESETS as command}
-                <button
-                  type="button"
-                  class="px-3 py-1.5 text-sm rounded-full border transition-colors {isNoteCommandActive(
-                    command
-                  )
-                    ? 'bg-amber-600 text-white border-amber-600'
-                    : 'bg-surface-elevated text-text-secondary border-border hover:border-amber-500 hover:text-text-primary'}"
-                  onclick={() => toggleNoteCommand(command)}
-                >
-                  "{command}"
-                </button>
-              {/each}
-            </div>
-          </div>
-
-          <!-- Custom Note Commands -->
-          <div class="mt-3">
-            <label class="block text-xs font-medium text-text-muted mb-2"
-              >Custom Commands</label
-            >
-            <div class="flex gap-2">
-              <input
-                type="text"
-                placeholder="Add custom command..."
-                class="flex-1 px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-amber-500"
-                bind:value={customNoteCommand}
-                onkeydown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addCustomNoteCommand();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                class="px-3 py-1.5 bg-amber-600 text-white rounded text-sm hover:bg-amber-700 transition-colors disabled:opacity-50"
-                onclick={addCustomNoteCommand}
-                disabled={!customNoteCommand.trim()}
+        {#if noteModeAvailable}
+          <!-- Note Commands Section -->
+          <div class="border-t border-border/50 pt-4 mt-4">
+            <div class="mb-3">
+              <label class="text-sm font-medium text-text-secondary"
+                >Note-Taking Commands</label
               >
-                Add
-              </button>
+              <p class="text-xs text-text-muted mt-0.5">
+                Say these commands to enter note-taking mode instead of sending as a prompt
+              </p>
             </div>
-            {#if customNoteCommandError}
-              <p class="text-xs text-red-500 mt-1">{customNoteCommandError}</p>
-            {/if}
 
-            {#if getCustomNoteCommands().length > 0}
-              <div class="flex flex-wrap gap-2 mt-2">
-                {#each getCustomNoteCommands() as command}
-                  <div
-                    class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-amber-600 text-white"
+            <!-- Preset Note Commands -->
+            <div>
+              <label class="block text-xs font-medium text-text-muted mb-2"
+                >Preset Commands</label
+              >
+              <div class="flex flex-wrap gap-2">
+                {#each NOTE_COMMAND_PRESETS as command}
+                  <button
+                    type="button"
+                    class="px-3 py-1.5 text-sm rounded-full border transition-colors {isNoteCommandActive(
+                      command
+                    )
+                      ? 'bg-amber-600 text-white border-amber-600'
+                      : 'bg-surface-elevated text-text-secondary border-border hover:border-amber-500 hover:text-text-primary'}"
+                    onclick={() => toggleNoteCommand(command)}
                   >
-                    <span>"{command}"</span>
-                    <button
-                      type="button"
-                      class="ml-1 hover:bg-white/20 rounded-full p-0.5 transition-colors"
-                      onclick={() => removeCustomNoteCommand(command)}
-                      title="Remove command"
-                    >
-                      <svg
-                        class="w-3 h-3"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M6 18L18 6M6 6l12 12"
-                        />
-                      </svg>
-                    </button>
-                  </div>
+                    "{command}"
+                  </button>
                 {/each}
               </div>
+            </div>
+
+            <!-- Custom Note Commands -->
+            <div class="mt-3">
+              <label class="block text-xs font-medium text-text-muted mb-2"
+                >Custom Commands</label
+              >
+              <div class="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Add custom command..."
+                  class="flex-1 px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-amber-500"
+                  bind:value={customNoteCommand}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addCustomNoteCommand();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  class="px-3 py-1.5 bg-amber-600 text-white rounded text-sm hover:bg-amber-700 transition-colors disabled:opacity-50"
+                  onclick={addCustomNoteCommand}
+                  disabled={!customNoteCommand.trim()}
+                >
+                  Add
+                </button>
+              </div>
+              {#if customNoteCommandError}
+                <p class="text-xs text-red-500 mt-1">{customNoteCommandError}</p>
+              {/if}
+
+              {#if getCustomNoteCommands().length > 0}
+                <div class="flex flex-wrap gap-2 mt-2">
+                  {#each getCustomNoteCommands() as command}
+                    <div
+                      class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-amber-600 text-white"
+                    >
+                      <span>"{command}"</span>
+                      <button
+                        type="button"
+                        class="ml-1 hover:bg-white/20 rounded-full p-0.5 transition-colors"
+                        onclick={() => removeCustomNoteCommand(command)}
+                        title="Remove command"
+                      >
+                        <svg
+                          class="w-3 h-3"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M6 18L18 6M6 6l12 12"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+
+            <!-- Active Note Commands Summary -->
+            {#if ($settings.audio.voice_commands.note_commands ?? []).length > 0}
+              <p class="text-xs text-text-muted mt-3">
+                Active note commands: {($settings.audio.voice_commands.note_commands ?? []).length}
+                - Recording will use the fastest model and note-taking MCP tools
+              </p>
+            {:else}
+              <p class="text-xs text-text-muted mt-3">
+                No note commands selected. Optional: select commands to enable voice-triggered note-taking.
+              </p>
             {/if}
           </div>
-
-          <!-- Active Note Commands Summary -->
-          {#if ($settings.audio.voice_commands.note_commands ?? []).length > 0}
-            <p class="text-xs text-text-muted mt-3">
-              Active note commands: {($settings.audio.voice_commands.note_commands ?? []).length}
-              - Recording will use the fastest model and note-taking MCP tools
-            </p>
-          {:else}
-            <p class="text-xs text-text-muted mt-3">
-              No note commands selected. Optional: select commands to enable voice-triggered note-taking.
-            </p>
-          {/if}
-        </div>
+        {/if}
 
         <!-- Sequence Voice Commands Section -->
         <div class="border-t border-border/50 pt-4 mt-4">

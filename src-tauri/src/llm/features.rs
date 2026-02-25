@@ -494,4 +494,58 @@ Respond with ONLY a JSON object in this exact format:
 
         self.generate_structured_with_usage(&prompt, Some(schema)).await
     }
+
+    /// Generate a descriptive git branch name from a user prompt
+    pub async fn generate_branch_name_with_usage(
+        &self,
+        user_prompt: &str,
+        existing_branches: &[String],
+    ) -> Result<GenerationResult<BranchNameResult>, String> {
+        let existing_list = if existing_branches.is_empty() {
+            "None".to_string()
+        } else {
+            existing_branches
+                .iter()
+                .take(50) // Don't send too many
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        let prompt = format!(
+            r#"Generate a concise git branch name for this coding task.
+
+User's request:
+{}
+
+Existing branches (avoid these names):
+{}
+
+Rules:
+- Use lowercase letters, numbers, and hyphens only
+- 3-6 words, hyphen-separated (e.g., "fix-auth-token-refresh", "add-dark-mode-toggle")
+- Be descriptive of the task, not generic
+- Do NOT use any prefix like "claude/", "feature/", "fix/", etc.
+- Do NOT include timestamps or random suffixes
+- Must not conflict with existing branch names listed above
+
+Respond with ONLY a JSON object:
+{{"branch_name": "descriptive-branch-name"}}"#,
+            truncate_text(user_prompt, 2000),
+            existing_list
+        );
+
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "branch_name": {
+                    "type": "string",
+                    "description": "A concise, descriptive git branch name using lowercase and hyphens"
+                }
+            },
+            "required": ["branch_name"]
+        });
+
+        self.generate_structured_with_usage(&prompt, Some(schema)).await
+    }
 }

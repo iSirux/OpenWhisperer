@@ -10,7 +10,12 @@ import {
   type PreToolUseHookInput,
   type HookCallback,
 } from "@anthropic-ai/claude-agent-sdk";
-import { Codex, type ThreadEvent, type Thread } from "@openai/codex-sdk";
+import {
+  Codex,
+  type ThreadEvent,
+  type Thread,
+  type ThreadOptions,
+} from "@openai/codex-sdk";
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import * as readline from "readline";
 import * as fs from "fs";
@@ -19,6 +24,26 @@ import * as path from "path";
 import { z } from "zod";
 
 const OPENAI_MODEL_FALLBACK = "gpt-5.3-codex";
+
+function inferProvider(
+  provider: string | undefined,
+  model: string | undefined
+): "claude" | "openai" {
+  const normalizedModel = model?.toLowerCase() ?? "";
+  const modelProvider: "claude" | "openai" =
+    normalizedModel.startsWith("gpt-") || normalizedModel.startsWith("codex")
+      ? "openai"
+      : "claude";
+
+  const normalizedProvider = provider?.toLowerCase();
+  if (normalizedProvider === "openai" || normalizedProvider === "claude") {
+    return normalizedProvider === modelProvider
+      ? (normalizedProvider as "claude" | "openai")
+      : modelProvider;
+  }
+
+  return modelProvider;
+}
 
 function isUnsupportedChatGptAccountModelError(errorMessage: string): boolean {
   const normalized = errorMessage.toLowerCase();
@@ -261,6 +286,7 @@ interface CreateMessage {
   options?: Partial<Options>;
   plan_mode?: boolean; // Whether this is a plan mode session (enables planning tools)
   note_mode?: boolean; // Whether this is a note-taking mode session (read-only + note MCP tools)
+  read_only_mode?: boolean; // Whether this session should use read-only tools + web search
   mcp_servers?: McpServerConfig[]; // External MCP servers to register
   fork_from_sdk_session_id?: string; // SDK session ID to fork from
   fork_at_message_uuid?: string; // Message UUID to fork at (resumeSessionAt)
@@ -325,6 +351,14 @@ interface AnswerAskUserQuestionMessage {
   answers: Record<string, string>; // Map of question text -> selected answer(s)
 }
 
+// User's decision on ExitPlanMode plan approval (from frontend via Rust)
+interface AnswerPlanApprovalMessage {
+  type: "answer_plan_approval";
+  id: string; // Session ID
+  action: string; // "approve" | "approve_new_session" | "deny"
+  feedback?: string; // Feedback text for deny
+}
+
 type InboundMessage =
   | CreateMessage
   | QueryMessage
@@ -334,7 +368,8 @@ type InboundMessage =
   | UpdateEffortMessage
   | GenerateRepoDescriptionMessage
   | GenerateRepoDescriptionWithCodexMessage
-  | AnswerAskUserQuestionMessage;
+  | AnswerAskUserQuestionMessage
+  | AnswerPlanApprovalMessage;
 
 type OpenAiExecutionMode = "sdk" | "app_server";
 
@@ -391,6 +426,7 @@ interface Session {
   currentQueryId?: string; // Unique ID for the current query (to detect stale done events)
   planMode?: boolean; // Whether this is a plan mode session
   noteMode?: boolean; // Whether this is a note-taking mode session
+  readOnlyMode?: boolean; // Whether this session should run in read-only mode
   // OpenAI Codex-specific fields
   codexThread?: Thread; // Active Codex thread instance
   codexModel?: string; // OpenAI model to use
@@ -404,6 +440,11 @@ interface Session {
   // Pending AskUserQuestion response (resolve when user answers via frontend)
   pendingAskUserAnswer?: {
     resolve: (answers: Record<string, string>) => void;
+    reject: (error: Error) => void;
+  };
+  // Pending ExitPlanMode approval (resolve when user approves/denies plan)
+  pendingPlanApproval?: {
+    resolve: (decision: { action: string; feedback?: string }) => void;
     reject: (error: Error) => void;
   };
 }
@@ -590,6 +631,14 @@ function sendAskUserQuestions(
   send({ type: "ask_user_questions", id, questions });
 }
 
+// Plan approval request (ExitPlanMode intercepted)
+function sendPlanApprovalRequest(
+  id: string,
+  allowedPrompts: Array<{ tool: string; prompt: string }>
+): void {
+  send({ type: "plan_approval_request", id, allowedPrompts });
+}
+
 // Repo description result event
 function sendRepoDescriptionResult(
   id: string,
@@ -726,6 +775,19 @@ function getWebSearchQuery(item: Record<string, unknown>): string | undefined {
   if (typeof item.query === "string" && item.query.trim()) {
     return item.query;
   }
+  if (typeof item.search_query === "string" && item.search_query.trim()) {
+    return item.search_query;
+  }
+
+  const input = item.input as Record<string, unknown> | undefined;
+  if (input && typeof input.query === "string" && input.query.trim()) {
+    return input.query;
+  }
+
+  const args = item.arguments as Record<string, unknown> | undefined;
+  if (args && typeof args.query === "string" && args.query.trim()) {
+    return args.query;
+  }
 
   const action = item.action as Record<string, unknown> | undefined;
   if (!action) return undefined;
@@ -748,7 +810,11 @@ function getWebSearchResultText(item: Record<string, unknown>): string {
     return `Error: ${String(error.message)}`;
   }
 
-  const result = item.result;
+  const result =
+    item.result ??
+    item.output ??
+    item.response ??
+    ((item.action as Record<string, unknown> | undefined)?.result);
   if (result !== undefined) {
     return stringifyUnknown(result);
   }
@@ -770,6 +836,116 @@ function getWebSearchResultText(item: Record<string, unknown>): string {
   return "Search completed";
 }
 
+function extractReasoningText(item: Record<string, unknown>): string {
+  const directCandidates = [
+    item.text,
+    item.summary,
+    item.reasoning,
+    item.output_text,
+    item.outputText,
+    item.content,
+    item.message,
+  ];
+  for (const candidate of directCandidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+
+  const nestedCandidates = [
+    item.result,
+    item.output,
+    item.response,
+    item.delta,
+    item.reasoning_text,
+  ];
+  for (const candidate of nestedCandidates) {
+    if (!candidate) continue;
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+    if (typeof candidate === "object" && !Array.isArray(candidate)) {
+      const obj = candidate as Record<string, unknown>;
+      const nestedText = [
+        obj.text,
+        obj.summary,
+        obj.reasoning,
+        obj.output_text,
+        obj.outputText,
+      ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+      if (nestedText) {
+        return nestedText;
+      }
+    }
+  }
+
+  const content = item.content;
+  if (Array.isArray(content)) {
+    const contentText = content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (!part || typeof part !== "object") return "";
+        const p = part as Record<string, unknown>;
+        if (typeof p.text === "string") return p.text;
+        if (typeof p.content === "string") return p.content;
+        if (typeof p.summary === "string") return p.summary;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (contentText.trim()) {
+      return contentText;
+    }
+  }
+
+  return "";
+}
+
+const reasoningByItemId = new Map<string, { startTime: number; content: string }>();
+
+function reasoningStateKey(sessionId: string, itemId: string): string {
+  return `${sessionId}:${itemId}`;
+}
+
+function updateReasoningState(
+  sessionId: string,
+  itemId: string,
+  phase: "started" | "updated" | "completed",
+  content: string
+): void {
+  const key = reasoningStateKey(sessionId, itemId);
+  const existing = reasoningByItemId.get(key);
+
+  if (phase === "started") {
+    reasoningByItemId.set(key, {
+      startTime: Date.now(),
+      content: content || existing?.content || "",
+    });
+    sendThinkingStart(sessionId, content || existing?.content || "");
+    return;
+  }
+
+  if (phase === "updated") {
+    if (existing) {
+      if (content) {
+        existing.content = content;
+      }
+    } else {
+      reasoningByItemId.set(key, {
+        startTime: Date.now(),
+        content: content || "",
+      });
+      sendThinkingStart(sessionId, content || "");
+    }
+    return;
+  }
+
+  const finalContent = content || existing?.content || "";
+  const durationMs = existing ? Math.max(0, Date.now() - existing.startTime) : 0;
+  sendThinkingEnd(sessionId, durationMs, finalContent);
+  reasoningByItemId.delete(key);
+}
+
 function toTodoWriteInput(item: Record<string, unknown>): { todos: Array<{ content: string; status: "completed" | "pending" }> } {
   const rawItems = Array.isArray(item.items)
     ? (item.items as Array<Record<string, unknown>>)
@@ -785,7 +961,7 @@ function toTodoWriteInput(item: Record<string, unknown>): { todos: Array<{ conte
 function handleAppServerItemEvent(
   id: string,
   item: Record<string, unknown>,
-  phase: "started" | "completed"
+  phase: "started" | "updated" | "completed"
 ): void {
   const itemId = (item.id as string) || `item-${Date.now()}`;
   const type = normalizeItemType(item.type as string | undefined);
@@ -854,11 +1030,8 @@ function handleAppServerItemEvent(
   }
 
   if (type === "reasoning") {
-    if (phase === "started") {
-      sendThinkingStart(id, String(item.text || ""));
-    } else {
-      sendThinkingEnd(id, 0, String(item.text || ""));
-    }
+    const reasoningText = extractReasoningText(item);
+    updateReasoningState(id, itemId, phase, reasoningText);
     return;
   }
 
@@ -1085,6 +1258,12 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
       if (item) handleAppServerItemEvent(id, item, "started");
       break;
     }
+    case "item/updated":
+    case "item.updated": {
+      const item = params.item as Record<string, unknown> | undefined;
+      if (item) handleAppServerItemEvent(id, item, "updated");
+      break;
+    }
     case "item/completed":
     case "item.completed": {
       const item = params.item as Record<string, unknown> | undefined;
@@ -1156,8 +1335,12 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
       const contextWindow =
         asNumber(tokenUsage?.modelContextWindow) ||
         asNumber(tokenUsage?.model_context_window) ||
+        asNumber(tokenUsage?.contextWindow) ||
+        asNumber(tokenUsage?.context_window) ||
         asNumber(params.modelContextWindow) ||
         asNumber(params.model_context_window) ||
+        asNumber(params.contextWindow) ||
+        asNumber(params.context_window) ||
         200000;
 
       if (last || total) {
@@ -1169,12 +1352,37 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
           asNumber(last?.cachedInputTokens) ||
           asNumber(last?.cached_input_tokens) ||
           asNumber(last?.cacheReadTokens);
+        const lastCacheCreation =
+          asNumber(last?.cacheCreationInputTokens) ||
+          asNumber(last?.cache_creation_input_tokens) ||
+          asNumber(last?.cacheCreationTokens);
+
+        const totalInput =
+          asNumber(total?.inputTokens) || asNumber(total?.input_tokens);
+        const totalOutput =
+          asNumber(total?.outputTokens) || asNumber(total?.output_tokens);
+        const totalCacheRead =
+          asNumber(total?.cachedInputTokens) ||
+          asNumber(total?.cached_input_tokens) ||
+          asNumber(total?.cacheReadTokens);
+        const totalCacheCreation =
+          asNumber(total?.cacheCreationInputTokens) ||
+          asNumber(total?.cache_creation_input_tokens) ||
+          asNumber(total?.cacheCreationTokens);
+
+        // For App Server, tokenUsage.total reflects current thread context and should
+        // drive final context usage after each turn. tokenUsage.last is per-turn and
+        // used only for live/progressive updates.
+        const finalInput = total ? totalInput : lastInput;
+        const finalOutput = total ? totalOutput : lastOutput;
+        const finalCacheRead = total ? totalCacheRead : lastCached;
+        const finalCacheCreation = total ? totalCacheCreation : lastCacheCreation;
 
         sendUsage(id, {
-          inputTokens: lastInput,
-          outputTokens: lastOutput,
-          cacheReadTokens: lastCached,
-          cacheCreationTokens: 0,
+          inputTokens: finalInput,
+          outputTokens: finalOutput,
+          cacheReadTokens: finalCacheRead,
+          cacheCreationTokens: finalCacheCreation,
           totalCostUsd: 0,
           durationMs: 0,
           durationApiMs: 0,
@@ -1182,17 +1390,12 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
           contextWindow,
         });
 
-        if (total) {
+        if (last) {
           sendProgressiveUsage(id, {
-            inputTokens:
-              asNumber(total.inputTokens) || asNumber(total.input_tokens),
-            outputTokens:
-              asNumber(total.outputTokens) || asNumber(total.output_tokens),
-            cacheReadTokens:
-              asNumber(total.cachedInputTokens) ||
-              asNumber(total.cached_input_tokens) ||
-              asNumber(total.cacheReadTokens),
-            cacheCreationTokens: 0,
+            inputTokens: lastInput,
+            outputTokens: lastOutput,
+            cacheReadTokens: lastCached,
+            cacheCreationTokens: lastCacheCreation,
           });
         }
       } else {
@@ -1419,6 +1622,13 @@ async function handleCodexAppServerQuery(
 
   try {
     const appServer = await ensureCodexAppServer(msg.id, session);
+    const appServerReadonlyParams = session.readOnlyMode
+      ? {
+          sandboxMode: "read-only",
+          webSearchEnabled: true,
+          networkAccessEnabled: true,
+        }
+      : {};
     send({
       type: "debug",
       id: msg.id,
@@ -1440,6 +1650,7 @@ async function handleCodexAppServerQuery(
         {
           threadId,
           ...(session.codexModel ? { model: session.codexModel } : {}),
+          ...appServerReadonlyParams,
         },
         abortController.signal
       );
@@ -1456,6 +1667,7 @@ async function handleCodexAppServerQuery(
           ...(session.codexModel ? { model: session.codexModel } : {}),
           cwd: session.cwd,
           approvalPolicy: "never",
+          ...appServerReadonlyParams,
         },
         abortController.signal
       )) as Record<string, unknown>;
@@ -1698,9 +1910,26 @@ function handleCodexItemEvent(
 
     case "reasoning":
       if (phase === "started") {
-        sendThinkingStart(id, typedItem.text || "");
+        updateReasoningState(
+          id,
+          typedItem.id || `reasoning-${Date.now()}`,
+          "started",
+          extractReasoningText(typedItem as unknown as Record<string, unknown>)
+        );
+      } else if (phase === "updated") {
+        updateReasoningState(
+          id,
+          typedItem.id || `reasoning-${Date.now()}`,
+          "updated",
+          extractReasoningText(typedItem as unknown as Record<string, unknown>)
+        );
       } else if (phase === "completed") {
-        sendThinkingEnd(id, 0, typedItem.text || "");
+        updateReasoningState(
+          id,
+          typedItem.id || `reasoning-${Date.now()}`,
+          "completed",
+          extractReasoningText(typedItem as unknown as Record<string, unknown>)
+        );
       }
       break;
 
@@ -1831,6 +2060,17 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
     if (!session.codexThread) {
       const codex = getCodexInstance();
       const resumeId = session.sdkSessionId || session.passedSdkSessionId;
+      const codexThreadOptions: ThreadOptions = {
+        ...(session.codexModel ? { model: session.codexModel } : {}),
+        approvalPolicy: "never",
+        ...(session.readOnlyMode
+          ? {
+              sandboxMode: "read-only" as const,
+              webSearchEnabled: true,
+              networkAccessEnabled: true,
+            }
+          : {}),
+      };
 
       if (resumeId) {
         send({
@@ -1838,7 +2078,7 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
           id: msg.id,
           message: `Resuming Codex thread: ${resumeId}`,
         });
-        session.codexThread = codex.resumeThread(resumeId);
+        session.codexThread = codex.resumeThread(resumeId, codexThreadOptions);
       } else {
         send({
           type: "debug",
@@ -1846,9 +2086,8 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
           message: `Starting new Codex thread in ${session.cwd}`,
         });
         session.codexThread = codex.startThread({
+          ...codexThreadOptions,
           workingDirectory: session.cwd,
-          model: session.codexModel,
-          approvalPolicy: "never",
         });
       }
     }
@@ -2288,6 +2527,31 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
           return { behavior: "allow" as const, updatedInput: { questions: askInput.questions, answers } };
         }
       }
+      // Intercept ExitPlanMode: emit to frontend, wait for user approval/denial
+      if (toolName === "ExitPlanMode") {
+        const exitInput = input as { allowedPrompts?: Array<{ tool: string; prompt: string }> };
+        send({ type: "debug", id: msg.id, message: `ExitPlanMode intercepted with ${(exitInput.allowedPrompts || []).length} allowed prompts` });
+        sendPlanApprovalRequest(msg.id, exitInput.allowedPrompts || []);
+
+        const decision = await new Promise<{ action: string; feedback?: string }>((resolve, reject) => {
+          const s = sessions.get(msg.id);
+          if (s) { s.pendingPlanApproval = { resolve, reject }; }
+          else { reject(new Error("Session not found for ExitPlanMode")); }
+        });
+
+        send({ type: "debug", id: msg.id, message: `ExitPlanMode decision: ${decision.action}` });
+
+        if (decision.action === 'deny') {
+          return {
+            behavior: "deny" as const,
+            message: decision.feedback || "User rejected the plan. Please revise based on their feedback.",
+          };
+        }
+
+        // For 'approve' and 'approve_new_session', allow ExitPlanMode to complete
+        // The frontend handles spawning a new session for 'approve_new_session'
+        return { behavior: "allow" as const, updatedInput: input };
+      }
       // Allow all MCP tools (they start with "mcp__")
       if (toolName.startsWith("mcp__")) {
         send({
@@ -2344,6 +2608,15 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       "Glob",
       "Grep",
     ];
+  }
+
+  if (msg.read_only_mode && !msg.note_mode) {
+    send({
+      type: "debug",
+      id: msg.id,
+      message: "Read-only mode: restricting to Read/Glob/Grep + WebSearch",
+    });
+    options.allowedTools = ["Read", "Glob", "Grep", "WebSearch"];
   }
 
   // Register external MCP servers if provided
@@ -2471,7 +2744,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     }
   }
 
-  const provider = msg.provider || "claude";
+  const provider = inferProvider(msg.provider, msg.model);
   const openaiMode: OpenAiExecutionMode =
     provider === "openai" && msg.codex_mode === "AppServer"
       ? "app_server"
@@ -2486,6 +2759,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     conversationHistory: msg.messages, // Store conversation history for restored sessions (DEPRECATED)
     planMode: msg.plan_mode,
     noteMode: msg.note_mode,
+    readOnlyMode: msg.read_only_mode,
     codexModel: provider === "openai" ? msg.model : undefined,
     codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
     forkFromSdkSessionId: msg.fork_from_sdk_session_id, // Fork: SDK session ID to fork from
@@ -2527,6 +2801,14 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       type: "debug",
       id: msg.id,
       message: "Session created in NOTE MODE - read-only tools + note MCP enabled",
+    });
+  }
+
+  if (msg.read_only_mode && !msg.note_mode) {
+    send({
+      type: "debug",
+      id: msg.id,
+      message: "Session created in READ-ONLY MODE - Read/Glob/Grep + WebSearch",
     });
   }
 
@@ -3533,6 +3815,11 @@ async function handleClose(msg: CloseMessage): Promise<void> {
       }
     }
   }
+  for (const key of reasoningByItemId.keys()) {
+    if (key.startsWith(`${msg.id}:`)) {
+      reasoningByItemId.delete(key);
+    }
+  }
   lastMainAgentUsage.delete(msg.id);
   sessions.delete(msg.id);
   send({ type: "closed", id: msg.id });
@@ -3572,6 +3859,17 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
         session.pendingAskUserAnswer = undefined;
       } else {
         send({ type: "debug", id: msg.id, message: "No pending AskUserQuestion to resolve" });
+      }
+      break;
+    }
+    case "answer_plan_approval": {
+      const session = sessions.get(msg.id);
+      if (session?.pendingPlanApproval) {
+        send({ type: "debug", id: msg.id, message: `Resolving pending plan approval: ${msg.action}` });
+        session.pendingPlanApproval.resolve({ action: msg.action, feedback: msg.feedback });
+        session.pendingPlanApproval = undefined;
+      } else {
+        send({ type: "debug", id: msg.id, message: "No pending plan approval to resolve" });
       }
       break;
     }

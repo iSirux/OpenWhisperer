@@ -15,7 +15,7 @@
         "tauri:dev": "npm run sidecar:build && tauri dev --config src-tauri/tauri.dev.conf.json",
         "tauri:build": "npm run sidecar:build && tauri build"
     },
-    "license": "MIT",
+    "license": "SEE LICENSE IN LICENSE",
     "dependencies": {
         "@tauri-apps/api": "^2",
         "@tauri-apps/plugin-clipboard-manager": "^2",

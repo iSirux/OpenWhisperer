@@ -10,7 +10,7 @@ mod terminal;
 mod realtime;
 mod whisper;
 
-use commands::{archive_cmds, audio_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, realtime_cmds};
+use commands::{archive_cmds, audio_cmds, git_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, realtime_cmds};
 use sequences::SequenceManager;
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -266,6 +266,11 @@ pub fn run() {
             settings_cmds::get_active_repo,
             settings_cmds::get_git_branch,
             settings_cmds::run_in_terminal,
+            git_cmds::list_git_worktrees,
+            git_cmds::create_git_worktree_with_setup,
+            git_cmds::generate_worktree_branch_name,
+            git_cmds::open_in_vscode,
+            git_cmds::open_in_terminal,
             terminal_cmds::create_terminal_session,
             terminal_cmds::create_interactive_session,
             terminal_cmds::write_to_terminal,
@@ -283,6 +288,7 @@ pub fn run() {
             sdk_cmds::update_sdk_effort,
             sdk_cmds::close_sdk_session,
             sdk_cmds::answer_ask_user_question,
+            sdk_cmds::answer_plan_approval,
             sdk_cmds::generate_repo_description_with_claude,
             sdk_cmds::generate_repo_description_with_codex,
             sdk_cmds::check_openai_codex_auth,
@@ -304,6 +310,7 @@ pub fn run() {
             archive_cmds::archive_sdk_session,
             archive_cmds::archive_terminal_session,
             archive_cmds::archive_sequence_execution,
+            archive_cmds::unarchive_entry,
             archive_cmds::delete_archive_entry,
             archive_cmds::clear_archive,
             archive_cmds::trim_archive,

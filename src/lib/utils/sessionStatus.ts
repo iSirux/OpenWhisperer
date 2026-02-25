@@ -57,6 +57,10 @@ export function getStatusColor(status: string): string {
       return 'text-teal-400';
     case 'pending_repo':
       return 'text-amber-400';
+    case 'pending_plan_approval':
+      return 'text-cyan-400';
+    case 'awaiting_input':
+      return 'text-orange-400';
     case 'Running':
     case 'querying':
     case 'tool':
@@ -102,6 +106,10 @@ export function getStatusBgColor(status: string): string {
       return 'bg-teal-400';
     case 'pending_repo':
       return 'bg-amber-400';
+    case 'pending_plan_approval':
+      return 'bg-cyan-400';
+    case 'awaiting_input':
+      return 'bg-orange-400';
     case 'Running':
     case 'querying':
     case 'tool':
@@ -155,6 +163,79 @@ function getSubagentLabel(agentType: string): string {
 }
 
 /**
+ * Map raw Claude SDK tool names to friendly activity-style labels.
+ * Handles count suffixes like "Read ×3" -> "Reading ×3".
+ */
+function getToolLabel(detail: string): string {
+  // Parse out the optional count suffix (e.g., " ×3")
+  const countMatch = detail.match(/^(.+?)(\s*×\d+)$/);
+  const baseTool = countMatch ? countMatch[1].trim() : detail.trim();
+  const countSuffix = countMatch ? countMatch[2] : '';
+
+  let label: string;
+
+  switch (baseTool) {
+    case 'Read':
+      label = 'Reading';
+      break;
+    case 'Write':
+      label = 'Writing';
+      break;
+    case 'Edit':
+      label = 'Editing';
+      break;
+    case 'Bash':
+      label = 'Executing';
+      break;
+    case 'Grep':
+    case 'Glob':
+      label = 'Searching';
+      break;
+    case 'WebFetch':
+      label = 'Fetching';
+      break;
+    case 'WebSearch':
+      label = 'Searching';
+      break;
+    case 'Task':
+      label = 'Delegating';
+      break;
+    case 'TodoWrite':
+      label = 'Updating tasks';
+      break;
+    case 'NotebookEdit':
+      label = 'Editing notebook';
+      break;
+    case 'LSP':
+      label = 'Analyzing';
+      break;
+    case 'EnterWorktree':
+      label = 'Branching';
+      break;
+    case 'ToolSearch':
+      label = 'Discovering';
+      break;
+    case 'Skill':
+      label = 'Running skill';
+      break;
+    default:
+      // Handle MCP tools: "mcp__server__tool" -> "Running tool"
+      if (baseTool.startsWith('mcp__')) {
+        const parts = baseTool.split('__');
+        const mcpToolName = parts.length >= 3 ? parts[parts.length - 1] : undefined;
+        label = mcpToolName ? `Running ${mcpToolName}` : 'Running MCP';
+      } else {
+        label = baseTool.length > 0
+          ? baseTool.charAt(0).toUpperCase() + baseTool.slice(1)
+          : 'Tool';
+      }
+      break;
+  }
+
+  return label + countSuffix;
+}
+
+/**
  * Get the human-readable label for a status
  */
 export function getStatusLabel(status: string, detail?: string): string {
@@ -173,6 +254,10 @@ export function getStatusLabel(status: string, detail?: string): string {
       return 'Prepared';
     case 'pending_repo':
       return 'Select Repo';
+    case 'pending_plan_approval':
+      return 'Review Plan';
+    case 'awaiting_input':
+      return 'Input Needed';
     case 'initializing':
     case 'Starting':
       return 'Starting';
@@ -180,7 +265,7 @@ export function getStatusLabel(status: string, detail?: string): string {
     case 'querying':
       return 'Active';
     case 'tool':
-      return detail || 'Tool';
+      return detail ? getToolLabel(detail) : 'Tool';
     case 'subagent':
       return detail ? getSubagentLabel(detail) : 'Agent';
     case 'thinking':

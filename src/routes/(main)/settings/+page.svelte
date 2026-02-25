@@ -16,7 +16,6 @@
     WhisperTab,
     VoskTab,
     LlmTab,
-    GitTab,
     HotkeysTab,
     OverlayTab,
     ReposTab,
@@ -119,7 +118,6 @@
     { id: "vosk", label: "Real-time Transcription" },
     { id: "llm", label: "LLM" },
     { id: "mcp", label: "MCP Servers" },
-    { id: "git", label: "Git" },
     { id: "hotkeys", label: "Hotkeys" },
     { id: "overlay", label: "Overlay" },
     { id: "repos", label: "Repositories" },
@@ -172,8 +170,6 @@
         <LlmTab />
       {:else if activeTab === "mcp"}
         <McpTab />
-      {:else if activeTab === "git"}
-        <GitTab />
       {:else if activeTab === "hotkeys"}
         <HotkeysTab />
       {:else if activeTab === "overlay"}

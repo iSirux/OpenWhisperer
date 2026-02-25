@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings } from "$lib/stores/settings";
+  import { settings, isNoteModeAvailable } from "$lib/stores/settings";
   import { repos } from "$lib/stores/repos";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -19,6 +19,10 @@
   let newRepoName = $state("");
   let generatingClaudeIndices = $state(new Set<number>());
   let generatingCodexIndices = $state(new Set<number>());
+  const noteModeAvailable = $derived(isNoteModeAvailable());
+
+  // Track which repos have their worktree section expanded
+  let worktreeExpandedIndices = $state(new Set<number>());
 
   // Provider availability
   let claudeAvailable = $state(false);
@@ -386,44 +390,46 @@
               <div class="text-text-muted mt-1 italic">Uses all enabled global servers</div>
             {/if}
           </div>
-          <!-- Note MCP Servers selection -->
-          <div class="text-xs mt-2 pt-2 border-t border-border/30">
-            <div class="flex items-center gap-1 text-amber-400/80 mb-1">
-              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-              <span>Note Mode MCP:</span>
+          {#if noteModeAvailable}
+            <!-- Note MCP Servers selection -->
+            <div class="text-xs mt-2 pt-2 border-t border-border/30">
+              <div class="flex items-center gap-1 text-amber-400/80 mb-1">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+                <span>Note Mode MCP:</span>
+              </div>
+              <div class="flex flex-wrap gap-1">
+                {#each $settings.mcp.servers.filter(s => s.enabled) as server}
+                  {@const isSelected = repo.note_mcp_servers?.includes(server.id)}
+                  <button
+                    class="px-1.5 py-0.5 rounded text-[10px] transition-colors {isSelected ? 'bg-amber-600 text-white' : 'bg-border text-text-muted hover:bg-border/80'}"
+                    onclick={() => {
+                      const updatedRepos = [...$repos.list];
+                      const currentServers = repo.note_mcp_servers || [];
+                      if (isSelected) {
+                        updatedRepos[index] = {
+                          ...updatedRepos[index],
+                          note_mcp_servers: currentServers.filter(id => id !== server.id),
+                        };
+                      } else {
+                        updatedRepos[index] = {
+                          ...updatedRepos[index],
+                          note_mcp_servers: [...currentServers, server.id],
+                        };
+                      }
+                      repos.updateList(updatedRepos);
+                    }}
+                  >
+                    {server.name}
+                  </button>
+                {/each}
+              </div>
+              {#if !repo.note_mcp_servers?.length}
+                <div class="text-text-muted mt-1 italic">Note mode won't use MCP servers</div>
+              {/if}
             </div>
-            <div class="flex flex-wrap gap-1">
-              {#each $settings.mcp.servers.filter(s => s.enabled) as server}
-                {@const isSelected = repo.note_mcp_servers?.includes(server.id)}
-                <button
-                  class="px-1.5 py-0.5 rounded text-[10px] transition-colors {isSelected ? 'bg-amber-600 text-white' : 'bg-border text-text-muted hover:bg-border/80'}"
-                  onclick={() => {
-                    const updatedRepos = [...$repos.list];
-                    const currentServers = repo.note_mcp_servers || [];
-                    if (isSelected) {
-                      updatedRepos[index] = {
-                        ...updatedRepos[index],
-                        note_mcp_servers: currentServers.filter(id => id !== server.id),
-                      };
-                    } else {
-                      updatedRepos[index] = {
-                        ...updatedRepos[index],
-                        note_mcp_servers: [...currentServers, server.id],
-                      };
-                    }
-                    repos.updateList(updatedRepos);
-                  }}
-                >
-                  {server.name}
-                </button>
-              {/each}
-            </div>
-            {#if !repo.note_mcp_servers?.length}
-              <div class="text-text-muted mt-1 italic">Note mode won't use MCP servers</div>
-            {/if}
-          </div>
+          {/if}
         {/if}
 
         <!-- Tags for sequence filtering -->
@@ -509,6 +515,164 @@
               {/if}
             </div>
           </div>
+        </div>
+
+        <!-- Worktree Setup (collapsible) -->
+        <div class="text-xs mt-2 pt-2 border-t border-border/30">
+          <button
+            class="flex items-center gap-1 text-text-muted hover:text-text-secondary transition-colors w-full text-left"
+            onclick={() => {
+              const next = new Set(worktreeExpandedIndices);
+              if (next.has(index)) {
+                next.delete(index);
+              } else {
+                next.add(index);
+              }
+              worktreeExpandedIndices = next;
+            }}
+          >
+            <svg
+              class="w-3 h-3 transition-transform {worktreeExpandedIndices.has(index) ? 'rotate-90' : ''}"
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+            </svg>
+            <span class="font-medium">Worktree Setup</span>
+            {#if (repo.worktree_copy_files?.length || 0) + (repo.worktree_post_create_commands?.length || 0) > 0}
+              <span class="text-text-muted text-[10px] ml-1">
+                ({(repo.worktree_copy_files?.length || 0) + (repo.worktree_post_create_commands?.length || 0)} configured)
+              </span>
+            {/if}
+          </button>
+
+          {#if worktreeExpandedIndices.has(index)}
+            <div class="mt-2 space-y-3 pl-4">
+              <!-- Copy Files -->
+              <div>
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-text-secondary font-medium">Copy Files</span>
+                  <button
+                    class="px-1.5 py-0.5 bg-accent/10 hover:bg-accent/20 text-accent rounded text-[10px] transition-colors"
+                    onclick={() => {
+                      const updatedRepos = [...$repos.list];
+                      const currentFiles = repo.worktree_copy_files || [];
+                      updatedRepos[index] = {
+                        ...updatedRepos[index],
+                        worktree_copy_files: [...currentFiles, ''],
+                      };
+                      repos.updateList(updatedRepos);
+                    }}
+                    title="Add file path"
+                  >+</button>
+                </div>
+                <div class="text-text-muted text-[10px] mb-1">Files copied from main worktree to new worktrees</div>
+                {#if repo.worktree_copy_files?.length}
+                  <div class="space-y-1">
+                    {#each repo.worktree_copy_files as filePath, fileIndex}
+                      <div class="flex items-center gap-1">
+                        <input
+                          type="text"
+                          class="flex-1 px-2 py-1 bg-surface border border-border rounded text-[11px] font-mono focus:outline-none focus:border-accent text-text-primary"
+                          value={filePath}
+                          placeholder=".env, settings.local.json"
+                          onchange={(e) => {
+                            const updatedRepos = [...$repos.list];
+                            const updatedFiles = [...(repo.worktree_copy_files || [])];
+                            updatedFiles[fileIndex] = (e.currentTarget as HTMLInputElement).value;
+                            updatedRepos[index] = {
+                              ...updatedRepos[index],
+                              worktree_copy_files: updatedFiles,
+                            };
+                            repos.updateList(updatedRepos);
+                          }}
+                        />
+                        <button
+                          class="p-1 text-text-muted hover:text-error transition-colors shrink-0"
+                          onclick={() => {
+                            const updatedRepos = [...$repos.list];
+                            const updatedFiles = [...(repo.worktree_copy_files || [])];
+                            updatedFiles.splice(fileIndex, 1);
+                            updatedRepos[index] = {
+                              ...updatedRepos[index],
+                              worktree_copy_files: updatedFiles,
+                            };
+                            repos.updateList(updatedRepos);
+                          }}
+                          title="Remove file"
+                        >&times;</button>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-text-muted text-[10px] italic">No files configured</div>
+                {/if}
+              </div>
+
+              <!-- Post-Create Commands -->
+              <div>
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-text-secondary font-medium">Post-Create Commands</span>
+                  <button
+                    class="px-1.5 py-0.5 bg-accent/10 hover:bg-accent/20 text-accent rounded text-[10px] transition-colors"
+                    onclick={() => {
+                      const updatedRepos = [...$repos.list];
+                      const currentCmds = repo.worktree_post_create_commands || [];
+                      updatedRepos[index] = {
+                        ...updatedRepos[index],
+                        worktree_post_create_commands: [...currentCmds, ''],
+                      };
+                      repos.updateList(updatedRepos);
+                    }}
+                    title="Add command"
+                  >+</button>
+                </div>
+                <div class="text-text-muted text-[10px] mb-1">Shell commands run after worktree creation</div>
+                {#if repo.worktree_post_create_commands?.length}
+                  <div class="space-y-1">
+                    {#each repo.worktree_post_create_commands as cmd, cmdIndex}
+                      <div class="flex items-center gap-1">
+                        <input
+                          type="text"
+                          class="flex-1 px-2 py-1 bg-surface border border-border rounded text-[11px] font-mono focus:outline-none focus:border-accent text-text-primary"
+                          value={cmd}
+                          placeholder="npm install"
+                          onchange={(e) => {
+                            const updatedRepos = [...$repos.list];
+                            const updatedCmds = [...(repo.worktree_post_create_commands || [])];
+                            updatedCmds[cmdIndex] = (e.currentTarget as HTMLInputElement).value;
+                            updatedRepos[index] = {
+                              ...updatedRepos[index],
+                              worktree_post_create_commands: updatedCmds,
+                            };
+                            repos.updateList(updatedRepos);
+                          }}
+                        />
+                        <button
+                          class="p-1 text-text-muted hover:text-error transition-colors shrink-0"
+                          onclick={() => {
+                            const updatedRepos = [...$repos.list];
+                            const updatedCmds = [...(repo.worktree_post_create_commands || [])];
+                            updatedCmds.splice(cmdIndex, 1);
+                            updatedRepos[index] = {
+                              ...updatedRepos[index],
+                              worktree_post_create_commands: updatedCmds,
+                            };
+                            repos.updateList(updatedRepos);
+                          }}
+                          title="Remove command"
+                        >&times;</button>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-text-muted text-[10px] italic">No commands configured</div>
+                {/if}
+              </div>
+            </div>
+          {/if}
         </div>
       </div>
     {/each}

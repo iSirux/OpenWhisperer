@@ -25,6 +25,7 @@
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
   import PlanningWizard from "./sdk/PlanningWizard.svelte";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
+  import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import SdkTaskBlock from "./sdk/SdkTaskBlock.svelte";
@@ -226,6 +227,19 @@
       }
     }
 
+    // Step 2.5: Detect task containers from parentToolUseId references.
+    // If any message references a parentToolUseId, that parent is a task container
+    // even if we didn't see a matching Task tool call (e.g. timing edge cases,
+    // persisted sessions with missing properties, or renamed tools).
+    for (const msg of msgs) {
+      if (msg.parentToolUseId && !knownTaskToolUseIds.has(msg.parentToolUseId)) {
+        knownTaskToolUseIds.add(msg.parentToolUseId);
+        if (!taskChildrenMap.has(msg.parentToolUseId)) {
+          taskChildrenMap.set(msg.parentToolUseId, []);
+        }
+      }
+    }
+
     // Step 3: Collect child messages into their parent task
     for (const msg of msgs) {
       if (msg.parentToolUseId && knownTaskToolUseIds.has(msg.parentToolUseId)) {
@@ -245,23 +259,28 @@
       if (msg.type === "task_started") return false;
       // Exclude task_completed (merged into task render items)
       if (msg.type === "task_completed") return false;
-      // Exclude subagent_start (redundant with task blocks)
-      if (msg.type === "subagent_start" && knownTaskToolUseIds.size > 0)
-        return false;
+      // Always exclude subagent_start - it's redundant with task blocks, and when
+      // task detection fails it renders as a misleading perpetual "Running" flat line
+      if (msg.type === "subagent_start") return false;
       return true;
     });
+
+    // Track which task containers have been rendered (for orphan detection)
+    const renderedTaskIds = new Set<string>();
 
     // Step 5: Build render items
     const items: RenderItem[] = [];
     let currentToolGroup: SdkMessage[] = [];
 
     for (const msg of mainStreamMsgs) {
-      // Detect Task tool calls and render as task blocks
+      // Detect Task tool calls and render as task blocks.
+      // Match by tool name "Task" OR by toolUseId being a known task container
+      // (detected via child message parentToolUseId references in Step 2.5).
       const isTaskToolCall =
         (msg.type === "tool_start" || msg.type === "tool_result") &&
-        msg.tool === "Task" &&
         !msg.parentToolUseId &&
-        msg.toolUseId;
+        msg.toolUseId &&
+        (msg.tool === "Task" || knownTaskToolUseIds.has(msg.toolUseId));
 
       if (isTaskToolCall) {
         // Flush any pending tool group
@@ -311,6 +330,7 @@
               }
             : undefined);
 
+        renderedTaskIds.add(toolUseId);
         items.push({
           type: "task",
           taskStarted: effectiveTaskStarted,
@@ -339,6 +359,38 @@
     // Flush remaining tool group
     if (currentToolGroup.length > 0 && isGridMode) {
       items.push({ type: "tool_group", tools: currentToolGroup });
+    }
+
+    // Step 6: Handle orphaned task containers.
+    // These are task containers detected via parentToolUseId (Step 2.5) or
+    // task_started (Step 2) that had no matching tool call in the main stream.
+    // Without this, their children would be filtered from the main stream but
+    // never displayed in any task block.
+    for (const taskId of knownTaskToolUseIds) {
+      if (renderedTaskIds.has(taskId)) continue;
+      const children = taskChildrenMap.get(taskId) || [];
+      if (children.length === 0 && !taskStartMap.has(taskId) && !taskCompletedMap.has(taskId)) continue;
+
+      const taskStartMsg = taskStartMap.get(taskId);
+      const taskCompletedMsg = taskCompletedMap.get(taskId);
+
+      const effectiveTaskStarted: SdkMessage = taskStartMsg
+        ? { ...taskStartMsg }
+        : {
+            type: "task_started" as const,
+            toolUseId: taskId,
+            description: "",
+            taskType: undefined,
+            taskId: taskId,
+            timestamp: children[0]?.timestamp ?? Date.now(),
+          };
+
+      items.push({
+        type: "task",
+        taskStarted: effectiveTaskStarted,
+        children,
+        taskCompleted: taskCompletedMsg,
+      });
     }
 
     return items;
@@ -425,6 +477,10 @@
   // AskUserQuestion state
   let askUserQuestion = $derived(session?.askUserQuestion);
   let hasAskUserQuestions = $derived(!!(askUserQuestion?.questions?.length));
+
+  // Plan approval state (ExitPlanMode interception)
+  let pendingPlanApproval = $derived(session?.pendingPlanApproval);
+  let hasPlanApproval = $derived(!!pendingPlanApproval);
 
   // Show completed recording header when we have recording data but session is no longer pending
   let hasCompletedRecordingData = $derived(
@@ -593,6 +649,13 @@
             session?.askUserQuestion?.currentQuestionIndex ||
           JSON.stringify(found?.askUserQuestion?.answers) !==
             JSON.stringify(session?.askUserQuestion?.answers);
+        const draftChanged =
+          found?.draftPrompt !== session?.draftPrompt ||
+          JSON.stringify(found?.draftImages ?? []) !==
+            JSON.stringify(session?.draftImages ?? []);
+        const planApprovalChanged =
+          JSON.stringify(found?.pendingPlanApproval) !==
+            JSON.stringify(session?.pendingPlanApproval);
 
         if (
           !session ||
@@ -604,7 +667,9 @@
           pendingChanged ||
           aiMetadataChanged ||
           planModeChanged ||
-          askUserQuestionChanged
+          askUserQuestionChanged ||
+          draftChanged ||
+          planApprovalChanged
         ) {
           session = found || null;
         }
@@ -768,6 +833,15 @@
     if (!forkedMessageCount) return false;
     const idx = getOriginalMessageIndex(msg);
     return idx >= 0 && idx < forkedMessageCount;
+  }
+
+  /** Check if a render item (message, tool_group, or task) belongs to the forked context */
+  function isForkedContextItem(item: RenderItem): boolean {
+    if (!forkedMessageCount) return false;
+    if (item.type === "message") return isForkedContextMessage(item.message);
+    if (item.type === "tool_group") return item.tools.length > 0 && item.tools.every(t => isForkedContextMessage(t));
+    if (item.type === "task") return isForkedContextMessage(item.taskStarted);
+    return false;
   }
 
   /** Track if we've passed the fork boundary for divider rendering */
@@ -1257,6 +1331,17 @@
   function handleAskUserDismiss() {
     sdkSessions.clearAskUserQuestion(sessionId);
   }
+
+  // Plan approval handlers
+  function handleApprovePlan() {
+    sdkSessions.approvePlan(sessionId);
+  }
+  function handleApprovePlanNewSession() {
+    sdkSessions.approvePlanNewSession(sessionId);
+  }
+  function handleDenyPlan(feedback: string) {
+    sdkSessions.denyPlan(sessionId, feedback);
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -1267,7 +1352,7 @@
   {/if}
 
   {#if hasUsageData && usage}
-    <SdkUsageBar {usage} {isQuerying} showCost={usesApiKey} />
+    <SdkUsageBar {usage} {isQuerying} />
   {/if}
 
   <div class="messages-wrapper">
@@ -1332,8 +1417,8 @@
       {/if}
 
       {#each renderItems() as item, index (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || index}` : `tool-group-${index}`)}
-        {@const isForked = item.type === "message" && isForkedContextMessage(item.message)}
-        {@const showForkDivider = !isForked && forkedMessageCount > 0 && index > 0 && (() => { const prevItem = renderItems()[index - 1]; return prevItem?.type === "message" && isForkedContextMessage(prevItem.message); })()}
+        {@const isForked = isForkedContextItem(item)}
+        {@const showForkDivider = !isForked && forkedMessageCount > 0 && index > 0 && (() => { const prevItem = renderItems()[index - 1]; return prevItem ? isForkedContextItem(prevItem) : false; })()}
         {#if showForkDivider}
           <div class="fork-divider">
             <span class="fork-divider-line"></span>
@@ -1361,8 +1446,11 @@
             />
           </div>
         {:else if item.type === "tool_group"}
-          <SdkToolGrid tools={item.tools} />
+          <div class:forked-context={isForked}>
+            <SdkToolGrid tools={item.tools} />
+          </div>
         {:else if item.type === "task"}
+          <div class:forked-context={isForked}>
           <SdkTaskBlock
             taskStarted={item.taskStarted}
             children={item.children}
@@ -1373,6 +1461,7 @@
             {sessionModel}
             {sessionEffortLevel}
           />
+          </div>
         {/if}
       {/each}
 
@@ -1406,6 +1495,15 @@
           onNavigate={handleAskUserNavigate}
           onSubmit={handleAskUserSubmit}
           onDismiss={handleAskUserDismiss}
+        />
+      {/if}
+
+      {#if hasPlanApproval && pendingPlanApproval}
+        <PlanApprovalDialog
+          {pendingPlanApproval}
+          onApprove={handleApprovePlan}
+          onApproveNewSession={handleApprovePlanNewSession}
+          onDeny={handleDenyPlan}
         />
       {/if}
 

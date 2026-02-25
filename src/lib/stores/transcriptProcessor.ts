@@ -18,7 +18,7 @@ import {
   settingsToStoreEffort,
 } from '$lib/stores/sdkSessions';
 import { sessions, activeSessionId } from '$lib/stores/sessions';
-import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
+import { settings, getEffectiveTerminalMode, isNoteModeAvailable } from '$lib/stores/settings';
 import { repos, activeRepo, isAutoRepoSelected, isRepoActive, type RepoConfig } from '$lib/stores/repos';
 import { recording } from '$lib/stores/recording';
 import { navigation } from '$lib/stores/navigation';
@@ -703,7 +703,7 @@ export async function handleVoiceCommand(
     return;
   }
 
-  if (commandType === 'note') {
+  if (commandType === 'note' && isNoteModeAvailable()) {
     if (pendingSessionId) {
       sdkSessions.cancelPendingTranscription(pendingSessionId);
     }
@@ -990,6 +990,7 @@ export async function handleSetupSessionStart(
     cwd: string;
     planMode: boolean;
     noteMode: boolean;
+    readOnlyMode: boolean;
     provider?: import('$lib/utils/models').SdkProvider;
   }
 ) {
@@ -1040,6 +1041,7 @@ export async function handleSetupSessionStart(
     effortLevel: finalEffort,
     planMode: config.planMode,
     noteMode: config.noteMode,
+    readOnlyMode: config.readOnlyMode,
     provider: config.provider,
   });
 }

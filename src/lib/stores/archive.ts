@@ -101,6 +101,64 @@ function createArchiveStore() {
     },
 
     /**
+     * Unarchive a session: restore it from archive back to the active session list.
+     * Returns the session id and type for navigation, or null if not restorable.
+     */
+    async unarchiveEntry(id: string): Promise<{ id: string; sessionType: string } | null> {
+      const result = await invoke<{ sessionData: unknown; sessionType: string }>('unarchive_entry', { id });
+
+      if (result.sessionType === 'sdk') {
+        const { persistedToSdkSession, saveSessionsToDisk } = await import('./sessionPersistence');
+        const { sdkSessions, activeSdkSessionId } = await import('./sdkSessions');
+
+        const restored = persistedToSdkSession(result.sessionData as Parameters<typeof persistedToSdkSession>[0]);
+
+        // Ensure restored session has a stable status
+        if (restored.status === 'querying' || restored.status === 'initializing') {
+          restored.status = 'idle';
+        }
+
+        // Add to live SDK sessions (guard against duplicates, use get+set since store doesn't expose update)
+        const currentSessions = get(sdkSessions);
+        if (!currentSessions.some(s => s.id === restored.id)) {
+          sdkSessions.set([restored, ...currentSessions]);
+        }
+        activeSdkSessionId.set(restored.id);
+
+        // Update local archive state
+        entries.update(e => e.filter(entry => entry.id !== id));
+        totalCount.update(n => n - 1);
+        archiveCount.update(n => Math.max(0, n - 1));
+
+        await saveSessionsToDisk();
+        return { id, sessionType: result.sessionType };
+      } else if (result.sessionType === 'pty') {
+        const { persistedToTerminalSession, saveSessionsToDisk } = await import('./sessionPersistence');
+        const { sessions, activeSessionId } = await import('./sessions');
+
+        const restored = persistedToTerminalSession(result.sessionData as Parameters<typeof persistedToTerminalSession>[0]);
+
+        // Add to live terminal sessions (guard against duplicates)
+        sessions.update(current => {
+          if (current.some(s => s.id === restored.id)) return current;
+          return [restored, ...current];
+        });
+        activeSessionId.set(restored.id);
+
+        // Update local archive state
+        entries.update(e => e.filter(entry => entry.id !== id));
+        totalCount.update(n => n - 1);
+        archiveCount.update(n => Math.max(0, n - 1));
+
+        await saveSessionsToDisk();
+        return { id, sessionType: result.sessionType };
+      } else {
+        console.warn(`[archive] Cannot restore session type: ${result.sessionType}`);
+        return null;
+      }
+    },
+
+    /**
      * Delete a single archived entry
      */
     async deleteEntry(id: string): Promise<void> {

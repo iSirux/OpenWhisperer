@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import type { SdkMessage, EffortLevel } from "$lib/stores/sdkSessions";
   import { settings } from "$lib/stores/settings";
   import SdkMessageComponent from "./SdkMessage.svelte";
@@ -23,6 +24,22 @@
     sessionModel?: string;
     sessionEffortLevel?: EffortLevel;
   } = $props();
+
+  // Auto-scroll task body to bottom when new children arrive
+  let taskBodyEl = $state<HTMLDivElement | null>(null);
+  let prevChildCount = $state(0);
+
+  $effect(() => {
+    const currentCount = children.length;
+    if (currentCount > prevChildCount && taskBodyEl) {
+      tick().then(() => {
+        if (taskBodyEl) {
+          taskBodyEl.scrollTop = taskBodyEl.scrollHeight;
+        }
+      });
+    }
+    prevChildCount = currentCount;
+  });
 
   let isRunning = $derived(!taskCompleted);
   let isCompleted = $derived(taskCompleted?.taskStatus === 'completed');
@@ -100,6 +117,11 @@
   // Derive the display label: use taskType if available (e.g. "Explore"), else "Task"
   let taskLabel = $derived(taskStarted.taskType || 'Task');
 
+  // Count tool calls (tool_start or tool_result, excluding thinking/text/other message types)
+  let toolCallCount = $derived(
+    children.filter(m => m.type === 'tool_start' || m.type === 'tool_result' || m.type === 'thinking').length
+  );
+
   let isGridMode = $derived($settings.tool_display_mode === 'grid');
 
   // Group processed children into render items respecting grid/list setting
@@ -164,6 +186,9 @@
       {#if taskStarted.description}
         <span class="task-description">{taskStarted.description}</span>
       {/if}
+      {#if toolCallCount > 0}
+        <span class="task-tool-count">{toolCallCount} tool call{toolCallCount !== 1 ? 's' : ''}</span>
+      {/if}
       <span class="task-status-badge" class:running={isRunning} class:completed={isCompleted} class:failed={isFailed} class:stopped={isStopped}>
         {#if isRunning}
           <span class="spinner"></span>
@@ -184,7 +209,7 @@
       </span>
     </summary>
 
-    <div class="task-body">
+    <div class="task-body" bind:this={taskBodyEl}>
       {#if childRenderItems().length > 0}
         <div class="task-children">
           {#each childRenderItems() as item, index (item.type === 'tool_group' ? `tool-group-${index}` : item.message.timestamp)}
@@ -230,6 +255,7 @@
     border: 1px solid color-mix(in srgb, var(--color-model-opus) 20%, var(--color-border));
     background: color-mix(in srgb, var(--color-model-opus) 4%, var(--color-surface));
     overflow: hidden;
+    min-width: 0;
     animation: fadeIn 0.2s ease-out;
   }
 
@@ -298,6 +324,14 @@
     min-width: 0;
   }
 
+  .task-tool-count {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
   .task-type-badge {
     font-size: 0.65rem;
     padding: 0.0625rem 0.375rem;
@@ -353,9 +387,17 @@
   }
 
   .task-body {
-    max-height: 500px;
+    min-height: clamp(220px, 32vh, 420px);
+    max-height: min(72vh, 900px);
     overflow-y: auto;
+    overflow-x: hidden;
     border-top: 1px solid color-mix(in srgb, var(--color-model-opus) 10%, var(--color-border));
+  }
+
+  @media (max-height: 760px) {
+    .task-body {
+      min-height: 160px;
+    }
   }
 
   .task-children {
@@ -365,6 +407,7 @@
     padding: 0.5rem 0.75rem 0.5rem 1rem;
     border-left: 2px solid color-mix(in srgb, var(--color-model-opus) 25%, var(--color-border));
     margin-left: 0.75rem;
+    min-width: 0;
     background: color-mix(in srgb, var(--color-model-opus) 2%, transparent);
   }
 

@@ -31,20 +31,9 @@
     allSessions.filter(s => ['Starting', 'Running', 'querying', 'initializing'].includes(s.status)).length
   );
 
-  const pendingCount = $derived(
-    sdkSessions.filter(s => s.status === 'pending_repo').length
-  );
   const currentPath = $derived($page.url.pathname);
   const isOnSequences = $derived(currentPath.startsWith('/sequences'));
   const isOnUsage = $derived(currentPath.startsWith('/usage'));
-
-  const doneCount = $derived(
-    allSessions.filter(s => ['Completed', 'idle', 'done'].includes(s.status)).length
-  );
-
-  const errorCount = $derived(
-    allSessions.filter(s => ['Failed', 'error'].includes(s.status)).length
-  );
 
   function openCommandCenter() {
     goto('/sessions-view');
@@ -65,33 +54,18 @@
 
 <div class="px-3 py-2 border-b border-border flex items-center justify-between gap-2 overflow-hidden">
   <button
-    class="h-8 shrink-0 hover:bg-surface-elevated transition-colors rounded px-2"
-    class:bg-surface-elevated={currentView === 'sessions'}
+    class="h-8 shrink-0 px-2 flex items-center"
     onclick={onShowSessions}
+    aria-current={currentView === 'sessions' ? 'page' : undefined}
   >
     <div class="flex items-center gap-2">
       {#if totalCount > 0}
         <div class="flex items-center gap-1">
-          {#if pendingCount > 0}
-            <div class="flex items-center gap-1">
-              <div class="w-1.5 h-1.5 rounded-full bg-amber-400"></div>
-              <span class="text-[11px] text-amber-400 font-medium">{pendingCount}</span>
-            </div>
-          {/if}
           {#if activeCount > 0}
             <div class="flex items-center gap-1">
               <div class="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
               <span class="text-[11px] text-emerald-400 font-medium">{activeCount}</span>
             </div>
-          {/if}
-          {#if doneCount > 0}
-            <div class="flex items-center gap-1">
-              <div class="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
-              <span class="text-[11px] text-blue-400 font-medium">{doneCount}</span>
-            </div>
-          {/if}
-          {#if errorCount > 0}
-            <div class="w-1.5 h-1.5 rounded-full bg-red-400"></div>
           {/if}
         </div>
       {/if}

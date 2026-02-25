@@ -1,0 +1,216 @@
+use crate::commands::usage_cmds::UsageStatsState;
+use crate::config::{AppConfig, LlmProvider};
+use crate::git::{GitManager, WorktreeCreationResult, WorktreeInfo};
+use crate::llm::LlmClient;
+use parking_lot::Mutex;
+use tauri::{AppHandle, State};
+use tauri_plugin_keyring::KeyringExt;
+
+type ConfigState = Mutex<AppConfig>;
+
+/// Keyring constants (shared with llm_cmds)
+const KEYRING_SERVICE: &str = "claude-whisperer";
+const KEYRING_LLM_KEY: &str = "llm-api-key";
+
+/// List all worktrees for a repository
+#[tauri::command]
+pub fn list_git_worktrees(repo_path: String) -> Result<Vec<WorktreeInfo>, String> {
+    GitManager::list_worktrees(&repo_path)
+}
+
+/// Create a new worktree with full setup (copy files, run post-create commands)
+#[tauri::command]
+pub async fn create_git_worktree_with_setup(
+    repo_path: String,
+    branch_name: String,
+    worktree_path: Option<String>,
+    copy_files: Vec<String>,
+    post_create_commands: Vec<String>,
+) -> Result<WorktreeCreationResult, String> {
+    // Run in a blocking task since git operations and shell commands are blocking
+    tokio::task::spawn_blocking(move || {
+        GitManager::create_worktree_with_setup(
+            &repo_path,
+            &branch_name,
+            worktree_path.as_deref(),
+            &copy_files,
+            &post_create_commands,
+        )
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Generate a branch name for a new worktree using LLM (with fallback)
+#[tauri::command]
+pub async fn generate_worktree_branch_name(
+    app: AppHandle,
+    config: State<'_, ConfigState>,
+    stats: State<'_, UsageStatsState>,
+    prompt: String,
+    repo_path: String,
+) -> Result<String, String> {
+    let cfg = config.lock().clone();
+
+    // Check if LLM branch naming is enabled
+    if !cfg.llm.features.generate_branch_names {
+        return Ok(GitManager::generate_unique_branch_name(&prompt, &repo_path));
+    }
+
+    // Get existing branches to avoid conflicts
+    let existing_branches = GitManager::list_branches(&repo_path).unwrap_or_default();
+
+    // Try LLM-generated name first
+    if cfg.llm.enabled {
+        // For local provider, API key is optional
+        let api_key = if matches!(cfg.llm.provider, LlmProvider::Local) {
+            app.keyring()
+                .get_password(KEYRING_SERVICE, KEYRING_LLM_KEY)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        } else {
+            match app.keyring().get_password(KEYRING_SERVICE, KEYRING_LLM_KEY) {
+                Ok(Some(key)) => key,
+                Ok(None) | Err(_) => String::new(),
+            }
+        };
+
+        if !api_key.is_empty() || matches!(cfg.llm.provider, LlmProvider::Local) {
+            let client = LlmClient::new(
+                api_key,
+                cfg.llm.model.clone(),
+                cfg.llm.provider.clone(),
+                cfg.llm.endpoint.clone(),
+                cfg.llm.auto_model,
+                cfg.llm.model_priority.clone(),
+            );
+
+            // Truncate prompt to 10k chars for branch naming
+            let truncated_prompt = if prompt.len() > 10000 {
+                &prompt[..10000]
+            } else {
+                &prompt
+            };
+
+            match client
+                .generate_branch_name_with_usage(truncated_prompt, &existing_branches)
+                .await
+            {
+                Ok(result) => {
+                    // Track LLM usage
+                    let mut s = stats.lock();
+                    s.track_llm_token_usage(
+                        "branch_name",
+                        result.usage.input_tokens,
+                        result.usage.output_tokens,
+                    );
+                    let _ = s.save();
+
+                    let name = result.data.branch_name;
+
+                    // Validate the name: must be non-empty, no spaces, reasonable length
+                    if !name.is_empty()
+                        && !name.contains(' ')
+                        && name.len() <= 80
+                        && !existing_branches.contains(&name)
+                    {
+                        return Ok(name);
+                    }
+                    // If LLM returned something invalid, fall through to fallback
+                }
+                Err(e) => {
+                    eprintln!("[git] LLM branch name generation failed: {}", e);
+                    // Fall through to fallback
+                }
+            }
+        }
+    }
+
+    // Fallback: auto-generated name
+    Ok(GitManager::generate_unique_branch_name(&prompt, &repo_path))
+}
+
+/// Open a path in VS Code
+#[tauri::command]
+pub fn open_in_vscode(path: String) -> Result<(), String> {
+    use std::process::Command;
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        Command::new("cmd")
+            .args(["/c", "code", &path])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| format!("Failed to open VS Code: {}", e))?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        Command::new("code")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open VS Code: {}", e))?;
+    }
+
+    Ok(())
+}
+
+/// Open a terminal at a specific path
+#[tauri::command]
+pub fn open_in_terminal(path: String) -> Result<(), String> {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        Command::new("cmd")
+            .args(["/c", "start", "cmd", "/k", &format!("cd /d \"{}\"", path)])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| format!("Failed to open terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"tell application "Terminal"
+                activate
+                do script "cd '{}'"
+            end tell"#,
+            path.replace("'", "'\\''")
+        );
+        Command::new("osascript")
+            .args(["-e", &script])
+            .spawn()
+            .map_err(|e| format!("Failed to open terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let terminals = [
+            ("gnome-terminal", vec!["--working-directory", &path]),
+            ("konsole", vec!["--workdir", &path]),
+            ("xfce4-terminal", vec!["--working-directory", &path]),
+            ("xterm", vec!["-e", &format!("cd '{}' && bash", path)]),
+        ];
+
+        let mut launched = false;
+        for (term, args) in terminals {
+            if Command::new(term).args(&args).spawn().is_ok() {
+                launched = true;
+                break;
+            }
+        }
+
+        if !launched {
+            return Err(
+                "No supported terminal emulator found (tried gnome-terminal, konsole, xfce4-terminal, xterm)"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}

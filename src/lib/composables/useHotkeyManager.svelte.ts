@@ -4,7 +4,7 @@
  */
 
 import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
-import { settings, type HotkeyEnabledConfig } from '$lib/stores/settings';
+import { settings, isNoteModeAvailable, type HotkeyEnabledConfig } from '$lib/stores/settings';
 import { repos } from '$lib/stores/repos';
 import { isRecording } from '$lib/stores/recording';
 import { overlay } from '$lib/stores/overlay';
@@ -116,7 +116,8 @@ export function useHotkeyManager() {
 
       // Register note mode hotkey (only if enabled)
       const noteModeHotkey = currentSettings.hotkeys.note_mode;
-      if (enabled.note_mode && noteModeHotkey && noteModeHotkey !== currentSettings.hotkeys.toggle_recording) {
+      const noteModeAvailable = isNoteModeAvailable();
+      if (noteModeAvailable && enabled.note_mode && noteModeHotkey && noteModeHotkey !== currentSettings.hotkeys.toggle_recording) {
         console.log('[Hotkey] Registering note_mode:', noteModeHotkey);
         await register(noteModeHotkey, async () => {
           if (isStartingNoteMode || get(isRecording)) return;
@@ -134,6 +135,8 @@ export function useHotkeyManager() {
         registeredNoteModeHotkey = noteModeHotkey;
         noteModeHotkeyRegistered = true;
         console.log('[Hotkey] Successfully registered note_mode:', noteModeHotkey);
+      } else if (!noteModeAvailable) {
+        console.log('[Hotkey] note_mode unavailable in production, skipping registration');
       } else if (!enabled.note_mode) {
         console.log('[Hotkey] note_mode is disabled, skipping registration');
       }
@@ -141,7 +144,7 @@ export function useHotkeyManager() {
       // Collect already-registered hotkeys for collision detection
       const registeredHotkeys = new Set([
         currentSettings.hotkeys.toggle_recording,
-        noteModeHotkey,
+        noteModeAvailable ? noteModeHotkey : null,
       ].filter(Boolean));
 
       // Register send_selection hotkey (only if enabled)

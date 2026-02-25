@@ -179,6 +179,7 @@
           initialEffortLevel={activeSession.effortLevel}
           initialCwd={activeSession.cwd || $activeRepo?.path || ''}
           initialPlanMode={activeSession.planMode?.isActive || false}
+          initialReadOnlyMode={activeSession.readOnlyMode || false}
           initialDraftPrompt={activeSession.draftPrompt || ''}
           initialDraftImages={activeSession.draftImages || []}
           isRecordingForSetup={$isRecordingForSetup}

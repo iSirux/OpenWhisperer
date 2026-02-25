@@ -287,6 +287,32 @@ impl ArchiveIndex {
         Ok(())
     }
 
+    /// Unarchive a session: load its full data, remove from index, and delete data file.
+    /// Returns (session_data, session_type) so the frontend knows how to restore it.
+    pub fn unarchive_entry(&mut self, id: &str) -> Result<(serde_json::Value, String), String> {
+        let session_type = self
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| format!("Archive entry not found: {}", id))?
+            .session_type
+            .clone();
+
+        // Load full session data before removing
+        let data = self.load_session_data(id)?;
+
+        // Remove from index
+        self.entries.retain(|e| e.id != id);
+
+        // Delete data file
+        let path = Self::sessions_dir().join(format!("{}.json", id));
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+
+        Ok((data, session_type))
+    }
+
     /// Delete a single archived entry and its data file
     pub fn delete_entry(&mut self, id: &str) -> Result<(), String> {
         self.entries.retain(|e| e.id != id);

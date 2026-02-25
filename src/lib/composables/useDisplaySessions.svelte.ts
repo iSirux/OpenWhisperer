@@ -64,6 +64,16 @@ export function getSdkSmartStatus(session: SdkSession): {
     return { status: 'pending_repo' };
   }
 
+  // Handle pending plan approval (ExitPlanMode intercepted)
+  if (session.pendingPlanApproval) {
+    return { status: 'pending_plan_approval' };
+  }
+
+  // Handle pending AskUserQuestion
+  if (session.askUserQuestion?.questions?.length) {
+    return { status: 'awaiting_input' };
+  }
+
   // Handle prepared status
   if (session.status === 'prepared') {
     return { status: 'prepared' };
@@ -79,29 +89,37 @@ export function getSdkSmartStatus(session: SdkSession): {
   }
 
   if (session.status === 'querying') {
-    // Find the last tool_start that doesn't have a matching tool_result after it
-    // Also track if we're in a subagent
-    let inSubagent = false;
-    let subagentType: string | undefined;
+    // Phase 1: Check if we're inside an active subagent.
+    // Scan backwards — if we find subagent_start before subagent_stop,
+    // the subagent is still running. Its internal tool/text messages appear
+    // AFTER (higher index than) the subagent_start, so a single backwards
+    // pass that checks tool/text would return early before ever reaching it.
+    let activeSubagentType: string | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.type === 'subagent_stop') {
+        break; // Most recent subagent has ended
+      }
+      if (msg.type === 'subagent_start') {
+        activeSubagentType = msg.agentType;
+        break; // Found an active (unclosed) subagent
+      }
+    }
 
+    if (activeSubagentType) {
+      return { status: 'subagent', detail: activeSubagentType };
+    }
+
+    // Phase 2: No active subagent — determine status from latest messages
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
 
-      // Track subagent state (stop before start when iterating backwards)
-      if (msg.type === 'subagent_stop') {
-        continue;
-      }
-      if (msg.type === 'subagent_start') {
-        inSubagent = true;
-        subagentType = msg.agentType;
+      // Skip subagent markers (already handled above)
+      if (msg.type === 'subagent_start' || msg.type === 'subagent_stop') {
         continue;
       }
 
       if (msg.type === 'tool_start') {
-        if (inSubagent) {
-          return { status: 'subagent', detail: subagentType || 'Agent' };
-        }
-
         // Count consecutive calls to this same tool
         let count = 1;
         const currentTool = msg.tool;
@@ -121,22 +139,13 @@ export function getSdkSmartStatus(session: SdkSession): {
         return { status: 'tool', detail };
       }
       if (msg.type === 'tool_result') {
-        if (inSubagent) {
-          return { status: 'subagent', detail: subagentType || 'Agent' };
-        }
         return { status: 'thinking' };
       }
       if (msg.type === 'text') {
-        if (inSubagent) {
-          return { status: 'subagent', detail: subagentType || 'Agent' };
-        }
         return { status: 'responding' };
       }
     }
 
-    if (inSubagent) {
-      return { status: 'subagent', detail: subagentType || 'Agent' };
-    }
     return { status: 'thinking' };
   }
 
@@ -277,6 +286,8 @@ export function transformToDisplaySessions(
         pendingRepoSelection: s.pendingRepoSelection,
         planMode: s.planMode,
         noteMode: s.noteMode,
+        pendingPlanApproval: !!s.pendingPlanApproval,
+        askUserQuestion: !!(s.askUserQuestion?.questions?.length),
         provider: s.provider,
         todoProgress
       };

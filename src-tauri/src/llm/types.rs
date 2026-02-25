@@ -77,6 +77,12 @@ impl RepoRecommendation {
     }
 }
 
+/// Result for generating a git branch name from a prompt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchNameResult {
+    pub branch_name: String,
+}
+
 /// A single quick action suggestion
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuickAction {

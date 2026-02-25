@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { settings } from './settings';
 import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo, type PlanModeState, type NoteModeState } from './sdkSessions';
-import type { SdkProvider } from '$lib/utils/models';
+import { getProviderForModel, type SdkProvider } from '$lib/utils/models';
 import { sessions, activeSessionId, type TerminalSession } from './sessions';
 
 // ============================================================================
@@ -31,6 +31,7 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
     'draftImages', // Transient input state - images pending to be sent
     'pendingSystemNotifications', // Transient parallel agent notifications - cleared after first query
     'askUserQuestion', // Transient - SDK already auto-answered, questions are one-time interactive
+    'pendingPlanApproval', // Transient - plan approval is a one-time interactive decision
   ]),
   // PendingTranscriptionInfo fields that shouldn't be persisted
   PendingTranscriptionInfo: new Set([
@@ -226,6 +227,7 @@ export interface PersistedSdkSession {
   currentBranch?: string | null;
   model: string;
   provider?: SdkProvider;
+  readOnlyMode?: boolean;
   autoModelRequested?: boolean;
   effortLevel?: EffortLevel;
   /** @deprecated Use effortLevel - kept for backward compat loading */
@@ -294,7 +296,7 @@ export function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession 
  * Convert persisted SDK session to frontend format.
  * Applies defaults for fields that need runtime initialization.
  */
-function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
+export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
   // Determine if this is a pending session
   const isPending = persisted.status === 'pending_transcription' ||
                     persisted.status === 'pending_repo' ||
@@ -342,6 +344,13 @@ function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
     session.effortLevel = null;
   }
 
+  // Normalize provider for legacy/mismatched sessions: derive from model.
+  // This prevents invalid pairs like provider=claude with model=gpt-5.3-codex.
+  const modelProvider = getProviderForModel(session.model);
+  if (session.provider !== modelProvider) {
+    session.provider = modelProvider;
+  }
+
   return session;
 }
 
@@ -363,7 +372,7 @@ export function terminalSessionToPersisted(session: TerminalSession, outputBuffe
 /**
  * Convert persisted terminal session to frontend format.
  */
-function persistedToTerminalSession(persisted: PersistedTerminalSession): TerminalSession {
+export function persistedToTerminalSession(persisted: PersistedTerminalSession): TerminalSession {
   return {
     id: persisted.id,
     repo_path: persisted.repo_path,

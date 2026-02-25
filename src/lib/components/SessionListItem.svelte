@@ -115,12 +115,48 @@
           Note
         </span>
       {:else if session.planMode?.isActive}
-        <!-- Planning badge takes priority over model badge -->
+        <!-- Planning badge - changes color when awaiting plan approval -->
         <span
-          class="px-1.5 py-0.5 text-[10px] font-medium bg-cyan-500/20 text-cyan-400 rounded flex items-center gap-1"
-          title={session.planMode.isComplete
-            ? "Planning complete"
-            : "Planning in progress"}
+          class="px-1.5 py-0.5 text-[10px] font-medium rounded flex items-center gap-1 {
+            session.pendingPlanApproval
+              ? 'bg-orange-500/20 text-orange-400'
+              : 'bg-cyan-500/20 text-cyan-400'
+          }"
+          title={session.pendingPlanApproval
+            ? "Plan ready for review"
+            : session.planMode.isComplete
+              ? "Planning complete"
+              : "Planning in progress"}
+        >
+          <svg
+            class="w-2.5 h-2.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            {#if session.pendingPlanApproval}
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            {:else}
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+              />
+            {/if}
+          </svg>
+          {session.pendingPlanApproval ? "Review Plan" : session.planMode.isComplete ? "Plan" : "Planning"}
+        </span>
+      {:else if session.askUserQuestion}
+        <!-- AskUserQuestion badge -->
+        <span
+          class="px-1.5 py-0.5 text-[10px] font-medium bg-orange-500/20 text-orange-400 rounded flex items-center gap-1"
+          title="Claude is asking a question"
         >
           <svg
             class="w-2.5 h-2.5"
@@ -132,10 +168,10 @@
               stroke-linecap="round"
               stroke-linejoin="round"
               stroke-width="2"
-              d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+              d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
             />
           </svg>
-          {session.planMode.isComplete ? "Plan" : "Planning"}
+          Input Needed
         </span>
       {:else if session.status === "prepared"}
         <!-- Prepared badge (teal) -->

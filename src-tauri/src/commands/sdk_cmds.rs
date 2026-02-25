@@ -24,6 +24,7 @@ pub fn create_sdk_session(
     sdk_session_id: Option<String>, // SDK session ID for proper resume (preferred over messages)
     plan_mode: Option<bool>, // Whether this is a plan mode session (enables planning tools)
     note_mode: Option<bool>, // Whether this is a note-taking mode session (read-only + note MCP tools)
+    read_only_mode: Option<bool>, // Whether this is a read-only mode session (read tools + web search)
     mcp_servers: Option<Vec<McpServerConfig>>, // Optional MCP servers to register
     fork_from_sdk_session_id: Option<String>, // SDK session ID to fork from (creates a new branch)
     fork_at_message_uuid: Option<String>, // Message UUID to fork at (resumeSessionAt)
@@ -31,7 +32,7 @@ pub fn create_sdk_session(
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
     }
-    sidecar.send(OutboundMessage::Create { id, cwd, provider, codex_mode, model: Some(model), system_prompt, messages, sdk_session_id, plan_mode, note_mode, mcp_servers, fork_from_sdk_session_id, fork_at_message_uuid })
+    sidecar.send(OutboundMessage::Create { id, cwd, provider, codex_mode, model: Some(model), system_prompt, messages, sdk_session_id, plan_mode, note_mode, read_only_mode, mcp_servers, fork_from_sdk_session_id, fork_at_message_uuid })
 }
 
 #[tauri::command]
@@ -105,6 +106,21 @@ pub fn answer_ask_user_question(
         return Err("Sidecar not started".to_string());
     }
     sidecar.send(OutboundMessage::AnswerAskUserQuestion { id, answers })
+}
+
+/// Send user's plan approval decision back to the sidecar.
+/// The sidecar's canUseTool callback is waiting for this decision.
+#[tauri::command]
+pub fn answer_plan_approval(
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    action: String,
+    feedback: Option<String>,
+) -> Result<(), String> {
+    if !sidecar.is_started() {
+        return Err("Sidecar not started".to_string());
+    }
+    sidecar.send(OutboundMessage::AnswerPlanApproval { id, action, feedback })
 }
 
 /// Generate repository description using Claude SDK (Haiku model)

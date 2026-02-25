@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
   import { repos } from '$lib/stores/repos';
@@ -96,6 +97,26 @@
       isChatCopied = false;
     }, 2000);
   }
+
+  async function openInVSCode() {
+    if (repoPath) {
+      try {
+        await invoke('open_in_vscode', { path: repoPath });
+      } catch (e) {
+        console.error('Failed to open VS Code:', e);
+      }
+    }
+  }
+
+  async function openInTerminal() {
+    if (repoPath) {
+      try {
+        await invoke('open_in_terminal', { path: repoPath });
+      } catch (e) {
+        console.error('Failed to open terminal:', e);
+      }
+    }
+  }
 </script>
 
 <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">
@@ -134,6 +155,28 @@
     {/if}
   </div>
   <div class="flex items-center gap-2">
+    {#if repoPath}
+      <button
+        class="action-icon-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
+        onclick={openInVSCode}
+        title="Open in VS Code"
+      >
+        <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="16 18 22 12 16 6" />
+          <polyline points="8 6 2 12 8 18" />
+        </svg>
+      </button>
+      <button
+        class="action-icon-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
+        onclick={openInTerminal}
+        title="Open in Terminal"
+      >
+        <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 17 10 11 4 5" />
+          <line x1="12" y1="19" x2="20" y2="19" />
+        </svg>
+      </button>
+    {/if}
     {#if !isPending}
       <button
         class="copy-all-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { SdkImageContent } from "$lib/stores/sdkSessions";
   import {
     getImagesFromClipboard,
@@ -65,18 +66,30 @@
   // Notify parent of draft changes (debounced to avoid too many updates)
   let draftChangeTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  function getImageContent(): SdkImageContent[] {
+    return pendingImages.map((img) => ({
+      mediaType: img.mediaType,
+      base64Data: img.base64Data,
+      width: img.width,
+      height: img.height,
+    }));
+  }
+
+  function flushDraftChange() {
+    if (!onDraftChange) return;
+    if (draftChangeTimeout) {
+      clearTimeout(draftChangeTimeout);
+      draftChangeTimeout = null;
+    }
+    onDraftChange(prompt, getImageContent());
+  }
+
   function notifyDraftChange() {
     if (!onDraftChange) return;
     if (draftChangeTimeout) clearTimeout(draftChangeTimeout);
     draftChangeTimeout = setTimeout(() => {
       draftChangeTimeout = null;
-      const imageContent: SdkImageContent[] = pendingImages.map((img) => ({
-        mediaType: img.mediaType,
-        base64Data: img.base64Data,
-        width: img.width,
-        height: img.height,
-      }));
-      onDraftChange(prompt, imageContent);
+      onDraftChange(prompt, getImageContent());
     }, 300);
   }
 
@@ -128,6 +141,10 @@
       })),
     };
   }
+
+  onDestroy(() => {
+    flushDraftChange();
+  });
 
   // Expose method to append transcribed text to the current prompt
   export function appendToPrompt(text: string) {

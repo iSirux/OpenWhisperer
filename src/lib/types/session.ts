@@ -51,6 +51,11 @@ export interface DisplaySession {
   // Note mode state
   noteMode?: NoteModeState;
 
+  // Pending plan approval (ExitPlanMode waiting for user)
+  pendingPlanApproval?: boolean;
+  // Pending AskUserQuestion (Claude asking user a question)
+  askUserQuestion?: boolean;
+
   // Sequence execution fields
   sequenceStatus?: ExecutionStatus;
   sequenceProgress?: { completed: number; total: number };

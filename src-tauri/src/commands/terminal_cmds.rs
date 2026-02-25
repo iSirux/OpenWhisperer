@@ -1,5 +1,4 @@
 use crate::config::AppConfig;
-use crate::git::GitManager;
 use crate::terminal::{TerminalManager, TerminalSession};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -21,19 +20,10 @@ pub fn create_terminal_session(
         .get_active_repo()
         .ok_or("No active repository configured")?;
 
-    let working_path = if cfg.git.create_branch && cfg.git.use_worktrees {
-        let branch_name = GitManager::generate_branch_name(&prompt);
-        let worktree_path = GitManager::get_worktree_path(&repo.path, &branch_name);
-
-        GitManager::create_worktree(&repo.path, &branch_name, &worktree_path)?;
-        worktree_path
-    } else if cfg.git.create_branch {
-        let branch_name = GitManager::generate_branch_name(&prompt);
-        GitManager::create_branch(&repo.path, &branch_name)?;
-        repo.path.clone()
-    } else {
-        repo.path.clone()
-    };
+    // CWD is now resolved by the frontend (main repo path or worktree path).
+    // The old git branch/worktree creation logic has been replaced by
+    // per-session worktree selection in the session setup UI.
+    let working_path = repo.path.clone();
 
     let model = Some(cfg.default_model.clone());
     let terminal_mode = cfg.get_effective_terminal_mode();

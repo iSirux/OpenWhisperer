@@ -139,14 +139,6 @@ Access settings via the gear icon or `Cmd/Ctrl + ,`.
 └──────────────────────┴──────────────────────────────────────────┘
 ```
 
-### Windows
-
-| Window       | Description                                   |
-| ------------ | --------------------------------------------- |
-| **Main**     | Terminal tabs, session list, transcript panel |
-| **Overlay**  | Transparent, always-on-top recording status   |
-| **Settings** | Configuration modal                           |
-
 ## Development
 
 ```bash
@@ -185,17 +177,9 @@ ClaudeWhisperer/
 └── package.json
 ```
 
-## Roadmap
-
-- [ ] Notion integration for note-taking mode
-- [ ] Session history and replay
-- [ ] Custom voice command vocabulary
-- [ ] Multi-repo workspaces
-- [ ] Prompt templates / snippets
-
 ## License
 
-[MIT](LICENSE) with [Commons Clause](https://commonsclause.com/) — free to use, modify, and share, but you cannot sell it.
+[MIT + Commons Clause](LICENSE) — source-available: free to use, modify, and share, but you cannot sell software or services derived substantially from it.
 
 ```
 
@@ -205,10 +189,12 @@ ClaudeWhisperer/
 ```
 
 LICENSE
-├── Part 1: MIT License (full standard text)
+├── Part 1: MIT License text (base terms)
 │
 └── Part 2: Commons Clause (addendum that restricts selling)
-└── Specifies: Licensor, Software name, Base license
-´´´
+└── Specifies: Licensor, Software name, and the non-selling condition
+
+```
 
 ---
+```

@@ -8,7 +8,6 @@ export { default as AudioTab } from "./AudioTab.svelte";
 export { default as WhisperTab } from "./WhisperTab.svelte";
 export { default as VoskTab } from "./VoskTab.svelte";
 export { default as LlmTab } from "./LlmTab.svelte";
-export { default as GitTab } from "./GitTab.svelte";
 export { default as HotkeysTab } from "./HotkeysTab.svelte";
 export { default as OverlayTab } from "./OverlayTab.svelte";
 export { default as ReposTab } from "./ReposTab.svelte";

@@ -1,6 +1,7 @@
 import { writable, derived } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { dev } from "$app/environment";
 
 
 export type WhisperProvider = "Local" | "OpenAI" | "Groq" | "Custom";
@@ -87,6 +88,7 @@ export interface VoskConfig {
   speaches: SpeachesConfig;
 }
 
+/** @deprecated Legacy GitConfig kept only for deserialization of old configs */
 export interface GitConfig {
   create_branch: boolean;
   auto_merge: boolean;
@@ -357,6 +359,8 @@ export interface LlmFeaturesConfig {
   auto_model_thinking?: AutoModelEffort;
   /** Auto-select repository based on prompt content */
   auto_select_repo: boolean;
+  /** Use LLM to generate descriptive branch names for new worktrees */
+  generate_branch_names: boolean;
 }
 // Alias for backwards compatibility
 export type GeminiFeaturesConfig = LlmFeaturesConfig;
@@ -647,6 +651,7 @@ const defaultConfig: AppConfig = {
       recommend_model: true,
       auto_model_effort: "dynamic",
       auto_select_repo: true,
+      generate_branch_names: true,
     },
     confirm_repo_selection: false,
     min_auto_select_confidence: "high",
@@ -724,6 +729,10 @@ function createSettingsStore() {
 }
 
 export const settings = createSettingsStore();
+
+export function isNoteModeAvailable(): boolean {
+  return dev;
+}
 
 export function getEffectiveTerminalMode(config: AppConfig): TerminalMode {
   // OpenAI App Server mode is not yet integrated into the structured session flow.

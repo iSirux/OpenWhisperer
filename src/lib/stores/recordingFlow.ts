@@ -17,7 +17,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 // Stores
 import { recording, isRecording } from '$lib/stores/recording';
 import { sdkSessions, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
+import { settings, getEffectiveTerminalMode, isNoteModeAvailable } from '$lib/stores/settings';
 import { activeRepo } from '$lib/stores/repos';
 import { overlay } from '$lib/stores/overlay';
 import { openMic } from '$lib/stores/openMic';
@@ -385,6 +385,7 @@ function createRecordingFlowStore() {
 
   /** Start recording for note-taking mode. */
   async function startRecordingForNoteMode() {
+    if (!isNoteModeAvailable()) return;
     if (get(isRecording)) return;
     update((s) => ({ ...s, isRecordingForNoteMode: true }));
 

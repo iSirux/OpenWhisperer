@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { settings } from "$lib/stores/settings";
+  import { settings, isNoteModeAvailable } from "$lib/stores/settings";
   import HotkeyInput from "$lib/components/HotkeyInput.svelte";
+
+  const noteModeAvailable = $derived(isNoteModeAvailable());
 </script>
 
 <div class="space-y-4">
@@ -105,24 +107,26 @@
     />
   </div>
 
-  <!-- Note Mode -->
-  <div class="border-t border-border pt-4">
-    <div class="flex items-center justify-between mb-1">
-      <label class="text-sm font-medium text-text-secondary">Note Mode</label>
-      <input
-        type="checkbox"
-        class="toggle"
-        bind:checked={$settings.hotkeys_enabled.note_mode}
+  {#if noteModeAvailable}
+    <!-- Note Mode -->
+    <div class="border-t border-border pt-4">
+      <div class="flex items-center justify-between mb-1">
+        <label class="text-sm font-medium text-text-secondary">Note Mode</label>
+        <input
+          type="checkbox"
+          class="toggle"
+          bind:checked={$settings.hotkeys_enabled.note_mode}
+        />
+      </div>
+      <p class="text-xs text-text-muted mb-2">
+        Start recording in note-taking mode. Uses the fastest model with note MCP tools.
+      </p>
+      <HotkeyInput
+        bind:value={$settings.hotkeys.note_mode}
+        enabled={$settings.hotkeys_enabled.note_mode}
       />
     </div>
-    <p class="text-xs text-text-muted mb-2">
-      Start recording in note-taking mode. Uses the fastest model with note MCP tools.
-    </p>
-    <HotkeyInput
-      bind:value={$settings.hotkeys.note_mode}
-      enabled={$settings.hotkeys_enabled.note_mode}
-    />
-  </div>
+  {/if}
 
   <!-- Send Selection -->
   <div class="border-t border-border pt-4">

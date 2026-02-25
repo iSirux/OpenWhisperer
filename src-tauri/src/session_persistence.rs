@@ -170,6 +170,9 @@ pub struct PersistedSdkSession {
     /// SDK provider ("anthropic", "openai", etc.)
     #[serde(default)]
     pub provider: Option<String>,
+    /// Whether the session uses read-only mode (read tools + web search)
+    #[serde(default)]
+    pub read_only_mode: bool,
     /// Whether 'auto' model was requested (before resolution)
     #[serde(default)]
     pub auto_model_requested: bool,

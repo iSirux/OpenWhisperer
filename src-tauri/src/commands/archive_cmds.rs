@@ -59,6 +59,24 @@ pub fn archive_sequence_execution(
     index.save()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnarchiveResult {
+    pub session_data: serde_json::Value,
+    pub session_type: String,
+}
+
+#[tauri::command]
+pub fn unarchive_entry(id: String) -> Result<UnarchiveResult, String> {
+    let mut index = ArchiveIndex::load();
+    let (session_data, session_type) = index.unarchive_entry(&id)?;
+    index.save()?;
+    Ok(UnarchiveResult {
+        session_data,
+        session_type,
+    })
+}
+
 #[tauri::command]
 pub fn delete_archive_entry(id: String) -> Result<(), String> {
     let mut index = ArchiveIndex::load();
