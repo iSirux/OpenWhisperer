@@ -262,6 +262,8 @@ interface CreateMessage {
   plan_mode?: boolean; // Whether this is a plan mode session (enables planning tools)
   note_mode?: boolean; // Whether this is a note-taking mode session (read-only + note MCP tools)
   mcp_servers?: McpServerConfig[]; // External MCP servers to register
+  fork_from_sdk_session_id?: string; // SDK session ID to fork from
+  fork_at_message_uuid?: string; // Message UUID to fork at (resumeSessionAt)
 }
 
 interface ImageData {
@@ -316,6 +318,13 @@ interface GenerateRepoDescriptionWithCodexMessage {
   repo_name: string; // Name of the repository
 }
 
+// User's answers to AskUserQuestion tool (from frontend via Rust)
+interface AnswerAskUserQuestionMessage {
+  type: "answer_ask_user_question";
+  id: string; // Session ID
+  answers: Record<string, string>; // Map of question text -> selected answer(s)
+}
+
 type InboundMessage =
   | CreateMessage
   | QueryMessage
@@ -324,7 +333,8 @@ type InboundMessage =
   | UpdateModelMessage
   | UpdateEffortMessage
   | GenerateRepoDescriptionMessage
-  | GenerateRepoDescriptionWithCodexMessage;
+  | GenerateRepoDescriptionWithCodexMessage
+  | AnswerAskUserQuestionMessage;
 
 type OpenAiExecutionMode = "sdk" | "app_server";
 
@@ -388,6 +398,14 @@ interface Session {
   appServer?: AppServerState; // Active Codex app-server process state
   appServerTurnId?: string; // Active app-server turn ID
   pendingParallelNotification?: string; // Queued notification to inject via PreToolUse hook when parallel session detected
+  lastAssistantTurnUuid?: string; // Last assistant message UUID for fork support
+  forkFromSdkSessionId?: string; // SDK session ID to fork from (consumed on first query)
+  forkAtMessageUuid?: string; // Message UUID to fork at (consumed on first query)
+  // Pending AskUserQuestion response (resolve when user answers via frontend)
+  pendingAskUserAnswer?: {
+    resolve: (answers: Record<string, string>) => void;
+    reject: (error: Error) => void;
+  };
 }
 
 const sessions = new Map<string, Session>();
@@ -412,8 +430,8 @@ function send(msg: object): void {
   process.stdout.write(line);
 }
 
-function sendText(id: string, content: string, parentToolUseId?: string | null): void {
-  send({ type: "text", id, content, ...(parentToolUseId ? { parentToolUseId } : {}) });
+function sendText(id: string, content: string, parentToolUseId?: string | null, turnUuid?: string | null): void {
+  send({ type: "text", id, content, ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}) });
 }
 
 function sendToolStart(
@@ -421,9 +439,10 @@ function sendToolStart(
   tool: string,
   input: unknown,
   toolUseId: string,
-  parentToolUseId?: string | null
+  parentToolUseId?: string | null,
+  turnUuid?: string | null
 ): void {
-  send({ type: "tool_start", id, tool, input, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}) });
+  send({ type: "tool_start", id, tool, input, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}) });
 }
 
 function sendToolResult(
@@ -431,22 +450,24 @@ function sendToolResult(
   tool: string,
   output: string,
   toolUseId: string,
-  parentToolUseId?: string | null
+  parentToolUseId?: string | null,
+  turnUuid?: string | null
 ): void {
-  send({ type: "tool_result", id, tool, output, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}) });
+  send({ type: "tool_result", id, tool, output, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}) });
 }
 
-function sendThinkingStart(id: string, content: string, parentToolUseId?: string | null): void {
-  send({ type: "thinking_start", id, content, timestamp: Date.now(), ...(parentToolUseId ? { parentToolUseId } : {}) });
+function sendThinkingStart(id: string, content: string, parentToolUseId?: string | null, turnUuid?: string | null): void {
+  send({ type: "thinking_start", id, content, timestamp: Date.now(), ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}) });
 }
 
 function sendThinkingEnd(
   id: string,
   durationMs: number,
   content: string,
-  parentToolUseId?: string | null
+  parentToolUseId?: string | null,
+  turnUuid?: string | null
 ): void {
-  send({ type: "thinking_end", id, durationMs, content, ...(parentToolUseId ? { parentToolUseId } : {}) });
+  send({ type: "thinking_end", id, durationMs, content, ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}) });
 }
 
 function sendDone(id: string): void {
@@ -559,6 +580,14 @@ function sendPlanningComplete(
   summary: string
 ): void {
   send({ type: "planning_complete", id, planPath, featureName, summary });
+}
+
+// AskUserQuestion events
+function sendAskUserQuestions(
+  id: string,
+  questions: PlanningQuestion[]
+): void {
+  send({ type: "ask_user_questions", id, questions });
 }
 
 // Repo description result event
@@ -684,6 +713,75 @@ function normalizeItemType(rawType: string | undefined): string {
   return rawType.replace(/_/g, "").toLowerCase();
 }
 
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value ?? "");
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function getWebSearchQuery(item: Record<string, unknown>): string | undefined {
+  if (typeof item.query === "string" && item.query.trim()) {
+    return item.query;
+  }
+
+  const action = item.action as Record<string, unknown> | undefined;
+  if (!action) return undefined;
+
+  if (typeof action.query === "string" && action.query.trim()) {
+    return action.query;
+  }
+
+  const search = action.search as Record<string, unknown> | undefined;
+  if (search && typeof search.query === "string" && search.query.trim()) {
+    return search.query;
+  }
+
+  return undefined;
+}
+
+function getWebSearchResultText(item: Record<string, unknown>): string {
+  const error = item.error as Record<string, unknown> | undefined;
+  if (error?.message) {
+    return `Error: ${String(error.message)}`;
+  }
+
+  const result = item.result;
+  if (result !== undefined) {
+    return stringifyUnknown(result);
+  }
+
+  const action = item.action as Record<string, unknown> | undefined;
+  const actionType = typeof action?.type === "string" ? action.type : undefined;
+  const query = getWebSearchQuery(item);
+
+  if (actionType && query) {
+    return `${actionType}: ${query}`;
+  }
+  if (query) {
+    return query;
+  }
+  if (actionType) {
+    return actionType;
+  }
+
+  return "Search completed";
+}
+
+function toTodoWriteInput(item: Record<string, unknown>): { todos: Array<{ content: string; status: "completed" | "pending" }> } {
+  const rawItems = Array.isArray(item.items)
+    ? (item.items as Array<Record<string, unknown>>)
+    : [];
+  return {
+    todos: rawItems.map((todo) => ({
+      content: String(todo.text ?? ""),
+      status: todo.completed === true ? "completed" : "pending",
+    })),
+  };
+}
+
 function handleAppServerItemEvent(
   id: string,
   item: Record<string, unknown>,
@@ -741,12 +839,47 @@ function handleAppServerItemEvent(
     return;
   }
 
+  if (type === "websearch" || type === "websearchrequest") {
+    if (phase === "started") {
+      sendToolStart(
+        id,
+        "WebSearch",
+        { query: getWebSearchQuery(item) || "unknown" },
+        itemId
+      );
+    } else {
+      sendToolResult(id, "WebSearch", getWebSearchResultText(item), itemId);
+    }
+    return;
+  }
+
   if (type === "reasoning") {
     if (phase === "started") {
       sendThinkingStart(id, String(item.text || ""));
     } else {
       sendThinkingEnd(id, 0, String(item.text || ""));
     }
+    return;
+  }
+
+  if (type === "todolist") {
+    const input = toTodoWriteInput(item);
+    if (phase === "started") {
+      sendToolStart(id, "TodoWrite", input, itemId);
+    } else {
+      sendToolResult(
+        id,
+        "TodoWrite",
+        `Updated ${input.todos.length} todo item${input.todos.length === 1 ? "" : "s"}`,
+        itemId
+      );
+    }
+    return;
+  }
+
+  if (type === "error" && phase === "completed") {
+    const message = (item.message as string) || "Unknown item error";
+    sendError(id, message);
     return;
   }
 
@@ -762,7 +895,155 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
   const session = sessions.get(id);
   if (!session) return;
 
+  const asNumber = (value: unknown, fallback = 0): number => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return fallback;
+  };
+
   const params = (notification.params || {}) as Record<string, unknown>;
+  const pickNumber = (
+    obj: Record<string, unknown> | undefined,
+    keys: string[]
+  ): number => {
+    if (!obj) return 0;
+    for (const key of keys) {
+      const value = obj[key];
+      const parsed = asNumber(value);
+      if (parsed > 0) return parsed;
+    }
+    return 0;
+  };
+  const extractTokenUsage = (
+    source: Record<string, unknown> | undefined
+  ):
+    | {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+      }
+    | null => {
+    if (!source) return null;
+
+    const candidates: Array<Record<string, unknown>> = [];
+    const pushCandidate = (value: unknown) => {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        candidates.push(value as Record<string, unknown>);
+      }
+    };
+
+    pushCandidate(source);
+    pushCandidate(source.info);
+    pushCandidate(source.usage);
+    pushCandidate(source.result);
+    pushCandidate(source.token_count);
+    pushCandidate(source.tokenCount);
+    pushCandidate(source.total_token_usage);
+    pushCandidate(source.totalTokenUsage);
+    pushCandidate(source.last_token_usage);
+    pushCandidate(source.lastTokenUsage);
+    const eventObj = source.event as Record<string, unknown> | undefined;
+    if (eventObj) {
+      pushCandidate(eventObj);
+      pushCandidate(eventObj.usage);
+      pushCandidate(eventObj.result);
+      pushCandidate(eventObj.token_count);
+      pushCandidate(eventObj.tokenCount);
+      pushCandidate(eventObj.total_token_usage);
+      pushCandidate(eventObj.totalTokenUsage);
+      pushCandidate(eventObj.last_token_usage);
+      pushCandidate(eventObj.lastTokenUsage);
+    }
+
+    for (const c of candidates) {
+      const inputTokens = pickNumber(c, [
+        "input_tokens",
+        "inputTokens",
+      ]);
+      const outputTokens = pickNumber(c, [
+        "output_tokens",
+        "outputTokens",
+      ]);
+      const cacheReadTokens = pickNumber(c, [
+        "cached_input_tokens",
+        "cache_read_input_tokens",
+        "cachedInputTokens",
+        "cacheReadInputTokens",
+        "cacheReadTokens",
+      ]);
+      const cacheCreationTokens = pickNumber(c, [
+        "cache_creation_input_tokens",
+        "cacheCreationInputTokens",
+      ]);
+
+      if (
+        inputTokens > 0 ||
+        outputTokens > 0 ||
+        cacheReadTokens > 0 ||
+        cacheCreationTokens > 0
+      ) {
+        return {
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens,
+        };
+      }
+    }
+
+    return null;
+  };
+  const extractContextWindow = (
+    source: Record<string, unknown> | undefined
+  ): number => {
+    if (!source) return 200000;
+    const direct =
+      asNumber(source.model_context_window) ||
+      asNumber(source.modelContextWindow) ||
+      asNumber(source.context_window) ||
+      asNumber(source.contextWindow);
+    if (direct > 0) return direct;
+    const info = source.info as Record<string, unknown> | undefined;
+    if (info) {
+      const infoWindow =
+        asNumber(info.model_context_window) ||
+        asNumber(info.modelContextWindow) ||
+        asNumber(info.context_window) ||
+        asNumber(info.contextWindow);
+      if (infoWindow > 0) return infoWindow;
+    }
+    const eventObj = source.event as Record<string, unknown> | undefined;
+    if (eventObj) {
+      const eventWindow =
+        asNumber(eventObj.model_context_window) ||
+        asNumber(eventObj.modelContextWindow) ||
+        asNumber(eventObj.context_window) ||
+        asNumber(eventObj.contextWindow);
+      if (eventWindow > 0) return eventWindow;
+    }
+    return 200000;
+  };
+  const emitAppServerUsage = (
+    source: Record<string, unknown> | undefined,
+    numTurns = 1
+  ): boolean => {
+    const usage = extractTokenUsage(source);
+    if (!usage) return false;
+    sendUsage(id, {
+      ...usage,
+      totalCostUsd: 0,
+      durationMs: 0,
+      durationApiMs: 0,
+      numTurns,
+      contextWindow: extractContextWindow(source),
+    });
+    sendProgressiveUsage(id, usage);
+    return true;
+  };
   const turn = params.turn as Record<string, unknown> | undefined;
   const item = params.item as Record<string, unknown> | undefined;
   const turnId = typeof turn?.id === "string" ? turn.id : undefined;
@@ -782,7 +1063,8 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
   });
 
   switch (notification.method) {
-    case "thread/started": {
+    case "thread/started":
+    case "thread.started": {
       const thread = params.thread as Record<string, unknown> | undefined;
       const threadId = thread?.id;
       if (typeof threadId === "string" && threadId) {
@@ -790,23 +1072,31 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
       }
       break;
     }
-    case "item/agentMessage/delta": {
+    case "item/agentMessage/delta":
+    case "item.agentMessage.delta":
+    case "item/agent_message/delta":
+    case "item.agent_message.delta": {
       // Intentionally ignore deltas: emit only completed full assistant message.
       break;
     }
-    case "item/started": {
+    case "item/started":
+    case "item.started": {
       const item = params.item as Record<string, unknown> | undefined;
       if (item) handleAppServerItemEvent(id, item, "started");
       break;
     }
-    case "item/completed": {
+    case "item/completed":
+    case "item.completed": {
       const item = params.item as Record<string, unknown> | undefined;
       if (item) handleAppServerItemEvent(id, item, "completed");
       break;
     }
-    case "turn/completed": {
+    case "turn/completed":
+    case "turn.completed": {
       const turn = params.turn as Record<string, unknown> | undefined;
       const turnId = turn?.id;
+      emitAppServerUsage(turn, 1) || emitAppServerUsage(params, 1);
+
       if (typeof turnId === "string") {
         const wasActiveTurn = session.appServerTurnId === turnId;
         if (session.appServerTurnId === turnId) {
@@ -854,39 +1144,76 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
       }
       break;
     }
-    case "thread/tokenUsage/updated": {
-      // TokenCountEvent: { info: TokenUsageInfo | null, rate_limits: ... }
-      // TokenUsageInfo: { total_token_usage: TokenUsage, last_token_usage: TokenUsage, model_context_window: number | null }
-      // TokenUsage: { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens }
-      const info = params.info as Record<string, unknown> | undefined;
-      if (info) {
-        const lastUsage = info.last_token_usage as Record<string, number> | undefined;
-        const totalUsage = info.total_token_usage as Record<string, number> | undefined;
-        const contextWindow = (info.model_context_window as number) || 200000;
+    case "thread/tokenUsage/updated":
+    case "thread.tokenUsage.updated":
+    case "thread/token_usage/updated":
+    case "thread.token_usage.updated": {
+      // Official v2 payload shape:
+      // { threadId, turnId, tokenUsage: { last, total, modelContextWindow } }
+      const tokenUsage = params.tokenUsage as Record<string, unknown> | undefined;
+      const last = tokenUsage?.last as Record<string, unknown> | undefined;
+      const total = tokenUsage?.total as Record<string, unknown> | undefined;
+      const contextWindow =
+        asNumber(tokenUsage?.modelContextWindow) ||
+        asNumber(tokenUsage?.model_context_window) ||
+        asNumber(params.modelContextWindow) ||
+        asNumber(params.model_context_window) ||
+        200000;
 
-        if (lastUsage) {
-          sendUsage(id, {
-            inputTokens: lastUsage.input_tokens || 0,
-            outputTokens: lastUsage.output_tokens || 0,
-            cacheReadTokens: lastUsage.cached_input_tokens || 0,
-            cacheCreationTokens: 0,
-            totalCostUsd: 0, // App server doesn't report cost
-            durationMs: 0,
-            durationApiMs: 0,
-            numTurns: 1,
-            contextWindow,
-          });
-        }
+      if (last || total) {
+        const lastInput =
+          asNumber(last?.inputTokens) || asNumber(last?.input_tokens);
+        const lastOutput =
+          asNumber(last?.outputTokens) || asNumber(last?.output_tokens);
+        const lastCached =
+          asNumber(last?.cachedInputTokens) ||
+          asNumber(last?.cached_input_tokens) ||
+          asNumber(last?.cacheReadTokens);
 
-        // Also send progressive usage with cumulative totals for live context bar updates
-        if (totalUsage) {
+        sendUsage(id, {
+          inputTokens: lastInput,
+          outputTokens: lastOutput,
+          cacheReadTokens: lastCached,
+          cacheCreationTokens: 0,
+          totalCostUsd: 0,
+          durationMs: 0,
+          durationApiMs: 0,
+          numTurns: 1,
+          contextWindow,
+        });
+
+        if (total) {
           sendProgressiveUsage(id, {
-            inputTokens: totalUsage.input_tokens || 0,
-            outputTokens: totalUsage.output_tokens || 0,
-            cacheReadTokens: totalUsage.cached_input_tokens || 0,
+            inputTokens:
+              asNumber(total.inputTokens) || asNumber(total.input_tokens),
+            outputTokens:
+              asNumber(total.outputTokens) || asNumber(total.output_tokens),
+            cacheReadTokens:
+              asNumber(total.cachedInputTokens) ||
+              asNumber(total.cached_input_tokens) ||
+              asNumber(total.cacheReadTokens),
             cacheCreationTokens: 0,
           });
         }
+      } else {
+        emitAppServerUsage(params.info as Record<string, unknown> | undefined, 1) ||
+          emitAppServerUsage(params, 1);
+      }
+      break;
+    }
+    case "codex/event/token_count":
+    case "codex.event.token_count":
+    case "codex/event/tokenCount":
+    case "codex.event.tokenCount": {
+      const emitted = emitAppServerUsage(params, 1);
+      if (!emitted) {
+        send({
+          type: "debug",
+          id,
+          message:
+            `[app-server token_count] unable to parse usage payload keys=` +
+            `${Object.keys(params).join(",")}`,
+        });
       }
       break;
     }
@@ -1354,6 +1681,9 @@ function handleCodexItemEvent(
     result?: { content: unknown[]; structured_content: unknown };
     error?: { message: string };
     query?: string;
+    action?: Record<string, unknown>;
+    items?: Array<{ text?: string; completed?: boolean }>;
+    message?: string;
   };
 
   switch (typedItem.type) {
@@ -1432,15 +1762,24 @@ function handleCodexItemEvent(
       break;
 
     case "web_search":
+    case "web_search_request":
       if (phase === "started") {
+        const query =
+          getWebSearchQuery(typedItem as unknown as Record<string, unknown>) ||
+          "unknown";
         sendToolStart(
           id,
           "WebSearch",
-          { query: typedItem.query },
+          { query },
           typedItem.id
         );
       } else if (phase === "completed") {
-        sendToolResult(id, "WebSearch", "Search completed", typedItem.id);
+        sendToolResult(
+          id,
+          "WebSearch",
+          getWebSearchResultText(typedItem as unknown as Record<string, unknown>),
+          typedItem.id
+        );
       }
       break;
 
@@ -1449,6 +1788,21 @@ function handleCodexItemEvent(
         sendError(id, (typedItem as { message?: string }).message || "Unknown error");
       }
       break;
+
+    case "todo_list": {
+      const input = toTodoWriteInput(typedItem as unknown as Record<string, unknown>);
+      if (phase === "started" || phase === "updated") {
+        sendToolStart(id, "TodoWrite", input, typedItem.id);
+      } else if (phase === "completed") {
+        sendToolResult(
+          id,
+          "TodoWrite",
+          `Updated ${input.todos.length} todo item${input.todos.length === 1 ? "" : "s"}`,
+          typedItem.id
+        );
+      }
+      break;
+    }
   }
 }
 
@@ -1919,6 +2273,21 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     // Allow all MCP tools to execute without permission prompts
     // This callback fires when Claude would show a permission prompt
     canUseTool: async (toolName: string, input: unknown) => {
+      // Intercept AskUserQuestion: emit to frontend, wait for user answers
+      if (toolName === "AskUserQuestion") {
+        const askInput = input as { questions?: PlanningQuestion[] };
+        if (askInput.questions && Array.isArray(askInput.questions)) {
+          send({ type: "debug", id: msg.id, message: `AskUserQuestion intercepted with ${askInput.questions.length} questions` });
+          sendAskUserQuestions(msg.id, askInput.questions);
+          const answers = await new Promise<Record<string, string>>((resolve, reject) => {
+            const s = sessions.get(msg.id);
+            if (s) { s.pendingAskUserAnswer = { resolve, reject }; }
+            else { reject(new Error("Session not found for AskUserQuestion")); }
+          });
+          send({ type: "debug", id: msg.id, message: `AskUserQuestion answered: ${JSON.stringify(answers)}` });
+          return { behavior: "allow" as const, updatedInput: { questions: askInput.questions, answers } };
+        }
+      }
       // Allow all MCP tools (they start with "mcp__")
       if (toolName.startsWith("mcp__")) {
         send({
@@ -2119,6 +2488,8 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     noteMode: msg.note_mode,
     codexModel: provider === "openai" ? msg.model : undefined,
     codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
+    forkFromSdkSessionId: msg.fork_from_sdk_session_id, // Fork: SDK session ID to fork from
+    forkAtMessageUuid: msg.fork_at_message_uuid, // Fork: message UUID to fork at
   });
 
   if (provider === "openai") {
@@ -2383,10 +2754,32 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
   const hasImages = msg.images && msg.images.length > 0;
 
   // Determine the SDK session ID to use for resume:
-  // 1. If we have a captured sdkSessionId from a previous query, use that
-  // 2. If we have a passedSdkSessionId from the frontend (restored session), use that
-  // 3. Otherwise, no resume
-  const resumeSessionId = session.sdkSessionId || session.passedSdkSessionId;
+  // Fork mode: use fork params for first query only, then normal resume
+  // Normal mode: use captured/passed SDK session ID
+  let resumeSessionId: string | undefined;
+  let forkAtUuid: string | undefined;
+  let isFork = false;
+
+  if (session.forkFromSdkSessionId) {
+    // FORK: Use fork parameters for first query only
+    resumeSessionId = session.forkFromSdkSessionId;
+    forkAtUuid = session.forkAtMessageUuid;
+    isFork = true;
+    // Consume fork params (subsequent queries use normal resume with new sdkSessionId)
+    session.forkFromSdkSessionId = undefined;
+    session.forkAtMessageUuid = undefined;
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Forking from session ${resumeSessionId} at message ${forkAtUuid}`,
+    });
+  } else {
+    // Normal resume path
+    // 1. If we have a captured sdkSessionId from a previous query, use that
+    // 2. If we have a passedSdkSessionId from the frontend (restored session), use that
+    // 3. Otherwise, no resume
+    resumeSessionId = session.sdkSessionId || session.passedSdkSessionId;
+  }
 
   // Only prepend history if we have NO SDK session ID to resume from (legacy fallback)
   const hasHistory =
@@ -2466,6 +2859,8 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
       abortController,
       // Resume from previous session if we have one (either captured or passed from frontend)
       resume: resumeSessionId,
+      // Fork support: when forking, specify the message to fork at and create a new branch
+      ...(isFork ? { resumeSessionAt: forkAtUuid, forkSession: true } : {}),
       // Capture stderr for debugging
       stderr: (data: string) => {
         send({ type: "debug", id: msg.id, message: `[stderr] ${data}` });
@@ -2656,11 +3051,17 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       // Assistant message with content blocks
       // Extract parent_tool_use_id for task/subagent scoping
       const parentToolUseId = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
+      // Capture the assistant message UUID for fork support
+      const turnUuid = (message as { uuid?: string }).uuid || null;
+      const session = sessions.get(id);
+      if (session && turnUuid) {
+        session.lastAssistantTurnUuid = turnUuid;
+      }
       const thinkingKey = `${id}-${parentToolUseId || "main"}`;
       send({
         type: "debug",
         id,
-        message: `Assistant message has ${message.message.content.length} content blocks (parent: ${parentToolUseId || "main"})`,
+        message: `Assistant message has ${message.message.content.length} content blocks (parent: ${parentToolUseId || "main"}, uuid: ${turnUuid || "none"})`,
       });
       for (const block of message.message.content) {
         send({
@@ -2680,7 +3081,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
               startTime: Date.now(),
               content: thinkingContent,
             });
-            sendThinkingStart(id, thinkingContent, parentToolUseId);
+            sendThinkingStart(id, thinkingContent, parentToolUseId, turnUuid);
             send({
               type: "debug",
               id,
@@ -2707,7 +3108,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           const state = thinkingState.get(thinkingKey)!;
           const durationMs = Date.now() - state.startTime;
           thinkingState.delete(thinkingKey);
-          sendThinkingEnd(id, durationMs, state.content, parentToolUseId);
+          sendThinkingEnd(id, durationMs, state.content, parentToolUseId, turnUuid);
           send({
             type: "debug",
             id,
@@ -2721,7 +3122,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
             id,
             message: `Text content: ${block.text.slice(0, 100)}`,
           });
-          sendText(id, block.text, parentToolUseId);
+          sendText(id, block.text, parentToolUseId, turnUuid);
         } else if (block.type === "tool_use") {
           // Track tool_use_id to name mapping for matching with tool_result
           const toolUseBlock = block as {
@@ -2733,7 +3134,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           if (toolUseBlock.id) {
             toolUseIdToName.set(toolUseBlock.id, toolUseBlock.name);
           }
-          sendToolStart(id, block.name, block.input, toolUseId, parentToolUseId);
+          sendToolStart(id, block.name, block.input, toolUseId, parentToolUseId, turnUuid);
 
           // Handle planning-specific tools (both direct names and MCP-prefixed names)
           const toolName = block.name;
@@ -2774,6 +3175,10 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
               );
             }
           }
+
+          // Note: AskUserQuestion is handled via canUseTool callback, not here.
+          // The canUseTool callback intercepts it, emits questions, waits for answers,
+          // and returns the proper updatedInput with the user's answers.
         }
       }
       // Send progressive usage data from assistant message if available
@@ -2869,6 +3274,9 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       // User messages contain tool results
       // Extract parent_tool_use_id for task/subagent scoping
       const userParentToolUseId = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
+      // Use the last assistant turn UUID for tool results (they belong to the same conversational turn)
+      const userSession = sessions.get(id);
+      const userTurnUuid = userSession?.lastAssistantTurnUuid || null;
       // The message.message.content array contains tool_result blocks
       if (message.message?.content && Array.isArray(message.message.content)) {
         for (const block of message.message.content) {
@@ -2904,7 +3312,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
                 100
               )}...`,
             });
-            sendToolResult(id, toolName, output, toolUseId, userParentToolUseId);
+            sendToolResult(id, toolName, output, toolUseId, userParentToolUseId, userTurnUuid);
 
             // Clean up the mapping after use
             if (toolResultBlock.tool_use_id) {
@@ -3156,6 +3564,17 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
     case "generate_repo_description_with_codex":
       await handleGenerateRepoDescriptionWithCodex(msg);
       break;
+    case "answer_ask_user_question": {
+      const session = sessions.get(msg.id);
+      if (session?.pendingAskUserAnswer) {
+        send({ type: "debug", id: msg.id, message: "Resolving pending AskUserQuestion with user answers" });
+        session.pendingAskUserAnswer.resolve(msg.answers);
+        session.pendingAskUserAnswer = undefined;
+      } else {
+        send({ type: "debug", id: msg.id, message: "No pending AskUserQuestion to resolve" });
+      }
+      break;
+    }
     default:
       sendError(
         "unknown",

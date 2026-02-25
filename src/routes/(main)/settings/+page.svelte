@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settings, settingsLoaded } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
+  import { emit } from "@tauri-apps/api/event";
   import { onDestroy } from "svelte";
   import { get } from "svelte/store";
   import { page } from "$app/stores";
@@ -50,6 +51,7 @@
     saveStatus = "saving";
     try {
       await invoke("save_config", { newConfig: $settings });
+      emit("settings-changed");
       saveStatus = "idle";
     } catch (error) {
       console.error("Failed to save settings:", error);
@@ -70,6 +72,7 @@
       saveStatus = "saving";
       try {
         await invoke("save_config", { newConfig: $settings });
+        emit("settings-changed");
         saveStatus = "idle";
       } catch (error) {
         console.error("Failed to save settings:", error);
@@ -113,7 +116,7 @@
     { id: "audio", label: "Audio" },
     { id: "voice-commands", label: "Voice Commands" },
     { id: "whisper", label: "Transcription (Whisper)" },
-    { id: "vosk", label: "Real-time Transcription (Vosk)" },
+    { id: "vosk", label: "Real-time Transcription" },
     { id: "llm", label: "LLM" },
     { id: "mcp", label: "MCP Servers" },
     { id: "git", label: "Git" },

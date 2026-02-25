@@ -40,9 +40,6 @@
     handleSetupSessionStart,
   } from '$lib/stores/transcriptProcessor';
 
-  // Tauri APIs
-  import { invoke } from '@tauri-apps/api/core';
-
   // Constants
   const PROMPT_PREVIEW_LENGTH = 80;
 
@@ -54,9 +51,6 @@
 
   // Reference to SdkView for focusing prompt input
   let sdkViewRef: { focusPromptInput: () => void } | undefined;
-
-  // Active SDK session header info
-  let activeSdkSessionBranch = $state<string | null>(null);
 
   // Computed values for the active SDK session header
   let activeSdkRepoName = $derived(
@@ -73,26 +67,17 @@
     return content.slice(0, PROMPT_PREVIEW_LENGTH) + '...';
   });
 
-  // Track last fetched cwd to avoid redundant IPC calls
-  let lastFetchedBranchCwd = '';
-
-  // Effect to fetch branch when active SDK session's cwd changes
+  // Refresh current branch metadata when active SDK session changes.
+  let lastRefreshedBranchSessionKey = '';
   $effect(() => {
-    const cwd = $activeSdkSession?.cwd;
-    // Only fetch if cwd actually changed
-    if (cwd !== lastFetchedBranchCwd) {
-      lastFetchedBranchCwd = cwd ?? '';
-      if (cwd && cwd !== '.') {
-        invoke<string>('get_git_branch', { repoPath: cwd })
-          .then((b) => {
-            activeSdkSessionBranch = b;
-          })
-          .catch(() => {
-            activeSdkSessionBranch = null;
-          });
-      } else {
-        activeSdkSessionBranch = null;
-      }
+    const session = $activeSdkSession;
+    const key = session ? `${session.id}:${session.cwd}` : '';
+    if (key && key !== lastRefreshedBranchSessionKey) {
+      lastRefreshedBranchSessionKey = key;
+      void sdkSessions.refreshSessionBranch(session.id);
+    }
+    if (!key) {
+      lastRefreshedBranchSessionKey = '';
     }
   });
 
@@ -217,7 +202,8 @@
           repoPath={activeSession.cwd}
           model={activeSession.model}
           effortLevel={activeSession.effortLevel}
-          branch={activeSdkSessionBranch}
+          createdBranch={activeSession.createdBranch}
+          currentBranch={activeSession.currentBranch}
           firstPrompt={activeSdkFirstPrompt()}
           onClose={handleSessionClose}
           onCancel={handlePendingSessionCancel}

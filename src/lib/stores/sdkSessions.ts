@@ -58,6 +58,8 @@ export interface SdkMessage {
   taskStatus?: string;
   summary?: string;
   taskUsage?: { total_tokens: number; tool_uses: number; duration_ms: number };
+  /** SDK assistant turn UUID (for fork support - identifies the conversation turn) */
+  turnUuid?: string;
   timestamp: number;
 }
 
@@ -143,6 +145,12 @@ export interface PlanModeState {
   isComplete: boolean;
 }
 
+export interface AskUserQuestionState {
+  questions: PlanningQuestion[];
+  answers: PlanningAnswer[];
+  currentQuestionIndex: number;
+}
+
 export interface NoteModeState {
   isActive: boolean;
   /** Track if the initial note was created */
@@ -217,6 +225,10 @@ export interface PendingTranscriptionInfo {
 export interface SdkSession {
   id: string;
   cwd: string;
+  /** Branch at the time this session was first tied to a repo. */
+  createdBranch?: string | null;
+  /** Most recently fetched branch for this session's cwd. */
+  currentBranch?: string | null;
   model: string;
   provider?: SdkProvider;
   autoModelRequested?: boolean;
@@ -239,6 +251,7 @@ export interface SdkSession {
   pendingTranscription?: PendingTranscriptionInfo;
   planMode?: PlanModeState;
   noteMode?: NoteModeState;
+  askUserQuestion?: AskUserQuestionState;
   draftPrompt?: string;
   draftImages?: SdkImageContent[];
   /** SDK session ID for proper resume after app restart (persisted) */
@@ -251,6 +264,14 @@ export interface SdkSession {
   preparedRepoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string };
   /** Queued system notifications to prepend to the next query (e.g., parallel agent alerts) */
   pendingSystemNotifications?: string[];
+  /** App-level parent session ID this was forked from (for display/linking) */
+  forkedFromSessionId?: string;
+  /** SDK session ID to fork from (consumed on first query registration) */
+  forkFromSdkSessionId?: string;
+  /** Message UUID to fork at - resumeSessionAt (consumed on first query registration) */
+  forkAtMessageUuid?: string;
+  /** Number of messages inherited from parent session (displayed as read-only context) */
+  forkedMessageCount?: number;
 }
 
 export type HistoryMessage =
@@ -384,6 +405,95 @@ function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progres
   };
 }
 
+/** Clear progressive ("live") usage values once a query is no longer running */
+function clearProgressiveUsage(prevUsage: SdkSessionUsage | undefined): SdkSessionUsage | undefined {
+  if (!prevUsage) return prevUsage;
+  const totalContextTokens =
+    prevUsage.totalInputTokens +
+    prevUsage.totalCacheReadTokens +
+    prevUsage.totalCacheCreationTokens +
+    prevUsage.totalOutputTokens;
+  const contextUsagePercent =
+    prevUsage.contextWindow > 0
+      ? Math.min(100, (totalContextTokens / prevUsage.contextWindow) * 100)
+      : 0;
+
+  return {
+    ...prevUsage,
+    contextUsagePercent,
+    progressiveInputTokens: 0,
+    progressiveOutputTokens: 0,
+    progressiveCacheReadTokens: 0,
+    progressiveCacheCreationTokens: 0,
+  };
+}
+
+function findOpenThinkingMessageIndex(
+  messages: SdkMessage[],
+  parentToolUseId: string | undefined,
+  turnUuid: string | undefined
+): number {
+  if (turnUuid) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (
+        msg.type === 'thinking' &&
+        !msg.thinkingDurationMs &&
+        msg.parentToolUseId === parentToolUseId &&
+        msg.turnUuid === turnUuid
+      ) {
+        return i;
+      }
+    }
+  }
+
+  if (!turnUuid) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (
+        msg.type === 'thinking' &&
+        !msg.thinkingDurationMs &&
+        msg.parentToolUseId === parentToolUseId &&
+        !msg.turnUuid
+      ) {
+        return i;
+      }
+    }
+  }
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (
+      msg.type === 'thinking' &&
+      !msg.thinkingDurationMs &&
+      msg.parentToolUseId === parentToolUseId
+    ) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+function closeOpenThinkingMessages(messages: SdkMessage[], closedAt: number): SdkMessage[] {
+  let hasOpenThinking = false;
+  for (const msg of messages) {
+    if (msg.type === 'thinking' && !msg.thinkingDurationMs) {
+      hasOpenThinking = true;
+      break;
+    }
+  }
+  if (!hasOpenThinking) return messages;
+
+  return messages.map((msg) => {
+    if (msg.type !== 'thinking' || msg.thinkingDurationMs) return msg;
+    return {
+      ...msg,
+      thinkingDurationMs: Math.max(0, closedAt - msg.timestamp),
+    };
+  });
+}
+
 // =============================================================================
 // Store Implementation
 // =============================================================================
@@ -401,10 +511,10 @@ function createSdkSessionsStore() {
   async function setupEventListeners(id: string): Promise<UnlistenFn[]> {
     const unlisteners: UnlistenFn[] = [];
 
-    // Text events (payload includes parentToolUseId for task scoping)
+    // Text events (payload includes parentToolUseId for task scoping, turnUuid for fork support)
     unlisteners.push(
-      await listen<{ content: string; parentToolUseId?: string | null }>(`sdk-text-${id}`, (e) => {
-        const { content, parentToolUseId } = e.payload;
+      await listen<{ content: string; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-text-${id}`, (e) => {
+        const { content, parentToolUseId, turnUuid } = e.payload;
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -412,7 +522,7 @@ function createSdkSessionsStore() {
                   ...s,
                   startedAt: s.startedAt || Date.now(),
                   currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
-                  messages: [...s.messages, { type: 'text' as const, content, parentToolUseId: parentToolUseId || undefined, timestamp: Date.now() }],
+                  messages: [...s.messages, { type: 'text' as const, content, parentToolUseId: parentToolUseId || undefined, turnUuid: turnUuid || undefined, timestamp: Date.now() }],
                 }
               : s
           )
@@ -423,7 +533,7 @@ function createSdkSessionsStore() {
 
     // Tool start events
     unlisteners.push(
-      await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string; parentToolUseId?: string | null }>(
+      await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string; parentToolUseId?: string | null; turnUuid?: string | null }>(
         `sdk-tool-start-${id}`,
         (e) => {
           usageStats.trackToolCall(e.payload.tool);
@@ -442,6 +552,7 @@ function createSdkSessionsStore() {
                         toolUseId: e.payload.toolUseId,
                         input: e.payload.input,
                         parentToolUseId: e.payload.parentToolUseId || undefined,
+                        turnUuid: e.payload.turnUuid || undefined,
                         timestamp: Date.now(),
                       },
                     ],
@@ -456,7 +567,7 @@ function createSdkSessionsStore() {
 
     // Tool result events
     unlisteners.push(
-      await listen<{ tool: string; output: string; toolUseId: string; parentToolUseId?: string | null }>(`sdk-tool-result-${id}`, (e) => {
+      await listen<{ tool: string; output: string; toolUseId: string; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-tool-result-${id}`, (e) => {
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -470,6 +581,7 @@ function createSdkSessionsStore() {
                       toolUseId: e.payload.toolUseId,
                       output: e.payload.output,
                       parentToolUseId: e.payload.parentToolUseId || undefined,
+                      turnUuid: e.payload.turnUuid || undefined,
                       timestamp: Date.now(),
                     },
                   ],
@@ -483,7 +595,7 @@ function createSdkSessionsStore() {
 
     // Thinking start events
     unlisteners.push(
-      await listen<{ content: string; timestamp: number; parentToolUseId?: string | null }>(`sdk-thinking-start-${id}`, (e) => {
+      await listen<{ content: string; timestamp: number; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-thinking-start-${id}`, (e) => {
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -491,7 +603,7 @@ function createSdkSessionsStore() {
                   ...s,
                   messages: [
                     ...s.messages,
-                    { type: 'thinking' as const, content: e.payload.content, parentToolUseId: e.payload.parentToolUseId || undefined, timestamp: e.payload.timestamp },
+                    { type: 'thinking' as const, content: e.payload.content, parentToolUseId: e.payload.parentToolUseId || undefined, turnUuid: e.payload.turnUuid || undefined, timestamp: e.payload.timestamp },
                   ],
                 }
               : s
@@ -502,17 +614,21 @@ function createSdkSessionsStore() {
 
     // Thinking end events
     unlisteners.push(
-      await listen<{ durationMs: number; content: string; parentToolUseId?: string | null }>(`sdk-thinking-end-${id}`, (e) => {
+      await listen<{ durationMs: number; content: string; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-thinking-end-${id}`, (e) => {
         const payloadParent = e.payload.parentToolUseId || undefined;
+        const payloadTurnUuid = e.payload.turnUuid || undefined;
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
             const messages = [...s.messages];
-            for (let i = messages.length - 1; i >= 0; i--) {
-              if (messages[i].type === 'thinking' && !messages[i].thinkingDurationMs && messages[i].parentToolUseId === payloadParent) {
-                messages[i] = { ...messages[i], thinkingDurationMs: e.payload.durationMs, content: e.payload.content };
-                break;
-              }
+            const matchIndex = findOpenThinkingMessageIndex(messages, payloadParent, payloadTurnUuid);
+            if (matchIndex >= 0) {
+              messages[matchIndex] = {
+                ...messages[matchIndex],
+                thinkingDurationMs: e.payload.durationMs,
+                content: e.payload.content,
+                turnUuid: payloadTurnUuid || messages[matchIndex].turnUuid,
+              };
             }
             return { ...s, messages };
           })
@@ -526,13 +642,15 @@ function createSdkSessionsStore() {
         const currentSettings = get(settings);
         let sessionMessages: SdkMessage[] = [];
         let needsAiAnalysis = false;
+        const now = Date.now();
 
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
 
             const workPeriod = calculateWorkPeriod(s);
-            const updatedMessages = [...s.messages, { type: 'done' as const, timestamp: Date.now() }];
+            const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
+            const updatedMessages = [...closedThinkingMessages, { type: 'done' as const, timestamp: now }];
             sessionMessages = updatedMessages;
             needsAiAnalysis = isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
@@ -540,6 +658,7 @@ function createSdkSessionsStore() {
               ...s,
               status: 'idle' as const,
               ...workPeriod,
+              usage: clearProgressiveUsage(s.usage),
               messages: updatedMessages,
               unread: currentSettings.mark_sessions_unread ? true : s.unread,
             };
@@ -570,15 +689,18 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<string>(`sdk-error-${id}`, (e) => {
         const currentSettings = get(settings);
+        const now = Date.now();
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
             const workPeriod = calculateWorkPeriod(s);
+            const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
             return {
               ...s,
               status: 'error' as const,
               ...workPeriod,
-              messages: [...s.messages, { type: 'error' as const, content: e.payload, timestamp: Date.now() }],
+              usage: clearProgressiveUsage(s.usage),
+              messages: [...closedThinkingMessages, { type: 'error' as const, content: e.payload, timestamp: now }],
               unread: currentSettings.mark_sessions_unread ? true : s.unread,
             };
           })
@@ -748,6 +870,25 @@ function createSdkSessionsStore() {
       })
     );
 
+    // AskUserQuestion events - interactive questions from Claude
+    unlisteners.push(
+      await listen<PlanningQuestion[]>(`sdk-ask-user-questions-${id}`, (e) => {
+        update(sessions =>
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            return {
+              ...s,
+              askUserQuestion: {
+                questions: e.payload,
+                answers: [],
+                currentQuestionIndex: 0,
+              },
+            };
+          })
+        );
+      })
+    );
+
     // SDK session ID events - capture for proper resume after app restart
     unlisteners.push(
       await listen<string>(`sdk-session-id-${id}`, (e) => {
@@ -805,7 +946,9 @@ function createSdkSessionsStore() {
     sdkSessionId?: string | null, // SDK session ID for proper resume (preferred over historyMessages)
     planMode?: boolean,
     noteMode?: boolean,
-    provider?: string
+    provider?: string,
+    forkFromSdkSessionId?: string | null, // SDK session ID to fork from
+    forkAtMessageUuid?: string | null // Message UUID to fork at (resumeSessionAt)
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -908,6 +1051,8 @@ function createSdkSessionsStore() {
       noteMode: noteMode ?? null,
       mcpServers: mcpServers && mcpServers.length > 0 ? mcpServers : null,
       provider: provider ?? null,
+      forkFromSdkSessionId: forkFromSdkSessionId ?? null,
+      forkAtMessageUuid: forkAtMessageUuid ?? null,
     });
 
     if (effortLevel && modelSupportsEffort(model)) {
@@ -915,6 +1060,33 @@ function createSdkSessionsStore() {
     }
 
     liveSessions.add(id);
+  }
+
+  async function syncSessionBranchMetadata(id: string, cwd: string): Promise<void> {
+    if (!cwd || cwd === '.') {
+      update(allSessions =>
+        allSessions.map(s => (s.id === id ? { ...s, currentBranch: null } : s))
+      );
+      return;
+    }
+
+    let currentBranch: string | null = null;
+    try {
+      currentBranch = await invoke<string>('get_git_branch', { repoPath: cwd });
+    } catch {
+      currentBranch = null;
+    }
+
+    update(allSessions =>
+      allSessions.map(s => {
+        if (s.id !== id) return s;
+        return {
+          ...s,
+          currentBranch,
+          createdBranch: s.createdBranch ?? currentBranch,
+        };
+      })
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1014,6 +1186,7 @@ function createSdkSessionsStore() {
       listeners.set(id, unlisteners);
 
       await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, planMode, undefined, provider);
+      await syncSessionBranchMetadata(id, cwd);
 
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
       usageStats.trackSession('sdk', resolvedModel, cwd);
@@ -1037,7 +1210,109 @@ function createSdkSessionsStore() {
       // Prefer SDK session ID for proper resume (avoids context bloat from prepending history)
       // Fall back to history messages only if no SDK session ID is available (legacy sessions)
       const historyMessages = session.sdkSessionId ? null : convertToHistoryMessages(session.messages);
-      await registerSessionWithBackend(id, session.cwd, session.model, session.effortLevel, null, historyMessages, session.sdkSessionId, undefined, undefined, session.provider);
+      await registerSessionWithBackend(
+        id, session.cwd, session.model, session.effortLevel,
+        null, historyMessages, session.sdkSessionId,
+        undefined, undefined, session.provider,
+        session.forkFromSdkSessionId, session.forkAtMessageUuid
+      );
+    },
+
+    /**
+     * Fork a session from a specific message, creating a new session that branches off
+     * with the full conversation context up to that message.
+     * Uses the Claude SDK's native resume + resumeSessionAt + forkSession support.
+     */
+    async forkSession(sourceSessionId: string, messageIndex: number): Promise<string | null> {
+      let sourceSession: SdkSession | undefined;
+      subscribe(sessions => { sourceSession = sessions.find(s => s.id === sourceSessionId); })();
+
+      if (!sourceSession) return null;
+
+      // Determine the fork point UUID
+      const targetMessage = sourceSession.messages[messageIndex];
+      if (!targetMessage) return null;
+
+      let forkAtUuid: string | undefined;
+
+      if (targetMessage.type === 'user') {
+        // Fork from user message: use the preceding assistant turn's UUID
+        // This includes context up to BEFORE this user prompt, so user can type a new one
+        for (let i = messageIndex - 1; i >= 0; i--) {
+          if (sourceSession.messages[i].turnUuid) {
+            forkAtUuid = sourceSession.messages[i].turnUuid;
+            break;
+          }
+        }
+        // First user message (no preceding assistant turn) → create fresh session with prompt pre-filled
+        if (!forkAtUuid) {
+          const newId = this.createSetupSession(
+            sourceSession.model,
+            sourceSession.effortLevel,
+            false,
+            sourceSession.provider,
+            sourceSession.cwd
+          );
+          this.updateDraft(newId, targetMessage.content || '', targetMessage.images);
+          return newId;
+        }
+      } else {
+        // Fork from assistant/tool/thinking message: use its turnUuid or search backward
+        forkAtUuid = targetMessage.turnUuid;
+        if (!forkAtUuid) {
+          for (let i = messageIndex; i >= 0; i--) {
+            if (sourceSession.messages[i].turnUuid) {
+              forkAtUuid = sourceSession.messages[i].turnUuid;
+              break;
+            }
+          }
+        }
+      }
+
+      // Need both sdkSessionId and forkAtUuid for SDK forking
+      if (!forkAtUuid || !sourceSession.sdkSessionId) return null;
+
+      // Copy parent messages up to fork point for display
+      const parentMessages: SdkMessage[] = [];
+      for (let i = 0; i <= messageIndex; i++) {
+        parentMessages.push({ ...sourceSession.messages[i] });
+      }
+
+      // Create the forked session
+      await this.ensureSidecarStarted();
+      const id = crypto.randomUUID();
+
+      const session: SdkSession = {
+        id,
+        cwd: sourceSession.cwd,
+        model: sourceSession.model,
+        provider: sourceSession.provider,
+        effortLevel: sourceSession.effortLevel,
+        messages: parentMessages,
+        status: 'idle',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+        accumulatedDurationMs: 0,
+        forkedFromSessionId: sourceSessionId,
+        forkFromSdkSessionId: sourceSession.sdkSessionId,
+        forkAtMessageUuid: forkAtUuid,
+        forkedMessageCount: parentMessages.length,
+      };
+
+      update(sessions => [...sessions, session]);
+
+      const unlisteners = await setupEventListeners(id);
+      listeners.set(id, unlisteners);
+
+      // Register with backend, passing fork parameters
+      await registerSessionWithBackend(
+        id, sourceSession.cwd, sourceSession.model, sourceSession.effortLevel,
+        null, null, null,
+        undefined, undefined, sourceSession.provider,
+        sourceSession.sdkSessionId, forkAtUuid
+      );
+
+      return id;
     },
 
     async sendPrompt(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
@@ -1214,6 +1489,7 @@ function createSdkSessionsStore() {
       if (!session || session.status !== 'idle' || session.messages.length > 0) return;
 
       update(sessions => sessions.map(s => s.id === id ? { ...s, cwd } : s));
+      await syncSessionBranchMetadata(id, cwd);
 
       if (liveSessions.has(id)) {
         try {
@@ -1294,6 +1570,7 @@ function createSdkSessionsStore() {
         const finalEffort = config.noteMode ? null : config.effortLevel;
 
         await registerSessionWithBackend(id, config.cwd, finalModel, finalEffort, finalSystemPrompt, null, null, config.planMode, config.noteMode, config.provider);
+        await syncSessionBranchMetadata(id, config.cwd);
 
         const currentSettings = get(settings);
         const resolvedModel = resolveModelForApi(finalModel, currentSettings.enabled_models);
@@ -1414,6 +1691,7 @@ function createSdkSessionsStore() {
         update(sessions =>
           sessions.map(s => s.id === id ? { ...s, cwd, status: 'initializing' as const, pendingPrompt: transcript } : s)
         );
+        await syncSessionBranchMetadata(id, cwd);
 
         try {
           await this.initializeSession(id, cwd, session.model, session.effortLevel, systemPrompt, transcript, session.provider);
@@ -1438,6 +1716,10 @@ function createSdkSessionsStore() {
       update(sessions =>
         sessions.map(s => s.id === id ? { ...s, status: 'pending_approval' as const, pendingApprovalPrompt: prompt, cwd: cwd || s.cwd } : s)
       );
+      const nextCwd = cwd;
+      if (nextCwd) {
+        void syncSessionBranchMetadata(id, nextCwd);
+      }
     },
 
     cancelApproval(id: string): void {
@@ -1456,6 +1738,7 @@ function createSdkSessionsStore() {
           pendingTranscription: s.pendingTranscription ? { ...s.pendingTranscription, status: 'processing' as PendingTranscriptionStatus } : s.pendingTranscription,
         } : s)
       );
+      void syncSessionBranchMetadata(id, cwd);
       debouncedSave();
     },
 
@@ -1463,6 +1746,7 @@ function createSdkSessionsStore() {
       update(sessions =>
         sessions.map(s => s.id === id && s.status === 'prepared' ? { ...s, cwd } : s)
       );
+      void syncSessionBranchMetadata(id, cwd);
       debouncedSave();
     },
 
@@ -1578,6 +1862,7 @@ function createSdkSessionsStore() {
       };
 
       update(sessions => [...sessions, session]);
+      void syncSessionBranchMetadata(id, cwd);
       return id;
     },
 
@@ -1592,6 +1877,7 @@ function createSdkSessionsStore() {
       update(sessions =>
         sessions.map(s => s.id === id ? { ...s, cwd, status: 'initializing' as const, pendingRepoSelection: undefined, pendingPrompt } : s)
       );
+      await syncSessionBranchMetadata(id, cwd);
 
       try {
         await this.initializeSession(id, cwd, session.model, session.effortLevel, systemPrompt, pendingPrompt, session.provider);
@@ -1620,6 +1906,7 @@ function createSdkSessionsStore() {
       }
 
       await registerSessionWithBackend(id, cwd, resolvedModel, effortLevel, systemPrompt, undefined, undefined, undefined, undefined, provider);
+      await syncSessionBranchMetadata(id, cwd);
       usageStats.trackSession('sdk', resolvedModel, cwd);
 
       if (pendingPrompt) {
@@ -1631,6 +1918,12 @@ function createSdkSessionsStore() {
 
     updateStatus(id: string, status: SdkSession['status']): void {
       update(sessions => sessions.map(s => s.id === id ? { ...s, status } : s));
+    },
+
+    async refreshSessionBranch(id: string): Promise<void> {
+      const session = get({ subscribe }).find(s => s.id === id);
+      if (!session) return;
+      await syncSessionBranchMetadata(id, session.cwd);
     },
 
     async createPlanModeSession(cwd: string, model: string, effortLevel: EffortLevel = null): Promise<string> {
@@ -1691,6 +1984,7 @@ function createSdkSessionsStore() {
       listeners.set(id, unlisteners);
 
       await registerSessionWithBackend(id, cwd, model, null, systemPrompt, null, null, false, true);
+      await syncSessionBranchMetadata(id, cwd);
 
       usageStats.trackSession('sdk', model, cwd);
 
@@ -1756,6 +2050,7 @@ function createSdkSessionsStore() {
         listeners.set(id, unlisteners);
 
         await registerSessionWithBackend(id, cwd, session.model, null, systemPrompt, null, null, false, true);
+        await syncSessionBranchMetadata(id, cwd);
 
         usageStats.trackSession('sdk', session.model, cwd);
 
@@ -1874,6 +2169,77 @@ function createSdkSessionsStore() {
         sessions.map(s => {
           if (s.id !== id || !s.planMode) return s;
           return { ...s, planMode: { ...s.planMode, questions: [], answers: [], currentQuestionIndex: 0 } };
+        })
+      );
+    },
+
+    // AskUserQuestion methods
+    updateAskUserAnswer(id: string, answer: PlanningAnswer): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.askUserQuestion) return s;
+          const existingIndex = s.askUserQuestion.answers.findIndex(
+            a => a.questionIndex === answer.questionIndex
+          );
+          const newAnswers = [...s.askUserQuestion.answers];
+          if (existingIndex >= 0) {
+            newAnswers[existingIndex] = answer;
+          } else {
+            newAnswers.push(answer);
+          }
+          return { ...s, askUserQuestion: { ...s.askUserQuestion, answers: newAnswers } };
+        })
+      );
+    },
+
+    setAskUserQuestionIndex(id: string, index: number): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.askUserQuestion) return s;
+          return {
+            ...s,
+            askUserQuestion: {
+              ...s.askUserQuestion,
+              currentQuestionIndex: Math.max(0, Math.min(index, s.askUserQuestion.questions.length - 1)),
+            },
+          };
+        })
+      );
+    },
+
+    async submitAskUserAnswers(id: string): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
+
+      if (!session?.askUserQuestion) throw new Error('No pending AskUserQuestion');
+
+      // Build answers map: question text -> selected label(s), per SDK AskUserQuestionOutput format
+      const answers: Record<string, string> = {};
+      for (const answer of session.askUserQuestion.answers) {
+        const question = session.askUserQuestion.questions[answer.questionIndex];
+        if (!question) continue;
+
+        const parts: string[] = [];
+        for (const optIdx of answer.selectedOptions) {
+          const opt = question.options[optIdx];
+          if (opt) parts.push(opt.label);
+        }
+        if (answer.textInput) {
+          parts.push(answer.textInput);
+        }
+        answers[question.question] = parts.join(', ');
+      }
+
+      this.clearAskUserQuestion(id);
+      // Send answers to sidecar via Tauri command (resolves the pending canUseTool callback)
+      await invoke('answer_ask_user_question', { id, answers });
+    },
+
+    clearAskUserQuestion(id: string): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id) return s;
+          return { ...s, askUserQuestion: undefined };
         })
       );
     },

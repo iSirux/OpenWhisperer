@@ -160,6 +160,12 @@ pub struct PersistedPendingRepoSelection {
 pub struct PersistedSdkSession {
     pub id: String,
     pub cwd: String,
+    /// Branch captured when the session was first associated with this repo
+    #[serde(default)]
+    pub created_branch: Option<String>,
+    /// Most recently fetched branch for this session
+    #[serde(default)]
+    pub current_branch: Option<String>,
     pub model: String,
     /// SDK provider ("anthropic", "openai", etc.)
     #[serde(default)]

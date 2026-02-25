@@ -1,9 +1,10 @@
 <script lang="ts">
-  import type { SdkMessage, SdkImageContent, EffortLevel } from "$lib/stores/sdkSessions";
+  import type { SdkMessage, SdkImageContent, EffortLevel, SdkSession } from "$lib/stores/sdkSessions";
   import { renderMarkdown } from "$lib/utils/markdown";
   import { formatToolCallInput, getToolCallSummary } from "$lib/utils/toolCallFormatting";
   import { getModelType } from "$lib/utils/modelColors";
   import RerunDropdown from "./RerunDropdown.svelte";
+  import ForkButton from "./ForkButton.svelte";
 
   let {
     message,
@@ -12,6 +13,9 @@
     sessionCwd = "",
     sessionModel = "",
     sessionEffortLevel = null,
+    sessionId = "",
+    messageIndex = -1,
+    session = undefined,
   }: {
     message: SdkMessage;
     copiedMessageId?: number | null;
@@ -19,6 +23,9 @@
     sessionCwd?: string;
     sessionModel?: string;
     sessionEffortLevel?: EffortLevel;
+    sessionId?: string;
+    messageIndex?: number;
+    session?: SdkSession;
   } = $props();
 
   function createImagePreviewUrl(img: SdkImageContent): string {
@@ -84,6 +91,9 @@
         {/if}
       </div>
       <div class="message-actions">
+        {#if sessionId && messageIndex >= 0}
+          <ForkButton {sessionId} {messageIndex} {message} {session} />
+        {/if}
         {#if sessionCwd && sessionModel && message.content}
           <RerunDropdown
             prompt={message.content}
@@ -123,29 +133,34 @@
       <div class="text-content markdown-body">
         {@html renderMarkdown(message.content ?? "")}
       </div>
-      <button
-        class="copy-message-button"
-        class:copied={isCopied}
-        onclick={() => onCopy(message)}
-        title="Copy message"
-      >
-        {#if isCopied}
-          <svg viewBox="0 0 20 20" fill="currentColor">
-            <path
-              fill-rule="evenodd"
-              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-              clip-rule="evenodd"
-            />
-          </svg>
-        {:else}
-          <svg viewBox="0 0 20 20" fill="currentColor">
-            <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-            <path
-              d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"
-            />
-          </svg>
+      <div class="text-message-actions">
+        {#if sessionId && messageIndex >= 0}
+          <ForkButton {sessionId} {messageIndex} {message} {session} />
         {/if}
-      </button>
+        <button
+          class="copy-message-button"
+          class:copied={isCopied}
+          onclick={() => onCopy(message)}
+          title="Copy message"
+        >
+          {#if isCopied}
+            <svg viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fill-rule="evenodd"
+                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          {:else}
+            <svg viewBox="0 0 20 20" fill="currentColor">
+              <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+              <path
+                d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"
+              />
+            </svg>
+          {/if}
+        </button>
+      </div>
     </div>
   {:else if message.type === "tool_start"}
     <details class="tool-call tool-running">
@@ -299,7 +314,8 @@
     position: relative;
   }
 
-  .text-message-container:hover .copy-message-button {
+  .text-message-container:hover .copy-message-button,
+  .text-message-container:hover .text-message-actions {
     opacity: 1;
   }
 
@@ -333,8 +349,22 @@
     min-width: unset;
   }
 
-  /* For text messages that don't use message-actions wrapper */
-  .text-message-container .copy-message-button {
+  /* For text messages - actions wrapper */
+  .text-message-actions {
+    position: sticky;
+    bottom: 0.5rem;
+    float: right;
+    margin-top: -1.75rem;
+    margin-right: 0.25rem;
+    opacity: 0;
+    transition: opacity 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  /* For text messages that don't use text-message-actions wrapper (legacy) */
+  .text-message-container .copy-message-button:not(.text-message-actions .copy-message-button) {
     position: sticky;
     bottom: 0.5rem;
     float: right;
@@ -431,6 +461,11 @@
   }
 
   .markdown-body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  /* Ensure trailing markdown blocks (e.g. ul/pre/table) don't add extra bottom space */
+  .markdown-body :global(*:last-child) {
     margin-bottom: 0;
   }
 

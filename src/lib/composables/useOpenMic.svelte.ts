@@ -11,6 +11,7 @@ import { get } from 'svelte/store';
 export function useOpenMicLifecycle() {
   let restartTimeout: ReturnType<typeof setTimeout> | null = null;
   let prevRecording = false;
+  let prevRealtimeConfigFingerprint: string | null = null;
   let initialized = false;
 
   /**
@@ -20,10 +21,16 @@ export function useOpenMicLifecycle() {
   function update(
     openMicEnabled: boolean,
     voskEnabled: boolean,
+    realtimeConfigFingerprint: string,
     currentlyRecording: boolean,
     currentlyListening: boolean,
     currentlyPaused: boolean
   ) {
+    const realtimeConfigChanged =
+      prevRealtimeConfigFingerprint !== null &&
+      prevRealtimeConfigFingerprint !== realtimeConfigFingerprint;
+    prevRealtimeConfigFingerprint = realtimeConfigFingerprint;
+
     // Detect recording state transition
     const recordingJustStopped = prevRecording && !currentlyRecording;
     prevRecording = currentlyRecording;
@@ -39,6 +46,10 @@ export function useOpenMicLifecycle() {
         // Don't start while recording
       } else if (currentlyPaused) {
         // User manually paused - don't auto-start, respect their choice
+      } else if (realtimeConfigChanged && currentlyListening) {
+        // Provider/endpoint/sample-rate changed while listening - reconnect with new settings
+        console.log('[open-mic] Realtime config changed, restarting open mic session');
+        openMic.restart();
       } else if (recordingJustStopped) {
         // Recording just stopped - delay restart to ensure audio resources are released
         if (!currentlyListening && !restartTimeout) {
@@ -69,11 +80,28 @@ export function useOpenMicLifecycle() {
       const currentSettings = get(settings);
       const openMicEnabled = currentSettings.audio.open_mic.enabled;
       const voskEnabled = currentSettings.vosk?.enabled ?? false;
+      const realtimeConfigFingerprint = JSON.stringify({
+        provider: currentSettings.vosk?.provider ?? "Vosk",
+        endpoint: currentSettings.vosk?.provider === "VoiceStreamAI"
+          ? currentSettings.vosk?.voice_stream_ai?.endpoint
+          : currentSettings.vosk?.provider === "SherpaOnnx"
+            ? currentSettings.vosk?.sherpa_onnx?.endpoint
+            : currentSettings.vosk?.provider === "Speaches"
+              ? currentSettings.vosk?.speaches?.endpoint
+              : currentSettings.vosk?.endpoint,
+        sampleRate: currentSettings.vosk?.provider === "VoiceStreamAI"
+          ? currentSettings.vosk?.voice_stream_ai?.sample_rate
+          : currentSettings.vosk?.provider === "SherpaOnnx"
+            ? currentSettings.vosk?.sherpa_onnx?.sample_rate
+            : currentSettings.vosk?.provider === "Speaches"
+              ? currentSettings.vosk?.speaches?.sample_rate
+              : currentSettings.vosk?.sample_rate,
+      });
       const recording = get(isRecording);
       const listening = get(isOpenMicListening);
       const paused = get(isOpenMicPaused);
 
-      update(openMicEnabled, voskEnabled, recording, listening, paused);
+      update(openMicEnabled, voskEnabled, realtimeConfigFingerprint, recording, listening, paused);
     });
   }
 

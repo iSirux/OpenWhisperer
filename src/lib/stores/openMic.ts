@@ -36,8 +36,8 @@ function createOpenMicStore() {
   let unlistenPartial: UnlistenFn | null = null;
   let unlistenFinal: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
-  // Accumulated final text from Vosk (when accumulate_transcript is enabled)
-  let voskAccumulatedText: string = "";
+  // Accumulated final text from real-time transcription (when accumulate_transcript is enabled)
+  let realtimeAccumulatedText: string = "";
 
   // Guard against concurrent start() calls - tracks the current initialization promise
   let startPromise: Promise<void> | null = null;
@@ -55,7 +55,7 @@ function createOpenMicStore() {
   let wasAboveThreshold = false;
   let hangoverRemaining = 0;
 
-  // Convert Float32 audio samples to Int16 for Vosk
+  // Convert Float32 audio samples to Int16 for real-time transcription
   function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
     const int16Array = new Int16Array(float32Array.length);
     for (let i = 0; i < float32Array.length; i++) {
@@ -137,7 +137,7 @@ function createOpenMicStore() {
       update((s) => ({
         ...s,
         state: "error",
-        error: "Vosk must be enabled for open mic mode",
+        error: "Real-time transcription must be enabled for open mic mode",
       }));
       return;
     }
@@ -161,7 +161,7 @@ function createOpenMicStore() {
     }
 
     // Clear accumulated text at the start of each listening session
-    voskAccumulatedText = "";
+    realtimeAccumulatedText = "";
 
     // Reset pre-roll buffer state
     preRollBuffer = [];
@@ -220,10 +220,15 @@ function createOpenMicStore() {
       }
       runVisualization();
 
-      // Create audio context at Vosk's required sample rate (16kHz)
-      audioContext = new AudioContext({
-        sampleRate: currentSettings.vosk.sample_rate || 16000,
-      });
+      // Create audio context at provider's required sample rate (16kHz)
+      const sampleRate = currentSettings.vosk.provider === 'VoiceStreamAI'
+        ? (currentSettings.vosk.voice_stream_ai?.sample_rate || 16000)
+        : currentSettings.vosk.provider === 'SherpaOnnx'
+          ? (currentSettings.vosk.sherpa_onnx?.sample_rate || 16000)
+          : currentSettings.vosk.provider === 'Speaches'
+            ? (currentSettings.vosk.speaches?.sample_rate || 16000)
+          : (currentSettings.vosk.sample_rate || 16000);
+      audioContext = new AudioContext({ sampleRate });
       audioSource = audioContext.createMediaStreamSource(mediaStream);
 
       // ScriptProcessor to extract PCM samples (256 buffer = ~16ms at 16kHz, minimum valid size)
@@ -240,7 +245,7 @@ function createOpenMicStore() {
         const float32Data = event.inputBuffer.getChannelData(0);
         const int16Data = convertFloat32ToInt16(float32Data);
 
-        // Check volume threshold before sending to Vosk
+        // Check volume threshold before sending to realtime provider
         const rms = calculateRMS(float32Data);
         const threshold = get(settings).audio.open_mic.volume_threshold ?? 0.01;
         const isAboveThreshold = rms >= threshold;
@@ -252,7 +257,7 @@ function createOpenMicStore() {
           // If we just crossed the threshold, send buffered pre-roll audio first
           if (!wasAboveThreshold && preRollBuffer.length > 0) {
             for (const bufferedChunk of preRollBuffer) {
-              invoke("send_vosk_audio", {
+              invoke("send_realtime_audio", {
                 sessionId: OPEN_MIC_SESSION_ID,
                 samples: Array.from(bufferedChunk),
               }).catch(() => {});
@@ -261,7 +266,7 @@ function createOpenMicStore() {
           }
 
           // Send current audio
-          invoke("send_vosk_audio", {
+          invoke("send_realtime_audio", {
             sessionId: OPEN_MIC_SESSION_ID,
             samples: Array.from(int16Data),
           }).catch(() => {});
@@ -271,7 +276,7 @@ function createOpenMicStore() {
         } else if (hangoverRemaining > 0) {
           // Post-roll: continue sending briefly after threshold drops to avoid cutting off word endings
           hangoverRemaining--;
-          invoke("send_vosk_audio", {
+          invoke("send_realtime_audio", {
             sessionId: OPEN_MIC_SESSION_ID,
             samples: Array.from(int16Data),
           }).catch(() => {});
@@ -292,14 +297,14 @@ function createOpenMicStore() {
       audioSource.connect(processor);
       processor.connect(audioContext.destination);
 
-      // Listen for Vosk partial events (real-time)
+      // Listen for realtime partial events (real-time)
       // NOTE: Open mic does NOT accumulate across utterances like recording does.
       // Open mic runs continuously, so we show only the CURRENT utterance directly.
-      // Vosk partials already contain the full current utterance (they replace, not add).
+      // Partials already contain the full current utterance (they replace, not add).
       let lastPartialTime = Date.now();
       let lastPartialText = "";
       unlistenPartial = await listen(
-        `vosk-partial-${OPEN_MIC_SESSION_ID}`,
+        `realtime-partial-${OPEN_MIC_SESSION_ID}`,
         (event: any) => {
           const partial = event.payload?.partial || "";
 
@@ -326,9 +331,9 @@ function createOpenMicStore() {
         }
       );
 
-      // Listen for Vosk final events
+      // Listen for realtime final events
       unlistenFinal = await listen(
-        `vosk-final-${OPEN_MIC_SESSION_ID}`,
+        `realtime-final-${OPEN_MIC_SESSION_ID}`,
         (event: any) => {
           const text = event.payload?.text || "";
           console.log("[open-mic][final]", { text });
@@ -346,16 +351,16 @@ function createOpenMicStore() {
         }
       );
 
-      // Listen for Vosk errors
+      // Listen for realtime errors
       unlistenError = await listen(
-        `vosk-error-${OPEN_MIC_SESSION_ID}`,
+        `realtime-error-${OPEN_MIC_SESSION_ID}`,
         (event: any) => {
-          console.error("[open-mic] Vosk error:", event.payload?.error);
+          console.error("[open-mic] Realtime transcription error:", event.payload?.error);
         }
       );
 
-      // Start the Vosk session on the backend
-      await invoke("start_vosk_session", { sessionId: OPEN_MIC_SESSION_ID });
+      // Start the realtime session on the backend
+      await invoke("start_realtime_session", { sessionId: OPEN_MIC_SESSION_ID });
 
       // Clear the UI transcript when starting fresh
       emit("open-mic-realtime-transcript", { text: "" });
@@ -399,7 +404,7 @@ function createOpenMicStore() {
       const state = get({ subscribe });
       if (state.state === "triggered") {
         // Clear accumulated text when returning to listening
-        voskAccumulatedText = "";
+        realtimeAccumulatedText = "";
         update((s) => ({
           ...s,
           state: "listening",
@@ -414,7 +419,7 @@ function createOpenMicStore() {
     console.log("[open-mic] Stopping passive listening");
     await cleanup();
     // Clear accumulated text when stopping
-    voskAccumulatedText = "";
+    realtimeAccumulatedText = "";
     update((s) => ({
       ...s,
       state: "disabled",
@@ -541,9 +546,9 @@ function createOpenMicStore() {
       mediaStream = null;
     }
 
-    // Stop the backend Vosk session
+    // Stop the backend realtime session
     try {
-      await invoke("stop_vosk_session", { sessionId: OPEN_MIC_SESSION_ID });
+      await invoke("stop_realtime_session", { sessionId: OPEN_MIC_SESSION_ID });
     } catch (error) {
       // Ignore errors stopping session (may not exist)
     }

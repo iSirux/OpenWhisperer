@@ -10,4 +10,4 @@ pub mod session_cmds;
 pub mod settings_cmds;
 pub mod terminal_cmds;
 pub mod usage_cmds;
-pub mod vosk_cmds;
+pub mod realtime_cmds;

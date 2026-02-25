@@ -58,6 +58,12 @@ pub enum OutboundMessage {
         note_mode: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         mcp_servers: Option<Vec<McpServerConfig>>,
+        /// SDK session ID to fork from (creates a new branch from parent session)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fork_from_sdk_session_id: Option<String>,
+        /// Message UUID to fork at (resumeSessionAt - include messages up to this point)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fork_at_message_uuid: Option<String>,
     },
     Query {
         id: String,
@@ -92,6 +98,11 @@ pub enum OutboundMessage {
         repo_path: String,
         repo_name: String,
     },
+    /// User's answers to AskUserQuestion tool
+    AnswerAskUserQuestion {
+        id: String,
+        answers: std::collections::HashMap<String, String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,6 +117,8 @@ pub enum InboundMessage {
         content: String,
         #[serde(rename = "parentToolUseId")]
         parent_tool_use_id: Option<String>,
+        #[serde(rename = "turnUuid", default)]
+        turn_uuid: Option<String>,
     },
     ToolStart {
         id: String,
@@ -115,6 +128,8 @@ pub enum InboundMessage {
         tool_use_id: String,
         #[serde(rename = "parentToolUseId")]
         parent_tool_use_id: Option<String>,
+        #[serde(rename = "turnUuid", default)]
+        turn_uuid: Option<String>,
     },
     ToolResult {
         id: String,
@@ -124,6 +139,8 @@ pub enum InboundMessage {
         tool_use_id: String,
         #[serde(rename = "parentToolUseId")]
         parent_tool_use_id: Option<String>,
+        #[serde(rename = "turnUuid", default)]
+        turn_uuid: Option<String>,
     },
     ThinkingStart {
         id: String,
@@ -131,6 +148,8 @@ pub enum InboundMessage {
         timestamp: u64,
         #[serde(rename = "parentToolUseId")]
         parent_tool_use_id: Option<String>,
+        #[serde(rename = "turnUuid", default)]
+        turn_uuid: Option<String>,
     },
     ThinkingEnd {
         id: String,
@@ -139,6 +158,8 @@ pub enum InboundMessage {
         content: String,
         #[serde(rename = "parentToolUseId")]
         parent_tool_use_id: Option<String>,
+        #[serde(rename = "turnUuid", default)]
+        turn_uuid: Option<String>,
     },
     Done {
         id: String,
@@ -249,6 +270,11 @@ pub enum InboundMessage {
         #[serde(rename = "featureName")]
         feature_name: String,
         summary: String,
+    },
+    /// AskUserQuestion tool - interactive questions for the user
+    AskUserQuestions {
+        id: String,
+        questions: Vec<PlanningQuestion>,
     },
     /// Result from Claude SDK repo description generation
     RepoDescriptionResult {
@@ -471,38 +497,38 @@ impl SidecarManager {
                 println!("[sidecar] Emitting sdk-created-{}", id);
                 let _ = app.emit(&format!("sdk-created-{}", id), ());
             }
-            InboundMessage::Text { id, ref content, ref parent_tool_use_id } => {
+            InboundMessage::Text { id, ref content, ref parent_tool_use_id, ref turn_uuid } => {
                 println!("[sidecar] Emitting sdk-text-{} with {} bytes", id, content.len());
                 let result = app.emit(
                     &format!("sdk-text-{}", id),
-                    serde_json::json!({ "content": content, "parentToolUseId": parent_tool_use_id }),
+                    serde_json::json!({ "content": content, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
                 if let Err(e) = result {
                     eprintln!("[sidecar] Failed to emit text event: {}", e);
                 }
             }
-            InboundMessage::ToolStart { id, tool, input, tool_use_id, parent_tool_use_id } => {
+            InboundMessage::ToolStart { id, tool, input, tool_use_id, parent_tool_use_id, ref turn_uuid } => {
                 let _ = app.emit(
                     &format!("sdk-tool-start-{}", id),
-                    serde_json::json!({ "tool": tool, "input": input, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id }),
+                    serde_json::json!({ "tool": tool, "input": input, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
             }
-            InboundMessage::ToolResult { id, tool, output, tool_use_id, parent_tool_use_id } => {
+            InboundMessage::ToolResult { id, tool, output, tool_use_id, parent_tool_use_id, ref turn_uuid } => {
                 let _ = app.emit(
                     &format!("sdk-tool-result-{}", id),
-                    serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id }),
+                    serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
             }
-            InboundMessage::ThinkingStart { id, content, timestamp, parent_tool_use_id } => {
+            InboundMessage::ThinkingStart { id, content, timestamp, parent_tool_use_id, ref turn_uuid } => {
                 let _ = app.emit(
                     &format!("sdk-thinking-start-{}", id),
-                    serde_json::json!({ "content": content, "timestamp": timestamp, "parentToolUseId": parent_tool_use_id }),
+                    serde_json::json!({ "content": content, "timestamp": timestamp, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
             }
-            InboundMessage::ThinkingEnd { id, duration_ms, content, parent_tool_use_id } => {
+            InboundMessage::ThinkingEnd { id, duration_ms, content, parent_tool_use_id, ref turn_uuid } => {
                 let _ = app.emit(
                     &format!("sdk-thinking-end-{}", id),
-                    serde_json::json!({ "durationMs": duration_ms, "content": content, "parentToolUseId": parent_tool_use_id }),
+                    serde_json::json!({ "durationMs": duration_ms, "content": content, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
             }
             InboundMessage::Done { id } => {
@@ -710,6 +736,17 @@ impl SidecarManager {
                         "featureName": feature_name,
                         "summary": summary,
                     }),
+                );
+            }
+            InboundMessage::AskUserQuestions { id, questions } => {
+                println!(
+                    "[sidecar] AskUserQuestion for session {}: {} questions",
+                    id,
+                    questions.len()
+                );
+                let _ = app.emit(
+                    &format!("sdk-ask-user-questions-{}", id),
+                    serde_json::to_value(&questions).unwrap_or_default(),
                 );
             }
             InboundMessage::RepoDescriptionResult {

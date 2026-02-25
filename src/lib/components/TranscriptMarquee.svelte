@@ -23,8 +23,8 @@
       }
     });
 
-    // Listen for real-time transcript updates from Vosk
-    unlistenTranscript = await listen<{ text: string }>('vosk-realtime-transcript', (event) => {
+    // Listen for real-time transcript updates
+    unlistenTranscript = await listen<{ text: string }>('realtime-transcript', (event) => {
       const text = event.payload?.text ?? '';
       console.log('[TranscriptMarquee] received', { text, prevTranscript: transcript });
       // Always update transcript - empty string clears it

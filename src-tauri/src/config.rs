@@ -20,6 +20,16 @@ pub enum DockerComputeType {
     GPU,
 }
 
+/// Provider type for real-time transcription (live during recording)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum RealtimeProvider {
+    #[default]
+    Vosk,
+    VoiceStreamAI,
+    SherpaOnnx,
+    Speaches,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DockerConfig {
     /// Whether to use GPU (CUDA) or CPU
@@ -67,7 +77,7 @@ impl Default for WhisperConfig {
         Self {
             provider: WhisperProvider::default(),
             endpoint: "http://localhost:8000/v1/audio/transcriptions".to_string(),
-            model: "mobiuslabsgmbh/faster-whisper-large-v3-turbo".to_string(),
+            model: "dropbox-dash/faster-whisper-large-v3-turbo".to_string(),
             language: "en".to_string(),
             api_key: None,
             docker: DockerConfig::default(),
@@ -75,12 +85,183 @@ impl Default for WhisperConfig {
     }
 }
 
-/// Configuration for Vosk real-time transcription
+/// Configuration for VoiceStreamAI real-time transcription
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceStreamAIConfig {
+    /// WebSocket endpoint for VoiceStreamAI server
+    #[serde(default = "default_vsai_endpoint")]
+    pub endpoint: String,
+    /// Audio sample rate (default: 16000)
+    #[serde(default = "default_vsai_sample_rate")]
+    pub sample_rate: u32,
+    /// Chunk length in seconds for processing
+    #[serde(default = "default_vsai_chunk_length")]
+    pub chunk_length_seconds: f32,
+    /// Chunk offset in seconds (silence duration before processing)
+    #[serde(default = "default_vsai_chunk_offset")]
+    pub chunk_offset_seconds: f32,
+    /// Language code for transcription (e.g., "en", "multilanguage")
+    #[serde(default = "default_vsai_language")]
+    pub language: String,
+    /// Docker configuration for VoiceStreamAI server
+    #[serde(default = "default_vsai_docker")]
+    pub docker: DockerConfig,
+}
+
+fn default_vsai_endpoint() -> String {
+    "ws://localhost:8765".to_string()
+}
+
+fn default_vsai_sample_rate() -> u32 {
+    16000
+}
+
+fn default_vsai_chunk_length() -> f32 {
+    3.0
+}
+
+fn default_vsai_chunk_offset() -> f32 {
+    0.1
+}
+
+fn default_vsai_language() -> String {
+    "en".to_string()
+}
+
+fn default_vsai_container_name() -> String {
+    "claude-whisperer-voicestreamai".to_string()
+}
+
+fn default_vsai_docker() -> DockerConfig {
+    DockerConfig {
+        compute_type: DockerComputeType::CPU,
+        auto_restart: false,
+        container_name: default_vsai_container_name(),
+    }
+}
+
+impl Default for VoiceStreamAIConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: default_vsai_endpoint(),
+            sample_rate: default_vsai_sample_rate(),
+            chunk_length_seconds: default_vsai_chunk_length(),
+            chunk_offset_seconds: default_vsai_chunk_offset(),
+            language: default_vsai_language(),
+            docker: default_vsai_docker(),
+        }
+    }
+}
+
+/// Configuration for sherpa-onnx real-time transcription
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SherpaOnnxConfig {
+    /// WebSocket endpoint for sherpa-onnx online server
+    #[serde(default = "default_sherpa_endpoint")]
+    pub endpoint: String,
+    /// Audio sample rate (default: 16000)
+    #[serde(default = "default_sherpa_sample_rate")]
+    pub sample_rate: u32,
+    /// Docker configuration for sherpa-onnx server
+    #[serde(default = "default_sherpa_docker")]
+    pub docker: DockerConfig,
+}
+
+fn default_sherpa_endpoint() -> String {
+    "ws://localhost:6006".to_string()
+}
+
+fn default_sherpa_sample_rate() -> u32 {
+    16000
+}
+
+fn default_sherpa_container_name() -> String {
+    "claude-whisperer-sherpa-onnx".to_string()
+}
+
+fn default_sherpa_docker() -> DockerConfig {
+    DockerConfig {
+        compute_type: DockerComputeType::CPU,
+        auto_restart: false,
+        container_name: default_sherpa_container_name(),
+    }
+}
+
+impl Default for SherpaOnnxConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: default_sherpa_endpoint(),
+            sample_rate: default_sherpa_sample_rate(),
+            docker: default_sherpa_docker(),
+        }
+    }
+}
+
+/// Configuration for Speaches real-time transcription
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpeachesConfig {
+    /// WebSocket endpoint for Speaches realtime API
+    #[serde(default = "default_speaches_endpoint")]
+    pub endpoint: String,
+    /// Audio sample rate (default: 16000)
+    #[serde(default = "default_speaches_sample_rate")]
+    pub sample_rate: u32,
+    /// Transcription model name
+    #[serde(default = "default_speaches_model")]
+    pub model: String,
+    /// Optional API key for protected Speaches deployments
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Docker configuration for Speaches server
+    #[serde(default = "default_speaches_docker")]
+    pub docker: DockerConfig,
+}
+
+fn default_speaches_endpoint() -> String {
+    "ws://localhost:2701/v1/realtime".to_string()
+}
+
+fn default_speaches_sample_rate() -> u32 {
+    16000
+}
+
+fn default_speaches_model() -> String {
+    "Systran/faster-distil-whisper-small.en".to_string()
+}
+
+fn default_speaches_container_name() -> String {
+    "claude-whisperer-speaches".to_string()
+}
+
+fn default_speaches_docker() -> DockerConfig {
+    DockerConfig {
+        compute_type: DockerComputeType::CPU,
+        auto_restart: false,
+        container_name: default_speaches_container_name(),
+    }
+}
+
+impl Default for SpeachesConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: default_speaches_endpoint(),
+            sample_rate: default_speaches_sample_rate(),
+            model: default_speaches_model(),
+            api_key: None,
+            docker: default_speaches_docker(),
+        }
+    }
+}
+
+/// Configuration for real-time transcription providers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoskConfig {
-    /// Whether Vosk real-time transcription is enabled
+    /// Whether real-time transcription is enabled
     #[serde(default)]
     pub enabled: bool,
+    /// Which real-time transcription provider to use
+    #[serde(default)]
+    pub provider: RealtimeProvider,
     /// WebSocket endpoint for Vosk server
     #[serde(default = "default_vosk_endpoint")]
     pub endpoint: String,
@@ -96,6 +277,15 @@ pub struct VoskConfig {
     /// Whether to accumulate transcript text across pauses (vs reset on each pause)
     #[serde(default)]
     pub accumulate_transcript: bool,
+    /// VoiceStreamAI-specific configuration
+    #[serde(default)]
+    pub voice_stream_ai: VoiceStreamAIConfig,
+    /// sherpa-onnx-specific configuration
+    #[serde(default)]
+    pub sherpa_onnx: SherpaOnnxConfig,
+    /// Speaches-specific configuration
+    #[serde(default)]
+    pub speaches: SpeachesConfig,
 }
 
 fn default_vosk_endpoint() -> String {
@@ -126,11 +316,15 @@ impl Default for VoskConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            provider: RealtimeProvider::default(),
             endpoint: default_vosk_endpoint(),
             sample_rate: default_vosk_sample_rate(),
             docker: default_vosk_docker(),
             show_realtime_transcript: true,
             accumulate_transcript: false,
+            voice_stream_ai: VoiceStreamAIConfig::default(),
+            sherpa_onnx: SherpaOnnxConfig::default(),
+            speaches: SpeachesConfig::default(),
         }
     }
 }

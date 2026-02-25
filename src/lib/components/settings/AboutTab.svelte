@@ -15,7 +15,7 @@
     try {
       appVersion = await getVersion();
     } catch {
-      appVersion = "0.9.0";
+      appVersion = "0.10.0";
     }
 
     try {
@@ -72,7 +72,11 @@
   <!-- App identity -->
   <div class="border-b border-border pb-6">
     <div class="flex items-center gap-4 mb-4">
-      <img src="/icon.png" alt="Claude Whisperer" class="w-14 h-14 rounded-xl" />
+      <img
+        src="/icon.png"
+        alt="Claude Whisperer"
+        class="w-14 h-14 rounded-xl"
+      />
       <div>
         <h2 class="text-xl font-semibold text-text">Claude Whisperer</h2>
         <p class="text-sm text-text-muted">Version {appVersion}</p>

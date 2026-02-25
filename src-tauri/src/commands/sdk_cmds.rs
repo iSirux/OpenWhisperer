@@ -25,11 +25,13 @@ pub fn create_sdk_session(
     plan_mode: Option<bool>, // Whether this is a plan mode session (enables planning tools)
     note_mode: Option<bool>, // Whether this is a note-taking mode session (read-only + note MCP tools)
     mcp_servers: Option<Vec<McpServerConfig>>, // Optional MCP servers to register
+    fork_from_sdk_session_id: Option<String>, // SDK session ID to fork from (creates a new branch)
+    fork_at_message_uuid: Option<String>, // Message UUID to fork at (resumeSessionAt)
 ) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
     }
-    sidecar.send(OutboundMessage::Create { id, cwd, provider, codex_mode, model: Some(model), system_prompt, messages, sdk_session_id, plan_mode, note_mode, mcp_servers })
+    sidecar.send(OutboundMessage::Create { id, cwd, provider, codex_mode, model: Some(model), system_prompt, messages, sdk_session_id, plan_mode, note_mode, mcp_servers, fork_from_sdk_session_id, fork_at_message_uuid })
 }
 
 #[tauri::command]
@@ -89,6 +91,20 @@ pub fn close_sdk_session(
         return Err("Sidecar not started".to_string());
     }
     sidecar.send(OutboundMessage::Close { id })
+}
+
+/// Send user's answers to an AskUserQuestion tool call back to the sidecar.
+/// The sidecar's canUseTool callback is waiting for these answers.
+#[tauri::command]
+pub fn answer_ask_user_question(
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    answers: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    if !sidecar.is_started() {
+        return Err("Sidecar not started".to_string());
+    }
+    sidecar.send(OutboundMessage::AnswerAskUserQuestion { id, answers })
 }
 
 /// Generate repository description using Claude SDK (Haiku model)

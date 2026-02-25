@@ -21,7 +21,8 @@
     repoPath?: string;
     model?: string | null;
     effortLevel?: EffortLevel;
-    branch?: string | null;
+    createdBranch?: string | null;
+    currentBranch?: string | null;
     firstPrompt?: string | null;
     onClose: () => void;
     onCancel?: () => void;
@@ -35,7 +36,8 @@
     repoPath = '',
     model = null,
     effortLevel = null,
-    branch = null,
+    createdBranch = null,
+    currentBranch = null,
     firstPrompt = null,
     onClose,
     onCancel,
@@ -52,6 +54,26 @@
 
   const sessionTime = $derived(
     createdAt ? new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+  );
+
+  const normalizedCreatedBranch = $derived(
+    createdBranch?.trim() ? createdBranch.trim() : null
+  );
+
+  const normalizedCurrentBranch = $derived(
+    currentBranch?.trim() ? currentBranch.trim() : null
+  );
+
+  const showSplitBranchLabels = $derived(
+    !!normalizedCreatedBranch &&
+    !!normalizedCurrentBranch &&
+    normalizedCreatedBranch !== normalizedCurrentBranch
+  );
+
+  const singleBranchDisplay = $derived(
+    showSplitBranchLabels
+      ? null
+      : normalizedCurrentBranch || normalizedCreatedBranch
   );
 
   async function copyChat() {
@@ -85,9 +107,14 @@
       {#if sessionTime}<span class="separator">·</span>{/if}
       <RepoIcon repo={repoConfig} size="xs" />
       <span class="repo-name">{repoName}</span>
-      {#if branch}
+      {#if showSplitBranchLabels}
         <span class="separator">·</span>
-        <span class="branch-name">{branch}</span>
+        <span class="branch-name" title="Branch when session was created">created:{normalizedCreatedBranch}</span>
+        <span class="separator">·</span>
+        <span class="branch-name" title="Current branch">current:{normalizedCurrentBranch}</span>
+      {:else if singleBranchDisplay}
+        <span class="separator">·</span>
+        <span class="branch-name">{singleBranchDisplay}</span>
       {/if}
     {/if}
     {#if model}

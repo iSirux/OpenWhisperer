@@ -1010,7 +1010,7 @@
 
     {#if !$settings.vosk?.enabled}
       <p class="text-xs text-yellow-500">
-        Vosk must be enabled for open mic mode. Enable it in the Vosk tab.
+        Real-time transcription must be enabled for open mic mode. Enable it in the Real-time Transcription tab.
       </p>
     {:else if $settings.audio.open_mic.enabled}
       <div class="space-y-3 mt-4">

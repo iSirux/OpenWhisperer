@@ -7,16 +7,16 @@ mod sequences;
 mod session_persistence;
 mod sidecar;
 mod terminal;
-mod vosk;
+mod realtime;
 mod whisper;
 
-use commands::{archive_cmds, audio_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, vosk_cmds};
+use commands::{archive_cmds, audio_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, realtime_cmds};
 use sequences::SequenceManager;
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
 use sidecar::SidecarManager;
 use std::sync::Arc;
-use vosk::VoskManager;
+use realtime::RealtimeSessionManager;
 
 /// Tracks whether config was successfully loaded from disk.
 /// When false, saves are blocked to prevent overwriting valid config with defaults.
@@ -78,7 +78,7 @@ pub fn run() {
     let start_minimized = config.system.start_minimized;
     let terminal_manager = Arc::new(TerminalManager::new());
     let sidecar_manager = Arc::new(SidecarManager::new());
-    let vosk_manager = Arc::new(VoskManager::new());
+    let realtime_manager = Arc::new(RealtimeSessionManager::new());
     let config_load_status = ConfigLoadStatus(Mutex::new(config_loaded_ok));
 
     let builder = tauri::Builder::default();
@@ -122,7 +122,7 @@ pub fn run() {
         .manage(config_load_status)
         .manage(terminal_manager)
         .manage(sidecar_manager)
-        .manage(vosk_manager)
+        .manage(realtime_manager)
         .setup(move |app| {
             #[cfg(target_os = "windows")]
             set_windows_app_user_model_id(&app.config().identifier);
@@ -282,6 +282,7 @@ pub fn run() {
             sdk_cmds::update_sdk_model,
             sdk_cmds::update_sdk_effort,
             sdk_cmds::close_sdk_session,
+            sdk_cmds::answer_ask_user_question,
             sdk_cmds::generate_repo_description_with_claude,
             sdk_cmds::generate_repo_description_with_codex,
             sdk_cmds::check_openai_codex_auth,
@@ -331,10 +332,10 @@ pub fn run() {
             llm_cmds::delete_gemini_api_key,
             llm_cmds::recommend_repo,
             llm_cmds::generate_quick_actions,
-            vosk_cmds::test_vosk_connection,
-            vosk_cmds::start_vosk_session,
-            vosk_cmds::send_vosk_audio,
-            vosk_cmds::stop_vosk_session,
+            realtime_cmds::test_realtime_connection,
+            realtime_cmds::start_realtime_session,
+            realtime_cmds::send_realtime_audio,
+            realtime_cmds::stop_realtime_session,
             mcp_cmds::test_mcp_server,
             mcp_cmds::save_mcp_bearer_token,
             mcp_cmds::get_mcp_bearer_token,

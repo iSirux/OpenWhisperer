@@ -26,9 +26,9 @@ interface RecordingStore {
   queue: QueuedRecording[];
   // Number of recordings currently being transcribed
   transcribingCount: number;
-  // Vosk real-time transcription
+  // Real-time transcription
   realtimeTranscript: string;
-  voskSessionId: string | null;
+  realtimeSessionId: string | null;
 }
 
 function createRecordingStore() {
@@ -41,7 +41,7 @@ function createRecordingStore() {
     queue: [],
     transcribingCount: 0,
     realtimeTranscript: '',
-    voskSessionId: null,
+    realtimeSessionId: null,
   });
 
   let mediaRecorder: MediaRecorder | null = null;
@@ -52,21 +52,21 @@ function createRecordingStore() {
   let visualizationAnimationId: number | null = null;
   let recordingStartTime: number | null = null;
 
-  // Vosk real-time transcription state
-  let voskAudioContext: AudioContext | null = null;
-  let voskProcessor: ScriptProcessorNode | null = null;
-  let voskSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
-  let voskUnlistenPartial: UnlistenFn | null = null;
-  let voskUnlistenFinal: UnlistenFn | null = null;
-  let voskUnlistenError: UnlistenFn | null = null;
-  // Accumulated final text from Vosk (when accumulate_transcript is enabled)
-  let voskAccumulatedText: string = '';
+  // Real-time transcription state
+  let realtimeAudioContext: AudioContext | null = null;
+  let realtimeProcessor: ScriptProcessorNode | null = null;
+  let realtimeSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
+  let realtimeUnlistenPartial: UnlistenFn | null = null;
+  let realtimeUnlistenFinal: UnlistenFn | null = null;
+  let realtimeUnlistenError: UnlistenFn | null = null;
+  // Accumulated final text from real-time transcription (when accumulate_transcript is enabled)
+  let realtimeAccumulatedText: string = '';
   // Flag to prevent double-triggering of voice commands
   let voiceCommandTriggered: boolean = false;
-  // Flag to prevent concurrent Vosk session starts
-  let voskSessionStarting: boolean = false;
+  // Flag to prevent concurrent realtime session starts
+  let realtimeSessionStarting: boolean = false;
 
-  // Convert Float32 audio samples to Int16 for Vosk
+  // Convert Float32 audio samples to Int16 for real-time transcription
   function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
     const int16Array = new Int16Array(float32Array.length);
     for (let i = 0; i < float32Array.length; i++) {
@@ -76,79 +76,86 @@ function createRecordingStore() {
     return int16Array;
   }
 
-  // Start Vosk real-time transcription session
-  async function startVoskSession(stream: MediaStream, sessionId: string) {
+  // Start real-time transcription session
+  async function startRealtimeSession(stream: MediaStream, sessionId: string) {
     const currentSettings = get(settings);
-    console.log('[recording] startVoskSession called', {
+    console.log('[recording] startRealtimeSession called', {
       sessionId,
-      voskEnabled: currentSettings.vosk?.enabled,
+      realtimeEnabled: currentSettings.vosk?.enabled,
     });
     if (!currentSettings.vosk?.enabled) {
-      console.log('[recording] Vosk disabled, skipping');
+      console.log('[recording] Real-time transcription disabled, skipping');
       return;
     }
 
     // Prevent concurrent session starts
-    if (voskSessionStarting) {
-      console.log('[recording] Vosk session already starting, skipping');
+    if (realtimeSessionStarting) {
+      console.log('[recording] Realtime session already starting, skipping');
       return;
     }
-    voskSessionStarting = true;
+    realtimeSessionStarting = true;
 
     // Clean up any existing session first (guard against listener leaks)
-    await stopVoskSession();
+    await stopRealtimeSession();
 
     // Reset voice command flag for new session
     voiceCommandTriggered = false;
 
     // Clear accumulated text FIRST before anything else
-    voskAccumulatedText = '';
+    realtimeAccumulatedText = '';
     // Emit clear event immediately
-    emit('vosk-realtime-transcript', { text: '' });
+    emit('realtime-transcript', { text: '' });
 
     try {
-      // Create audio context at Vosk's required sample rate (16kHz)
-      voskAudioContext = new AudioContext({ sampleRate: currentSettings.vosk.sample_rate || 16000 });
-      voskSource = voskAudioContext.createMediaStreamSource(stream);
+      // Create audio context at provider's required sample rate (16kHz)
+      const sampleRate = currentSettings.vosk.provider === 'VoiceStreamAI'
+        ? (currentSettings.vosk.voice_stream_ai?.sample_rate || 16000)
+        : currentSettings.vosk.provider === 'SherpaOnnx'
+          ? (currentSettings.vosk.sherpa_onnx?.sample_rate || 16000)
+          : currentSettings.vosk.provider === 'Speaches'
+            ? (currentSettings.vosk.speaches?.sample_rate || 16000)
+          : (currentSettings.vosk.sample_rate || 16000);
+      realtimeAudioContext = new AudioContext({ sampleRate });
+      realtimeSource = realtimeAudioContext.createMediaStreamSource(stream);
 
       // ScriptProcessor to extract PCM samples (4096 samples per buffer)
-      voskProcessor = voskAudioContext.createScriptProcessor(4096, 1, 1);
+      realtimeProcessor = realtimeAudioContext.createScriptProcessor(4096, 1, 1);
 
       // Store sessionId in closure, but check if context is still valid before sending
-      const contextRef = voskAudioContext;
-      voskProcessor.onaudioprocess = (event) => {
+      const contextRef = realtimeAudioContext;
+      realtimeProcessor.onaudioprocess = (event) => {
         // Skip if context was closed (prevents zombie callbacks)
-        if (contextRef.state === 'closed' || !voskProcessor) return;
+        if (contextRef.state === 'closed' || !realtimeProcessor) return;
 
         const float32Data = event.inputBuffer.getChannelData(0);
         const int16Data = convertFloat32ToInt16(float32Data);
 
         // Use non-blocking invoke with catch (don't await to prevent backpressure)
-        invoke('send_vosk_audio', {
+        invoke('send_realtime_audio', {
           sessionId,
           samples: Array.from(int16Data),
         }).catch((error) => {
           // Only log if context is still active
           if (contextRef.state !== 'closed') {
-            console.error('Failed to send audio to Vosk:', error);
+            console.error('Failed to send realtime audio:', error);
           }
         });
       };
 
-      voskSource.connect(voskProcessor);
+      realtimeSource.connect(realtimeProcessor);
       // Connect to destination to keep processing active (required by ScriptProcessorNode)
-      voskProcessor.connect(voskAudioContext.destination);
+      realtimeProcessor.connect(realtimeAudioContext.destination);
 
-      // Listen for Vosk events
+      // Listen for realtime events
       let lastPartialTime = Date.now();
       let lastPartialText = '';
-      voskUnlistenPartial = await listen(`vosk-partial-${sessionId}`, (event: any) => {
+      realtimeUnlistenPartial = await listen(`realtime-partial-${sessionId}`, (event: any) => {
         const partial = event.payload?.partial || '';
 
         const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
         // When accumulating, prepend accumulated text to partial
-        const displayText = shouldAccumulate && voskAccumulatedText
-          ? `${voskAccumulatedText} ${partial}`.trim()
+        const displayText = shouldAccumulate && realtimeAccumulatedText
+          ? `${realtimeAccumulatedText} ${partial}`.trim()
           : partial;
 
         // Skip if displayText hasn't changed (avoid duplicate updates)
@@ -168,14 +175,14 @@ function createRecordingStore() {
         });
 
         update((s) => ({ ...s, realtimeTranscript: displayText }));
-        emit('vosk-realtime-transcript', { text: displayText });
+        emit('realtime-transcript', { text: displayText });
 
         // Check for voice commands in partial transcript for instant detection
         if (displayText && !voiceCommandTriggered) {
           const voiceCommandResult = processVoiceCommand(displayText);
           if (voiceCommandResult.commandDetected) {
             voiceCommandTriggered = true;
-            console.log('[vosk] Voice command detected in partial:', voiceCommandResult.detectedCommand, 'type:', voiceCommandResult.commandType);
+            console.log('[realtime] Voice command detected in partial:', voiceCommandResult.detectedCommand, 'type:', voiceCommandResult.commandType);
             emit('voice-command-triggered', {
               command: voiceCommandResult.detectedCommand,
               cleanedTranscript: voiceCommandResult.cleanedTranscript,
@@ -186,7 +193,7 @@ function createRecordingStore() {
         }
       });
 
-      voskUnlistenFinal = await listen(`vosk-final-${sessionId}`, (event: any) => {
+      realtimeUnlistenFinal = await listen(`realtime-final-${sessionId}`, (event: any) => {
         const text = event.payload?.text || '';
         console.log('[recording][final]', {
           raw: event.payload?.text,
@@ -195,32 +202,32 @@ function createRecordingStore() {
         });
         if (text) {
           const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
-          const prevAccumulated = voskAccumulatedText;
+          const prevAccumulated = realtimeAccumulatedText;
           if (shouldAccumulate) {
             // Append this final text to accumulated text
-            voskAccumulatedText = voskAccumulatedText
-              ? `${voskAccumulatedText} ${text}`.trim()
+            realtimeAccumulatedText = realtimeAccumulatedText
+              ? `${realtimeAccumulatedText} ${text}`.trim()
               : text;
           }
-          const displayText = shouldAccumulate ? voskAccumulatedText : text;
+          const displayText = shouldAccumulate ? realtimeAccumulatedText : text;
 
           console.log('[recording][final] processed', {
             shouldAccumulate,
             prevAccumulated,
-            newAccumulated: voskAccumulatedText,
+            newAccumulated: realtimeAccumulatedText,
             displayText,
           });
 
           update((s) => ({ ...s, realtimeTranscript: displayText }));
-          emit('vosk-realtime-transcript', { text: displayText });
+          emit('realtime-transcript', { text: displayText });
 
           // Check for voice commands in the accumulated/final transcript
           if (!voiceCommandTriggered) {
             const voiceCommandResult = processVoiceCommand(displayText);
             if (voiceCommandResult.commandDetected) {
               voiceCommandTriggered = true;
-              console.log('[vosk] Voice command detected:', voiceCommandResult.detectedCommand, 'type:', voiceCommandResult.commandType);
-              console.log('[vosk] Cleaned transcript:', voiceCommandResult.cleanedTranscript);
+              console.log('[realtime] Voice command detected:', voiceCommandResult.detectedCommand, 'type:', voiceCommandResult.commandType);
+              console.log('[realtime] Cleaned transcript:', voiceCommandResult.cleanedTranscript);
               // Emit event to trigger action (will be handled by +page.svelte)
               emit('voice-command-triggered', {
                 command: voiceCommandResult.detectedCommand,
@@ -233,85 +240,85 @@ function createRecordingStore() {
         }
       });
 
-      voskUnlistenError = await listen(`vosk-error-${sessionId}`, (event: any) => {
-        console.error('Vosk error:', event.payload?.error);
+      realtimeUnlistenError = await listen(`realtime-error-${sessionId}`, (event: any) => {
+        console.error('Realtime transcription error:', event.payload?.error);
       });
 
-      // Start the Vosk session on the backend
-      console.log('[recording] Starting Vosk backend session...');
-      await invoke('start_vosk_session', { sessionId });
-      console.log('[recording] Vosk backend session started, listening for events on:', `vosk-partial-${sessionId}`);
+      // Start the realtime session on the backend
+      console.log('[recording] Starting realtime backend session...');
+      await invoke('start_realtime_session', { sessionId });
+      console.log('[recording] Realtime backend session started, listening for events on:', `realtime-partial-${sessionId}`);
 
-      update((s) => ({ ...s, voskSessionId: sessionId }));
+      update((s) => ({ ...s, realtimeSessionId: sessionId }));
     } catch (error) {
-      console.error('Failed to start Vosk session:', error);
+      console.error('Failed to start realtime session:', error);
       // Clean up on error
-      await stopVoskSession();
+      await stopRealtimeSession();
     } finally {
-      voskSessionStarting = false;
+      realtimeSessionStarting = false;
     }
   }
 
-  // Stop Vosk real-time transcription session
-  async function stopVoskSession() {
+  // Stop real-time transcription session
+  async function stopRealtimeSession() {
     const currentState = get({ subscribe });
-    const sessionId = currentState.voskSessionId;
+    const sessionId = currentState.realtimeSessionId;
 
     // Clean up event listeners first (before any async operations)
-    if (voskUnlistenPartial) {
-      voskUnlistenPartial();
-      voskUnlistenPartial = null;
+    if (realtimeUnlistenPartial) {
+      realtimeUnlistenPartial();
+      realtimeUnlistenPartial = null;
     }
-    if (voskUnlistenFinal) {
-      voskUnlistenFinal();
-      voskUnlistenFinal = null;
+    if (realtimeUnlistenFinal) {
+      realtimeUnlistenFinal();
+      realtimeUnlistenFinal = null;
     }
-    if (voskUnlistenError) {
-      voskUnlistenError();
-      voskUnlistenError = null;
+    if (realtimeUnlistenError) {
+      realtimeUnlistenError();
+      realtimeUnlistenError = null;
     }
 
     // Clean up audio processing - disconnect source first, then processor
-    if (voskSource) {
+    if (realtimeSource) {
       try {
-        voskSource.disconnect();
+        realtimeSource.disconnect();
       } catch (e) {
         // Ignore - may already be disconnected
       }
-      voskSource = null;
+      realtimeSource = null;
     }
-    if (voskProcessor) {
+    if (realtimeProcessor) {
       try {
-        voskProcessor.disconnect();
+        realtimeProcessor.disconnect();
       } catch (e) {
         // Ignore - may already be disconnected
       }
-      voskProcessor = null;
+      realtimeProcessor = null;
     }
-    if (voskAudioContext) {
+    if (realtimeAudioContext) {
       try {
         // Check state before closing to avoid errors on already closed contexts
-        if (voskAudioContext.state !== 'closed') {
-          await voskAudioContext.close();
+        if (realtimeAudioContext.state !== 'closed') {
+          await realtimeAudioContext.close();
         }
       } catch (e) {
-        console.warn('[recording] Error closing Vosk audio context:', e);
+        console.warn('[recording] Error closing realtime audio context:', e);
       }
-      voskAudioContext = null;
+      realtimeAudioContext = null;
     }
 
     // Stop the backend session
     if (sessionId) {
       try {
-        await invoke('stop_vosk_session', { sessionId });
+        await invoke('stop_realtime_session', { sessionId });
       } catch (error) {
-        console.error('Failed to stop Vosk session:', error);
+        console.error('Failed to stop realtime session:', error);
       }
     }
 
     // Clear accumulated text when session ends
-    voskAccumulatedText = '';
-    update((s) => ({ ...s, voskSessionId: null, realtimeTranscript: '' }));
+    realtimeAccumulatedText = '';
+    update((s) => ({ ...s, realtimeSessionId: null, realtimeTranscript: '' }));
   }
 
   function startVisualizationBroadcast(stream: MediaStream) {
@@ -488,13 +495,13 @@ function createRecordingStore() {
         // Start broadcasting audio visualization data to all windows
         startVisualizationBroadcast(stream);
 
-        // Start Vosk real-time transcription if enabled (wrapped in try-catch to not fail recording)
-        const voskSessionId = `vosk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // Start real-time transcription if enabled (wrapped in try-catch to not fail recording)
+        const realtimeSessionId = `rt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         try {
-          await startVoskSession(stream, voskSessionId);
-        } catch (voskError) {
-          // Log but don't fail recording if Vosk fails
-          console.warn('[recording] Vosk session failed to start, continuing without real-time transcription:', voskError);
+          await startRealtimeSession(stream, realtimeSessionId);
+        } catch (realtimeError) {
+          // Log but don't fail recording if realtime transcription fails
+          console.warn('[recording] Realtime session failed to start, continuing without real-time transcription:', realtimeError);
         }
 
         // Also emit recording state change
@@ -506,7 +513,7 @@ function createRecordingStore() {
 
         // Clean up any resources that were allocated before the error
         await stopVisualizationBroadcast();
-        await stopVoskSession();
+        await stopRealtimeSession();
 
         if (stream) {
           stream.getTracks().forEach((track) => track.stop());
@@ -533,9 +540,9 @@ function createRecordingStore() {
     async stopRecording(autoTranscribe: boolean = true): Promise<string | null> {
       return new Promise((resolve, reject) => {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-          // Still need to clean up visualization and Vosk even if mediaRecorder is inactive
+          // Still need to clean up visualization and realtime transcription even if mediaRecorder is inactive
           stopVisualizationBroadcast().catch(console.error);
-          stopVoskSession().catch(console.error);
+          stopRealtimeSession().catch(console.error);
           emit('recording-state', { state: 'idle' });
           resolve(null);
           return;
@@ -550,10 +557,10 @@ function createRecordingStore() {
           }
 
           try {
-            // Stop Vosk real-time transcription (wrapped in try-catch to ensure promise resolves)
-            await stopVoskSession();
-          } catch (voskError) {
-            console.warn('[recording] Error stopping Vosk session:', voskError);
+            // Stop real-time transcription (wrapped in try-catch to ensure promise resolves)
+            await stopRealtimeSession();
+          } catch (realtimeError) {
+            console.warn('[recording] Error stopping realtime session:', realtimeError);
           }
 
           try {
@@ -681,14 +688,14 @@ function createRecordingStore() {
 
     async cancelRecording() {
       stopVisualizationBroadcast();
-      await stopVoskSession();
+      await stopRealtimeSession();
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach((track) => track.stop());
       }
       mediaRecorder = null;
       audioChunks = [];
-      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0, realtimeTranscript: '', voskSessionId: null });
+      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0, realtimeTranscript: '', realtimeSessionId: null });
       emit('recording-state', { state: 'idle' });
     },
 
@@ -733,6 +740,6 @@ export const hasQueuedTranscriptions = derived(recording, ($recording) =>
   $recording.queue.some(r => r.status === 'pending' || r.status === 'transcribing')
 );
 
-// Vosk real-time transcription
+// Real-time transcription
 export const realtimeTranscript = derived(recording, ($recording) => $recording.realtimeTranscript);
-export const hasVoskSession = derived(recording, ($recording) => $recording.voskSessionId !== null);
+export const hasRealtimeSession = derived(recording, ($recording) => $recording.realtimeSessionId !== null);

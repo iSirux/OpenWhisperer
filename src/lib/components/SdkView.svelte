@@ -24,6 +24,7 @@
   import SessionRecordingHeader from "./sdk/SessionRecordingHeader.svelte";
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
   import PlanningWizard from "./sdk/PlanningWizard.svelte";
+  import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import SdkTaskBlock from "./sdk/SdkTaskBlock.svelte";
@@ -380,8 +381,12 @@
     !!usage &&
       (usage.totalInputTokens > 0 ||
         usage.totalOutputTokens > 0 ||
+        usage.totalCacheReadTokens > 0 ||
+        usage.totalCacheCreationTokens > 0 ||
         usage.progressiveInputTokens > 0 ||
-        usage.progressiveOutputTokens > 0),
+        usage.progressiveOutputTokens > 0 ||
+        usage.progressiveCacheReadTokens > 0 ||
+        usage.progressiveCacheCreationTokens > 0),
   );
   // Determine if user is paying via API key (show cost) vs OAuth/subscription (hide cost)
   let usesApiKey = $state(false);
@@ -416,6 +421,10 @@
       planMode.questions.length > 0 &&
       !planMode.isComplete,
   );
+
+  // AskUserQuestion state
+  let askUserQuestion = $derived(session?.askUserQuestion);
+  let hasAskUserQuestions = $derived(!!(askUserQuestion?.questions?.length));
 
   // Show completed recording header when we have recording data but session is no longer pending
   let hasCompletedRecordingData = $derived(
@@ -489,6 +498,7 @@
     !cwd || cwd === "." ? "" : cwd.split(/[/\\]/).pop() || cwd,
   );
   let sessionModel = $derived(session?.model ?? "");
+  let forkedMessageCount = $derived(session?.forkedMessageCount ?? 0);
   let branch = $state<string | null>(null);
   let lastFetchedBranchCwd = "";
 
@@ -536,10 +546,21 @@
           found?.usage?.totalInputTokens !== session?.usage?.totalInputTokens ||
           found?.usage?.totalOutputTokens !==
             session?.usage?.totalOutputTokens ||
+          found?.usage?.totalCacheReadTokens !==
+            session?.usage?.totalCacheReadTokens ||
+          found?.usage?.totalCacheCreationTokens !==
+            session?.usage?.totalCacheCreationTokens ||
+          found?.usage?.contextUsagePercent !==
+            session?.usage?.contextUsagePercent ||
+          found?.usage?.contextWindow !== session?.usage?.contextWindow ||
           found?.usage?.progressiveInputTokens !==
             session?.usage?.progressiveInputTokens ||
           found?.usage?.progressiveOutputTokens !==
-            session?.usage?.progressiveOutputTokens;
+            session?.usage?.progressiveOutputTokens ||
+          found?.usage?.progressiveCacheReadTokens !==
+            session?.usage?.progressiveCacheReadTokens ||
+          found?.usage?.progressiveCacheCreationTokens !==
+            session?.usage?.progressiveCacheCreationTokens;
         const pendingChanged =
           found?.pendingTranscription?.status !==
             session?.pendingTranscription?.status ||
@@ -563,6 +584,15 @@
           // Deep check for answer changes (selectedOptions)
           JSON.stringify(found?.planMode?.answers) !==
             JSON.stringify(session?.planMode?.answers);
+        const askUserQuestionChanged =
+          found?.askUserQuestion?.questions.length !==
+            session?.askUserQuestion?.questions.length ||
+          found?.askUserQuestion?.answers.length !==
+            session?.askUserQuestion?.answers.length ||
+          found?.askUserQuestion?.currentQuestionIndex !==
+            session?.askUserQuestion?.currentQuestionIndex ||
+          JSON.stringify(found?.askUserQuestion?.answers) !==
+            JSON.stringify(session?.askUserQuestion?.answers);
 
         if (
           !session ||
@@ -573,7 +603,8 @@
           usageChanged ||
           pendingChanged ||
           aiMetadataChanged ||
-          planModeChanged
+          planModeChanged ||
+          askUserQuestionChanged
         ) {
           session = found || null;
         }
@@ -730,6 +761,29 @@
     } catch {
       return String(input);
     }
+  }
+
+  /** Check if a message is inherited from a parent fork session (displayed as read-only context) */
+  function isForkedContextMessage(msg: SdkMessage): boolean {
+    if (!forkedMessageCount) return false;
+    const idx = getOriginalMessageIndex(msg);
+    return idx >= 0 && idx < forkedMessageCount;
+  }
+
+  /** Track if we've passed the fork boundary for divider rendering */
+  let lastWasForkedContext = false;
+
+  /** Find the original index of a processed message in the raw messages array (for fork support) */
+  function getOriginalMessageIndex(msg: SdkMessage): number {
+    // Use timestamp + type as a key to find the original message
+    // The processedMessages step merges tool_start into tool_result, so for merged messages
+    // we search by toolUseId first, then fall back to timestamp matching
+    if (msg.toolUseId) {
+      const idx = messages.findIndex(m => m.toolUseId === msg.toolUseId && m.type === msg.type);
+      if (idx >= 0) return idx;
+    }
+    // Fall back to timestamp matching (works for user, text, thinking, etc.)
+    return messages.findIndex(m => m.timestamp === msg.timestamp && m.type === msg.type);
   }
 
   function getMessageText(msg: SdkMessage): string {
@@ -1186,6 +1240,23 @@
       );
     }
   }
+
+  // AskUserQuestion handlers
+  function handleAskUserAnswerChange(answer: PlanningAnswer) {
+    sdkSessions.updateAskUserAnswer(sessionId, answer);
+  }
+
+  function handleAskUserNavigate(index: number) {
+    sdkSessions.setAskUserQuestionIndex(sessionId, index);
+  }
+
+  function handleAskUserSubmit() {
+    sdkSessions.submitAskUserAnswers(sessionId);
+  }
+
+  function handleAskUserDismiss() {
+    sdkSessions.clearAskUserQuestion(sessionId);
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -1261,15 +1332,34 @@
       {/if}
 
       {#each renderItems() as item, index (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || index}` : `tool-group-${index}`)}
+        {@const isForked = item.type === "message" && isForkedContextMessage(item.message)}
+        {@const showForkDivider = !isForked && forkedMessageCount > 0 && index > 0 && (() => { const prevItem = renderItems()[index - 1]; return prevItem?.type === "message" && isForkedContextMessage(prevItem.message); })()}
+        {#if showForkDivider}
+          <div class="fork-divider">
+            <span class="fork-divider-line"></span>
+            <span class="fork-divider-label">
+              <svg viewBox="0 0 16 16" fill="currentColor" class="fork-divider-icon">
+                <path fill-rule="evenodd" d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM5 5.372a2.25 2.25 0 1 0-1.5 0v.878A2.25 2.25 0 0 0 5.75 8.5h1.5v2.128a2.251 2.251 0 1 0 1.5 0V8.5h1.5a2.25 2.25 0 0 0 2.25-2.25v-.878a2.25 2.25 0 1 0-1.5 0v.878a.75.75 0 0 1-.75.75h-4.5A.75.75 0 0 1 5 6.25v-.878ZM8.75 12.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM12.25 4a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" />
+              </svg>
+              Forked from here
+            </span>
+            <span class="fork-divider-line"></span>
+          </div>
+        {/if}
         {#if item.type === "message"}
-          <SdkMessageComponent
-            message={item.message}
-            {copiedMessageId}
-            onCopy={copyMessage}
-            sessionCwd={cwd}
-            {sessionModel}
-            {sessionEffortLevel}
-          />
+          <div class:forked-context={isForked}>
+            <SdkMessageComponent
+              message={item.message}
+              {copiedMessageId}
+              onCopy={copyMessage}
+              sessionCwd={cwd}
+              {sessionModel}
+              {sessionEffortLevel}
+              {sessionId}
+              messageIndex={getOriginalMessageIndex(item.message)}
+              session={session ?? undefined}
+            />
+          </div>
         {:else if item.type === "tool_group"}
           <SdkToolGrid tools={item.tools} />
         {:else if item.type === "task"}
@@ -1304,6 +1394,18 @@
           onSendPrompt={(prompt) => handleSendPrompt(prompt)}
           generatedActions={generatedQuickActions}
           hasOutcomeAbove={!!sessionOutcome}
+        />
+      {/if}
+
+      {#if hasAskUserQuestions && askUserQuestion}
+        <AskUserQuestionWizard
+          questions={askUserQuestion.questions}
+          answers={askUserQuestion.answers}
+          currentQuestionIndex={askUserQuestion.currentQuestionIndex}
+          onAnswerChange={handleAskUserAnswerChange}
+          onNavigate={handleAskUserNavigate}
+          onSubmit={handleAskUserSubmit}
+          onDismiss={handleAskUserDismiss}
         />
       {/if}
 
@@ -1486,5 +1588,47 @@
 
   .outcome-text {
     color: var(--color-text-secondary);
+  }
+
+  /* Forked session context - inherited messages shown dimmed */
+  .forked-context {
+    opacity: 0.5;
+    transition: opacity 0.2s;
+  }
+
+  .forked-context:hover {
+    opacity: 0.75;
+  }
+
+  /* Fork divider between inherited and new messages */
+  .fork-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    padding: 0 0.5rem;
+  }
+
+  .fork-divider-line {
+    flex: 1;
+    height: 1px;
+    background: var(--color-border);
+  }
+
+  .fork-divider-label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+
+  .fork-divider-icon {
+    width: 12px;
+    height: 12px;
   }
 </style>

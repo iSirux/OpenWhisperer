@@ -5,6 +5,8 @@ import { emit } from "@tauri-apps/api/event";
 
 export type WhisperProvider = "Local" | "OpenAI" | "Groq" | "Custom";
 
+export type RealtimeProvider = "Vosk" | "VoiceStreamAI" | "SherpaOnnx" | "Speaches";
+
 export type DockerComputeType = "CPU" | "GPU";
 
 export interface DockerConfig {
@@ -25,9 +27,48 @@ export interface WhisperConfig {
   docker: DockerConfig;
 }
 
+export interface VoiceStreamAIConfig {
+  /** WebSocket endpoint for VoiceStreamAI server */
+  endpoint: string;
+  /** Audio sample rate (default: 16000) */
+  sample_rate: number;
+  /** Chunk length in seconds for processing */
+  chunk_length_seconds: number;
+  /** Chunk offset in seconds (silence duration before processing) */
+  chunk_offset_seconds: number;
+  /** Language code for transcription (e.g., "en", "multilanguage") */
+  language: string;
+  /** Docker configuration for VoiceStreamAI server */
+  docker: DockerConfig;
+}
+
+export interface SherpaOnnxConfig {
+  /** WebSocket endpoint for sherpa-onnx online server */
+  endpoint: string;
+  /** Audio sample rate (default: 16000) */
+  sample_rate: number;
+  /** Docker configuration for sherpa-onnx server */
+  docker: DockerConfig;
+}
+
+export interface SpeachesConfig {
+  /** WebSocket endpoint for Speaches realtime API */
+  endpoint: string;
+  /** Audio sample rate (default: 16000) */
+  sample_rate: number;
+  /** Transcription model */
+  model: string;
+  /** Optional API key for protected deployments */
+  api_key: string | null;
+  /** Docker configuration for Speaches server */
+  docker: DockerConfig;
+}
+
 export interface VoskConfig {
-  /** Whether Vosk real-time transcription is enabled */
+  /** Whether real-time transcription is enabled */
   enabled: boolean;
+  /** Which real-time transcription provider to use */
+  provider: RealtimeProvider;
   /** WebSocket endpoint for Vosk server */
   endpoint: string;
   /** Audio sample rate (default: 16000) */
@@ -38,6 +79,12 @@ export interface VoskConfig {
   show_realtime_transcript: boolean;
   /** Whether to accumulate transcript text across pauses (vs reset on each pause) */
   accumulate_transcript: boolean;
+  /** VoiceStreamAI-specific configuration */
+  voice_stream_ai: VoiceStreamAIConfig;
+  /** sherpa-onnx-specific configuration */
+  sherpa_onnx: SherpaOnnxConfig;
+  /** Speaches-specific configuration */
+  speaches: SpeachesConfig;
 }
 
 export interface GitConfig {
@@ -424,7 +471,7 @@ const defaultConfig: AppConfig = {
   whisper: {
     provider: "Local",
     endpoint: "http://localhost:8000/v1/audio/transcriptions",
-    model: "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    model: "dropbox-dash/faster-whisper-large-v3-turbo",
     language: "en",
     api_key: null,
     docker: {
@@ -435,6 +482,7 @@ const defaultConfig: AppConfig = {
   },
   vosk: {
     enabled: false,
+    provider: "Vosk",
     endpoint: "ws://localhost:2700",
     sample_rate: 16000,
     docker: {
@@ -444,6 +492,38 @@ const defaultConfig: AppConfig = {
     },
     show_realtime_transcript: true,
     accumulate_transcript: false,
+    voice_stream_ai: {
+      endpoint: "ws://localhost:8765",
+      sample_rate: 16000,
+      chunk_length_seconds: 3,
+      chunk_offset_seconds: 0.1,
+      language: "en",
+      docker: {
+        compute_type: "CPU",
+        auto_restart: false,
+        container_name: "claude-whisperer-voicestreamai",
+      },
+    },
+    sherpa_onnx: {
+      endpoint: "ws://localhost:6006",
+      sample_rate: 16000,
+      docker: {
+        compute_type: "CPU",
+        auto_restart: false,
+        container_name: "claude-whisperer-sherpa-onnx",
+      },
+    },
+    speaches: {
+      endpoint: "ws://localhost:2701/v1/realtime",
+      sample_rate: 16000,
+      model: "Systran/faster-distil-whisper-small.en",
+      api_key: null,
+      docker: {
+        compute_type: "CPU",
+        auto_restart: false,
+        container_name: "claude-whisperer-speaches",
+      },
+    },
   },
   git: {
     create_branch: false,

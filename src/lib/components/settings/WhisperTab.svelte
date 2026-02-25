@@ -54,7 +54,7 @@
           $settings.whisper.endpoint =
             "http://localhost:8000/v1/audio/transcriptions";
           $settings.whisper.model =
-            "mobiuslabsgmbh/faster-whisper-large-v3-turbo";
+            "dropbox-dash/faster-whisper-large-v3-turbo";
           $settings.whisper.api_key = null;
         } else if (provider === "OpenAI") {
           $settings.whisper.endpoint =
@@ -167,7 +167,7 @@
           <option value="Systran/faster-whisper-large-v3"
             >large-v3 (1550M) - Best accuracy</option
           >
-          <option value="mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+          <option value="dropbox-dash/faster-whisper-large-v3-turbo"
             >large-v3-turbo (809M) - Recommended</option
           >
         </optgroup>

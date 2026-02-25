@@ -30,6 +30,7 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
     'draftPrompt', // Transient input state - user is still typing
     'draftImages', // Transient input state - images pending to be sent
     'pendingSystemNotifications', // Transient parallel agent notifications - cleared after first query
+    'askUserQuestion', // Transient - SDK already auto-answered, questions are one-time interactive
   ]),
   // PendingTranscriptionInfo fields that shouldn't be persisted
   PendingTranscriptionInfo: new Set([
@@ -221,6 +222,8 @@ export interface PersistedPendingTranscriptionInfo {
 export interface PersistedSdkSession {
   id: string;
   cwd: string;
+  createdBranch?: string | null;
+  currentBranch?: string | null;
   model: string;
   provider?: SdkProvider;
   autoModelRequested?: boolean;
