@@ -53,20 +53,20 @@ pub fn load_definitions() -> Result<Vec<SequenceDefinition>, String> {
                 let err_msg = e.to_string();
                 // If the error is about duplicate fields, attempt repair
                 if err_msg.contains("duplicate field") {
-                    eprintln!(
+                    log::error!(
                         "[sequences] Duplicate keys detected in {}, attempting repair...",
                         path.display()
                     );
                     match repair_and_reload(&path, &content) {
                         Ok(def) => {
-                            eprintln!(
+                            log::error!(
                                 "[sequences] Successfully repaired {}",
                                 path.display()
                             );
                             def
                         }
                         Err(repair_err) => {
-                            eprintln!(
+                            log::error!(
                                 "[sequences] Failed to repair {}: {}",
                                 path.display(),
                                 repair_err
@@ -75,7 +75,7 @@ pub fn load_definitions() -> Result<Vec<SequenceDefinition>, String> {
                         }
                     }
                 } else {
-                    eprintln!(
+                    log::error!(
                         "[sequences] Failed to parse {}: {}",
                         path.display(),
                         e
@@ -118,7 +118,7 @@ fn repair_and_reload(
     // Save the corrupt original as .corrupt for debugging
     let corrupt_path = path.with_extension("yaml.corrupt");
     if let Err(e) = fs::copy(path, &corrupt_path) {
-        eprintln!(
+        log::error!(
             "[sequences] Warning: failed to save corrupt backup {}: {}",
             corrupt_path.display(),
             e
@@ -277,7 +277,7 @@ pub fn save_definition(def: &SequenceDefinition) -> Result<(), String> {
     if path.exists() {
         let backup_path = dir.join(format!("{}.yaml.bak", slug));
         if let Err(e) = fs::copy(&path, &backup_path) {
-            eprintln!(
+            log::error!(
                 "[sequences] Warning: failed to create backup {}: {}",
                 backup_path.display(),
                 e
@@ -383,7 +383,7 @@ pub fn list_executions() -> Result<Vec<ExecutionSummary>, String> {
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!(
+                log::error!(
                     "[sequences] Failed to read {}: {}",
                     path.display(),
                     e
@@ -397,7 +397,7 @@ pub fn list_executions() -> Result<Vec<ExecutionSummary>, String> {
                 summaries.push(exec.to_summary());
             }
             Err(e) => {
-                eprintln!(
+                log::error!(
                     "[sequences] Failed to parse {}: {}",
                     path.display(),
                     e
@@ -474,7 +474,7 @@ pub fn cleanup_old_executions(max_age_days: u64) -> Result<usize, String> {
         let timestamp = exec.completed_at.unwrap_or(exec.started_at);
         if timestamp < cutoff {
             if let Err(e) = fs::remove_file(&path) {
-                eprintln!(
+                log::error!(
                     "[sequences] Failed to delete old execution {}: {}",
                     path.display(),
                     e

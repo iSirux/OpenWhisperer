@@ -38,6 +38,13 @@ function debouncedSave(): void {
   }, SAVE_DEBOUNCE_MS);
 }
 
+/** Resolve a repo ID from a cwd path by looking up the repos list. */
+function resolveRepoId(cwd: string): string | undefined {
+  if (!cwd || cwd === '.') return undefined;
+  const reposList = get(repos).list;
+  return reposList.find(r => r.path === cwd)?.id || undefined;
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -50,7 +57,7 @@ export interface SdkImageContent {
 }
 
 export interface SdkMessage {
-  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking' | 'notification' | 'task_started' | 'task_completed';
+  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'stopped' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking' | 'notification' | 'task_started' | 'task_completed';
   content?: string;
   images?: SdkImageContent[];
   tool?: string;
@@ -125,6 +132,22 @@ export interface SessionAiMetadata {
   interactionUrgency?: string;
   waitingFor?: string;
   quickActions?: QuickAction[];
+}
+
+function clearCompletionMetadata(
+  aiMetadata?: SessionAiMetadata,
+): SessionAiMetadata | undefined {
+  if (!aiMetadata) return aiMetadata;
+  return {
+    ...aiMetadata,
+    category: undefined,
+    outcome: undefined,
+    quickActions: undefined,
+    needsInteraction: undefined,
+    interactionReason: undefined,
+    interactionUrgency: undefined,
+    waitingFor: undefined,
+  };
 }
 
 export interface PlanningQuestionOption {
@@ -240,6 +263,9 @@ export interface PendingTranscriptionInfo {
 export interface SdkSession {
   id: string;
   cwd: string;
+  /** Stable reference to the repository entity by ID. Used for display/icon/color resolution.
+   *  Survives worktree path changes — the cwd may point to a worktree while this links to the parent repo. */
+  repoId?: string;
   /** Branch at the time this session was first tied to a repo. */
   createdBranch?: string | null;
   /** Most recently fetched branch for this session's cwd. */
@@ -281,6 +307,8 @@ export interface SdkSession {
   preparedRepoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string };
   /** Queued system notifications to prepend to the next query (e.g., parallel agent alerts) */
   pendingSystemNotifications?: string[];
+  /** User requested stop for the active query; used to tag terminal state as stopped. */
+  stopRequestedAt?: number;
   /** App-level parent session ID this was forked from (for display/linking) */
   forkedFromSessionId?: string;
   /** SDK session ID to fork from (consumed on first query registration) */
@@ -548,6 +576,27 @@ function createSdkSessionsStore() {
         `sdk-tool-start-${id}`,
         (e) => {
           usageStats.trackToolCall(e.payload.tool);
+
+          // Detect ExitPlanMode / AskUserQuestion tool calls directly from the
+          // streaming path.  The sidecar also sends dedicated events for these via
+          // canUseTool, but those events may not arrive reliably (stdout buffering
+          // on Windows, SDK version differences in permission handling).  Detecting
+          // them here from the tool_start is more robust because this event is
+          // proven to work — it already renders the tool card in the UI.
+          const toolName = e.payload.tool;
+          const isExitPlanMode = toolName === 'ExitPlanMode';
+          const isAskUserQuestion = toolName === 'AskUserQuestion';
+
+          // Extract allowedPrompts from ExitPlanMode input
+          const exitPlanAllowedPrompts = isExitPlanMode
+            ? ((e.payload.input as { allowedPrompts?: Array<{ tool: string; prompt: string }> })?.allowedPrompts || [])
+            : undefined;
+
+          // Extract questions from AskUserQuestion input
+          const askQuestions = isAskUserQuestion
+            ? ((e.payload.input as { questions?: PlanningQuestion[] })?.questions || [])
+            : undefined;
+
           update(sessions =>
             sessions.map(s =>
               s.id === id
@@ -567,6 +616,20 @@ function createSdkSessionsStore() {
                         timestamp: Date.now(),
                       },
                     ],
+                    // Set pendingPlanApproval when ExitPlanMode is detected
+                    ...(isExitPlanMode ? {
+                      pendingPlanApproval: {
+                        allowedPrompts: exitPlanAllowedPrompts!,
+                      },
+                    } : {}),
+                    // Set askUserQuestion when AskUserQuestion is detected
+                    ...(isAskUserQuestion && askQuestions && askQuestions.length > 0 ? {
+                      askUserQuestion: {
+                        questions: askQuestions,
+                        answers: [] as PlanningAnswer[],
+                        currentQuestionIndex: 0,
+                      },
+                    } : {}),
                   }
                 : s
             )
@@ -653,6 +716,7 @@ function createSdkSessionsStore() {
         const currentSettings = get(settings);
         let sessionMessages: SdkMessage[] = [];
         let needsAiAnalysis = false;
+        let wasStoppedByUser = false;
         const now = Date.now();
 
         update(sessions =>
@@ -661,13 +725,16 @@ function createSdkSessionsStore() {
 
             const workPeriod = calculateWorkPeriod(s);
             const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
-            const updatedMessages = [...closedThinkingMessages, { type: 'done' as const, timestamp: now }];
+            wasStoppedByUser = !!s.stopRequestedAt;
+            const terminalType = wasStoppedByUser ? 'stopped' as const : 'done' as const;
+            const updatedMessages = [...closedThinkingMessages, { type: terminalType, timestamp: now }];
             sessionMessages = updatedMessages;
-            needsAiAnalysis = isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+            needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
             return {
               ...s,
               status: 'idle' as const,
+              stopRequestedAt: undefined,
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: updatedMessages,
@@ -677,7 +744,7 @@ function createSdkSessionsStore() {
         );
         debouncedSave();
 
-        if (currentSettings.audio.play_sound_on_completion) {
+        if (!wasStoppedByUser && currentSettings.audio.play_sound_on_completion) {
           playCompletionSound();
         }
 
@@ -1080,7 +1147,7 @@ function createSdkSessionsStore() {
       id,
       cwd,
       model: resolvedModel,
-      codexMode: resolvedProvider === 'openai' ? currentSettings.codex_mode : null,
+      codexMode: resolvedProvider === 'openai' ? 'AppServer' : null,
       systemPrompt: systemPrompt ?? null,
       // Only send history messages if we don't have an SDK session ID (legacy fallback)
       messages: !usesSdkSessionId && historyMessages && historyMessages.length > 0 ? historyMessages : null,
@@ -1154,6 +1221,7 @@ function createSdkSessionsStore() {
       const session: SdkSession = {
         id,
         cwd,
+        repoId: resolveRepoId(cwd),
         model,
         provider: resolvedProvider,
         autoModelRequested,
@@ -1334,6 +1402,7 @@ function createSdkSessionsStore() {
       const session: SdkSession = {
         id,
         cwd: sourceSession.cwd,
+        repoId: sourceSession.repoId,
         model: sourceSession.model,
         provider: sourceSession.provider,
         readOnlyMode: sourceSession.readOnlyMode,
@@ -1366,6 +1435,17 @@ function createSdkSessionsStore() {
     },
 
     async sendPrompt(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                aiMetadata: clearCompletionMetadata(s.aiMetadata),
+              }
+            : s
+        )
+      );
+
       await this.ensureSessionLive(id);
 
       let sessionCwd: string | undefined;
@@ -1386,7 +1466,7 @@ function createSdkSessionsStore() {
                 status: 'querying' as const,
                 lastActivityAt: Date.now(),
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: Date.now() }],
-                aiMetadata: s.aiMetadata ? { ...s.aiMetadata, needsInteraction: undefined, interactionReason: undefined, interactionUrgency: undefined, waitingFor: undefined } : s.aiMetadata,
+                aiMetadata: clearCompletionMetadata(s.aiMetadata),
               }
             : s
         )
@@ -1434,12 +1514,36 @@ function createSdkSessionsStore() {
 
     async stopQuery(id: string): Promise<void> {
       if (!liveSessions.has(id)) {
-        update(sessions => sessions.map(s => s.id === id ? { ...s, status: 'idle' as const } : s));
+        const now = Date.now();
+        update(sessions => sessions.map(s => {
+          if (s.id !== id) return s;
+          const workPeriod = calculateWorkPeriod(s);
+          const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
+          return {
+            ...s,
+            status: 'idle' as const,
+            stopRequestedAt: undefined,
+            ...workPeriod,
+            usage: clearProgressiveUsage(s.usage),
+            messages: [...closedThinkingMessages, { type: 'stopped' as const, timestamp: now }],
+          };
+        }));
+        debouncedSave();
         return;
       }
 
-      await invoke('stop_sdk_query', { id });
-      update(sessions => sessions.map(s => s.id === id ? { ...s, status: 'idle' as const } : s));
+      update(sessions => sessions.map(s =>
+        s.id === id ? { ...s, status: 'idle' as const, stopRequestedAt: Date.now() } : s
+      ));
+
+      try {
+        await invoke('stop_sdk_query', { id });
+      } catch (error) {
+        update(sessions => sessions.map(s =>
+          s.id === id ? { ...s, stopRequestedAt: undefined } : s
+        ));
+        throw error;
+      }
     },
 
     async closeSession(id: string): Promise<void> {
@@ -1478,9 +1582,9 @@ function createSdkSessionsStore() {
           await invoke('trim_archive', {
             maxEntries: currentSettings.session_persistence?.max_archived_sessions ?? 500,
           });
-          // Refresh archive count for sidebar
+          // Refresh archive metadata and list
           const { archive } = await import('./archive');
-          archive.refreshCount();
+          await archive.refresh();
         } catch (error) {
           console.error('[sdkSessions] Failed to archive session:', error);
         }
@@ -1538,7 +1642,7 @@ function createSdkSessionsStore() {
 
       if (!session || session.status !== 'idle' || session.messages.length > 0) return;
 
-      update(sessions => sessions.map(s => s.id === id ? { ...s, cwd } : s));
+      update(sessions => sessions.map(s => s.id === id ? { ...s, cwd, repoId: resolveRepoId(cwd) } : s));
       await syncSessionBranchMetadata(id, cwd);
 
       if (liveSessions.has(id)) {
@@ -1555,8 +1659,60 @@ function createSdkSessionsStore() {
       update(sessions => sessions.map(s => s.id === id ? { ...s, unread: false } : s));
     },
 
+    /**
+     * Sync setup-session config back to the store so the session list
+     * (and any other store consumers) reflect changes made in SessionSetupView.
+     * Only touches sessions that are still in 'setup' status.
+     */
+    updateSetupConfig(id: string, config: {
+      model?: string;
+      effortLevel?: EffortLevel;
+      cwd?: string;
+      repoId?: string;
+      currentBranch?: string | null;
+      provider?: SdkProvider;
+      planMode?: PlanModeState;
+      noteMode?: NoteModeState;
+      readOnlyMode?: boolean;
+    }): void {
+      update(sessions => sessions.map(s => {
+        if (s.id !== id || s.status !== 'setup') return s;
+        const updated = { ...s };
+        if (config.model !== undefined) {
+          updated.model = config.model;
+          updated.provider = normalizeSdkProvider(config.provider ?? s.provider, config.model);
+        }
+        if (config.effortLevel !== undefined) updated.effortLevel = config.effortLevel;
+        if (config.cwd !== undefined) {
+          updated.cwd = config.cwd;
+          // Explicit repoId takes priority (e.g. worktree cwd won't resolve to a repo)
+          updated.repoId = config.repoId ?? resolveRepoId(config.cwd);
+        }
+        if (config.currentBranch !== undefined) updated.currentBranch = config.currentBranch;
+        if (config.provider !== undefined) updated.provider = normalizeSdkProvider(config.provider, updated.model);
+        if (config.planMode !== undefined) updated.planMode = config.planMode;
+        if (config.noteMode !== undefined) updated.noteMode = config.noteMode;
+        if (config.readOnlyMode !== undefined) updated.readOnlyMode = config.readOnlyMode;
+        return updated;
+      }));
+      debouncedSave();
+    },
+
     updateDraft(id: string, draftPrompt?: string, draftImages?: SdkImageContent[]): void {
       update(sessions => sessions.map(s => s.id === id ? { ...s, draftPrompt, draftImages } : s));
+    },
+
+    clearAiCompletionMetadata(id: string): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                aiMetadata: clearCompletionMetadata(s.aiMetadata),
+              }
+            : s
+        )
+      );
     },
 
     createSetupSession(model: string, effortLevel: EffortLevel, planMode: boolean = false, provider?: SdkProvider, initialCwd: string = '', readOnlyMode: boolean = false): string {
@@ -1566,6 +1722,7 @@ function createSdkSessionsStore() {
       const session: SdkSession = {
         id,
         cwd: initialCwd,
+        repoId: resolveRepoId(initialCwd),
         model,
         provider: resolvedProvider,
         readOnlyMode,
@@ -1582,7 +1739,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -1592,6 +1749,7 @@ function createSdkSessionsStore() {
             ? {
                 ...s,
                 cwd: config.cwd,
+                repoId: config.repoId ?? resolveRepoId(config.cwd),
                 model: config.noteMode ? 'claude-haiku-4-5-20251001' : config.model, // Note mode always uses Haiku
                 effortLevel: config.noteMode ? null : config.effortLevel, // Note mode doesn't use effort
                 readOnlyMode: config.noteMode ? false : (config.readOnlyMode ?? false),
@@ -1744,7 +1902,7 @@ function createSdkSessionsStore() {
         );
       } else {
         update(sessions =>
-          sessions.map(s => s.id === id ? { ...s, cwd, status: 'initializing' as const, pendingPrompt: transcript } : s)
+          sessions.map(s => s.id === id ? { ...s, cwd, repoId: resolveRepoId(cwd), status: 'initializing' as const, pendingPrompt: transcript } : s)
         );
         await syncSessionBranchMetadata(id, cwd);
 
@@ -1769,7 +1927,7 @@ function createSdkSessionsStore() {
 
     setPendingApproval(id: string, prompt: string, cwd?: string): void {
       update(sessions =>
-        sessions.map(s => s.id === id ? { ...s, status: 'pending_approval' as const, pendingApprovalPrompt: prompt, cwd: cwd || s.cwd } : s)
+        sessions.map(s => s.id === id ? { ...s, status: 'pending_approval' as const, pendingApprovalPrompt: prompt, cwd: cwd || s.cwd, repoId: cwd ? resolveRepoId(cwd) : s.repoId } : s)
       );
       const nextCwd = cwd;
       if (nextCwd) {
@@ -1787,6 +1945,7 @@ function createSdkSessionsStore() {
           ...s,
           status: 'prepared' as const,
           cwd,
+          repoId: resolveRepoId(cwd),
           preparedPrompt: prompt,
           preparedSystemPrompt: systemPrompt,
           preparedRepoRecommendation: repoRecommendation,
@@ -1799,7 +1958,7 @@ function createSdkSessionsStore() {
 
     updatePreparedRepo(id: string, cwd: string): void {
       update(sessions =>
-        sessions.map(s => s.id === id && s.status === 'prepared' ? { ...s, cwd } : s)
+        sessions.map(s => s.id === id && s.status === 'prepared' ? { ...s, cwd, repoId: resolveRepoId(cwd) } : s)
       );
       void syncSessionBranchMetadata(id, cwd);
       debouncedSave();
@@ -1907,6 +2066,7 @@ function createSdkSessionsStore() {
       const session: SdkSession = {
         id,
         cwd,
+        repoId: resolveRepoId(cwd),
         model,
         provider: resolvedProvider,
         effortLevel,
@@ -1932,7 +2092,7 @@ function createSdkSessionsStore() {
       const pendingPrompt = cleanedTranscript || session.pendingPrompt;
 
       update(sessions =>
-        sessions.map(s => s.id === id ? { ...s, cwd, status: 'initializing' as const, pendingRepoSelection: undefined, pendingPrompt } : s)
+        sessions.map(s => s.id === id ? { ...s, cwd, repoId: resolveRepoId(cwd), status: 'initializing' as const, pendingRepoSelection: undefined, pendingPrompt } : s)
       );
       await syncSessionBranchMetadata(id, cwd);
 
@@ -2097,7 +2257,7 @@ function createSdkSessionsStore() {
       const systemPrompt = getNoteModeSystemPrompt();
 
       update(sessions =>
-        sessions.map(s => s.id === id ? { ...s, cwd, status: 'initializing' as const, pendingPrompt: transcript } : s)
+        sessions.map(s => s.id === id ? { ...s, cwd, repoId: resolveRepoId(cwd), status: 'initializing' as const, pendingPrompt: transcript } : s)
       );
 
       try {
@@ -2303,9 +2463,9 @@ function createSdkSessionsStore() {
 
     // --- Plan Approval (ExitPlanMode interception) ---
 
-    async approvePlan(id: string): Promise<void> {
+    async approvePlan(id: string, feedback?: string): Promise<void> {
       this.clearPlanApproval(id);
-      await invoke('answer_plan_approval', { id, action: 'approve', feedback: null });
+      await invoke('answer_plan_approval', { id, action: 'approve', feedback: feedback ?? null });
     },
 
     async approvePlanNewSession(id: string): Promise<void> {
@@ -2321,10 +2481,20 @@ function createSdkSessionsStore() {
         s.id === id ? { ...s, status: 'done' as const } : s
       ));
 
-      // Spawn implementation session (reuses existing spawnImplementationSession pattern)
-      if (session) {
-        await this.spawnImplementationSession(id);
-      }
+      if (!session) return;
+
+      // Try full implementation spawn (requires complete_planning MCP tool was used and
+      // emitted a planning_complete event that set planMode.isComplete + planFilePath).
+      const implId = await this.spawnImplementationSession(id);
+      if (implId) return; // success — new session already started
+
+      // Fallback: native ExitPlanMode without an MCP plan file.
+      // Spawn a fresh session in the same workspace and ask Claude to implement
+      // whatever plan it wrote during the planning conversation.
+      console.log('[sdkSessions] approvePlanNewSession fallback: no plan file, spawning generic impl session');
+      const implementationId = await this.createSession(session.cwd, session.model, session.effortLevel);
+      const fallbackPrompt = `The previous planning session just finished. Please review any plan files or notes created during planning (e.g. PLAN.md, TODO.md, or any file written during the last session), then implement the plan step by step.\n\nFocus on quality and maintainability. Ask if any requirements are unclear.`;
+      await this.sendPrompt(implementationId, fallbackPrompt);
     },
 
     async denyPlan(id: string, feedback: string): Promise<void> {

@@ -114,7 +114,7 @@ impl SequenceScheduler {
                             let schedule = match cron::Schedule::from_str(cron) {
                                 Ok(s) => s,
                                 Err(e) => {
-                                    eprintln!("[scheduler] Invalid cron '{}' for sequence '{}': {}", cron, def.id, e);
+                                    log::error!("[scheduler] Invalid cron '{}' for sequence '{}': {}", cron, def.id, e);
                                     continue;
                                 }
                             };
@@ -134,19 +134,19 @@ impl SequenceScheduler {
                             }
 
                             if should_fire {
-                                println!("[scheduler] Firing sequence '{}' (cron: {})", def.name, cron);
+                                log::info!("[scheduler] Firing sequence '{}' (cron: {})", def.name, cron);
                                 let exec_inputs = inputs.clone().unwrap_or_default();
                                 match manager.start_execution_at(&def.id, exec_inputs, false, entry_node_id.clone()) {
                                     Ok(exec_id) => {
-                                        println!("[scheduler] Started execution {} for '{}'", exec_id, def.name);
+                                        log::info!("[scheduler] Started execution {} for '{}'", exec_id, def.name);
                                     }
                                     Err(e) => {
-                                        eprintln!("[scheduler] Failed to start '{}': {}", def.name, e);
+                                        log::error!("[scheduler] Failed to start '{}': {}", def.name, e);
                                     }
                                 }
                                 state.last_runs.insert(schedule_key, now);
                                 if let Err(e) = state.save() {
-                                    eprintln!("[scheduler] Failed to save state: {}", e);
+                                    log::error!("[scheduler] Failed to save state: {}", e);
                                 }
                             }
                         }

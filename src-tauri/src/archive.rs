@@ -82,9 +82,9 @@ impl ArchiveIndex {
             match fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str(&content) {
                     Ok(index) => return index,
-                    Err(e) => eprintln!("[archive] Failed to parse index: {}", e),
+                    Err(e) => log::error!("[archive] Failed to parse index: {}", e),
                 },
-                Err(e) => eprintln!("[archive] Failed to read index: {}", e),
+                Err(e) => log::error!("[archive] Failed to read index: {}", e),
             }
         }
         Self::default()
@@ -120,11 +120,8 @@ impl ArchiveIndex {
 
     /// Archive an SDK session: extract metadata and save full data
     pub fn archive_sdk_session(&mut self, session: &PersistedSdkSession) -> Result<(), String> {
-        // Don't archive duplicates
-        if self.entries.iter().any(|e| e.id == session.id) {
-            return Ok(());
-        }
-
+        // Upsert by ID so re-archived sessions get fresh metadata/timestamps.
+        self.entries.retain(|e| e.id != session.id);
         let entry = sdk_session_to_archive_entry(session);
         self.save_session_data(&session.id, session)?;
         self.entries.push(entry);
@@ -136,11 +133,8 @@ impl ArchiveIndex {
         &mut self,
         session: &PersistedTerminalSession,
     ) -> Result<(), String> {
-        // Don't archive duplicates
-        if self.entries.iter().any(|e| e.id == session.id) {
-            return Ok(());
-        }
-
+        // Upsert by ID so re-archived sessions get fresh metadata/timestamps.
+        self.entries.retain(|e| e.id != session.id);
         let entry = terminal_session_to_archive_entry(session);
         self.save_session_data(&session.id, session)?;
         self.entries.push(entry);
@@ -153,11 +147,8 @@ impl ArchiveIndex {
         data: &serde_json::Value,
         entry: ArchiveEntry,
     ) -> Result<(), String> {
-        // Don't archive duplicates
-        if self.entries.iter().any(|e| e.id == entry.id) {
-            return Ok(());
-        }
-
+        // Upsert by ID to keep archive ordering and metadata current.
+        self.entries.retain(|e| e.id != entry.id);
         self.save_session_data(&entry.id, data)?;
         self.entries.push(entry);
         Ok(())
@@ -279,7 +270,7 @@ impl ArchiveIndex {
             let path = sessions_dir.join(format!("{}.json", id));
             if path.exists() {
                 if let Err(e) = fs::remove_file(&path) {
-                    eprintln!("[archive] Failed to delete session file {}: {}", id, e);
+                    log::error!("[archive] Failed to delete session file {}: {}", id, e);
                 }
             }
         }

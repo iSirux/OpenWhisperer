@@ -15,6 +15,7 @@ export interface DisplaySession {
   statusDetail?: string; // e.g., tool name being run
   prompt: string;
   repoPath: string;
+  repoId?: string; // Stable repo entity reference for icon/color/name resolution
   model?: string; // model name for SDK sessions
   provider?: SdkProvider; // SDK provider (claude or openai)
   createdAt: number; // When the session was created

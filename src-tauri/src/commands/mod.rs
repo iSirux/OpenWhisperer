@@ -1,4 +1,5 @@
 pub mod archive_cmds;
+pub mod log_cmds;
 pub mod audio_cmds;
 pub mod git_cmds;
 pub mod llm_cmds;

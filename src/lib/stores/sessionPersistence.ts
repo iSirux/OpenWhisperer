@@ -223,6 +223,7 @@ export interface PersistedPendingTranscriptionInfo {
 export interface PersistedSdkSession {
   id: string;
   cwd: string;
+  repoId?: string;
   createdBranch?: string | null;
   currentBranch?: string | null;
   model: string;
@@ -488,9 +489,9 @@ export async function saveSessionsToDisk(): Promise<void> {
         maxEntries: currentSettings.session_persistence.max_archived_sessions ?? 500,
       });
 
-      // Refresh archive count for sidebar
+      // Refresh archive metadata and list
       const { archive } = await import('./archive');
-      archive.refreshCount();
+      await archive.refresh();
     }
 
     console.log('[sessionPersistence] Sessions saved to disk');

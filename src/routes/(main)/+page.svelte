@@ -24,7 +24,7 @@
     activeSdkSession,
   } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
-  import { repos, activeRepo } from '$lib/stores/repos';
+  import { repos, activeRepo, findRepoById } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
   import {
     activeExecution,
@@ -53,11 +53,18 @@
   let sdkViewRef: { focusPromptInput: () => void } | undefined;
 
   // Computed values for the active SDK session header
-  let activeSdkRepoName = $derived(
-    !$activeSdkSession?.cwd || $activeSdkSession?.cwd === '.'
-      ? ''
-      : $activeSdkSession?.cwd?.split(/[/\\]/).pop() || $activeSdkSession?.cwd || ''
-  );
+  let activeSdkRepoName = $derived.by(() => {
+    const session = $activeSdkSession;
+    if (!session) return '';
+    // Resolve from stable repoId first (handles worktrees correctly)
+    if (session.repoId) {
+      const repo = findRepoById($repos.list, session.repoId);
+      if (repo) return repo.name;
+    }
+    // Fallback: derive from cwd path
+    if (!session.cwd || session.cwd === '.') return '';
+    return session.cwd.split(/[/\\]/).pop() || session.cwd;
+  });
 
   let activeSdkFirstPrompt = $derived(() => {
     const firstUserMessage = $activeSdkSession?.messages.find((m) => m.type === 'user');
@@ -200,6 +207,7 @@
           messages={activeSession.messages}
           isPending={isPendingState}
           repoName={activeSdkRepoName}
+          repoId={activeSession.repoId}
           repoPath={activeSession.cwd}
           model={activeSession.model}
           effortLevel={activeSession.effortLevel}

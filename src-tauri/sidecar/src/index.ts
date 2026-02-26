@@ -8,6 +8,7 @@ import {
   type SubagentStartHookInput,
   type SubagentStopHookInput,
   type PreToolUseHookInput,
+  type PermissionRequestHookInput,
   type HookCallback,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -434,6 +435,8 @@ interface Session {
   appServer?: AppServerState; // Active Codex app-server process state
   appServerTurnId?: string; // Active app-server turn ID
   pendingParallelNotification?: string; // Queued notification to inject via PreToolUse hook when parallel session detected
+  claudeQueue: QueuedPrompt[]; // Pending Claude prompts (FIFO)
+  claudeProcessing: boolean; // Claude queue worker active flag
   lastAssistantTurnUuid?: string; // Last assistant message UUID for fork support
   forkFromSdkSessionId?: string; // SDK session ID to fork from (consumed on first query)
   forkAtMessageUuid?: string; // Message UUID to fork at (consumed on first query)
@@ -447,6 +450,21 @@ interface Session {
     resolve: (decision: { action: string; feedback?: string }) => void;
     reject: (error: Error) => void;
   };
+  // Gate set when ExitPlanMode tool_use is detected in an assistant message.
+  // The query iteration loop pauses here (before calling iterator.next()) until
+  // the user approves or denies — this is the only reliable interception point
+  // since canUseTool/PreToolUse/PermissionRequest are not actually awaited by the
+  // SDK for ExitPlanMode.
+  pendingExitPlanModeGate?: {
+    allowedPrompts: Array<{ tool: string; prompt: string }>;
+    toolUseId: string; // needed to send a synthetic tool_result on deny
+  };
+}
+
+interface QueuedPrompt {
+  queryId: string;
+  prompt: string;
+  images?: ImageData[];
 }
 
 const sessions = new Map<string, Session>();
@@ -1604,6 +1622,35 @@ async function stopCodexAppServer(session: Session): Promise<void> {
   state.process.kill();
 }
 
+function buildCodexAppServerInputItems(
+  msg: QueryMessage,
+  session: Session,
+  includeSystemPrompt: boolean
+): Array<Record<string, unknown>> {
+  const inputItems: Array<Record<string, unknown>> = [];
+
+  if (includeSystemPrompt && session.codexSystemPrompt) {
+    inputItems.push({ type: "text", text: session.codexSystemPrompt });
+  }
+  if (msg.images && msg.images.length > 0) {
+    for (const img of msg.images) {
+      const tmpDir = os.tmpdir();
+      const ext = img.mediaType.split("/")[1] || "png";
+      const tmpPath = path.join(
+        tmpDir,
+        `cw-codex-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+      );
+      fs.writeFileSync(tmpPath, Buffer.from(img.base64Data, "base64"));
+      inputItems.push({ type: "localImage", path: tmpPath });
+    }
+  }
+  if (msg.prompt.trim()) {
+    inputItems.push({ type: "text", text: msg.prompt });
+  }
+
+  return inputItems;
+}
+
 async function handleCodexAppServerQuery(
   msg: QueryMessage,
   preassignedQueryId?: string
@@ -1683,25 +1730,7 @@ async function handleCodexAppServerQuery(
     }
     setSessionSdkSessionId(session, threadId, msg.id);
 
-    const inputItems: Array<Record<string, unknown>> = [];
-    if (session.codexSystemPrompt) {
-      inputItems.push({ type: "text", text: session.codexSystemPrompt });
-    }
-    if (msg.images && msg.images.length > 0) {
-      for (const img of msg.images) {
-        const tmpDir = os.tmpdir();
-        const ext = img.mediaType.split("/")[1] || "png";
-        const tmpPath = path.join(
-          tmpDir,
-          `cw-codex-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
-        );
-        fs.writeFileSync(tmpPath, Buffer.from(img.base64Data, "base64"));
-        inputItems.push({ type: "localImage", path: tmpPath });
-      }
-    }
-    if (msg.prompt.trim()) {
-      inputItems.push({ type: "text", text: msg.prompt });
-    }
+    const inputItems = buildCodexAppServerInputItems(msg, session, true);
 
     const turnResult = (await appServerRequest(
       appServer,
@@ -2527,31 +2556,37 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
           return { behavior: "allow" as const, updatedInput: { questions: askInput.questions, answers } };
         }
       }
-      // Intercept ExitPlanMode: emit to frontend, wait for user approval/denial
-      if (toolName === "ExitPlanMode") {
-        const exitInput = input as { allowedPrompts?: Array<{ tool: string; prompt: string }> };
-        send({ type: "debug", id: msg.id, message: `ExitPlanMode intercepted with ${(exitInput.allowedPrompts || []).length} allowed prompts` });
-        sendPlanApprovalRequest(msg.id, exitInput.allowedPrompts || []);
+      // Intercept complete_planning (custom plan mode): emit approval request to frontend, wait for user decision
+      // Must be checked before the generic mcp__ allow below
+      if (
+        toolName === "mcp__planning-tools__complete_planning" ||
+        toolName === "complete_planning"
+      ) {
+        send({ type: "debug", id: msg.id, message: `complete_planning intercepted, showing plan approval dialog` });
+        sendPlanApprovalRequest(msg.id, []);
 
         const decision = await new Promise<{ action: string; feedback?: string }>((resolve, reject) => {
           const s = sessions.get(msg.id);
           if (s) { s.pendingPlanApproval = { resolve, reject }; }
-          else { reject(new Error("Session not found for ExitPlanMode")); }
+          else { reject(new Error("Session not found for complete_planning")); }
         });
 
-        send({ type: "debug", id: msg.id, message: `ExitPlanMode decision: ${decision.action}` });
+        send({ type: "debug", id: msg.id, message: `complete_planning decision: ${decision.action}` });
 
         if (decision.action === 'deny') {
           return {
             behavior: "deny" as const,
-            message: decision.feedback || "User rejected the plan. Please revise based on their feedback.",
+            message: decision.feedback || "User requested changes to the plan. Please revise based on their feedback.",
           };
         }
 
-        // For 'approve' and 'approve_new_session', allow ExitPlanMode to complete
+        // For 'approve' and 'approve_new_session', allow complete_planning to execute
         // The frontend handles spawning a new session for 'approve_new_session'
         return { behavior: "allow" as const, updatedInput: input };
       }
+      // Note: ExitPlanMode is handled by the pendingExitPlanModeGate in the query
+      // iteration loop — canUseTool/PermissionRequest are not awaited by the SDK
+      // for this tool, so intercepting here has no effect.
       // Allow all MCP tools (they start with "mcp__")
       if (toolName.startsWith("mcp__")) {
         send({
@@ -2746,9 +2781,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
 
   const provider = inferProvider(msg.provider, msg.model);
   const openaiMode: OpenAiExecutionMode =
-    provider === "openai" && msg.codex_mode === "AppServer"
-      ? "app_server"
-      : "sdk";
+    provider === "openai" ? "app_server" : "sdk";
 
   sessions.set(msg.id, {
     cwd: msg.cwd,
@@ -2762,6 +2795,8 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     readOnlyMode: msg.read_only_mode,
     codexModel: provider === "openai" ? msg.model : undefined,
     codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
+    claudeQueue: [],
+    claudeProcessing: false,
     forkFromSdkSessionId: msg.fork_from_sdk_session_id, // Fork: SDK session ID to fork from
     forkAtMessageUuid: msg.fork_at_message_uuid, // Fork: message UUID to fork at
   });
@@ -2967,67 +3002,69 @@ async function* createUserMessageStream(
   };
 }
 
-async function handleQuery(msg: QueryMessage): Promise<void> {
-  const session = sessions.get(msg.id);
-  if (!session) {
-    sendError(msg.id, "Session not found");
+function startClaudeQueueWorker(sessionId: string): void {
+  const session = sessions.get(sessionId);
+  if (!session || session.provider !== "claude" || session.claudeProcessing) {
     return;
   }
 
-  // Route to provider-specific handler
-  if (session.provider === "openai") {
-    if (session.openaiMode === "app_server") {
-      const queryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      // Claim query ownership before preempting so stale completions can't close the new run.
-      session.currentQueryId = queryId;
-      if (session.abortController || session.appServerTurnId) {
-        send({
-          type: "debug",
-          id: msg.id,
-          message:
-            "[app-server query] previous query still in progress; stopping it before starting a new turn",
-        });
-        await handleStop({ type: "stop", id: msg.id });
+  session.claudeProcessing = true;
+  send({ type: "debug", id: sessionId, message: "[claude queue] worker started" });
+  void processClaudeQueue(sessionId);
+}
+
+async function processClaudeQueue(sessionId: string): Promise<void> {
+  try {
+    while (true) {
+      const session = sessions.get(sessionId);
+      if (!session || session.provider !== "claude") {
+        return;
       }
-      return handleCodexAppServerQuery(msg, queryId);
+
+      const next = session.claudeQueue.shift();
+      if (!next) {
+        session.claudeProcessing = false;
+        send({ type: "debug", id: sessionId, message: "[claude queue] worker idle" });
+        return;
+      }
+
+      send({
+        type: "debug",
+        id: sessionId,
+        message: `[claude queue] start processing queryId=${next.queryId}`,
+      });
+
+      await runClaudeQueryItem(
+        session,
+        { type: "query", id: sessionId, prompt: next.prompt, images: next.images },
+        next.queryId
+      );
+
+      const currentSession = sessions.get(sessionId);
+      if (!currentSession || currentSession.provider !== "claude") {
+        return;
+      }
+      send({
+        type: "debug",
+        id: sessionId,
+        message: `[claude queue] completed queryId=${next.queryId} remaining=${currentSession.claudeQueue.length}`,
+      });
     }
-    return handleCodexQuery(msg);
+  } finally {
+    const session = sessions.get(sessionId);
+    if (session && session.provider === "claude" && session.claudeQueue.length === 0) {
+      session.claudeProcessing = false;
+    }
   }
+}
 
-  // === Claude provider path (unchanged) ===
-
-  // Generate a unique query ID to track this specific query
-  // This prevents stale done/error events from affecting newer queries
-  const queryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-  // If there's already a query in progress, interrupt it first
-  // This prevents race conditions where the old query's 'done' event arrives after the new query starts
-  if (session.queryIterator) {
-    send({
-      type: "debug",
-      id: msg.id,
-      message: "Previous query still in progress, interrupting it first...",
-    });
-    try {
-      await session.queryIterator.interrupt();
-      send({
-        type: "debug",
-        id: msg.id,
-        message: "Previous query interrupted successfully",
-      });
-    } catch (err) {
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `Error interrupting previous query: ${err}`,
-      });
-      // Fall back to abort controller if interrupt fails
-      if (session.abortController) {
-        session.abortController.abort();
-      }
-    }
-    session.queryIterator = undefined;
-    session.abortController = undefined;
+async function runClaudeQueryItem(
+  session: Session,
+  msg: QueryMessage,
+  queryId: string
+): Promise<void> {
+  if (sessions.get(msg.id) !== session) {
+    return;
   }
 
   // Set this as the current query BEFORE starting
@@ -3149,6 +3186,26 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
       },
       // Hook callbacks for subagent lifecycle events and parallel agent detection
       hooks: {
+        // Intercept ExitPlanMode (native SDK plan mode): show approval dialog, wait for user decision.
+        // ExitPlanMode bypasses both canUseTool and PreToolUse — it goes through PermissionRequest.
+        PermissionRequest: [
+          {
+            matcher: "ExitPlanMode",
+            timeout: 3600, // wait up to 1 hour for user to respond
+            hooks: [
+              (async (_input: PermissionRequestHookInput) => {
+                // ExitPlanMode is handled by the pendingExitPlanModeGate in the iteration loop.
+                // PermissionRequest fires but doesn’t block — just allow it through.
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: "PermissionRequest" as const,
+                    decision: { behavior: "allow" as const },
+                  },
+                };
+              }) as HookCallback,
+            ],
+          },
+        ],
         PreToolUse: [
           {
             hooks: [
@@ -3253,7 +3310,91 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     });
 
     let messageCount = 0;
-    for await (const message of queryIterator) {
+    // Manual iteration instead of `for await` so we can pause before iterator.next()
+    // when ExitPlanMode is detected and wait for the user's approval decision.
+    while (true) {
+      // --- ExitPlanMode gate ---
+      // handleSdkMessage sets pendingExitPlanModeGate when it sees an ExitPlanMode
+      // tool_use in an assistant message. We pause HERE (before the next next()) so
+      // the user can review the plan before Claude's implementation response is fetched.
+      const gateSession = sessions.get(msg.id);
+      if (gateSession?.pendingExitPlanModeGate) {
+        const gate = gateSession.pendingExitPlanModeGate;
+        gateSession.pendingExitPlanModeGate = undefined;
+
+        send({ type: "debug", id: msg.id, message: `ExitPlanMode gate: pausing iteration, waiting for user approval` });
+        sendPlanApprovalRequest(msg.id, gate.allowedPrompts);
+
+        let gateBlocked = true;
+        try {
+          const decision = await new Promise<{ action: string; feedback?: string }>((resolve, reject) => {
+            const s = sessions.get(msg.id);
+            if (s) { s.pendingPlanApproval = { resolve, reject }; }
+            else { reject(new Error("Session not found for ExitPlanMode gate")); }
+          });
+
+          send({ type: "debug", id: msg.id, message: `ExitPlanMode gate decision: ${decision.action}` });
+
+          if (decision.action === 'deny') {
+            // Send a synthetic tool_result so the UI closes the ExitPlanMode spinner
+            sendToolResult(
+              msg.id,
+              "ExitPlanMode",
+              decision.feedback
+                ? `Plan rejected: ${decision.feedback}`
+                : "Plan rejected by user. Please revise based on their feedback.",
+              gate.toolUseId
+            );
+
+            // Push the feedback as a new query so Claude revises the plan.
+            // The queue worker picks it up immediately after this query ends,
+            // resuming the same SDK session so Claude has full planning context.
+            const feedbackPrompt = decision.feedback
+              ? `The user reviewed your plan and requested changes:\n\n${decision.feedback}\n\nPlease update the plan file to address this feedback, then call ExitPlanMode again when ready.`
+              : "The user rejected the plan. Please revise it and call ExitPlanMode again when ready.";
+            const feedbackQueryId = `${Date.now()}-deny-feedback`;
+            const s = sessions.get(msg.id);
+            if (s) {
+              s.claudeQueue.push({ queryId: feedbackQueryId, prompt: feedbackPrompt });
+              send({ type: "debug", id: msg.id, message: `ExitPlanMode deny: queued feedback as ${feedbackQueryId}` });
+            }
+
+            // Interrupt the current query so Claude stops mid-stream
+            try { await queryIterator.interrupt(); } catch { /* ignore */ }
+            gateBlocked = false; // break the loop
+          } else if (decision.action === 'approve_new_session') {
+            // Planning session ends here — the frontend spawns a new implementation session.
+            // We don't need to continue iterating; just let the loop exit cleanly.
+            send({ type: "debug", id: msg.id, message: `ExitPlanMode approve_new_session: ending planning query` });
+            gateBlocked = false; // break the loop
+          } else if (decision.action === 'approve' && decision.feedback) {
+            // Approved with an additional note — queue it so Claude sees it before starting work.
+            const approveNoteQueryId = `${Date.now()}-approve-note`;
+            const s = sessions.get(msg.id);
+            if (s) {
+              s.claudeQueue.push({ queryId: approveNoteQueryId, prompt: decision.feedback });
+              send({ type: "debug", id: msg.id, message: `ExitPlanMode approve with note: queued as ${approveNoteQueryId}` });
+            }
+            // fall through — continue iterating so ExitPlanMode runs and Claude starts implementing
+          }
+          // plain approve: fall through, continue iterating
+        } catch (gateErr) {
+          send({ type: "debug", id: msg.id, message: `ExitPlanMode gate error: ${gateErr}` });
+          gateBlocked = false;
+        }
+
+        if (!gateBlocked) break;
+      }
+
+      // Fetch next message
+      const iterResult = await queryIterator.next();
+      if (iterResult.done) break;
+
+      const message = iterResult.value;
+
+      if (sessions.get(msg.id) !== session) {
+        return;
+      }
       messageCount++;
       send({
         type: "debug",
@@ -3290,7 +3431,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
 
     // Only emit done if this query is still the current one
     // This prevents stale done events from affecting newer queries
-    if (session.currentQueryId === queryId) {
+    if (sessions.get(msg.id) === session && session.currentQueryId === queryId) {
       sendDone(msg.id);
     } else {
       send({
@@ -3309,7 +3450,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     });
 
     // Only emit error if this query is still the current one
-    if (session.currentQueryId === queryId) {
+    if (sessions.get(msg.id) === session && session.currentQueryId === queryId) {
       sendError(msg.id, errorMessage);
     } else {
       send({
@@ -3325,6 +3466,67 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
       session.queryIterator = undefined;
     }
   }
+}
+
+async function handleQuery(msg: QueryMessage): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, "Session not found");
+    return;
+  }
+
+  // Route to provider-specific handler
+  if (session.provider === "openai") {
+    if (session.openaiMode === "app_server") {
+      const activeTurnId = session.appServerTurnId;
+      const activeThreadId = session.sdkSessionId || session.passedSdkSessionId;
+      if (session.appServer && activeTurnId && activeThreadId) {
+        const inputItems = buildCodexAppServerInputItems(msg, session, false);
+        send({
+          type: "debug",
+          id: msg.id,
+          message:
+            `[app-server query] active turn detected; steering turnId=${activeTurnId} ` +
+            `threadId=${activeThreadId}`,
+        });
+        try {
+          await appServerRequest(session.appServer, "turn/steer", {
+            threadId: activeThreadId,
+            input: inputItems.length > 0 ? inputItems : [{ type: "text", text: "" }],
+            expectedTurnId: activeTurnId,
+          });
+          send({
+            type: "debug",
+            id: msg.id,
+            message: `[app-server query] steer accepted turnId=${activeTurnId}`,
+          });
+          return;
+        } catch (error) {
+          send({
+            type: "debug",
+            id: msg.id,
+            message:
+              `[app-server query] steer failed for turnId=${activeTurnId}; ` +
+              `falling back to turn/start (${error instanceof Error ? error.message : String(error)})`,
+          });
+        }
+      }
+
+      const queryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      return handleCodexAppServerQuery(msg, queryId);
+    }
+    return handleCodexQuery(msg);
+  }
+
+  // === Claude provider path (non-interrupting FIFO queue) ===
+  const queryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  session.claudeQueue.push({ queryId, prompt: msg.prompt, images: msg.images });
+  send({
+    type: "debug",
+    id: msg.id,
+    message: `[claude queue] enqueue len=${session.claudeQueue.length} queryId=${queryId}`,
+  });
+  startClaudeQueueWorker(msg.id);
 }
 
 function handleSdkMessage(id: string, message: SDKMessage): void {
@@ -3455,6 +3657,21 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
                 input.feature_name,
                 input.summary
               );
+            }
+          }
+
+          // Detect ExitPlanMode: set a gate on the session so the query iteration
+          // loop pauses before fetching the next message and waits for user approval.
+          // canUseTool/PermissionRequest hooks fire but don't actually block this tool.
+          if (toolName === "ExitPlanMode") {
+            const exitInput = block.input as { allowedPrompts?: Array<{ tool: string; prompt: string }> };
+            const s = sessions.get(id);
+            if (s) {
+              s.pendingExitPlanModeGate = {
+                allowedPrompts: exitInput.allowedPrompts || [],
+                toolUseId,
+              };
+              send({ type: "debug", id, message: `ExitPlanMode detected — gate set, loop will pause before next message` });
             }
           }
 
@@ -3710,6 +3927,16 @@ async function handleStop(msg: StopMessage): Promise<void> {
   // Use interrupt() on the query iterator - this is the proper way to stop
   // the query and all subagents. The abort controller alone doesn't properly
   // stop subagents that are already running.
+  const pendingCount = session.claudeQueue.length;
+  if (pendingCount > 0) {
+    session.claudeQueue.length = 0;
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `[claude queue] cleared pending=${pendingCount} due to stop`,
+    });
+  }
+
   if (session.queryIterator) {
     send({
       type: "debug",
@@ -3803,6 +4030,15 @@ async function handleClose(msg: CloseMessage): Promise<void> {
       }
       session.codexThread = undefined;
     } else {
+      const pendingCount = session.claudeQueue.length;
+      if (pendingCount > 0) {
+        session.claudeQueue.length = 0;
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `[claude queue] cleared pending=${pendingCount} due to close`,
+        });
+      }
       // Use interrupt() if we have an active query
       if (session.queryIterator) {
         try {

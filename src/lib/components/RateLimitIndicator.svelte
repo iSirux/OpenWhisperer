@@ -6,21 +6,19 @@
 
   let claude = $derived($rateLimitData);
   let codex = $derived($codexRateLimitData);
-  let provider = $derived($settings.sdk_provider);
 
-  // Pick the active provider's data
+  // Calculate paces per provider
+  let claudePace5h = $derived(claude ? calculatePace(claude.five_hour.utilization, claude.five_hour.resets_at, 5) : null);
+  let claudePace7d = $derived(claude ? calculatePace(claude.seven_day.utilization, claude.seven_day.resets_at, 168) : null);
+  let codexPace5h = $derived(codex ? calculatePace(codex.five_hour.utilization, codex.five_hour.resets_at, 5) : null);
+  let codexPace7d = $derived(codex ? calculatePace(codex.seven_day.utilization, codex.seven_day.resets_at, 168) : null);
+
+  // Keep rl/pace aliases for tooltip compatibility
+  let provider = $derived($settings.sdk_provider);
   let rl = $derived(provider === 'OpenAI' ? codex : claude);
   let label = $derived(provider === 'OpenAI' ? 'Codex' : 'Claude');
-
-  // Calculate paces for color coding (active provider)
-  let pace5h = $derived(rl ? calculatePace(rl.five_hour.utilization, rl.five_hour.resets_at, 5) : null);
-  let pace7d = $derived(rl ? calculatePace(rl.seven_day.utilization, rl.seven_day.resets_at, 168) : null);
-
-  // Calculate paces for alt provider
-  let altPace5h = $derived(alt ? calculatePace(alt.five_hour.utilization, alt.five_hour.resets_at, 5) : null);
-  let altPace7d = $derived(alt ? calculatePace(alt.seven_day.utilization, alt.seven_day.resets_at, 168) : null);
-
-  // Show the secondary provider's data if available
+  let pace5h = $derived(provider === 'OpenAI' ? codexPace5h : claudePace5h);
+  let pace7d = $derived(provider === 'OpenAI' ? codexPace7d : claudePace7d);
   let alt = $derived(provider === 'OpenAI' ? claude : codex);
   let altLabel = $derived(provider === 'OpenAI' ? 'Claude' : 'Codex');
 
@@ -65,21 +63,31 @@
   });
 </script>
 
-{#if rl}
-  <button
-    class="indicator"
-    onclick={() => goto('/usage')}
-    title={tooltip()}
-  >
-    <div class="row">
-      <span class="val" style="color: {pace5h ? getPaceColor(pace5h.paceRatio, rl.five_hour.utilization) : 'var(--color-text-secondary)'}">{Math.round(rl.five_hour.utilization)}%</span>
-      <span class="sep">·</span>
-      <span class="val" style="color: {pace7d ? getPaceColor(pace7d.paceRatio, rl.seven_day.utilization) : 'var(--color-text-secondary)'}">{Math.round(rl.seven_day.utilization)}%</span>
-    </div>
-    <div class="row sub">
-      <span>{formatTimeRemaining(rl.five_hour.resets_at)}</span>
-    </div>
-  </button>
+{#snippet providerIndicator(data: typeof rl, p5h: typeof pace5h, p7d: typeof pace7d, name: string)}
+  {#if data}
+    <button
+      class="indicator"
+      class:indicator-claude={name === 'Claude'}
+      class:indicator-codex={name === 'Codex'}
+      onclick={() => goto('/usage')}
+      title={tooltip()}
+    >
+
+      <div class="row">
+        <span class="val" style="color: {p5h ? getPaceColor(p5h.paceRatio, data.five_hour.utilization) : 'var(--color-text-secondary)'}">{Math.round(data.five_hour.utilization)}%</span>
+        <span class="sep">·</span>
+        <span class="val" style="color: {p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">{Math.round(data.seven_day.utilization)}%</span>
+      </div>
+      <div class="row sub">
+        <span>{formatTimeRemaining(data.five_hour.resets_at)}</span>
+      </div>
+    </button>
+  {/if}
+{/snippet}
+
+{#if claude || codex}
+  {@render providerIndicator(claude, claudePace5h, claudePace7d, 'Claude')}
+  {@render providerIndicator(codex, codexPace5h, codexPace7d, 'Codex')}
 {/if}
 
 <style>
@@ -98,8 +106,22 @@
     white-space: nowrap;
   }
 
-  .indicator:hover {
-    border-color: var(--color-accent);
+  .indicator-claude {
+    background: rgb(249 115 22 / 0.07);
+    border-color: rgb(249 115 22 / 0.25);
+  }
+
+  .indicator-claude:hover {
+    border-color: rgb(249 115 22 / 0.6);
+  }
+
+  .indicator-codex {
+    background: rgb(34 197 94 / 0.07);
+    border-color: rgb(34 197 94 / 0.25);
+  }
+
+  .indicator-codex:hover {
+    border-color: rgb(34 197 94 / 0.6);
   }
 
   .row {
@@ -122,4 +144,5 @@
     color: var(--color-text-muted);
     opacity: 0.5;
   }
+
 </style>

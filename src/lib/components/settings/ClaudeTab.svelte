@@ -174,48 +174,7 @@
     </div>
   </div>
 
-  <div>
-    <label class="block text-sm font-medium text-text-secondary mb-1"
-      >Terminal Mode</label
-    >
-    <select
-      class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-      bind:value={$settings.terminal_mode}
-    >
-      <option value="Interactive">Interactive</option>
-      <option value="Prompt">Prompt (-p flag)</option>
-      <option value="Sdk">SDK (Agent SDK)</option>
-    </select>
-    <p class="text-xs text-text-muted mt-1">
-      {#if $settings.terminal_mode === "Interactive"}
-        Full terminal control with multi-turn conversations.
-      {:else if $settings.terminal_mode === "Prompt"}
-        Runs single prompt and exits. Good for one-shot tasks.
-      {:else if $settings.terminal_mode === "Sdk"}
-        Uses Claude Agent SDK for structured messages and tool
-        visibility.
-      {/if}
-    </p>
-  </div>
-  {#if $settings.terminal_mode === "Interactive" || $settings.terminal_mode === "Prompt"}
-    <div class="flex items-center justify-between">
-      <div>
-        <label class="text-sm font-medium text-text-secondary"
-          >Skip Permissions</label
-        >
-        <p class="text-xs text-text-muted">
-          Use --dangerously-skip-permissions flag
-        </p>
-      </div>
-      <input
-        type="checkbox"
-        class="toggle"
-        bind:checked={$settings.skip_permissions}
-      />
-    </div>
-  {/if}
-
-  <div class="border-t border-border pt-4 mt-4">
+  <div class="pt-1">
     <h3 class="text-sm font-medium text-text-primary mb-2">
       Enabled Models
     </h3>

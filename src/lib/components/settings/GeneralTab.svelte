@@ -171,58 +171,6 @@
       bind:checked={$settings.notify_parallel_agents}
     />
   </div>
-  <div class="border-t border-border pt-4 mt-4">
-    <h3 class="text-sm font-medium text-text-primary mb-3">
-      Session List Row Limits
-    </h3>
-    <div class="space-y-4">
-      <div>
-        <label
-          class="block text-sm font-medium text-text-secondary mb-1"
-          >User Prompt Rows</label
-        >
-        <div class="flex items-center gap-3">
-          <input
-            type="range"
-            min="1"
-            max="6"
-            step="1"
-            class="flex-1 accent-accent"
-            bind:value={$settings.session_prompt_rows}
-          />
-          <span class="text-sm text-text-primary w-8 text-right"
-            >{$settings.session_prompt_rows}</span
-          >
-        </div>
-        <p class="text-xs text-text-muted mt-1">
-          Maximum rows to show for user prompts in session list
-        </p>
-      </div>
-      <div>
-        <label
-          class="block text-sm font-medium text-text-secondary mb-1"
-          >Agent Response Rows</label
-        >
-        <div class="flex items-center gap-3">
-          <input
-            type="range"
-            min="1"
-            max="6"
-            step="1"
-            class="flex-1 accent-accent"
-            bind:value={$settings.session_response_rows}
-          />
-          <span class="text-sm text-text-primary w-8 text-right"
-            >{$settings.session_response_rows}</span
-          >
-        </div>
-        <p class="text-xs text-text-muted mt-1">
-          Maximum rows to show for agent responses in session list
-        </p>
-      </div>
-    </div>
-  </div>
-
   <!-- Quick Actions -->
   <div class="border-t border-border pt-4 mt-4">
     <h3 class="text-sm font-medium text-text-primary mb-1">Quick Actions</h3>

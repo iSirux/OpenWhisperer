@@ -1,8 +1,6 @@
 <script lang="ts">
   import {
     settings,
-    type SdkProvider,
-    type OpenAiAuthMethod,
   } from "$lib/stores/settings";
   import { OPENAI_MODELS } from "$lib/utils/models";
   import {
@@ -211,28 +209,6 @@
     </div>
   </div>
 
-  <div class="border-t border-border pt-4 mt-4">
-    <label class="block text-sm font-medium text-text-secondary mb-1"
-      >Terminal Mode</label
-    >
-    <select
-      class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-      bind:value={$settings.codex_mode}
-    >
-      <option value="AppServer">Codex App Server (Recommended)</option>
-      <option value="Sdk">SDK (Codex SDK, not recommended)</option>
-    </select>
-    <p class="text-xs text-text-muted mt-1">
-      {#if $settings.codex_mode === "AppServer"}
-        Uses Codex App Server JSON-RPC over stdio in the integrated session
-        view.
-      {:else if $settings.codex_mode === "Sdk"}
-        Uses the integrated Codex SDK session view with structured tool events.
-        Codex SDK mode is not recommended.
-      {/if}
-    </p>
-  </div>
-
   <!-- Enabled Models -->
   <div>
     <h3 class="text-sm font-medium text-text-primary mb-2">Enabled Models</h3>
@@ -297,23 +273,5 @@
         </button>
       {/each}
     </div>
-  </div>
-
-  <!-- Default Model -->
-  <div class="border-t border-border pt-4 mt-4">
-    <label class="block text-sm font-medium text-text-secondary mb-1"
-      >Default Model</label
-    >
-    <select
-      class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-      bind:value={$settings.openai_model}
-    >
-      {#each OPENAI_MODELS.filter((m) => isModelEnabled(m.id)) as model}
-        <option value={model.id}>{model.label} - {model.title}</option>
-      {/each}
-    </select>
-    <p class="text-xs text-text-muted mt-1">
-      Default model for new Codex sessions.
-    </p>
   </div>
 </div>

@@ -331,9 +331,9 @@ impl SessionIndex {
             match fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str(&content) {
                     Ok(index) => return index,
-                    Err(e) => eprintln!("[session_persistence] Failed to parse index: {}", e),
+                    Err(e) => log::error!("[session_persistence] Failed to parse index: {}", e),
                 },
-                Err(e) => eprintln!("[session_persistence] Failed to read index: {}", e),
+                Err(e) => log::error!("[session_persistence] Failed to read index: {}", e),
             }
         }
 
@@ -410,7 +410,7 @@ impl SessionIndex {
                 "sdk" => {
                     match self.load_session_data::<PersistedSdkSession>(&entry.id) {
                         Ok(session) => sdk_sessions.push(session),
-                        Err(e) => eprintln!(
+                        Err(e) => log::error!(
                             "[session_persistence] Skipping SDK session {}: {}",
                             entry.id, e
                         ),
@@ -419,7 +419,7 @@ impl SessionIndex {
                 "pty" => {
                     match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
                         Ok(session) => terminal_sessions.push(session),
-                        Err(e) => eprintln!(
+                        Err(e) => log::error!(
                             "[session_persistence] Skipping PTY session {}: {}",
                             entry.id, e
                         ),
@@ -466,7 +466,7 @@ impl SessionIndex {
             .collect();
         for id in &stale_ids {
             if let Err(e) = Self::delete_session_data(id) {
-                eprintln!(
+                log::error!(
                     "[session_persistence] Failed to delete stale session {}: {}",
                     id, e
                 );
@@ -534,7 +534,7 @@ impl SessionIndex {
                 "sdk" => {
                     match self.load_session_data::<PersistedSdkSession>(&entry.id) {
                         Ok(session) => overflow_sdk.push(session),
-                        Err(e) => eprintln!(
+                        Err(e) => log::error!(
                             "[session_persistence] Failed to load overflow SDK session {}: {}",
                             entry.id, e
                         ),
@@ -543,7 +543,7 @@ impl SessionIndex {
                 "pty" => {
                     match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
                         Ok(session) => overflow_terminal.push(session),
-                        Err(e) => eprintln!(
+                        Err(e) => log::error!(
                             "[session_persistence] Failed to load overflow PTY session {}: {}",
                             entry.id, e
                         ),
@@ -553,7 +553,7 @@ impl SessionIndex {
             }
             // Delete the data file for the overflow session
             if let Err(e) = Self::delete_session_data(&entry.id) {
-                eprintln!(
+                log::error!(
                     "[session_persistence] Failed to delete overflow session file {}: {}",
                     entry.id, e
                 );
@@ -590,12 +590,12 @@ impl SessionIndex {
             return None;
         }
 
-        eprintln!("[session_persistence] Migrating from legacy sessions file...");
+        log::error!("[session_persistence] Migrating from legacy sessions file...");
 
         let content = match fs::read_to_string(&legacy_path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!(
+                log::error!(
                     "[session_persistence] Failed to read legacy sessions file: {}",
                     e
                 );
@@ -606,7 +606,7 @@ impl SessionIndex {
         let old_data: PersistedSessions = match serde_json::from_str(&content) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!(
+                log::error!(
                     "[session_persistence] Failed to parse legacy sessions file: {}",
                     e
                 );
@@ -625,7 +625,7 @@ impl SessionIndex {
 
         // Ensure directories exist
         if let Err(e) = fs::create_dir_all(Self::data_dir()) {
-            eprintln!(
+            log::error!(
                 "[session_persistence] Failed to create data dir during migration: {}",
                 e
             );
@@ -635,7 +635,7 @@ impl SessionIndex {
         // Write each SDK session to its own file
         for sdk in &old_data.sdk_sessions {
             if let Err(e) = index.save_session_data(&sdk.id, sdk) {
-                eprintln!(
+                log::error!(
                     "[session_persistence] Failed to migrate SDK session {}: {}",
                     sdk.id, e
                 );
@@ -647,7 +647,7 @@ impl SessionIndex {
         // Write each terminal session to its own file
         for pty in &old_data.terminal_sessions {
             if let Err(e) = index.save_session_data(&pty.id, pty) {
-                eprintln!(
+                log::error!(
                     "[session_persistence] Failed to migrate PTY session {}: {}",
                     pty.id, e
                 );
@@ -658,7 +658,7 @@ impl SessionIndex {
 
         // Save the new index
         if let Err(e) = index.save() {
-            eprintln!(
+            log::error!(
                 "[session_persistence] Failed to save index during migration: {}",
                 e
             );
@@ -667,14 +667,14 @@ impl SessionIndex {
 
         // Delete the old file after successful migration
         if let Err(e) = fs::remove_file(&legacy_path) {
-            eprintln!(
+            log::error!(
                 "[session_persistence] Failed to delete legacy sessions file: {}",
                 e
             );
             // Non-fatal: migration was successful, just couldn't clean up
         }
 
-        eprintln!(
+        log::error!(
             "[session_persistence] Migration complete: {} sessions migrated",
             index.entries.len()
         );

@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
-  import { sdkSessions, activeSdkSessionId, settingsToStoreEffort } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
-  import { activeRepo } from '$lib/stores/repos';
-  import { DEFAULT_OPENAI_MODEL_ID } from '$lib/utils/models';
   import type { DisplaySession } from '$lib/types/session';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
+  import { formatHotkeyForDisplay } from '$lib/utils/hotkeys';
+  import { createAndActivateNewSession } from '$lib/utils/sessionCreation';
   import {
     transformToDisplaySessions,
     fetchBranchesForSessions,
@@ -107,28 +107,7 @@
 
   // Session creation - creates a setup session that appears in the list
   function createNewSession() {
-    const terminalMode = getEffectiveTerminalMode($settings);
-    if (terminalMode === 'Sdk') {
-      const provider = $settings.sdk_provider === 'OpenAI' ? 'openai' : 'claude';
-      const model = provider === 'openai'
-        ? ($settings.openai_model || DEFAULT_OPENAI_MODEL_ID)
-        : $settings.default_model;
-      const effortLevel = settingsToStoreEffort($settings.default_effort_level);
-      // Create a setup session - user will configure it before starting
-      const sessionId = sdkSessions.createSetupSession(model, effortLevel, false, provider);
-      activeSdkSessionId.set(sessionId);
-      activeSessionId.set(null);
-      window.dispatchEvent(new CustomEvent('switch-to-sessions'));
-    } else {
-      // For PTY mode, still create interactive session directly
-      sessions.createInteractiveSession().then(sessionId => {
-        activeSessionId.set(sessionId);
-        activeSdkSessionId.set(null);
-        window.dispatchEvent(new CustomEvent('switch-to-sessions'));
-      }).catch(error => {
-        console.error('Failed to create session:', error);
-      });
-    }
+    createAndActivateNewSession();
   }
 
   // Track active session IDs reactively for proper UI updates
@@ -254,12 +233,18 @@
     <button
       class="w-full p-3 border-b border-border text-left hover:bg-surface-elevated transition-colors flex items-center gap-2 text-accent"
       onclick={createNewSession}
+      title={`${
+        getEffectiveTerminalMode($settings) === 'Sdk' ? 'New Session' : 'New Terminal'
+      } (${formatHotkeyForDisplay($settings.hotkeys.new_session)})`}
     >
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
       </svg>
       <span class="text-sm font-medium">
         {getEffectiveTerminalMode($settings) === 'Sdk' ? 'New Session' : 'New Terminal'}
+      </span>
+      <span class="ml-auto text-xs text-text-muted font-mono">
+        {formatHotkeyForDisplay($settings.hotkeys.new_session)}
       </span>
     </button>
 
@@ -289,8 +274,8 @@
           {now}
           showLatestMessage={$settings.show_latest_message_preview}
           showSessionSummary={$settings.show_session_summary}
-          promptRows={$settings.session_prompt_rows}
-          responseRows={$settings.session_response_rows}
+          promptRows={2}
+          responseRows={2}
           onselect={() => selectSession(session)}
           onclose={(e) => closeSession(session, e)}
         />

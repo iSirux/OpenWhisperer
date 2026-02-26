@@ -120,7 +120,7 @@ pub async fn generate_worktree_branch_name(
                     // If LLM returned something invalid, fall through to fallback
                 }
                 Err(e) => {
-                    eprintln!("[git] LLM branch name generation failed: {}", e);
+                    log::error!("[git] LLM branch name generation failed: {}", e);
                     // Fall through to fallback
                 }
             }

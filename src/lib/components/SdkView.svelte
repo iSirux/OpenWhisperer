@@ -33,6 +33,11 @@
   import EffortToggle from "./EffortToggle.svelte";
   import RepoSelector from "./RepoSelector.svelte";
   import {
+    processSdkMessages,
+    buildRenderItems,
+    type RenderItem,
+  } from "./sdk/sdkViewMessageProcessing";
+  import {
     recommendModel,
     recommendRepo,
     isModelRecommendationEnabled,
@@ -54,347 +59,23 @@
   let session = $state<SdkSession | null>(null);
   let unsubscribe: (() => void) | undefined;
 
-  // Track scroll positions per session (module-level to persist across component re-renders)
-  const scrollPositions = new Map<string, number>();
+  // Persist across SdkView component remounts (session switches can recreate component instances).
+  type SessionScrollState = { scrollTop: number; stickToBottom: boolean };
+  const globalScrollStateKey =
+    "__claudeWhispererSdkViewScrollStates__" as const;
+  type GlobalWithSdkScrollStates = typeof globalThis & {
+    [globalScrollStateKey]?: Map<string, SessionScrollState>;
+  };
+  const scrollStates =
+    (globalThis as GlobalWithSdkScrollStates)[globalScrollStateKey] ??
+    (((globalThis as GlobalWithSdkScrollStates)[globalScrollStateKey] =
+      new Map<string, SessionScrollState>()));
 
   let messages = $derived(session?.messages ?? []);
-
-  // Process messages to merge tool_start/tool_result pairs
-  // - Skip tool_start if there's a matching tool_result
-  // - Copy input from tool_start to tool_result for display
-  // - Completed tools are shown in the order they STARTED, not completed
-  // - Supports both toolUseId matching (new) and sequential matching (legacy sessions)
-  let processedMessages = $derived(() => {
-    const result: SdkMessage[] = [];
-    const msgs = messages;
-
-    // Check if this session has toolUseIds (new format) or not (legacy)
-    const hasToolUseIds = msgs.some((m) => m.toolUseId);
-
-    if (hasToolUseIds) {
-      // NEW FORMAT: Match by toolUseId
-      // Build a map of toolUseId -> tool_result message
-      const toolResults = new Map<string, SdkMessage>();
-      for (const msg of msgs) {
-        if (msg.type === "tool_result" && msg.toolUseId) {
-          toolResults.set(msg.toolUseId, msg);
-        }
-      }
-
-      // Build a map of toolUseId -> input from tool_start
-      const toolInputs = new Map<string, Record<string, unknown>>();
-      for (const msg of msgs) {
-        if (msg.type === "tool_start" && msg.toolUseId && msg.input) {
-          toolInputs.set(msg.toolUseId, msg.input);
-        }
-      }
-
-      // Track which tool_results we've already output (to avoid duplicates)
-      const outputToolIds = new Set<string>();
-
-      for (const msg of msgs) {
-        if (msg.type === "tool_start") {
-          // Check if this tool has a result
-          if (msg.toolUseId && toolResults.has(msg.toolUseId)) {
-            // Tool completed - output the result at the START position (preserving start order)
-            const resultMsg = toolResults.get(msg.toolUseId)!;
-            const input = toolInputs.get(msg.toolUseId);
-            result.push({ ...resultMsg, input });
-            outputToolIds.add(msg.toolUseId);
-          } else {
-            // Tool still running - show tool_start
-            result.push(msg);
-          }
-        } else if (msg.type === "tool_result") {
-          // Skip tool_results here - they're output at tool_start position above
-          // (Unless it wasn't matched, which shouldn't happen but handle gracefully)
-          if (!msg.toolUseId || !outputToolIds.has(msg.toolUseId)) {
-            const input = msg.toolUseId
-              ? toolInputs.get(msg.toolUseId)
-              : undefined;
-            result.push({ ...msg, input });
-          }
-        } else {
-          result.push(msg);
-        }
-      }
-    } else {
-      // LEGACY FORMAT: Match sequentially by tool name
-      // For each tool_start at index i, check if there's a tool_result for the same tool after it
-      for (let i = 0; i < msgs.length; i++) {
-        const msg = msgs[i];
-
-        if (msg.type === "tool_start") {
-          // Look for the next tool_result with the same tool name
-          let hasResult = false;
-          let resultIndex = -1;
-          for (let j = i + 1; j < msgs.length; j++) {
-            if (msgs[j].type === "tool_result" && msgs[j].tool === msg.tool) {
-              hasResult = true;
-              resultIndex = j;
-              break;
-            }
-            // Stop if we hit another tool_start for the same tool (parallel calls)
-            if (msgs[j].type === "tool_start" && msgs[j].tool === msg.tool) {
-              break;
-            }
-          }
-          // Only show tool_start if it doesn't have a result yet
-          if (!hasResult) {
-            result.push(msg);
-          }
-        } else if (msg.type === "tool_result") {
-          // Find the matching tool_start to get its input
-          let toolInput: Record<string, unknown> | undefined;
-          for (let j = i - 1; j >= 0; j--) {
-            if (msgs[j].type === "tool_start" && msgs[j].tool === msg.tool) {
-              toolInput = msgs[j].input;
-              break;
-            }
-          }
-          result.push({ ...msg, input: toolInput });
-        } else {
-          result.push(msg);
-        }
-      }
-    }
-
-    return result;
-  });
-
-  // Group messages for rendering based on tool_display_mode setting
-  // Returns an array of render items: single messages, tool groups, or task blocks
-  type RenderItem =
-    | { type: "message"; message: SdkMessage }
-    | { type: "tool_group"; tools: SdkMessage[] }
-    | {
-        type: "task";
-        taskStarted: SdkMessage;
-        children: SdkMessage[];
-        taskCompleted?: SdkMessage;
-      };
-
-  let renderItems = $derived(() => {
-    // Filter out internal lifecycle markers that should not render in the chat body.
-    const msgs = processedMessages().filter(
-      (msg) => msg.type !== "subagent_stop" && msg.type !== "done",
-    );
-    const isGridMode = $settings.tool_display_mode === "grid";
-
-    // Build task grouping data structures
-    // The SDK sends task_started system messages AFTER the task completes, so we
-    // cannot rely on them for grouping. Instead, we use the Task tool call itself
-    // (tool_start/tool_result with tool === "Task") which arrives immediately.
-    // task_started/task_completed are merged in for metadata (description, usage).
-
-    // Maps toolUseId -> task_started system message (arrives late, used for metadata)
-    const taskStartMap = new Map<string, SdkMessage>();
-    // Maps toolUseId -> task_completed system message
-    const taskCompletedMap = new Map<string, SdkMessage>();
-    // Maps toolUseId -> child messages (those with matching parentToolUseId)
-    const taskChildrenMap = new Map<string, SdkMessage[]>();
-    // Set of toolUseIds that are task containers (for quick lookup)
-    const knownTaskToolUseIds = new Set<string>();
-
-    // Step 1: Find top-level Task tool calls (tool_start or merged tool_result for "Task")
-    // These arrive immediately when the agent calls the Task tool, unlike task_started
-    for (const msg of msgs) {
-      if (
-        (msg.type === "tool_start" || msg.type === "tool_result") &&
-        msg.tool === "Task" &&
-        !msg.parentToolUseId &&
-        msg.toolUseId
-      ) {
-        knownTaskToolUseIds.add(msg.toolUseId);
-        if (!taskChildrenMap.has(msg.toolUseId)) {
-          taskChildrenMap.set(msg.toolUseId, []);
-        }
-      }
-    }
-
-    // Step 2: Also register task_started/task_completed for metadata enrichment
-    for (const msg of msgs) {
-      if (msg.type === "task_started" && msg.toolUseId) {
-        taskStartMap.set(msg.toolUseId, msg);
-        // Also register as task container (fallback if Task tool call was missed)
-        knownTaskToolUseIds.add(msg.toolUseId);
-        if (!taskChildrenMap.has(msg.toolUseId)) {
-          taskChildrenMap.set(msg.toolUseId, []);
-        }
-      }
-      if (msg.type === "task_completed" && msg.toolUseId) {
-        taskCompletedMap.set(msg.toolUseId, msg);
-      }
-    }
-
-    // Step 2.5: Detect task containers from parentToolUseId references.
-    // If any message references a parentToolUseId, that parent is a task container
-    // even if we didn't see a matching Task tool call (e.g. timing edge cases,
-    // persisted sessions with missing properties, or renamed tools).
-    for (const msg of msgs) {
-      if (msg.parentToolUseId && !knownTaskToolUseIds.has(msg.parentToolUseId)) {
-        knownTaskToolUseIds.add(msg.parentToolUseId);
-        if (!taskChildrenMap.has(msg.parentToolUseId)) {
-          taskChildrenMap.set(msg.parentToolUseId, []);
-        }
-      }
-    }
-
-    // Step 3: Collect child messages into their parent task
-    for (const msg of msgs) {
-      if (msg.parentToolUseId && knownTaskToolUseIds.has(msg.parentToolUseId)) {
-        if (!taskChildrenMap.has(msg.parentToolUseId)) {
-          taskChildrenMap.set(msg.parentToolUseId, []);
-        }
-        taskChildrenMap.get(msg.parentToolUseId)!.push(msg);
-      }
-    }
-
-    // Step 4: Filter main stream messages
-    const mainStreamMsgs = msgs.filter((msg) => {
-      // Exclude child messages of tasks
-      if (msg.parentToolUseId && knownTaskToolUseIds.has(msg.parentToolUseId))
-        return false;
-      // Exclude task_started (consumed by task block at Task tool position)
-      if (msg.type === "task_started") return false;
-      // Exclude task_completed (merged into task render items)
-      if (msg.type === "task_completed") return false;
-      // Always exclude subagent_start - it's redundant with task blocks, and when
-      // task detection fails it renders as a misleading perpetual "Running" flat line
-      if (msg.type === "subagent_start") return false;
-      return true;
-    });
-
-    // Track which task containers have been rendered (for orphan detection)
-    const renderedTaskIds = new Set<string>();
-
-    // Step 5: Build render items
-    const items: RenderItem[] = [];
-    let currentToolGroup: SdkMessage[] = [];
-
-    for (const msg of mainStreamMsgs) {
-      // Detect Task tool calls and render as task blocks.
-      // Match by tool name "Task" OR by toolUseId being a known task container
-      // (detected via child message parentToolUseId references in Step 2.5).
-      const isTaskToolCall =
-        (msg.type === "tool_start" || msg.type === "tool_result") &&
-        !msg.parentToolUseId &&
-        msg.toolUseId &&
-        (msg.tool === "Task" || knownTaskToolUseIds.has(msg.toolUseId));
-
-      if (isTaskToolCall) {
-        // Flush any pending tool group
-        if (currentToolGroup.length > 0 && isGridMode) {
-          items.push({ type: "tool_group", tools: [...currentToolGroup] });
-          currentToolGroup = [];
-        }
-
-        const toolUseId = msg.toolUseId!;
-        const taskStartMsg = taskStartMap.get(toolUseId);
-        const taskCompletedMsg = taskCompletedMap.get(toolUseId);
-        const taskInput = msg.input as Record<string, unknown> | undefined;
-
-        // Build taskStarted: merge real task_started with tool input data.
-        // The SDK's task_type is internal (e.g. "local_agent") - prefer subagent_type from tool input.
-        const inputTaskType = taskInput?.subagent_type as string | undefined;
-        const inputDescription =
-          (taskInput?.description as string) ||
-          (taskInput?.prompt as string) ||
-          "";
-        const effectiveTaskStarted: SdkMessage = taskStartMsg
-          ? {
-              ...taskStartMsg,
-              taskType: inputTaskType || taskStartMsg.taskType,
-              description: taskStartMsg.description || inputDescription,
-            }
-          : {
-              type: "task_started" as const,
-              toolUseId,
-              description: inputDescription,
-              taskType: inputTaskType,
-              taskId: toolUseId,
-              timestamp: msg.timestamp,
-            };
-
-        // Build taskCompleted: use real task_completed if available,
-        // else if the Task tool has a result (tool_result), it's done
-        const effectiveTaskCompleted: SdkMessage | undefined =
-          taskCompletedMsg ||
-          (msg.type === "tool_result"
-            ? {
-                type: "task_completed" as const,
-                toolUseId,
-                taskStatus: "completed",
-                summary: "",
-                timestamp: msg.timestamp,
-              }
-            : undefined);
-
-        renderedTaskIds.add(toolUseId);
-        items.push({
-          type: "task",
-          taskStarted: effectiveTaskStarted,
-          children: taskChildrenMap.get(toolUseId) || [],
-          taskCompleted: effectiveTaskCompleted,
-        });
-      } else if (isGridMode) {
-        const isToolMessage =
-          msg.type === "tool_start" ||
-          msg.type === "tool_result" ||
-          msg.type === "thinking";
-        if (isToolMessage) {
-          currentToolGroup.push(msg);
-        } else {
-          if (currentToolGroup.length > 0) {
-            items.push({ type: "tool_group", tools: [...currentToolGroup] });
-            currentToolGroup = [];
-          }
-          items.push({ type: "message", message: msg });
-        }
-      } else {
-        items.push({ type: "message", message: msg });
-      }
-    }
-
-    // Flush remaining tool group
-    if (currentToolGroup.length > 0 && isGridMode) {
-      items.push({ type: "tool_group", tools: currentToolGroup });
-    }
-
-    // Step 6: Handle orphaned task containers.
-    // These are task containers detected via parentToolUseId (Step 2.5) or
-    // task_started (Step 2) that had no matching tool call in the main stream.
-    // Without this, their children would be filtered from the main stream but
-    // never displayed in any task block.
-    for (const taskId of knownTaskToolUseIds) {
-      if (renderedTaskIds.has(taskId)) continue;
-      const children = taskChildrenMap.get(taskId) || [];
-      if (children.length === 0 && !taskStartMap.has(taskId) && !taskCompletedMap.has(taskId)) continue;
-
-      const taskStartMsg = taskStartMap.get(taskId);
-      const taskCompletedMsg = taskCompletedMap.get(taskId);
-
-      const effectiveTaskStarted: SdkMessage = taskStartMsg
-        ? { ...taskStartMsg }
-        : {
-            type: "task_started" as const,
-            toolUseId: taskId,
-            description: "",
-            taskType: undefined,
-            taskId: taskId,
-            timestamp: children[0]?.timestamp ?? Date.now(),
-          };
-
-      items.push({
-        type: "task",
-        taskStarted: effectiveTaskStarted,
-        children,
-        taskCompleted: taskCompletedMsg,
-      });
-    }
-
-    return items;
-  });
+  let processedMessages = $derived(processSdkMessages(messages));
+  let renderItems = $derived(
+    buildRenderItems(processedMessages, $settings.tool_display_mode === "grid"),
+  );
 
   let status = $derived(session?.status ?? "idle");
   let isQuerying = $derived(status === "querying");
@@ -407,7 +88,10 @@
   let preparedRepoRecommendation = $derived(
     session?.preparedRepoRecommendation,
   );
-  let isLoading = $derived(isQuerying || isInitializing);
+  // Note: isLoading is suppressed when the session is waiting for user input
+  // (plan approval or AskUserQuestion) to avoid showing a spinner alongside the dialog.
+  let isWaitingForUserInput = $derived(!!session?.pendingPlanApproval || !!(session?.askUserQuestion?.questions?.length));
+  let isLoading = $derived((isQuerying || isInitializing) && !isWaitingForUserInput);
 
   // Plan mode state (must be defined before showQuickActions which uses isPlanMode)
   let planMode = $derived(session?.planMode);
@@ -481,6 +165,27 @@
   // Plan approval state (ExitPlanMode interception)
   let pendingPlanApproval = $derived(session?.pendingPlanApproval);
   let hasPlanApproval = $derived(!!pendingPlanApproval);
+  let planApprovalAnchorIndex = $derived.by(() => {
+    if (!hasPlanApproval || !pendingPlanApproval) return -1;
+
+    const isExitPlanModeToolMessage = (msg: SdkMessage) =>
+      (msg.type === "tool_start" || msg.type === "tool_result") &&
+      msg.tool === "ExitPlanMode";
+
+    // Prefer anchoring directly after ExitPlanMode, since that tool triggers plan approval.
+    for (let i = renderItems.length - 1; i >= 0; i -= 1) {
+      const item = renderItems[i];
+      if (
+        (item.type === "message" && isExitPlanModeToolMessage(item.message)) ||
+        (item.type === "tool_group" &&
+          item.tools.some((toolMsg) => isExitPlanModeToolMessage(toolMsg)))
+      ) {
+        return i;
+      }
+    }
+
+    return -1;
+  });
 
   // Show completed recording header when we have recording data but session is no longer pending
   let hasCompletedRecordingData = $derived(
@@ -508,13 +213,42 @@
 
   // Track previous session ID to save draft and scroll position before switching
   let prevSessionId = $state(sessionId);
+  let restoredSessionId = $state<string | null>(null);
+
+  function persistCurrentScrollState(targetSessionId = sessionId) {
+    if (!messagesEl) return;
+    const threshold = 100;
+    const distanceFromBottom =
+      messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+    const stickToBottom = distanceFromBottom < threshold;
+    scrollStates.set(targetSessionId, {
+      scrollTop: messagesEl.scrollTop,
+      stickToBottom,
+    });
+  }
+
+  async function restoreScrollState(targetSessionId = sessionId) {
+    if (!messagesEl) return;
+    await tick();
+    const savedState = scrollStates.get(targetSessionId);
+    if (savedState) {
+      messagesEl.scrollTop = savedState.stickToBottom
+        ? messagesEl.scrollHeight
+        : savedState.scrollTop;
+    } else {
+      // No saved position - scroll to bottom for new sessions
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      persistCurrentScrollState(targetSessionId);
+    }
+    checkIfNearBottom();
+  }
 
   // Save draft and scroll position to old session before switching to new session
   $effect(() => {
     if (sessionId !== prevSessionId) {
       // Save scroll position for the OLD session
       if (messagesEl) {
-        scrollPositions.set(prevSessionId, messagesEl.scrollTop);
+        persistCurrentScrollState(prevSessionId);
       }
 
       // Save draft to the OLD session
@@ -529,22 +263,21 @@
         }
       }
       prevSessionId = sessionId;
+      restoredSessionId = null;
 
       // Restore scroll position for the NEW session after DOM updates
-      tick().then(() => {
-        if (messagesEl) {
-          const savedPosition = scrollPositions.get(sessionId);
-          if (savedPosition !== undefined) {
-            messagesEl.scrollTop = savedPosition;
-          } else {
-            // No saved position - scroll to bottom for new sessions
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-          }
-          // Update userIsNearBottom based on restored position
-          checkIfNearBottom();
-        }
+      restoreScrollState(sessionId).then(() => {
+        restoredSessionId = sessionId;
       });
     }
+  });
+
+  // Initial mount/restoration path for the currently active session.
+  $effect(() => {
+    if (!messagesEl || restoredSessionId === sessionId) return;
+    restoreScrollState(sessionId).then(() => {
+      restoredSessionId = sessionId;
+    });
   });
 
   // Repo and branch info
@@ -678,11 +411,11 @@
   });
 
   onDestroy(() => {
+    persistCurrentScrollState(sessionId);
     unsubscribe?.();
   });
 
-  // Auto-scroll on new messages, but only if user is near the bottom
-  let prevMessageCount = $state(0);
+  // Keep bottom lock behavior when new content arrives.
   let userIsNearBottom = $state(true);
   let showGoToTop = $state(false);
   const GO_TO_TOP_SCROLL_THRESHOLD = 300;
@@ -694,6 +427,7 @@
       messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
     userIsNearBottom = distanceFromBottom < threshold;
     showGoToTop = messagesEl.scrollTop > GO_TO_TOP_SCROLL_THRESHOLD;
+    persistCurrentScrollState(sessionId);
   }
 
   function scrollToTop() {
@@ -708,16 +442,39 @@
   }
 
   $effect(() => {
-    const currentCount = messages.length;
-    const hasNewMessages = currentCount > prevMessageCount;
+    // Re-run when messages or rendered content shape changes.
+    const _messagesLength = messages.length;
+    const _renderItemCount = renderItems.length;
+    const _lastMessage = messages.length ? messages[messages.length - 1] : null;
+    const _lastContent = _lastMessage?.content ?? _lastMessage?.output ?? "";
 
-    if (hasNewMessages && userIsNearBottom && messagesEl) {
-      tick().then(() => {
+    if (!messagesEl) return;
+    const state = scrollStates.get(sessionId);
+    const shouldStick = state?.stickToBottom ?? userIsNearBottom;
+    if (!shouldStick) return;
+
+    tick().then(() => {
+      if (!messagesEl) return;
+      const latest = scrollStates.get(sessionId);
+      if (latest?.stickToBottom ?? true) {
         messagesEl.scrollTop = messagesEl.scrollHeight;
+        checkIfNearBottom();
+      }
+    });
+  });
+
+  // Auto-scroll when the session starts waiting for user input (plan approval / AskUserQuestion).
+  // These dialogs render below the messages but no new message is added, so the regular
+  // auto-scroll doesn't trigger. Without this the dialog may appear just below the fold.
+  let prevWaitingForInput = $state(false);
+  $effect(() => {
+    const waiting = isWaitingForUserInput;
+    if (waiting && !prevWaitingForInput && messagesEl) {
+      tick().then(() => {
+        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
       });
     }
-
-    prevMessageCount = currentCount;
+    prevWaitingForInput = waiting;
   });
 
   // Smart status based on recent messages and session state
@@ -889,6 +646,10 @@
 
   // Prompt handling
   async function handleSendPrompt(prompt: string, images?: SdkImageContent[]) {
+    // Clear completion metadata immediately so prior outcome/actions don't linger
+    // while pre-send recommendation calls are running.
+    sdkSessions.clearAiCompletionMetadata(sessionId);
+
     const isFirstPrompt =
       messages.filter((m) => m.type === "user").length === 0;
 
@@ -1333,8 +1094,8 @@
   }
 
   // Plan approval handlers
-  function handleApprovePlan() {
-    sdkSessions.approvePlan(sessionId);
+  function handleApprovePlan(feedback?: string) {
+    sdkSessions.approvePlan(sessionId, feedback);
   }
   function handleApprovePlanNewSession() {
     sdkSessions.approvePlanNewSession(sessionId);
@@ -1416,9 +1177,9 @@
         />
       {/if}
 
-      {#each renderItems() as item, index (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || index}` : `tool-group-${index}`)}
+      {#each renderItems as item, index (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || index}` : `tool-group-${index}`)}
         {@const isForked = isForkedContextItem(item)}
-        {@const showForkDivider = !isForked && forkedMessageCount > 0 && index > 0 && (() => { const prevItem = renderItems()[index - 1]; return prevItem ? isForkedContextItem(prevItem) : false; })()}
+        {@const showForkDivider = !isForked && forkedMessageCount > 0 && index > 0 && (() => { const prevItem = renderItems[index - 1]; return prevItem ? isForkedContextItem(prevItem) : false; })()}
         {#if showForkDivider}
           <div class="fork-divider">
             <span class="fork-divider-line"></span>
@@ -1463,6 +1224,15 @@
           />
           </div>
         {/if}
+
+        {#if hasPlanApproval && pendingPlanApproval && index === planApprovalAnchorIndex}
+          <PlanApprovalDialog
+            {pendingPlanApproval}
+            onApprove={handleApprovePlan}
+            onApproveNewSession={handleApprovePlanNewSession}
+            onDeny={handleDenyPlan}
+          />
+        {/if}
       {/each}
 
       {#if isLoading}
@@ -1498,7 +1268,7 @@
         />
       {/if}
 
-      {#if hasPlanApproval && pendingPlanApproval}
+      {#if hasPlanApproval && pendingPlanApproval && planApprovalAnchorIndex === -1}
         <PlanApprovalDialog
           {pendingPlanApproval}
           onApprove={handleApprovePlan}

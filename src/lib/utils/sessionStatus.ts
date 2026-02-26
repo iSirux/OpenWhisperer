@@ -75,6 +75,7 @@ export function getStatusColor(status: string): string {
     case 'Completed':
     case 'idle':
     case 'done':
+    case 'stopped':
     case 'seq_completed':
       return 'text-blue-400';
     case 'new':
@@ -124,6 +125,7 @@ export function getStatusBgColor(status: string): string {
     case 'Completed':
     case 'idle':
     case 'done':
+    case 'stopped':
     case 'seq_completed':
       return 'bg-blue-400';
     case 'new':
@@ -274,6 +276,8 @@ export function getStatusLabel(status: string, detail?: string): string {
       return 'Responding';
     case 'idle':
       return 'Ready';
+    case 'stopped':
+      return 'Stopped';
     case 'done':
     case 'Completed':
     case 'seq_completed':
@@ -334,7 +338,7 @@ export function isActivelyWorking(status: string): boolean {
  * Check if a status indicates the session is finished
  */
 export function isFinishedStatus(status: string): boolean {
-  return ['done', 'idle', 'error', 'new', 'Completed', 'Failed', 'seq_completed', 'seq_failed', 'seq_cancelled'].includes(status);
+  return ['done', 'stopped', 'idle', 'error', 'new', 'Completed', 'Failed', 'seq_completed', 'seq_failed', 'seq_cancelled'].includes(status);
 }
 
 /**
@@ -368,6 +372,7 @@ export function getStatusSortOrder(status: string): number {
     case 'seq_paused':
       return 1;
     case 'Completed':
+    case 'stopped':
     case 'done':
     case 'seq_completed':
       return 2;

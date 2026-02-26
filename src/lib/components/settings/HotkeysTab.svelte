@@ -107,6 +107,25 @@
     />
   </div>
 
+  <!-- New Session -->
+  <div class="border-t border-border pt-4">
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">New Session (In-App)</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.new_session}
+      />
+    </div>
+    <p class="text-xs text-text-muted mb-2">
+      While ClaudeWhisperer is focused, creates a new session.
+    </p>
+    <HotkeyInput
+      bind:value={$settings.hotkeys.new_session}
+      enabled={$settings.hotkeys_enabled.new_session}
+    />
+  </div>
+
   {#if noteModeAvailable}
     <!-- Note Mode -->
     <div class="border-t border-border pt-4">

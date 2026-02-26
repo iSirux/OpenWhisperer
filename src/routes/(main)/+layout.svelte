@@ -28,6 +28,8 @@
   import { loadSequences } from '$lib/stores/sequences';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import { type VoiceCommandType } from '$lib/utils/voiceCommands';
+  import { eventMatchesHotkey, isEditableElement } from '$lib/utils/hotkeys';
+  import { createAndActivateNewSession } from '$lib/utils/sessionCreation';
 
   // Composables (now layout-level — survive route changes)
   import { useHotkeyManager } from '$lib/composables/useHotkeyManager.svelte';
@@ -109,6 +111,16 @@
   // Helper: show sessions view
   function showSessionsView() {
     navigation.setView('sessions');
+  }
+
+  function handleAppKeydown(event: KeyboardEvent): void {
+    if (event.repeat) return;
+    if (!$settings.hotkeys_enabled.new_session) return;
+    if (isEditableElement(event.target)) return;
+    if (!eventMatchesHotkey(event, $settings.hotkeys.new_session)) return;
+
+    event.preventDefault();
+    void createAndActivateNewSession();
   }
 
   onMount(async () => {
@@ -212,7 +224,10 @@
   });
 </script>
 
+<svelte:window onkeydown={handleAppKeydown} />
+
 <div class="app-container h-screen flex flex-col bg-background">
+
   {#if !$configLoadedOk}
     <div class="config-warning bg-red-900/80 text-red-100 px-4 py-2 text-sm flex items-center gap-2 border-b border-red-700">
       <span class="font-bold">Warning:</span>

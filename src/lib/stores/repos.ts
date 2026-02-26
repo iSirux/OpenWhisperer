@@ -5,6 +5,8 @@ import { emit } from "@tauri-apps/api/event";
 // ---- Types ----
 
 export interface RepoConfig {
+  /** Stable unique identifier for this repository (auto-generated UUID) */
+  id?: string;
   path: string;
   name: string;
   /** Auto-generated description of the repository for auto-selection */
@@ -37,6 +39,12 @@ export interface RepoConfig {
 /** Helper: treat undefined/missing active field as true for backward compatibility */
 export function isRepoActive(repo: RepoConfig): boolean {
   return repo.active !== false;
+}
+
+/** Look up a RepoConfig by its stable unique ID. Returns null if not found. */
+export function findRepoById(repos: RepoConfig[], id: string | undefined): RepoConfig | null {
+  if (!id) return null;
+  return repos.find((r) => r.id === id) ?? null;
 }
 
 // ---- Store State ----
@@ -136,10 +144,15 @@ function createReposStore() {
     /** Update the full repos list and persist via save_config */
     async updateList(repos: RepoConfig[]) {
       try {
+        // Ensure all repos have IDs (handles frontend-created repos)
+        const reposWithIds = repos.map((r) => ({
+          ...r,
+          id: r.id || crypto.randomUUID(),
+        }));
         const fullConfig = await invoke<Record<string, unknown>>("get_config");
-        fullConfig.repos = repos;
+        fullConfig.repos = reposWithIds;
         await invoke("save_config", { newConfig: fullConfig });
-        update((s) => ({ ...s, list: repos }));
+        update((s) => ({ ...s, list: reposWithIds }));
         emit("settings-changed");
       } catch (error) {
         console.error("[repos] Failed to update repos list:", error);

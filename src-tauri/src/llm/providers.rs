@@ -233,11 +233,11 @@ impl LlmClient {
                 match self.try_gemini_model(model, prompt, &schema).await {
                     Ok((text, usage)) => {
                         // Log which model succeeded (helpful for debugging)
-                        eprintln!("[gemini] Request succeeded with model: {}", model);
+                        log::error!("[gemini] Request succeeded with model: {}", model);
                         return Ok((text, usage));
                     }
                     Err(e) => {
-                        eprintln!("[gemini] Model {} failed, trying next: {}", model, e);
+                        log::error!("[gemini] Model {} failed, trying next: {}", model, e);
                         last_error = e;
                     }
                 }

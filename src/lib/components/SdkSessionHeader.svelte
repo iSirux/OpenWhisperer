@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
-  import { repos } from '$lib/stores/repos';
+  import { repos, findRepoById } from '$lib/stores/repos';
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
   import type { EffortLevel } from '$lib/stores/sdkSessions';
 
@@ -19,6 +19,8 @@
     messages?: Message[];
     isPending?: boolean;
     repoName?: string;
+    repoId?: string;
+    /** Working directory — may be a worktree path different from the repo path */
     repoPath?: string;
     model?: string | null;
     effortLevel?: EffortLevel;
@@ -34,6 +36,7 @@
     messages = [],
     isPending = false,
     repoName = '',
+    repoId,
     repoPath = '',
     model = null,
     effortLevel = null,
@@ -44,7 +47,20 @@
     onCancel,
   }: Props = $props();
 
-  const repoConfig = $derived(findRepoByPath($repos.list, repoPath));
+  // Resolve repo config: prefer stable repoId, fall back to path match
+  const repoConfig = $derived(
+    repoId ? findRepoById($repos.list, repoId) : findRepoByPath($repos.list, repoPath)
+  );
+
+  /** True when the cwd is a worktree (different from the canonical repo path) */
+  const isWorktree = $derived(
+    !!repoConfig && !!repoPath && repoPath !== '.' && repoConfig.path !== repoPath
+  );
+
+  /** Short worktree folder name for display (last path segment) */
+  const worktreeName = $derived(
+    isWorktree ? repoPath.split(/[/\\]/).pop() || repoPath : null
+  );
 
   const effortLabel = $derived.by(() => {
     const labels: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', max: 'Max' };
@@ -79,7 +95,7 @@
 
   async function copyChat() {
     const text = messages
-      .filter(msg => msg.type !== 'done')
+      .filter(msg => msg.type !== 'done' && msg.type !== 'stopped')
       .map(msg => {
         const prefix = msg.type === 'user' ? 'User: ' : msg.type === 'text' ? 'Claude: ' : '';
         if (msg.type === 'user') return prefix + (msg.content ?? '');
@@ -128,6 +144,10 @@
       {#if sessionTime}<span class="separator">·</span>{/if}
       <RepoIcon repo={repoConfig} size="xs" />
       <span class="repo-name">{repoName}</span>
+      {#if isWorktree && worktreeName}
+        <span class="separator">·</span>
+        <span class="worktree-name" title="Worktree: {repoPath}">{worktreeName}</span>
+      {/if}
       {#if showSplitBranchLabels}
         <span class="separator">·</span>
         <span class="branch-name" title="Branch when session was created">created:{normalizedCreatedBranch}</span>
@@ -244,6 +264,13 @@
     font-size: 0.8rem;
     color: var(--color-text-secondary);
     font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  .worktree-name {
+    font-size: 0.75rem;
+    color: rgb(168, 162, 158);
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     flex-shrink: 0;
   }
 

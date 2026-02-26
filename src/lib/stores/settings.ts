@@ -101,6 +101,8 @@ export interface HotkeyConfig {
   transcribe_to_input: string;
   cycle_repo: string;
   cycle_model: string;
+  /** In-app hotkey to create a new session while the app is focused */
+  new_session: string;
   /** Hotkey to start recording in note-taking mode */
   note_mode: string;
   /** Hotkey to copy selected text and immediately send as a new SDK session prompt */
@@ -115,6 +117,7 @@ export interface HotkeyEnabledConfig {
   transcribe_to_input: boolean;
   cycle_repo: boolean;
   cycle_model: boolean;
+  new_session: boolean;
   note_mode: boolean;
   send_selection: boolean;
   prepare_selection: boolean;
@@ -453,8 +456,6 @@ export interface AppConfig {
   mark_sessions_unread: boolean;
   show_latest_message_preview: boolean;
   show_session_summary: boolean;
-  session_prompt_rows: number;
-  session_response_rows: number;
   sidebar_width: number;
   sessions_view: SessionsViewConfig;
   tool_display_mode: ToolDisplayMode;
@@ -540,6 +541,7 @@ const defaultConfig: AppConfig = {
     transcribe_to_input: "CommandOrControl+Shift+T",
     cycle_repo: "CommandOrControl+Shift+R",
     cycle_model: "CommandOrControl+Shift+M",
+    new_session: "CommandOrControl+N",
     note_mode: "CommandOrControl+Shift+N",
     send_selection: "CommandOrControl+Shift+E",
     prepare_selection: "CommandOrControl+Shift+J",
@@ -549,6 +551,7 @@ const defaultConfig: AppConfig = {
     transcribe_to_input: true,
     cycle_repo: true,
     cycle_model: true,
+    new_session: true,
     note_mode: false,
     send_selection: true,
     prepare_selection: true,
@@ -596,7 +599,7 @@ const defaultConfig: AppConfig = {
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
   ],
-  terminal_mode: "Interactive",
+  terminal_mode: "Sdk",
   codex_mode: "AppServer",
   sdk_provider: "Claude",
   openai_model: "gpt-5.3-codex",
@@ -626,8 +629,6 @@ const defaultConfig: AppConfig = {
   mark_sessions_unread: true,
   show_latest_message_preview: true,
   show_session_summary: true,
-  session_prompt_rows: 2,
-  session_response_rows: 2,
   sidebar_width: 282,
   sessions_view: {
     layout: "grid",
@@ -734,10 +735,11 @@ export function isNoteModeAvailable(): boolean {
   return dev;
 }
 
+export function isPlanNewSessionAvailable(): boolean {
+  return dev;
+}
+
 export function getEffectiveTerminalMode(config: AppConfig): TerminalMode {
-  // OpenAI App Server mode is not yet integrated into the structured session flow.
-  // Route OpenAI sessions through SDK mode.
-  return config.sdk_provider === 'OpenAI'
-    ? 'Sdk'
-    : config.terminal_mode;
+  // Session work always uses SDK-style flows.
+  return 'Sdk';
 }

@@ -164,7 +164,7 @@ impl SequenceManager {
 
         // Use pre-generated ID from frontend, or generate one.
         let execution_id = pre_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        println!("[sequence] start_execution_inner: id={}, sequence={}", execution_id, sequence_id);
+        log::info!("[sequence] start_execution_inner: id={}, sequence={}", execution_id, sequence_id);
         let exec_id = execution_id.clone();
 
         // Store coordination primitives
@@ -183,10 +183,10 @@ impl SequenceManager {
                 .await
             {
                 Ok(id) => {
-                    println!("[sequence] Execution {} completed", id);
+                    log::info!("[sequence] Execution {} completed", id);
                 }
                 Err(e) => {
-                    eprintln!("[sequence] Execution {} failed: {}", exec_id, e);
+                    log::error!("[sequence] Execution {} failed: {}", exec_id, e);
                 }
             }
         });

@@ -3,10 +3,14 @@
   import { onMount } from 'svelte';
   import { beforeNavigate } from '$app/navigation';
   import { openUrl } from '@tauri-apps/plugin-opener';
+  import { initLogger } from '$lib/utils/logger';
 
   // Prevent browser back/forward navigation from causing full page reloads
   // This app uses internal state for navigation, not URL-based routing
   onMount(() => {
+    // Initialise file logging — must be first so all subsequent logs are captured
+    initLogger();
+
     // Replace current history state to prevent back navigation
     history.replaceState({ ...history.state, preventNav: true }, '');
 

@@ -17,10 +17,12 @@
   let forking = $state(false);
 
   // Fork is available when:
+  // 0. The message is not the first message in the session
   // 1. The message has a turnUuid (assistant content) OR is a user message
   // 2. The session has an sdkSessionId (has sent at least one query)
   // 3. The provider is not openai (Codex doesn't support fork yet)
   let canFork = $derived(
+    messageIndex > 0 &&
     (!!message.turnUuid || message.type === 'user') &&
     !!session?.sdkSessionId &&
     session?.provider !== 'openai'

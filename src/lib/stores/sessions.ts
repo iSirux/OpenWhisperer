@@ -96,9 +96,9 @@ function createSessionsStore() {
             await invoke('trim_archive', {
               maxEntries: currentSettings.session_persistence?.max_archived_sessions ?? 500,
             });
-            // Refresh archive count for sidebar
+            // Refresh archive metadata and list
             const { archive } = await import('./archive');
-            archive.refreshCount();
+            await archive.refresh();
           } catch (archiveError) {
             console.error('[sessions] Failed to archive session:', archiveError);
           }

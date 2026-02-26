@@ -86,7 +86,7 @@ impl SequenceExecutor {
         pause_signal: Arc<Notify>,
         entry_node_id: Option<String>,
     ) -> Result<String, String> {
-        println!("[sequence] Executor starting with id={}, sequence={} ({} nodes)",
+        log::info!("[sequence] Executor starting with id={}, sequence={} ({} nodes)",
             execution_id, definition.name, definition.nodes.len());
 
         // 1. Validate required inputs
@@ -568,7 +568,7 @@ impl SequenceExecutor {
         // 0. Rate limiting: check provider rate and acquire permit
         let provider = prompt_node.provider.as_deref().unwrap_or("claude");
         if let Some(delay_ms) = self.rate_limiter.check_provider_rate(provider) {
-            println!(
+            log::info!(
                 "[sequence] Rate limit: waiting {}ms for provider '{}'",
                 delay_ms, provider
             );
@@ -1148,7 +1148,7 @@ impl SequenceExecutor {
 
         // Emit Tauri event for the frontend to display
         // Includes built-in notification flags so the frontend can handle system notifications and sounds
-        println!(
+        log::info!(
             "[sequence][{}] emit notification: title={:?}, play_sound={}, system_notification={}, sound={}",
             &execution_id[..8.min(execution_id.len())],
             title_str,
@@ -1232,7 +1232,7 @@ impl SequenceExecutor {
 
                 match on_error {
                     "warn" => {
-                        eprintln!(
+                        log::error!(
                             "[notifications] Warning: notification delivery failed: {}",
                             err
                         );
@@ -1265,7 +1265,7 @@ impl SequenceExecutor {
 
         if let Some(ref message) = delay.message {
             let rendered = TemplateEngine::render(message, context)?;
-            println!("[sequence] Delay {}s: {}", secs, rendered);
+            log::info!("[sequence] Delay {}s: {}", secs, rendered);
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
@@ -2768,7 +2768,7 @@ impl SequenceExecutor {
     // ─── Event Emission Helpers ──────────────────────────────────────────────
 
     fn emit_status(&self, exec_id: &str, status: &ExecutionStatus) {
-        println!("[sequence][{}] emit status: {:?}", &exec_id[..8], status);
+        log::info!("[sequence][{}] emit status: {:?}", &exec_id[..8], status);
         let _ = self.app.emit(
             &format!("sequence-status-{}", exec_id),
             serde_json::to_value(status).unwrap_or_default(),
@@ -2776,7 +2776,7 @@ impl SequenceExecutor {
     }
 
     fn emit_node_start(&self, exec_id: &str, node: &NodeDefinition) {
-        println!("[sequence][{}] emit node-start: {} ({:?})", &exec_id[..8], node.id, node.name);
+        log::info!("[sequence][{}] emit node-start: {} ({:?})", &exec_id[..8], node.id, node.name);
         let _ = self.app.emit(
             &format!("sequence-node-start-{}", exec_id),
             serde_json::json!({
@@ -2794,7 +2794,7 @@ impl SequenceExecutor {
         duration_ms: u64,
         cost: Option<f64>,
     ) {
-        println!("[sequence][{}] emit node-complete: {}", &exec_id[..8], node_id);
+        log::info!("[sequence][{}] emit node-complete: {}", &exec_id[..8], node_id);
         let _ = self.app.emit(
             &format!("sequence-node-complete-{}", exec_id),
             serde_json::json!({
@@ -2806,7 +2806,7 @@ impl SequenceExecutor {
     }
 
     fn emit_node_error(&self, exec_id: &str, node_id: &str, error: &str) {
-        println!("[sequence][{}] emit node-error: {} — {}", &exec_id[..8], node_id, error);
+        log::info!("[sequence][{}] emit node-error: {} — {}", &exec_id[..8], node_id, error);
         let _ = self.app.emit(
             &format!("sequence-node-error-{}", exec_id),
             serde_json::json!({
@@ -2817,7 +2817,7 @@ impl SequenceExecutor {
     }
 
     fn emit_done(&self, exec_id: &str, status: &ExecutionStatus) {
-        println!("[sequence][{}] emit done: {:?}", &exec_id[..8], status);
+        log::info!("[sequence][{}] emit done: {:?}", &exec_id[..8], status);
         let _ = self.app.emit(
             &format!("sequence-done-{}", exec_id),
             serde_json::to_value(status).unwrap_or_default(),

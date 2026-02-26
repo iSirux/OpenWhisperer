@@ -44,4 +44,6 @@ minijinja = { version = "2", features = ["builtins"] }
 cron = "0.12"
 regex = "1"
 tauri-plugin-notification = "2"
+tauri-plugin-log = "2"
+log = "0.4"
 windows-sys = { version = "0.59", features = ["Win32_UI_Shell"] }

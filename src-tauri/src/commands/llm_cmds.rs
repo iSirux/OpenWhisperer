@@ -63,10 +63,10 @@ fn migrate_legacy_key(app: &AppHandle) -> Result<bool, String> {
 
     // Delete the legacy file
     if let Err(e) = fs::remove_file(&legacy_path) {
-        eprintln!("[keyring] Warning: Failed to delete legacy key file: {}", e);
+        log::error!("[keyring] Warning: Failed to delete legacy key file: {}", e);
         // Don't fail migration just because we couldn't delete the old file
     } else {
-        eprintln!("[keyring] Successfully migrated API key from legacy storage to system keyring");
+        log::error!("[keyring] Successfully migrated API key from legacy storage to system keyring");
     }
 
     Ok(true)

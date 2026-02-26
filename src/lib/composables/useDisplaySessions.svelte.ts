@@ -155,6 +155,9 @@ export function getSdkSmartStatus(session: SdkSession): {
   }
 
   const lastMsg = messages.at(-1);
+  if (lastMsg?.type === 'stopped') {
+    return { status: 'stopped' };
+  }
   if (lastMsg?.type === 'done') {
     return { status: 'done' };
   }
@@ -162,7 +165,7 @@ export function getSdkSmartStatus(session: SdkSession): {
   // Check if there's an unfinished subagent
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (msg.type === 'subagent_stop' || msg.type === 'done') {
+    if (msg.type === 'subagent_stop' || msg.type === 'done' || msg.type === 'stopped') {
       break;
     }
     if (msg.type === 'subagent_start') {
@@ -259,7 +262,6 @@ export function transformToDisplaySessions(
       const smartStatus = getSdkSmartStatus(s);
       const finished = isFinishedStatus(smartStatus.status);
       const todoProgress = getTodoProgress(s.messages);
-
       return {
         id: s.id,
         type: 'sdk' as const,
@@ -272,7 +274,13 @@ export function transformToDisplaySessions(
           s.pendingRepoSelection?.transcript ||
           s.pendingTranscription?.transcript ||
           '',
+        // Always use the active session cwd for branch lookup/display.
+        // repoId is still carried separately for stable repo metadata (icon/name).
         repoPath: s.cwd,
+        repoId: s.repoId,
+        // Seed branch from session metadata (e.g. worktree branch set during setup)
+        // so it displays immediately before the async git fetch fills it in.
+        branch: s.currentBranch || undefined,
         model: s.model,
         createdAt: Math.floor(s.createdAt / 1000),
         lastActivityAt: Math.floor(s.lastActivityAt / 1000),

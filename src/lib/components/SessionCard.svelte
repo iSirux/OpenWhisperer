@@ -11,7 +11,7 @@
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
-  import { repos } from '$lib/stores/repos';
+  import { repos, findRepoById } from '$lib/stores/repos';
 
   interface Props {
     session: DisplaySession;
@@ -47,6 +47,14 @@
       now
     );
   }
+
+  const displayedRepoName = $derived.by(() => {
+    if (session.repoId) {
+      const repo = findRepoById($repos.list, session.repoId);
+      if (repo?.name) return repo.name;
+    }
+    return getRepoName(session.repoPath);
+  });
 
   // Size-based styling
   let sizeClasses = $derived.by(() => {
@@ -359,8 +367,8 @@
 
   <!-- Repo name, branch -->
   <div class="flex items-center gap-1.5 text-text-muted">
-    <RepoIcon repo={findRepoByPath($repos.list, session.repoPath)} size="xs" />
-    <span class="{sizeClasses.text} truncate">{getRepoName(session.repoPath)}</span>
+    <RepoIcon repo={session.repoId ? findRepoById($repos.list, session.repoId) : findRepoByPath($repos.list, session.repoPath)} size="xs" />
+    <span class="{sizeClasses.text} truncate">{displayedRepoName()}</span>
     {#if session.branch}
       <span class="{sizeClasses.text} text-text-muted">·</span>
       <span class="{sizeClasses.text} text-blue-400/70" title="Git branch: {session.branch}">

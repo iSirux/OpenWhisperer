@@ -278,7 +278,7 @@
       <div class="flex items-center gap-0.5 px-1.5 py-0.5 bg-surface-elevated rounded">
         <button
           class="rounded px-2 py-0.5 text-[10px] font-medium transition-all"
-          class:bg-accent={sdkProvider === 'Claude'}
+          class:bg-orange-500={sdkProvider === 'Claude'}
           class:text-white={sdkProvider === 'Claude'}
           class:text-text-secondary={sdkProvider !== 'Claude'}
           class:bg-border={sdkProvider !== 'Claude'}

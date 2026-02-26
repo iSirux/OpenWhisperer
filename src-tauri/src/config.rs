@@ -352,6 +352,9 @@ pub struct HotkeyConfig {
     pub cycle_repo: String,
     #[serde(default = "default_cycle_model", alias = "toggle_model")]
     pub cycle_model: String,
+    /// In-app hotkey to create a new session while the app is focused
+    #[serde(default = "default_new_session")]
+    pub new_session: String,
     /// Hotkey to start recording in note-taking mode
     #[serde(default = "default_note_mode")]
     pub note_mode: String,
@@ -375,6 +378,10 @@ fn default_cycle_model() -> String {
     "CommandOrControl+Shift+M".to_string()
 }
 
+fn default_new_session() -> String {
+    "CommandOrControl+N".to_string()
+}
+
 fn default_note_mode() -> String {
     "CommandOrControl+Shift+N".to_string()
 }
@@ -394,6 +401,7 @@ impl Default for HotkeyConfig {
             transcribe_to_input: "CommandOrControl+Shift+T".to_string(),
             cycle_repo: "CommandOrControl+Shift+R".to_string(),
             cycle_model: "CommandOrControl+Shift+M".to_string(),
+            new_session: default_new_session(),
             note_mode: default_note_mode(),
             send_selection: default_send_selection(),
             prepare_selection: default_prepare_selection(),
@@ -417,6 +425,8 @@ pub struct HotkeyEnabledConfig {
     pub cycle_repo: bool,
     #[serde(default = "default_hotkey_enabled")]
     pub cycle_model: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    pub new_session: bool,
     #[serde(default)]
     pub note_mode: bool,
     #[serde(default = "default_hotkey_enabled")]
@@ -432,6 +442,7 @@ impl Default for HotkeyEnabledConfig {
             transcribe_to_input: true,
             cycle_repo: true,
             cycle_model: true,
+            new_session: true,
             note_mode: false,
             send_selection: true,
             prepare_selection: true,
@@ -650,9 +661,9 @@ impl UsageStats {
             match fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str(&content) {
                     Ok(stats) => return stats,
-                    Err(e) => eprintln!("Failed to parse usage stats: {}", e),
+                    Err(e) => log::error!("Failed to parse usage stats: {}", e),
                 },
-                Err(e) => eprintln!("Failed to read usage stats: {}", e),
+                Err(e) => log::error!("Failed to read usage stats: {}", e),
             }
         }
         Self::default()
@@ -1083,6 +1094,9 @@ impl Default for AudioConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
+    /// Stable unique identifier for this repository (auto-generated UUID).
+    #[serde(default)]
+    pub id: Option<String>,
     pub path: String,
     pub name: String,
     /// Auto-generated description of the repository for auto-selection
@@ -1277,19 +1291,19 @@ impl<'de> Deserialize<'de> for EffortLevel {
             "max" => EffortLevel::Max,
             // Legacy thinking level values
             "on" | "think" => {
-                eprintln!("[config] Migrating legacy effort value '{}' → High", s);
+                log::error!("[config] Migrating legacy effort value '{}' → High", s);
                 EffortLevel::High
             }
             "megathink" => {
-                eprintln!("[config] Migrating legacy effort value 'megathink' → Max");
+                log::error!("[config] Migrating legacy effort value 'megathink' → Max");
                 EffortLevel::Max
             }
             "ultrathink" => {
-                eprintln!("[config] Migrating legacy effort value 'ultrathink' → Max");
+                log::error!("[config] Migrating legacy effort value 'ultrathink' → Max");
                 EffortLevel::Max
             }
             other => {
-                eprintln!("[config] Unknown effort level '{}', defaulting to Off", other);
+                log::error!("[config] Unknown effort level '{}', defaulting to Off", other);
                 EffortLevel::Off
             }
         })
@@ -1674,19 +1688,19 @@ impl<'de> Deserialize<'de> for AutoModelEffort {
             "dynamic" => AutoModelEffort::Dynamic,
             // Legacy thinking level values
             "on" | "think" => {
-                eprintln!("[config] Migrating legacy auto_model_effort '{}' → High", s);
+                log::error!("[config] Migrating legacy auto_model_effort '{}' → High", s);
                 AutoModelEffort::High
             }
             "megathink" => {
-                eprintln!("[config] Migrating legacy auto_model_effort 'megathink' → Max");
+                log::error!("[config] Migrating legacy auto_model_effort 'megathink' → Max");
                 AutoModelEffort::Max
             }
             "ultrathink" => {
-                eprintln!("[config] Migrating legacy auto_model_effort 'ultrathink' → Max");
+                log::error!("[config] Migrating legacy auto_model_effort 'ultrathink' → Max");
                 AutoModelEffort::Max
             }
             other => {
-                eprintln!("[config] Unknown auto_model_effort '{}', defaulting to Dynamic", other);
+                log::error!("[config] Unknown auto_model_effort '{}', defaulting to Dynamic", other);
                 AutoModelEffort::Dynamic
             }
         })
@@ -1827,7 +1841,7 @@ impl Default for AppConfig {
             default_model: "claude-opus-4-6".to_string(),
             default_effort_level: default_effort_level(),
             enabled_models: default_enabled_models(),
-            terminal_mode: ClaudeTerminalMode::default(),
+            terminal_mode: ClaudeTerminalMode::Sdk,
             codex_mode: CodexMode::default(),
             sdk_provider: SdkProvider::default(),
             openai_model: default_openai_model(),
@@ -1874,6 +1888,18 @@ impl AppConfig {
         Self::config_dir().join(filename)
     }
 
+    /// Ensure all repos have unique IDs. Returns true if any were assigned.
+    fn ensure_repo_ids(&mut self) -> bool {
+        let mut changed = false;
+        for repo in &mut self.repos {
+            if repo.id.is_none() {
+                repo.id = Some(uuid::Uuid::new_v4().to_string());
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Load config with graceful recovery.
     /// Returns (config, loaded_successfully).
     /// `loaded_successfully` is true if config was parsed from disk (even with field-level fixups),
@@ -1887,14 +1913,14 @@ impl AppConfig {
             {
                 let legacy_debug_path = Self::config_dir().join("config.dev");
                 if legacy_debug_path.exists() {
-                    eprintln!(
+                    log::error!(
                         "[config.load] Found legacy debug config at {:?}; attempting migration to {:?}",
                         legacy_debug_path, path
                     );
                     match fs::rename(&legacy_debug_path, &path) {
                         Ok(()) => path.clone(),
                         Err(e) => {
-                            eprintln!(
+                            log::error!(
                                 "[config.load] Failed to migrate legacy debug config: {}. Loading legacy file directly.",
                                 e
                             );
@@ -1904,20 +1930,20 @@ impl AppConfig {
                 } else {
                     let release_path = Self::config_dir().join("config.json");
                     if release_path.exists() {
-                        eprintln!(
+                        log::error!(
                             "[config.load] Debug config {:?} missing; loading {:?} instead.",
                             path, release_path
                         );
                         release_path
                     } else {
-                        println!("[config.load] No config file found, using defaults");
+                        log::info!("[config.load] No config file found, using defaults");
                         return (Self::default(), true);
                     }
                 }
             }
             #[cfg(not(debug_assertions))]
             {
-                println!("[config.load] No config file found, using defaults");
+                log::info!("[config.load] No config file found, using defaults");
                 return (Self::default(), true);
             }
         };
@@ -1925,19 +1951,23 @@ impl AppConfig {
         let content = match fs::read_to_string(&load_path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[config.load] Failed to read config: {}", e);
+                log::error!("[config.load] Failed to read config: {}", e);
                 return (Self::default(), false);
             }
         };
 
         // Attempt 1: Normal deserialization (custom deserializers handle most legacy values)
         match serde_json::from_str::<AppConfig>(&content) {
-            Ok(config) => {
-                println!("[config.load] Config loaded successfully ({} repos)", config.repos.len());
+            Ok(mut config) => {
+                log::info!("[config.load] Config loaded successfully ({} repos)", config.repos.len());
+                if config.ensure_repo_ids() {
+                    log::error!("[config.load] Assigned IDs to repos without IDs");
+                    let _ = config.save();
+                }
                 return (config, true);
             }
             Err(e) => {
-                eprintln!("[config.load] Normal parse failed: {}. Attempting field-level recovery...", e);
+                log::error!("[config.load] Normal parse failed: {}. Attempting field-level recovery...", e);
             }
         }
 
@@ -1946,17 +1976,21 @@ impl AppConfig {
             Ok(mut value) => {
                 Self::fix_known_fields(&mut value);
                 match serde_json::from_value::<AppConfig>(value) {
-                    Ok(config) => {
-                        eprintln!("[config.load] Recovery succeeded ({} repos)", config.repos.len());
+                    Ok(mut config) => {
+                        log::error!("[config.load] Recovery succeeded ({} repos)", config.repos.len());
+                        if config.ensure_repo_ids() {
+                            log::error!("[config.load] Assigned IDs to repos without IDs");
+                            let _ = config.save();
+                        }
                         return (config, true);
                     }
                     Err(e) => {
-                        eprintln!("[config.load] Recovery also failed: {}. Falling back to defaults.", e);
+                        log::error!("[config.load] Recovery also failed: {}. Falling back to defaults.", e);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("[config.load] Config is not valid JSON: {}. Falling back to defaults.", e);
+                log::error!("[config.load] Config is not valid JSON: {}. Falling back to defaults.", e);
             }
         }
 
@@ -1971,7 +2005,7 @@ impl AppConfig {
             // Fix default_effort_level / default_thinking_level
             if let Some(field) = obj.get("default_effort_level").or(obj.get("default_thinking_level")) {
                 if let serde_json::Value::Bool(_) | serde_json::Value::Number(_) = field {
-                    eprintln!("[config.fix] Fixing non-string default_effort_level");
+                    log::error!("[config.fix] Fixing non-string default_effort_level");
                     obj.insert("default_effort_level".to_string(), serde_json::Value::String("high".to_string()));
                 }
             }
@@ -1982,7 +2016,7 @@ impl AppConfig {
                     for key in &["auto_model_effort", "auto_model_thinking"] {
                         if let Some(field) = features.get(*key) {
                             if let serde_json::Value::Bool(_) | serde_json::Value::Number(_) = field {
-                                eprintln!("[config.fix] Fixing non-string {}", key);
+                                log::error!("[config.fix] Fixing non-string {}", key);
                                 features.insert(key.to_string(), serde_json::Value::String("dynamic".to_string()));
                             }
                         }
@@ -1994,7 +2028,7 @@ impl AppConfig {
             if let Some(serde_json::Value::String(theme)) = obj.get("theme") {
                 let valid_themes = ["Midnight", "Slate", "Void", "Ember", "Pearl", "Latte", "Snow", "Sand"];
                 if !valid_themes.contains(&theme.as_str()) {
-                    eprintln!("[config.fix] Fixing unknown theme '{}' → Midnight", theme);
+                    log::error!("[config.fix] Fixing unknown theme '{}' → Midnight", theme);
                     obj.insert("theme".to_string(), serde_json::Value::String("Midnight".to_string()));
                 }
             }
@@ -2002,7 +2036,7 @@ impl AppConfig {
             // Migrate removed OpenAI alias model id
             if let Some(serde_json::Value::String(openai_model)) = obj.get("openai_model") {
                 if openai_model == "codex-mini-latest" {
-                    eprintln!("[config.fix] Migrating openai_model 'codex-mini-latest' → 'gpt-5.3-codex'");
+                    log::error!("[config.fix] Migrating openai_model 'codex-mini-latest' → 'gpt-5.3-codex'");
                     obj.insert("openai_model".to_string(), serde_json::Value::String("gpt-5.3-codex".to_string()));
                 }
             }
@@ -2014,11 +2048,11 @@ impl AppConfig {
                     _ => true,
                 });
                 if enabled_models.len() != original_len {
-                    eprintln!("[config.fix] Removed deprecated model 'codex-mini-latest' from enabled_openai_models");
+                    log::error!("[config.fix] Removed deprecated model 'codex-mini-latest' from enabled_openai_models");
                 }
                 if enabled_models.is_empty() {
                     enabled_models.push(serde_json::Value::String(default_openai_model()));
-                    eprintln!("[config.fix] enabled_openai_models was empty after migration; restored default");
+                    log::error!("[config.fix] enabled_openai_models was empty after migration; restored default");
                 }
             }
 
@@ -2026,7 +2060,7 @@ impl AppConfig {
             if !obj.contains_key("codex_mode") && !obj.contains_key("openai_terminal_mode") {
                 if let Some(serde_json::Value::String(mode)) = obj.get("terminal_mode") {
                     if mode == "CodexAppServer" {
-                        eprintln!("[config.fix] Migrating legacy terminal_mode 'CodexAppServer' to codex_mode");
+                        log::error!("[config.fix] Migrating legacy terminal_mode 'CodexAppServer' to codex_mode");
                         obj.insert(
                             "codex_mode".to_string(),
                             serde_json::Value::String("AppServer".to_string()),
@@ -2048,7 +2082,7 @@ impl AppConfig {
                         "Sdk"
                     };
                     if mode == "CodexAppServer" || mode == "AppServer" {
-                        eprintln!("[config.fix] Migrating openai_terminal_mode '{}' to codex_mode=AppServer", mode);
+                        log::error!("[config.fix] Migrating openai_terminal_mode '{}' to codex_mode=AppServer", mode);
                     }
                     obj.insert(
                         "codex_mode".to_string(),
@@ -2061,7 +2095,7 @@ impl AppConfig {
 
     pub fn save(&self) -> Result<(), String> {
         let dir = Self::config_dir();
-        println!("[config.save] Saving to dir: {:?}", dir);
+        log::info!("[config.save] Saving to dir: {:?}", dir);
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
 
         let path = Self::config_path();
@@ -2086,17 +2120,17 @@ impl AppConfig {
             let newest = path.with_extension("json.bak.1");
             match fs::copy(&path, &newest) {
                 Ok(_) => {}
-                Err(e) => eprintln!("[config.save] Warning: failed to backup config: {}", e),
+                Err(e) => log::error!("[config.save] Warning: failed to backup config: {}", e),
             }
         }
 
-        println!("[config.save] Config path: {:?}", path);
+        log::info!("[config.save] Config path: {:?}", path);
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-        println!("[config.save] Writing {} bytes, repos count: {}", content.len(), self.repos.len());
+        log::info!("[config.save] Writing {} bytes, repos count: {}", content.len(), self.repos.len());
         fs::write(&path, &content).map_err(|e| format!("Failed to write config: {}", e))?;
-        println!("[config.save] Write successful");
+        log::info!("[config.save] Write successful");
         Ok(())
     }
 
@@ -2105,17 +2139,7 @@ impl AppConfig {
     }
 
     pub fn get_effective_terminal_mode(&self) -> TerminalMode {
-        match self.sdk_provider {
-            SdkProvider::OpenAI => match self.codex_mode {
-                CodexMode::Sdk => TerminalMode::Sdk,
-                // OpenAI app-server runs inside the SDK-style session view (not PTY terminal mode).
-                CodexMode::AppServer => TerminalMode::Sdk,
-            },
-            SdkProvider::Claude => match self.terminal_mode {
-                ClaudeTerminalMode::Interactive => TerminalMode::Interactive,
-                ClaudeTerminalMode::Prompt => TerminalMode::Prompt,
-                ClaudeTerminalMode::Sdk => TerminalMode::Sdk,
-            },
-        }
+        // Session work always uses SDK-style flows.
+        TerminalMode::Sdk
     }
 }

@@ -333,7 +333,7 @@ impl GitManager {
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                eprintln!(
+                log::error!(
                     "[git] Post-create command '{}' failed: {}",
                     cmd_str, stderr
                 );

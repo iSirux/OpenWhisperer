@@ -18,7 +18,7 @@
   } from "$lib/utils/modelColors";
   import RepoIcon from "$lib/components/RepoIcon.svelte";
   import { findRepoByPath } from "$lib/utils/repoIcons";
-  import { repos } from "$lib/stores/repos";
+  import { repos, findRepoById } from "$lib/stores/repos";
 
   interface Props {
     session: DisplaySession;
@@ -57,19 +57,24 @@
     }
   }
 
-  // Check if there's any content below the header row
-  let hasContentBelow = $derived(
+  const displayedRepoName = $derived.by(() => {
+    if (session.repoId) {
+      const repo = findRepoById($repos.list, session.repoId);
+      if (repo?.name) return repo.name;
+    }
+    return getRepoName(session.repoPath);
+  });
+
+  // Check if there's any text content between the header row and the repo row
+  // (session name, prompt, summary, latest message). Used to add spacing when empty.
+  let hasTextContent = $derived(
     !!session.aiMetadata?.name ||
       !!session.prompt ||
       (showSessionSummary && !!session.aiMetadata?.outcome) ||
       (showLatestMessage &&
         session.type === "sdk" &&
         !!session.latestMessage &&
-        !session.aiMetadata?.outcome) ||
-      (session.status !== "pending_repo" &&
-        session.status !== "setup" &&
-        !!session.repoPath &&
-        session.repoPath !== "."),
+        !session.aiMetadata?.outcome),
   );
 </script>
 
@@ -387,14 +392,14 @@
     </p>
   {/if}
 
-  <!-- Repo name and branch (skip for pending_repo and setup since none selected yet) -->
-  {#if session.status !== "pending_repo" && session.status !== "setup" && session.repoPath && session.repoPath !== "."}
-    <div class="flex items-center gap-1.5 text-text-muted">
+  <!-- Repo name and branch (skip for pending_repo; setup sessions show repo when one is selected) -->
+  {#if session.status !== "pending_repo" && session.repoPath && session.repoPath !== "."}
+    <div class="flex items-center gap-1.5 text-text-muted" class:mt-1.5={!hasTextContent}>
       <RepoIcon
-        repo={findRepoByPath($repos.list, session.repoPath)}
+        repo={session.repoId ? findRepoById($repos.list, session.repoId) : findRepoByPath($repos.list, session.repoPath)}
         size="xs"
       />
-      <span class="text-xs truncate">{getRepoName(session.repoPath)}</span>
+      <span class="text-xs truncate">{displayedRepoName}</span>
       {#if session.branch}
         <span class="text-xs text-text-muted">·</span>
         <span

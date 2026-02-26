@@ -33,6 +33,7 @@ function createArchiveStore() {
   const filterType = writable<string | null>(null);
   const currentPage = writable<number>(0);
   const archiveCount = writable<number>(0);
+  let hasLoaded = false;
 
   return {
     entries,
@@ -60,6 +61,7 @@ function createArchiveStore() {
         currentPage.set(page);
         searchQuery.set(query);
         filterType.set(sessionType);
+        hasLoaded = true;
       } catch (error) {
         console.error('[archive] Failed to load entries:', error);
       } finally {
@@ -187,6 +189,34 @@ function createArchiveStore() {
         archiveCount.set(count);
       } catch (error) {
         console.error('[archive] Failed to get count:', error);
+      }
+    },
+
+    /**
+     * Refresh archive count and list (if archive has been loaded in this session)
+     */
+    async refresh(): Promise<void> {
+      await invoke<number>('get_archive_count')
+        .then((count) => archiveCount.set(count))
+        .catch((error) => console.error('[archive] Failed to get count:', error));
+      if (!hasLoaded) return;
+      const query = get(searchQuery);
+      const type = get(filterType);
+      isLoading.set(true);
+      try {
+        const result = await invoke<ArchiveSearchResult>('get_archive_entries', {
+          query: query || null,
+          sessionType: type || null,
+          offset: 0,
+          limit: PAGE_SIZE,
+        });
+        entries.set(result.entries);
+        totalCount.set(result.totalCount);
+        currentPage.set(0);
+      } catch (error) {
+        console.error('[archive] Failed to refresh entries:', error);
+      } finally {
+        isLoading.set(false);
       }
     },
   };

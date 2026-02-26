@@ -495,7 +495,7 @@ export function closeExecution(executionId: string): void {
         });
         // Refresh archive count for sidebar
         const { archive } = await import("./archive");
-        archive.refreshCount();
+        await archive.refresh();
       })
       .catch((err: unknown) =>
         console.error("[sequenceExecutions] Failed to archive execution:", err)

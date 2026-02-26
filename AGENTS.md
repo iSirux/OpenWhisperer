@@ -18,7 +18,7 @@ Supporting folders:
 
 - `pnpm install`: install frontend dependencies.
 - `pnpm dev`: frontend-only Vite dev server.
-- `pnpm check`: Svelte type checking (`svelte-check`).
+- `pnpm check | grep -A 5 "Error:""`: Svelte type checking (`svelte-check`).
 - `pnpm tauri dev`: builds sidecar, then launches full desktop app in dev mode.
 - `pnpm tauri build`: builds sidecar and packages production Tauri app.
 - `pnpm sidecar:install`: installs sidecar dependencies.
@@ -63,3 +63,10 @@ PRs should include:
 - Never commit API keys, tokens, or local paths.
 - Validate changes touching persisted config or secrets handling (`keyring`, settings commands).
 - Keep environment-specific values out of tracked files.
+
+### Providers
+
+Read these for info on the interface:
+
+- Claude Agent SDK: "docs\Claude Agent SDK reference - TypeScript.md"
+- Codex App Server: "docs\Codex App Server.md"

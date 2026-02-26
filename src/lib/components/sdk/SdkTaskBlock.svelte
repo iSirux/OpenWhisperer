@@ -387,17 +387,10 @@
   }
 
   .task-body {
-    min-height: clamp(220px, 32vh, 420px);
     max-height: min(72vh, 900px);
     overflow-y: auto;
     overflow-x: hidden;
     border-top: 1px solid color-mix(in srgb, var(--color-model-opus) 10%, var(--color-border));
-  }
-
-  @media (max-height: 760px) {
-    .task-body {
-      min-height: 160px;
-    }
   }
 
   .task-children {

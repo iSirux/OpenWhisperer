@@ -383,7 +383,7 @@ impl SpeachesSession {
 
         self.audio_chunks_sent += 1;
         if self.audio_chunks_sent % 25 == 0 {
-            println!(
+            log::info!(
                 "[realtime][speaches] sent {} audio chunks (last chunk samples: {}, bytes: {})",
                 self.audio_chunks_sent,
                 samples.len(),
@@ -418,7 +418,7 @@ impl SpeachesSession {
             .socket
             .send(Message::Text(commit_msg.to_string().into()))
             .await;
-        println!(
+        log::info!(
             "[realtime][speaches] sent input_audio_buffer.commit after {} chunks",
             self.audio_chunks_sent
         );
@@ -426,7 +426,7 @@ impl SpeachesSession {
         for _ in 0..50 {
             match timeout(Duration::from_millis(20), self.socket.next()).await {
                 Ok(Some(Ok(Message::Text(text)))) => {
-                    println!(
+                    log::info!(
                         "[realtime][speaches] recv(finalize): {}",
                         truncate_for_log(&text, 280)
                     );
@@ -492,7 +492,7 @@ fn parse_speaches_event(
     partial_by_item: &mut HashMap<String, String>,
     last_text: &mut String,
 ) -> Result<Option<RealtimeResponse>, String> {
-    println!(
+    log::info!(
         "[realtime][speaches] recv: {}",
         truncate_for_log(raw, 280)
     );
@@ -546,7 +546,7 @@ fn parse_speaches_event(
             if partial.is_empty() {
                 Ok(None)
             } else {
-                println!(
+                log::info!(
                     "[realtime][speaches] parsed delta item_id={} len={} text={}",
                     item_id,
                     partial.len(),
@@ -580,7 +580,7 @@ fn parse_speaches_event(
                 Ok(None)
             } else {
                 *last_text = text.clone();
-                println!(
+                log::info!(
                     "[realtime][speaches] parsed completed item_id={} len={} text={}",
                     item_id,
                     text.len(),
@@ -620,7 +620,7 @@ fn parse_speaches_event(
             } else {
                 partial_by_item.remove(&item_id);
                 *last_text = transcript.clone();
-                println!(
+                log::info!(
                     "[realtime][speaches] parsed conversation.item.created item_id={} len={} text={}",
                     item_id,
                     transcript.len(),
@@ -642,7 +642,7 @@ fn parse_speaches_event(
             } else {
                 let mut partial = last_text.clone();
                 partial.push_str(&delta);
-                println!(
+                log::info!(
                     "[realtime][speaches] parsed response delta len={} text={}",
                     partial.len(),
                     truncate_for_log(&partial, 160)
@@ -662,7 +662,7 @@ fn parse_speaches_event(
                 Ok(None)
             } else {
                 *last_text = text.clone();
-                println!(
+                log::info!(
                     "[realtime][speaches] parsed response done len={} text={}",
                     text.len(),
                     truncate_for_log(&text, 160)
@@ -672,7 +672,7 @@ fn parse_speaches_event(
         }
         _ => {
             if !event_type.is_empty() {
-                println!("[realtime][speaches] ignored event type: {}", event_type);
+                log::info!("[realtime][speaches] ignored event type: {}", event_type);
             }
             Ok(None)
         }

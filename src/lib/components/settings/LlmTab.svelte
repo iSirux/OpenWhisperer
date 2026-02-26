@@ -1031,6 +1031,45 @@
                 </div>
               </button>
 
+              <!-- Sub-options for auto-select repo -->
+              {#if $settings.llm.features.auto_select_repo}
+                <div class="mt-3 ml-8 pl-3 border-l-2 border-border space-y-3">
+                  <div>
+                    <label
+                      class="block text-sm font-medium text-text-secondary mb-1"
+                      >Minimum Confidence for Auto-Select</label
+                    >
+                    <p class="text-xs text-text-muted mb-2">
+                      Only auto-select repos when LLM confidence meets this
+                      threshold
+                    </p>
+                    <select
+                      class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+                      bind:value={$settings.llm.min_auto_select_confidence}
+                    >
+                      <option value="high">High only (most prompts)</option>
+                      <option value="medium">Medium or higher</option>
+                      <option value="low">Any confidence (fewest prompts)</option>
+                    </select>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <label class="text-sm font-medium text-text-secondary"
+                        >Confirm Repo Selection</label
+                      >
+                      <p class="text-xs text-text-muted">
+                        The AI will question the repo selection if it seems wrong
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      class="toggle"
+                      bind:checked={$settings.llm.confirm_repo_selection}
+                    />
+                  </div>
+                </div>
+              {/if}
+
               <!-- Generate Branch Names -->
               <button
                 class="w-full flex items-center justify-between p-3 rounded border-2 transition-all text-left {$settings
@@ -1103,45 +1142,6 @@
                 </div>
               </button>
             </div>
-
-            <!-- Sub-options for auto-select repo -->
-            {#if $settings.llm.features.auto_select_repo}
-              <div class="mt-3 ml-8 pl-3 border-l-2 border-border space-y-3">
-                <div>
-                  <label
-                    class="block text-sm font-medium text-text-secondary mb-1"
-                    >Minimum Confidence for Auto-Select</label
-                  >
-                  <p class="text-xs text-text-muted mb-2">
-                    Only auto-select repos when LLM confidence meets this
-                    threshold
-                  </p>
-                  <select
-                    class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-                    bind:value={$settings.llm.min_auto_select_confidence}
-                  >
-                    <option value="high">High only (most prompts)</option>
-                    <option value="medium">Medium or higher</option>
-                    <option value="low">Any confidence (fewest prompts)</option>
-                  </select>
-                </div>
-                <div class="flex items-center justify-between">
-                  <div>
-                    <label class="text-sm font-medium text-text-secondary"
-                      >Confirm Repo Selection</label
-                    >
-                    <p class="text-xs text-text-muted">
-                      The AI will question the repo selection if it seems wrong
-                    </p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    class="toggle"
-                    bind:checked={$settings.llm.confirm_repo_selection}
-                  />
-                </div>
-              </div>
-            {/if}
           </div>
         </div>
       {/if}

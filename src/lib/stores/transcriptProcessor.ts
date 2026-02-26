@@ -992,6 +992,7 @@ export async function handleSetupSessionStart(
     noteMode: boolean;
     readOnlyMode: boolean;
     provider?: import('$lib/utils/models').SdkProvider;
+    worktreeRepoPath?: string;
   }
 ) {
   const currentSettings = get(settings);
@@ -1002,6 +1003,10 @@ export async function handleSetupSessionStart(
   let repoPath = config.cwd;
   let needsAutoRepo = !repoPath || repoPath === '.';
   let selectedRepo = needsAutoRepo ? null : currentRepos.list.find((r) => r.path === repoPath);
+  // If using a worktree, the cwd differs from the repo path — look up by the original repo path
+  if (!selectedRepo && config.worktreeRepoPath) {
+    selectedRepo = currentRepos.list.find((r) => r.path === config.worktreeRepoPath) ?? null;
+  }
 
   if (
     needsAutoRepo &&
@@ -1033,10 +1038,17 @@ export async function handleSetupSessionStart(
     if (effortLevel) finalEffort = effortLevel;
   }
 
+  // When using a worktree, the actual repo entity ID comes from the original repo path
+  const repoId = (config.worktreeRepoPath
+    ? currentRepos.list.find((r) => r.path === config.worktreeRepoPath)
+    : selectedRepo
+  )?.id;
+
   await sdkSessions.startSetupSession(sessionId, {
     prompt: config.prompt,
     images: config.images,
     cwd: repoPath,
+    repoId,
     model: finalModel,
     effortLevel: finalEffort,
     planMode: config.planMode,

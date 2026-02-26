@@ -1,16 +1,11 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import type { EffortLevel, SdkImageContent } from '$lib/stores/sdkSessions';
+  import { sdkSessions, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
   import { settings, isNoteModeAvailable } from '$lib/stores/settings';
   import { repos, type RepoConfig } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { findRepoByPath } from '$lib/utils/repoIcons';
   import { isRecording, isTranscribing } from '$lib/stores/recording';
-  import {
-    getModelBgColor,
-    getModelRingColor,
-    getModelHoverBgColor,
-  } from '$lib/utils/modelColors';
   import {
     getEnabledModelsWithAuto,
     getEnabledModels,
@@ -31,6 +26,14 @@
     formatFileSize,
     type ImageData,
   } from '$lib/utils/image';
+  import {
+    toImageData,
+    toSdkImageContent,
+    getModelButtonClasses,
+    getWorktreeLabel,
+    type WorktreeInfo,
+    type WorktreeCreationResult,
+  } from '$lib/components/session-setup/sessionSetupHelpers';
 
   interface Props {
     sessionId: string;
@@ -83,26 +86,6 @@
     onCancel,
   }: Props = $props();
 
-  function toImageData(images: SdkImageContent[]): ImageData[] {
-    return images.map((img) => ({
-      mediaType: img.mediaType,
-      base64Data: img.base64Data,
-      width: img.width ?? 0,
-      height: img.height ?? 0,
-      originalSize: 0,
-      compressedSize: 0,
-    }));
-  }
-
-  function toSdkImageContent(images: ImageData[]): SdkImageContent[] {
-    return images.map((img) => ({
-      mediaType: img.mediaType,
-      base64Data: img.base64Data,
-      width: img.width,
-      height: img.height,
-    }));
-  }
-
   // Local state
   let prompt = $state(initialDraftPrompt);
   let model = $state(initialModel);
@@ -122,18 +105,6 @@
   let prevSessionId = $state(sessionId);
 
   // Worktree state
-  interface WorktreeInfo {
-    path: string;
-    branch: string | null;
-    is_main: boolean;
-    is_detached: boolean;
-  }
-
-  interface WorktreeCreationResult {
-    worktree_path: string;
-    branch: string;
-  }
-
   let worktreeMode = $state<'main' | 'new' | 'existing'>('main');
   let existingWorktrees = $state<WorktreeInfo[]>([]);
   let selectedWorktreePath = $state<string>('');
@@ -264,6 +235,39 @@
     prompt;
     pendingImages;
     onDraftChange?.(prompt, toSdkImageContent(pendingImages));
+  });
+
+  // Sync local config back to the store so the session list reflects changes
+  // (model badge, plan/note badges, repo name, worktree branch, etc.) in real time.
+  $effect(() => {
+    // When an existing worktree is selected, use its path as the display cwd
+    // so the session list shows the worktree branch (fetched via git).
+    const usingExistingWorktree = worktreeMode === 'existing' && !!selectedWorktreePath;
+    const displayCwd = usingExistingWorktree ? selectedWorktreePath : cwd;
+    // Keep repoId linked to the main repo when using a worktree path
+    const explicitRepoId = usingExistingWorktree
+      ? $repos.list.find(r => r.path === cwd)?.id
+      : undefined;
+    // Provide worktree branch immediately (before async git fetch)
+    const worktreeBranch = usingExistingWorktree
+      ? (existingWorktrees.find(w => w.path === selectedWorktreePath)?.branch ?? null)
+      : undefined;
+
+    sdkSessions.updateSetupConfig(sessionId, {
+      model,
+      effortLevel,
+      cwd: displayCwd,
+      repoId: explicitRepoId,
+      currentBranch: worktreeBranch,
+      provider,
+      planMode: planMode
+        ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false }
+        : undefined,
+      noteMode: noteMode
+        ? { isActive: true, noteCreated: false }
+        : undefined,
+      readOnlyMode,
+    });
   });
 
   async function handleStart() {
@@ -419,27 +423,6 @@
     }
   }
 
-  function getModelButtonClasses(id: string, isSelected: boolean): string {
-    const base = 'rounded font-medium transition-all px-3 py-1.5 text-xs';
-
-    if (isAutoModel(id) && !isSmartModelEnabled) {
-      return `${base} text-text-muted hover:text-text-secondary hover:bg-surface-elevated`;
-    }
-
-    if (isSelected) {
-      if (isAutoModel(id)) {
-        return `${base} bg-gradient-to-r from-purple-500 to-amber-500 text-white shadow-md ring-2 ring-purple-400 ring-opacity-50`;
-      }
-      return `${base} ${getModelBgColor(id)} text-white shadow-md ring-2 ${getModelRingColor(id)} ring-opacity-50`;
-    }
-
-    if (isAutoModel(id)) {
-      return `${base} text-text-secondary hover:bg-gradient-to-r hover:from-purple-500/20 hover:to-amber-500/20`;
-    }
-
-    return `${base} text-text-secondary ${getModelHoverBgColor(id)}`;
-  }
-
   // Repo handling
   function handleRepoSelect(path: string) {
     cwd = path;
@@ -484,14 +467,6 @@
   function handleWorktreeSelect(path: string) {
     selectedWorktreePath = path;
     showWorktreeDropdown = false;
-  }
-
-  function getWorktreeLabel(wt: WorktreeInfo): string {
-    const branch = wt.branch || '(detached)';
-    // Show last two path segments for context
-    const parts = wt.path.replace(/\\/g, '/').split('/');
-    const relativePath = parts.slice(-2).join('/');
-    return `${branch} (${relativePath})`;
   }
 
   function handleClickOutside(event: MouseEvent) {
@@ -612,7 +587,7 @@
         <div class="model-selector">
           {#each models as { id, label, title }}
             <button
-              class={getModelButtonClasses(id, model === id)}
+              class={getModelButtonClasses(id, model === id, isSmartModelEnabled)}
               onclick={() => handleModelClick(id)}
               title={isAutoModel(id) && !isSmartModelEnabled ? 'Enable in LLM settings' : title}
             >

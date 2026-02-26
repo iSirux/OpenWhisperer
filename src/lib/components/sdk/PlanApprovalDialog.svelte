@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PlanApprovalState } from '$lib/stores/sdkSessions';
+  import { isPlanNewSessionAvailable } from '$lib/stores/settings';
 
   let {
     pendingPlanApproval,
@@ -8,7 +9,7 @@
     onDeny,
   }: {
     pendingPlanApproval: PlanApprovalState;
-    onApprove: () => void;
+    onApprove: (feedback?: string) => void;
     onApproveNewSession: () => void;
     onDeny: (feedback: string) => void;
   } = $props();
@@ -21,13 +22,17 @@
   );
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && event.ctrlKey && event.shiftKey) {
+    if (event.key === 'Enter' && event.ctrlKey && event.shiftKey && isPlanNewSessionAvailable()) {
       event.preventDefault();
       onApproveNewSession();
     } else if (event.key === 'Enter' && event.ctrlKey) {
       event.preventDefault();
-      onApprove();
+      onApprove(feedbackText.trim() || undefined);
     }
+  }
+
+  function handleApprove() {
+    onApprove(feedbackText.trim() || undefined);
   }
 
   function handleDeny() {
@@ -75,10 +80,10 @@
       {/if}
     {/if}
 
-    <!-- Feedback textarea -->
+    <!-- Feedback textarea (optional for approve, required for request changes) -->
     <textarea
       class="feedback-textarea"
-      placeholder="Describe what changes you'd like to the plan..."
+      placeholder="Optional: add notes for Claude before it starts implementing..."
       bind:value={feedbackText}
     ></textarea>
 
@@ -94,20 +99,22 @@
       </button>
       <button
         class="plan-btn btn-approve"
-        onclick={onApprove}
+        onclick={handleApprove}
         title="Continue implementing in this session"
       >
         Approve & Implement
         <span class="kbd">Ctrl+Enter</span>
       </button>
-      <button
-        class="plan-btn btn-new-session"
-        onclick={onApproveNewSession}
-        title="Start a fresh session to implement the plan"
-      >
-        Approve in New Session
-        <span class="kbd">Ctrl+Shift+Enter</span>
-      </button>
+      {#if isPlanNewSessionAvailable()}
+        <button
+          class="plan-btn btn-new-session"
+          onclick={onApproveNewSession}
+          title="Start a fresh session to implement the plan"
+        >
+          Approve in New Session
+          <span class="kbd">Ctrl+Shift+Enter</span>
+        </button>
+      {/if}
     </div>
   </div>
 </div>

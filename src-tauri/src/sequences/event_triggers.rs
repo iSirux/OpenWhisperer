@@ -115,13 +115,13 @@ impl EventTriggerManager {
                                 match mgr.start_execution_at(&seq_id, inputs_map, false, entry) {
                                     Ok(exec_id) => {
                                         tids.lock().push(exec_id.clone());
-                                        println!(
+                                        log::info!(
                                             "[event-trigger] Fired '{}' for app_start -> execution {}",
                                             seq_id, exec_id
                                         );
                                     }
                                     Err(e) => {
-                                        eprintln!(
+                                        log::error!(
                                             "[event-trigger] Failed to fire '{}': {}",
                                             seq_id, e
                                         );
@@ -198,13 +198,13 @@ impl EventTriggerManager {
                             match mgr.start_execution_at(&seq_id, inputs_map, false, entry) {
                                 Ok(exec_id) => {
                                     tids.lock().push(exec_id.clone());
-                                    println!(
+                                    log::info!(
                                         "[event-trigger] Fired '{}' -> execution {}",
                                         seq_id, exec_id
                                     );
                                 }
                                 Err(e) => {
-                                    eprintln!(
+                                    log::error!(
                                         "[event-trigger] Failed to fire '{}': {}",
                                         seq_id, e
                                     );

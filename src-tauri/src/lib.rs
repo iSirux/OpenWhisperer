@@ -10,7 +10,7 @@ mod terminal;
 mod realtime;
 mod whisper;
 
-use commands::{archive_cmds, audio_cmds, git_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, realtime_cmds};
+use commands::{archive_cmds, audio_cmds, git_cmds, llm_cmds, input_cmds, log_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, realtime_cmds};
 use sequences::SequenceManager;
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -81,7 +81,36 @@ pub fn run() {
     let realtime_manager = Arc::new(RealtimeSessionManager::new());
     let config_load_status = ConfigLoadStatus(Mutex::new(config_loaded_ok));
 
+    // Set up backend file logging via tauri-plugin-log (date-stamped, 7-day rolling)
+    let log_dir = commands::log_cmds::logs_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+    // Cleanup is also done inside init_frontend_logger(); calling it here ensures
+    // backend-side old files are pruned even before the FrontendLogger is initialised.
+    commands::log_cmds::cleanup_old_logs(&log_dir);
+    let today = chrono::Local::now().format("%Y-%m-%d");
+    let backend_log_name: String = if cfg!(debug_assertions) {
+        format!("backend-dev-{}", today)
+    } else {
+        format!("backend-{}", today)
+    };
+
     let builder = tauri::Builder::default();
+
+    // Register the log plugin first so all subsequent plugin/setup logs are captured
+    let builder = builder.plugin(
+        tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Info)
+            .target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::Folder {
+                    path: log_dir,
+                    file_name: Some(backend_log_name),
+                },
+            ))
+            // Size cap per-file just in case the app runs for many days without a restart
+            .max_file_size(50_000_000)
+            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+            .build(),
+    );
 
     // Only enforce single instance in release builds - allows running debug and release simultaneously
     #[cfg(not(debug_assertions))]
@@ -123,6 +152,7 @@ pub fn run() {
         .manage(terminal_manager)
         .manage(sidecar_manager)
         .manage(realtime_manager)
+        .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
             #[cfg(target_os = "windows")]
             set_windows_app_user_model_id(&app.config().identifier);
@@ -210,7 +240,7 @@ pub fn run() {
             ));
             // Load sequence definitions
             if let Err(e) = sequence_manager.load_definitions() {
-                eprintln!("[sequences] Failed to load definitions: {}", e);
+                log::error!("[sequences] Failed to load definitions: {}", e);
             }
             let sequence_manager_for_scheduler = sequence_manager.clone();
             let sequence_manager_for_triggers = sequence_manager.clone();
@@ -377,6 +407,7 @@ pub fn run() {
             sequence_cmds::list_event_triggers,
             sequence_cmds::generate_sequence_yaml,
             sequence_cmds::generate_node_config,
+            log_cmds::write_frontend_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

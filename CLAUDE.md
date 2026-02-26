@@ -16,7 +16,7 @@ npm run tauri:dev
 npm run tauri:build
 
 # Type checking
-npm run check
+npm run check 2>&1 | grep -A 5 "Error:"
 
 # Frontend only (without Tauri)
 npm run dev
@@ -399,6 +399,7 @@ The app supports external MCP (Model Context Protocol) servers to extend Claude'
 ### Per-Server Configuration
 
 Each MCP server has:
+
 - `id` - Unique identifier
 - `name` - Display name
 - `server_type` - 'stdio', 'http', or 'sse'
@@ -422,3 +423,10 @@ Repositories can have specific MCP servers assigned via `mcp_servers` in `RepoCo
 
 - **Settings → MCP Servers** - Add, edit, remove, and test MCP servers
 - **Settings → Repositories** - Associate servers with specific repos
+
+### Providers
+
+Read these for info on the interface:
+
+- Claude Agent SDK: "docs\Claude Agent SDK reference - TypeScript.md"
+- Codex App Server: "docs\Codex App Server.md"

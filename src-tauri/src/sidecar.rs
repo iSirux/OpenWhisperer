@@ -396,7 +396,7 @@ impl SidecarManager {
         let path = possible_paths
             .iter()
             .find(|p| {
-                println!("[sidecar] Checking path: {:?} exists={}", p, p.exists());
+                log::info!("[sidecar] Checking path: {:?} exists={}", p, p.exists());
                 p.exists()
             })
             .cloned()
@@ -415,7 +415,7 @@ impl SidecarManager {
         let path_str = path.to_string_lossy().to_string();
         let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
 
-        println!("[sidecar] Using sidecar at: {}", path_str);
+        log::info!("[sidecar] Using sidecar at: {}", path_str);
 
         // Get the sidecar base directory (contains dist/ and node_modules/)
         let sidecar_base = std::path::Path::new(&path_str)
@@ -424,7 +424,7 @@ impl SidecarManager {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
 
-        println!("[sidecar] Sidecar base directory: {}", sidecar_base);
+        log::info!("[sidecar] Sidecar base directory: {}", sidecar_base);
 
         let mut cmd = Command::new("node");
         cmd.arg(&path_str)
@@ -475,7 +475,7 @@ impl SidecarManager {
                 let reader = BufReader::new(stderr);
                 for line in reader.lines() {
                     if let Ok(line) = line {
-                        eprintln!("[sidecar stderr] {}", line);
+                        log::error!("[sidecar stderr] {}", line);
                     }
                 }
             });
@@ -492,12 +492,12 @@ impl SidecarManager {
                             Self::handle_message(&app_clone, msg);
                         }
                         Err(e) => {
-                            eprintln!("[sidecar] Failed to parse message: {} - {}", e, line);
+                            log::error!("[sidecar] Failed to parse message: {} - {}", e, line);
                         }
                     }
                 }
             }
-            eprintln!("[sidecar] Reader thread exited");
+            log::error!("[sidecar] Reader thread exited");
         });
 
         Ok(())
@@ -506,20 +506,20 @@ impl SidecarManager {
     fn handle_message(app: &AppHandle, msg: InboundMessage) {
         match msg {
             InboundMessage::Ready => {
-                println!("[sidecar] Ready");
+                log::info!("[sidecar] Ready");
             }
             InboundMessage::Created { id } => {
-                println!("[sidecar] Emitting sdk-created-{}", id);
+                log::info!("[sidecar] Emitting sdk-created-{}", id);
                 let _ = app.emit(&format!("sdk-created-{}", id), ());
             }
             InboundMessage::Text { id, ref content, ref parent_tool_use_id, ref turn_uuid } => {
-                println!("[sidecar] Emitting sdk-text-{} with {} bytes", id, content.len());
+                log::info!("[sidecar] Emitting sdk-text-{} with {} bytes", id, content.len());
                 let result = app.emit(
                     &format!("sdk-text-{}", id),
                     serde_json::json!({ "content": content, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
                 if let Err(e) = result {
-                    eprintln!("[sidecar] Failed to emit text event: {}", e);
+                    log::error!("[sidecar] Failed to emit text event: {}", e);
                 }
             }
             InboundMessage::ToolStart { id, tool, input, tool_use_id, parent_tool_use_id, ref turn_uuid } => {
@@ -547,10 +547,10 @@ impl SidecarManager {
                 );
             }
             InboundMessage::Done { id } => {
-                println!("[sidecar] Emitting sdk-done-{}", id);
+                log::info!("[sidecar] Emitting sdk-done-{}", id);
                 let result = app.emit(&format!("sdk-done-{}", id), ());
                 if let Err(e) = result {
-                    eprintln!("[sidecar] Failed to emit done event: {}", e);
+                    log::error!("[sidecar] Failed to emit done event: {}", e);
                 }
             }
             InboundMessage::Usage {
@@ -569,7 +569,7 @@ impl SidecarManager {
                 main_agent_cache_read_tokens,
                 main_agent_cache_creation_tokens,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Emitting sdk-usage-{}: {} input, {} output, ${:.4}",
                     id, input_tokens, output_tokens, total_cost_usd
                 );
@@ -620,7 +620,7 @@ impl SidecarManager {
                 );
             }
             InboundMessage::ModelUpdated { id, model } => {
-                println!("[sidecar] Model updated for {}: {}", id, model);
+                log::info!("[sidecar] Model updated for {}: {}", id, model);
                 let _ = app.emit(&format!("sdk-model-updated-{}", id), &model);
             }
             InboundMessage::Closed { id } => {
@@ -630,14 +630,14 @@ impl SidecarManager {
                 let _ = app.emit(&format!("sdk-error-{}", id), &message);
             }
             InboundMessage::Debug { id, message } => {
-                println!("[sidecar debug][{}] {}", id, message);
+                log::info!("[sidecar debug][{}] {}", id, message);
             }
             InboundMessage::SubagentStart {
                 id,
                 agent_id,
                 agent_type,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Subagent started: {} (type: {}) for session {}",
                     agent_id, agent_type, id
                 );
@@ -654,7 +654,7 @@ impl SidecarManager {
                 agent_id,
                 transcript_path,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Subagent stopped: {} for session {}",
                     agent_id, id
                 );
@@ -673,7 +673,7 @@ impl SidecarManager {
                 description,
                 task_type,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Task started: {} (toolUseId: {:?}) for session {}",
                     task_id, tool_use_id, id
                 );
@@ -695,7 +695,7 @@ impl SidecarManager {
                 summary,
                 usage,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Task completed: {} ({}) for session {}",
                     task_id, status, id
                 );
@@ -714,7 +714,7 @@ impl SidecarManager {
                 id,
                 effort_level,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Effort updated for {}: {:?}",
                     id, effort_level
                 );
@@ -724,7 +724,7 @@ impl SidecarManager {
                 );
             }
             InboundMessage::PlanningQuestions { id, questions } => {
-                println!(
+                log::info!(
                     "[sidecar] Planning questions for session {}: {} questions",
                     id,
                     questions.len()
@@ -740,7 +740,7 @@ impl SidecarManager {
                 feature_name,
                 summary,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Planning complete for session {}: {}",
                     id, feature_name
                 );
@@ -754,7 +754,7 @@ impl SidecarManager {
                 );
             }
             InboundMessage::AskUserQuestions { id, questions } => {
-                println!(
+                log::info!(
                     "[sidecar] AskUserQuestion for session {}: {} questions",
                     id,
                     questions.len()
@@ -768,7 +768,7 @@ impl SidecarManager {
                 id,
                 allowed_prompts,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Plan approval request for session {}: {} allowed prompts",
                     id,
                     allowed_prompts.len()
@@ -788,7 +788,7 @@ impl SidecarManager {
                 icon,
                 color,
             } => {
-                println!(
+                log::info!(
                     "[sidecar] Repo description result for {}: {}",
                     id,
                     description.chars().take(50).collect::<String>()
@@ -805,18 +805,18 @@ impl SidecarManager {
                 );
             }
             InboundMessage::RepoDescriptionError { id, error } => {
-                eprintln!("[sidecar] Repo description error for {}: {}", id, error);
+                log::error!("[sidecar] Repo description error for {}: {}", id, error);
                 let _ = app.emit(&format!("repo-description-error-{}", id), &error);
             }
             InboundMessage::SdkSessionId { id, sdk_session_id } => {
-                println!(
+                log::info!(
                     "[sidecar] SDK session ID for {}: {}",
                     id, sdk_session_id
                 );
                 let _ = app.emit(&format!("sdk-session-id-{}", id), &sdk_session_id);
             }
             InboundMessage::ParallelSessionNotification { id, message } => {
-                println!(
+                log::info!(
                     "[sidecar] Parallel session notification for {}: {}",
                     id, message
                 );
@@ -848,7 +848,7 @@ impl SidecarManager {
     pub fn shutdown(&self) {
         let mut process = self.process.lock();
         if let Some(ref mut child) = *process {
-            println!("[sidecar] Shutting down sidecar process");
+            log::info!("[sidecar] Shutting down sidecar process");
             let _ = child.kill();
             let _ = child.wait();
         }

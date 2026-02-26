@@ -220,7 +220,7 @@ impl TerminalManager {
                     Err(e) => {
                         // Log error for debugging (only if not due to shutdown)
                         if !shutdown_flag_clone.load(Ordering::Relaxed) {
-                            eprintln!("Terminal reader error for session {}: {}", session_id, e);
+                            log::error!("Terminal reader error for session {}: {}", session_id, e);
                         }
                         break;
                     }

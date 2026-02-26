@@ -96,7 +96,7 @@ impl NotificationSender {
             ));
         }
 
-        println!("[notifications] Slack notification sent to {}", webhook_url);
+        log::info!("[notifications] Slack notification sent to {}", webhook_url);
         Ok(())
     }
 
@@ -157,7 +157,7 @@ impl NotificationSender {
             ));
         }
 
-        println!(
+        log::info!(
             "[notifications] Discord notification sent to {}",
             webhook_url
         );
@@ -256,7 +256,7 @@ impl NotificationSender {
             return Err(format!("Webhook returned {} — {}", status, body_text));
         }
 
-        println!(
+        log::info!(
             "[notifications] Webhook notification sent to {}",
             webhook_url
         );

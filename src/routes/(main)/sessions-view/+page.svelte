@@ -4,6 +4,7 @@
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings, type SessionsViewLayout, type SessionsGridSize } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
   import type { DisplaySession } from '$lib/types/session';
   import { getStatusCategory } from '$lib/utils/sessionStatus';
@@ -39,7 +40,7 @@
     const sdkSessionsList = $sdkSessions;
     const sortOrder = $settings.session_sort_order;
 
-    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder);
+    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder, [], $repos.list);
     allSessions = sorted;
 
     // Fetch branches
@@ -323,8 +324,8 @@
             {now}
             showLatestMessage={$settings.show_latest_message_preview}
             showSessionSummary={$settings.show_session_summary}
-            promptRows={$settings.session_prompt_rows}
-            responseRows={$settings.session_response_rows}
+            promptRows={2}
+            responseRows={2}
             onselect={() => selectSession(session)}
             onclose={(e) => closeSession(session, e)}
           />
@@ -341,8 +342,8 @@
             {now}
             showLatestMessage={$settings.show_latest_message_preview}
             showSessionSummary={$settings.show_session_summary}
-            promptRows={$settings.session_prompt_rows}
-            responseRows={$settings.session_response_rows}
+            promptRows={2}
+            responseRows={2}
             onselect={() => selectSession(session)}
             onclose={(e) => closeSession(session, e)}
           />
