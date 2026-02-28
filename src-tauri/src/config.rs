@@ -482,11 +482,25 @@ impl Default for OverlayConfig {
     }
 }
 
+/// Terminal emulator preference for launch profiles (Windows only)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum LaunchTerminal {
+    #[default]
+    Cmd,
+    #[serde(alias = "pwsh")]
+    PowerShell,
+    #[serde(alias = "wt")]
+    WindowsTerminal,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemConfig {
     pub minimize_to_tray: bool,
     pub start_minimized: bool,
     pub autostart: bool,
+    /// Preferred terminal emulator for launch profiles
+    #[serde(default)]
+    pub launch_terminal: LaunchTerminal,
 }
 
 impl Default for SystemConfig {
@@ -495,6 +509,7 @@ impl Default for SystemConfig {
             minimize_to_tray: false,
             start_minimized: false,
             autostart: false,
+            launch_terminal: LaunchTerminal::default(),
         }
     }
 }

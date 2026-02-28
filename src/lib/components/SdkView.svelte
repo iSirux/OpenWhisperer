@@ -114,6 +114,8 @@
   let isNewChat = $derived(messages.length === 0 && status === "idle");
   let autoModelRequested = $derived(session?.autoModelRequested ?? false);
   let sessionEffortLevel = $derived(session?.effortLevel ?? null);
+  let forkSourceLabel = $derived(session?.forkedFromSessionLabel ?? "");
+  let isForkSession = $derived(!!session?.forkedFromSessionId);
   let pendingApprovalPrompt = $derived(session?.pendingApprovalPrompt);
   let usage = $derived(session?.usage);
   let hasUsageData = $derived(
@@ -255,17 +257,6 @@
         persistCurrentScrollState(prevSessionId);
       }
 
-      // Save draft to the OLD session
-      if (promptInputRef) {
-        const draft = promptInputRef.getCurrentDraft();
-        if (draft.prompt || draft.images.length > 0) {
-          sdkSessions.updateDraft(
-            prevSessionId,
-            draft.prompt,
-            draft.images.length > 0 ? draft.images : undefined,
-          );
-        }
-      }
       prevSessionId = sessionId;
       restoredSessionId = null;
 
@@ -1057,9 +1048,13 @@
     sdkSessions.updateSessionCwd(sessionId, newCwd);
   }
 
-  function handleDraftChange(prompt: string, images: SdkImageContent[]) {
+  function handleDraftChange(
+    targetSessionId: string,
+    prompt: string,
+    images: SdkImageContent[],
+  ) {
     sdkSessions.updateDraft(
-      sessionId,
+      targetSessionId,
       prompt,
       images.length > 0 ? images : undefined,
     );
@@ -1190,6 +1185,15 @@
           completed={true}
           autoModelEffort={$settings.llm?.features?.auto_model_effort}
         />
+      {/if}
+
+      {#if isForkSession}
+        <div class="fork-session-banner">
+          <svg viewBox="0 0 16 16" fill="currentColor" class="fork-session-banner-icon">
+            <path fill-rule="evenodd" d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM5 5.372a2.25 2.25 0 1 0-1.5 0v.878A2.25 2.25 0 0 0 5.75 8.5h1.5v2.128a2.251 2.251 0 1 0 1.5 0V8.5h1.5a2.25 2.25 0 0 0 2.25-2.25v-.878a2.25 2.25 0 1 0-1.5 0v.878a.75.75 0 0 1-.75.75h-4.5A.75.75 0 0 1 5 6.25v-.878ZM8.75 12.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM12.25 4a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" />
+          </svg>
+          <span>{forkSourceLabel ? `Forked from ${forkSourceLabel}` : "Forked session"}</span>
+        </div>
       {/if}
 
       {#each renderItems as item, index (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || index}` : `tool-group-${index}`)}
@@ -1494,6 +1498,26 @@
 
   .forked-context:hover {
     opacity: 0.75;
+  }
+
+  .fork-session-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin: 0 0 0.9rem;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    border-radius: 0.7rem;
+    background: rgba(251, 191, 36, 0.08);
+    color: rgb(251, 191, 36);
+    font-size: 0.82rem;
+    font-weight: 500;
+  }
+
+  .fork-session-banner-icon {
+    width: 0.9rem;
+    height: 0.9rem;
+    flex-shrink: 0;
   }
 
   /* Fork divider between inherited and new messages */

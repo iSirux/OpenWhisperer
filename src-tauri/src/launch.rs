@@ -1,4 +1,4 @@
-use crate::config::LaunchCommand;
+use crate::config::{LaunchCommand, LaunchTerminal};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,7 @@ impl LaunchManager {
         repo_id: &str,
         repo_path: &str,
         commands: &[LaunchCommand],
+        terminal: &LaunchTerminal,
     ) -> Result<(), String> {
         let mut processes = Vec::new();
 
@@ -62,6 +63,7 @@ impl LaunchManager {
                 &cmd.command,
                 &cmd.name,
                 cmd.env.as_ref(),
+                terminal,
             )?;
 
             processes.push(RunningProcess {
@@ -105,21 +107,33 @@ impl LaunchManager {
     }
 
     /// Get the list of currently running command IDs for a repo.
+    /// Prunes any processes that have exited (e.g. user closed the terminal window).
     pub fn get_running_command_ids(&self, repo_id: &str) -> Vec<String> {
-        let running = self.running.lock();
-        running
-            .get(repo_id)
-            .map(|procs| procs.iter().map(|p| p.command_id.clone()).collect())
-            .unwrap_or_default()
+        let mut running = self.running.lock();
+        if let Some(procs) = running.get_mut(repo_id) {
+            // Prune processes that have exited
+            procs.retain_mut(|p| {
+                match p.child.try_wait() {
+                    Ok(Some(_)) => false, // Process has exited, remove it
+                    Ok(None) => true,     // Still running
+                    Err(_) => false,      // Error checking status, assume dead
+                }
+            });
+            let ids: Vec<String> = procs.iter().map(|p| p.command_id.clone()).collect();
+            // Clean up the entry if all processes are gone
+            if ids.is_empty() {
+                running.remove(repo_id);
+            }
+            ids
+        } else {
+            Vec::new()
+        }
     }
 
     /// Check if any processes are running for a given repo.
+    /// Prunes any processes that have exited.
     pub fn is_running(&self, repo_id: &str) -> bool {
-        let running = self.running.lock();
-        running
-            .get(repo_id)
-            .map(|procs| !procs.is_empty())
-            .unwrap_or(false)
+        !self.get_running_command_ids(repo_id).is_empty()
     }
 }
 
@@ -130,22 +144,56 @@ fn spawn_terminal_with_command(
     command: &str,
     title: &str,
     env: Option<&HashMap<String, String>>,
+    _terminal: &LaunchTerminal,
 ) -> Result<Child, String> {
     let cwd_str = cwd.to_string_lossy();
 
     #[cfg(target_os = "windows")]
     {
-        // On Windows: use `cmd /C start "title" cmd /K "cd /d path && command"`
-        // The outer cmd spawns a new terminal window via `start`,
-        // the inner cmd runs the actual command with /K (keep open).
-        let inner_cmd = format!("cd /d \"{}\" && {}", cwd_str, command);
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", title, "cmd", "/K", &inner_cmd]);
-        cmd.current_dir(cwd);
-
-        // CREATE_NO_WINDOW (0x08000000) for the outer cmd process
+        // All paths go through raw_arg to avoid Rust's C-runtime argument escaping
+        // which uses \" — incompatible with cmd.exe's own quote parsing.
+        let safe_title = title.replace('"', "'");
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let mut cmd = match _terminal {
+            LaunchTerminal::PowerShell => {
+                // start /WAIT keeps the outer cmd alive until the terminal closes,
+                // so our Child handle can track when the user closes the window.
+                let mut c = Command::new("cmd");
+                c.raw_arg(format!(
+                    "/C start \"{}\" /WAIT /D \"{}\" pwsh -NoExit -Command \"{}\"",
+                    safe_title, cwd_str, command
+                ));
+                c.creation_flags(CREATE_NO_WINDOW);
+                c
+            }
+            LaunchTerminal::WindowsTerminal => {
+                // Windows Terminal: wt --title "title" -d "path" cmd /K command
+                // Note: wt.exe may exit immediately if attaching to an existing
+                // instance, so process tracking may not detect manual close.
+                let mut c = Command::new("wt");
+                c.raw_arg(format!(
+                    "--title \"{}\" -d \"{}\" cmd /K {}",
+                    safe_title, cwd_str, command
+                ));
+                c
+            }
+            LaunchTerminal::Cmd => {
+                // start /WAIT keeps the outer cmd alive until the terminal closes,
+                // so our Child handle can track when the user closes the window.
+                // /D sets the working directory — avoids nested quoting issues
+                // that `cd /d "path" && command` caused.
+                let mut c = Command::new("cmd");
+                c.raw_arg(format!(
+                    "/C start \"{}\" /WAIT /D \"{}\" cmd /K {}",
+                    safe_title, cwd_str, command
+                ));
+                c.creation_flags(CREATE_NO_WINDOW);
+                c
+            }
+        };
+
+        cmd.current_dir(cwd);
 
         if let Some(env_vars) = env {
             for (key, val) in env_vars {

@@ -189,11 +189,13 @@
           initialReadOnlyMode={activeSession.readOnlyMode || false}
           initialDraftPrompt={activeSession.draftPrompt || ''}
           initialDraftImages={activeSession.draftImages || []}
+          providerLocked={!!activeSession.forkedFromSessionId}
+          forkedFromLabel={activeSession.forkedFromSessionLabel || ''}
           isRecordingForSetup={$isRecordingForSetup}
           onStart={(config) => handleSetupSessionStart(sessionId, config)}
-          onDraftChange={(prompt, images) =>
+          onDraftChange={(targetSessionId, prompt, images) =>
             sdkSessions.updateDraft(
-              sessionId,
+              targetSessionId,
               prompt,
               images.length > 0 ? images : undefined
             )}

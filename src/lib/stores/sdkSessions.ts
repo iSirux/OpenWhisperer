@@ -317,6 +317,25 @@ export interface SdkSession {
   forkAtMessageUuid?: string;
   /** Number of messages inherited from parent session (displayed as read-only context) */
   forkedMessageCount?: number;
+  /** Friendly label for the parent session, used in fork UI surfaces */
+  forkedFromSessionLabel?: string;
+}
+
+function normalizeDraftPrompt(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function normalizeDraftImages(value: unknown): SdkImageContent[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const images = value.filter((image): image is SdkImageContent => {
+    return !!image &&
+      typeof image === 'object' &&
+      typeof (image as SdkImageContent).mediaType === 'string' &&
+      typeof (image as SdkImageContent).base64Data === 'string';
+  });
+
+  return images.length > 0 ? images : undefined;
 }
 
 export type HistoryMessage =
@@ -348,6 +367,27 @@ function createDefaultUsage(contextWindow = 200000): SdkSessionUsage {
     progressiveCacheReadTokens: 0,
     progressiveCacheCreationTokens: 0,
   };
+}
+
+function getSessionDisplayLabel(session: SdkSession): string | undefined {
+  const aiName = session.aiMetadata?.name?.trim();
+  if (aiName) return aiName;
+
+  const firstUserMessage = session.messages.find((message) => message.type === 'user')?.content?.trim();
+  if (firstUserMessage) {
+    return firstUserMessage.length > 48
+      ? `${firstUserMessage.slice(0, 48).trimEnd()}...`
+      : firstUserMessage;
+  }
+
+  const draftPrompt = session.draftPrompt?.trim();
+  if (draftPrompt) {
+    return draftPrompt.length > 48
+      ? `${draftPrompt.slice(0, 48).trimEnd()}...`
+      : draftPrompt;
+  }
+
+  return undefined;
 }
 
 /** Convert SDK messages to history messages for session restoration */
@@ -733,6 +773,7 @@ function createSdkSessionsStore() {
             sessionMessages = updatedMessages;
             needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
+            const isActiveSession = get(activeSdkSessionId) === id;
             return {
               ...s,
               status: 'idle' as const,
@@ -740,7 +781,7 @@ function createSdkSessionsStore() {
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: updatedMessages,
-              unread: currentSettings.mark_sessions_unread ? true : s.unread,
+              unread: currentSettings.mark_sessions_unread && !isActiveSession ? true : s.unread,
             };
           })
         );
@@ -781,7 +822,7 @@ function createSdkSessionsStore() {
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: [...closedThinkingMessages, { type: 'error' as const, content: e.payload, timestamp: now }],
-              unread: currentSettings.mark_sessions_unread ? true : s.unread,
+              unread: currentSettings.mark_sessions_unread && get(activeSdkSessionId) !== id ? true : s.unread,
             };
           })
         );
@@ -1191,7 +1232,11 @@ function createSdkSessionsStore() {
         return {
           ...s,
           currentBranch,
-          createdBranch: s.createdBranch ?? currentBranch,
+          // Don't lock in createdBranch during the setup phase — the user hasn't
+          // committed to a cwd yet and may switch worktree modes several times.
+          // Once the session transitions past 'setup' (in startSetupSession), the
+          // first call here will set createdBranch from the actual committed cwd.
+          ...(s.status !== 'setup' ? { createdBranch: s.createdBranch ?? currentBranch } : {}),
         };
       })
     );
@@ -1397,9 +1442,8 @@ function createSdkSessionsStore() {
         parentMessages.push({ ...sourceSession.messages[i] });
       }
 
-      // Create the forked session
-      await this.ensureSidecarStarted();
       const id = crypto.randomUUID();
+      const parentLabel = getSessionDisplayLabel(sourceSession);
 
       const session: SdkSession = {
         id,
@@ -1410,28 +1454,18 @@ function createSdkSessionsStore() {
         readOnlyMode: sourceSession.readOnlyMode,
         effortLevel: sourceSession.effortLevel,
         messages: parentMessages,
-        status: 'idle',
+        status: 'setup',
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         forkedFromSessionId: sourceSessionId,
+        forkedFromSessionLabel: parentLabel,
         forkFromSdkSessionId: sourceSession.sdkSessionId,
         forkAtMessageUuid: forkAtUuid,
         forkedMessageCount: parentMessages.length,
       };
 
       update(sessions => [...sessions, session]);
-
-      const unlisteners = await setupEventListeners(id);
-      listeners.set(id, unlisteners);
-
-      // Register with backend, passing fork parameters
-      await registerSessionWithBackend(
-        id, sourceSession.cwd, sourceSession.model, sourceSession.effortLevel,
-        null, null, null,
-        undefined, undefined, sourceSession.provider,
-        sourceSession.sdkSessionId, forkAtUuid, sourceSession.readOnlyMode
-      );
 
       return id;
     },
@@ -1710,7 +1744,10 @@ function createSdkSessionsStore() {
     },
 
     updateDraft(id: string, draftPrompt?: string, draftImages?: SdkImageContent[]): void {
-      update(sessions => sessions.map(s => s.id === id ? { ...s, draftPrompt, draftImages } : s));
+      const normalizedPrompt = normalizeDraftPrompt(draftPrompt);
+      const normalizedImages = normalizeDraftImages(draftImages);
+      update(sessions => sessions.map(s => s.id === id ? { ...s, draftPrompt: normalizedPrompt, draftImages: normalizedImages } : s));
+      debouncedSave();
     },
 
     clearAiCompletionMetadata(id: string): void {
@@ -1795,7 +1832,21 @@ function createSdkSessionsStore() {
         const finalEffort = config.noteMode ? null : config.effortLevel;
         const finalProvider = normalizeSdkProvider(config.provider, finalModel);
 
-        await registerSessionWithBackend(id, config.cwd, finalModel, finalEffort, finalSystemPrompt, null, null, config.planMode, config.noteMode, finalProvider, undefined, undefined, config.noteMode ? false : (config.readOnlyMode ?? false));
+        await registerSessionWithBackend(
+          id,
+          config.cwd,
+          finalModel,
+          finalEffort,
+          finalSystemPrompt,
+          null,
+          null,
+          config.planMode,
+          config.noteMode,
+          finalProvider,
+          session.forkFromSdkSessionId,
+          session.forkAtMessageUuid,
+          config.noteMode ? false : (config.readOnlyMode ?? false)
+        );
         await syncSessionBranchMetadata(id, config.cwd);
 
         const currentSettings = get(settings);

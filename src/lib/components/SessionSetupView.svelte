@@ -46,6 +46,8 @@
     initialReadOnlyMode?: boolean;
     initialDraftPrompt?: string;
     initialDraftImages?: SdkImageContent[];
+    providerLocked?: boolean;
+    forkedFromLabel?: string;
     isRecordingForSetup?: boolean;
     onStart: (config: {
       prompt: string;
@@ -61,7 +63,11 @@
       worktreeBranch?: string;
       worktreeRepoPath?: string;
     }) => void;
-    onDraftChange?: (prompt: string, images: SdkImageContent[]) => void;
+    onDraftChange?: (
+      sessionId: string,
+      prompt: string,
+      images: SdkImageContent[],
+    ) => void;
     onStartRecording: () => void;
     onStopRecording: () => Promise<string | null>;
     onCancel?: () => void;
@@ -78,6 +84,8 @@
     initialReadOnlyMode = false,
     initialDraftPrompt = '',
     initialDraftImages = [],
+    providerLocked = false,
+    forkedFromLabel = '',
     isRecordingForSetup = false,
     onStart,
     onDraftChange,
@@ -159,6 +167,12 @@
   });
 
   $effect(() => {
+    if (providerLocked && noteMode) {
+      noteMode = false;
+    }
+  });
+
+  $effect(() => {
     if (noteMode && readOnlyMode) {
       readOnlyMode = false;
     }
@@ -234,7 +248,7 @@
   $effect(() => {
     prompt;
     pendingImages;
-    onDraftChange?.(prompt, toSdkImageContent(pendingImages));
+    onDraftChange?.(sessionId, prompt, toSdkImageContent(pendingImages));
   });
 
   // Sync local config back to the store so the session list reflects changes
@@ -504,9 +518,22 @@
       </div>
       <div class="header-content">
         <h3 class="header-title">
-          {noteMode ? 'New Note' : planMode ? 'Start Planning Session' : 'New Session'}
+          {providerLocked
+            ? 'Fork Session'
+            : noteMode
+              ? 'New Note'
+              : planMode
+                ? 'Start Planning Session'
+                : 'New Session'}
         </h3>
-        {#if noteMode || planMode}
+        {#if providerLocked}
+          <p class="header-description">
+            {forkedFromLabel
+              ? `Forked from ${forkedFromLabel}.`
+              : 'Forked from an earlier session point.'}
+            You can adjust model, effort, repo, and prompt before starting.
+          </p>
+        {:else if noteMode || planMode}
           <p class="header-description">
             {noteMode
               ? 'Capture a voice note. The AI will create a note using your configured note-taking tools.'
@@ -541,7 +568,7 @@
             </svg>
             Plan
           </button>
-          {#if noteModeAvailable}
+          {#if noteModeAvailable && !providerLocked}
             <button
               class="mode-btn note"
               class:active={noteMode}
@@ -557,7 +584,7 @@
       </div>
 
       <!-- Provider Toggle (only show when both providers are available) -->
-      {#if openaiAvailable && !noteMode}
+      {#if openaiAvailable && !noteMode && !providerLocked}
         <div class="option-row">
           <label class="option-label">Provider</label>
           <div class="mode-toggle">
@@ -577,6 +604,14 @@
             >
               Codex
             </button>
+          </div>
+        </div>
+      {:else if !noteMode && providerLocked}
+        <div class="option-row">
+          <label class="option-label">Provider</label>
+          <div class="locked-provider">
+            <span class="locked-provider-badge">{provider === 'openai' ? 'Codex' : 'Claude'}</span>
+            <span class="locked-provider-text">Locked for forked sessions</span>
           </div>
         </div>
       {/if}
@@ -1082,6 +1117,27 @@
     background: var(--color-surface);
     border-radius: 0.5rem;
     border: 1px solid var(--color-border);
+  }
+
+  .locked-provider {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    min-height: 2.5rem;
+  }
+
+  .locked-provider-badge {
+    padding: 0.45rem 0.8rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    color: var(--color-text-primary);
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+
+  .locked-provider-text {
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
   }
 
   .mode-btn {

@@ -264,10 +264,13 @@ export interface AudioConfig {
   open_mic: OpenMicConfig;
 }
 
+export type LaunchTerminal = "Cmd" | "PowerShell" | "WindowsTerminal";
+
 export interface SystemConfig {
   minimize_to_tray: boolean;
   start_minimized: boolean;
   autostart: boolean;
+  launch_terminal: LaunchTerminal;
 }
 
 export interface SessionPersistenceConfig {
@@ -622,6 +625,7 @@ const defaultConfig: AppConfig = {
     minimize_to_tray: false,
     start_minimized: false,
     autostart: false,
+    launch_terminal: "Cmd",
   },
   show_branch_in_sessions: true,
   session_persistence: {

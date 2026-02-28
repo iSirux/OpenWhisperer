@@ -19,7 +19,11 @@ export interface WorktreeCreationResult {
   branch: string;
 }
 
-export function toImageData(images: SdkImageContent[]): ImageData[] {
+export function toImageData(images: SdkImageContent[] | null | undefined): ImageData[] {
+  if (!Array.isArray(images)) {
+    return [];
+  }
+
   return images.map((img) => ({
     mediaType: img.mediaType,
     base64Data: img.base64Data,

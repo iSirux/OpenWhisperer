@@ -233,6 +233,22 @@ function mapExecutionStatus(status: ExecutionStatus): string {
   }
 }
 
+function getSessionLabel(session: SdkSession): string | undefined {
+  const aiName = session.aiMetadata?.name?.trim();
+  if (aiName) return aiName;
+
+  const firstUserPrompt = session.messages.find((message) => message.type === 'user')?.content?.trim();
+  if (firstUserPrompt) return firstUserPrompt;
+
+  const draftPrompt = session.draftPrompt?.trim();
+  if (draftPrompt) return draftPrompt;
+
+  const pendingPrompt = session.preparedPrompt?.trim() || session.pendingPrompt?.trim();
+  if (pendingPrompt) return pendingPrompt;
+
+  return undefined;
+}
+
 /**
  * Transform PTY, SDK sessions, and sequence executions into unified DisplaySession format
  */
@@ -242,6 +258,10 @@ export function transformToDisplaySessions(
   sortOrder: SessionSortOrder,
   sequenceExecutions: SequenceExecution[] = []
 ): DisplaySession[] {
+  const sdkLabelById = new Map(
+    sdkSessionsList.map((session) => [session.id, getSessionLabel(session)])
+  );
+
   // Build base sessions
   const baseSessions: DisplaySession[] = [
     ...ptySessions.map((s) => ({
@@ -297,7 +317,14 @@ export function transformToDisplaySessions(
         pendingPlanApproval: !!s.pendingPlanApproval,
         askUserQuestion: !!(s.askUserQuestion?.questions?.length),
         provider: s.provider,
-        todoProgress
+        todoProgress,
+        forkInfo: s.forkedFromSessionId
+          ? {
+              parentSessionId: s.forkedFromSessionId,
+              parentLabel: s.forkedFromSessionLabel || sdkLabelById.get(s.forkedFromSessionId),
+              inheritedMessageCount: s.forkedMessageCount ?? 0,
+            }
+          : undefined,
       };
     }),
     ...sequenceExecutions.map((exec) => {

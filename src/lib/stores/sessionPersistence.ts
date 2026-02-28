@@ -4,6 +4,7 @@ import { settings } from './settings';
 import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo, type PlanModeState, type NoteModeState } from './sdkSessions';
 import { getProviderForModel, type SdkProvider } from '$lib/utils/models';
 import { sessions, activeSessionId, type TerminalSession } from './sessions';
+import { repos } from './repos';
 
 // ============================================================================
 // AUTO-PERSISTENCE SYSTEM
@@ -27,8 +28,6 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
   // SdkSession fields that shouldn't be persisted
   SdkSession: new Set([
     'currentWorkStartedAt', // Runtime-only timer, accumulated time is persisted instead
-    'draftPrompt', // Transient input state - user is still typing
-    'draftImages', // Transient input state - images pending to be sent
     'pendingSystemNotifications', // Transient parallel agent notifications - cleared after first query
     'askUserQuestion', // Transient - SDK already auto-answered, questions are one-time interactive
     'pendingPlanApproval', // Transient - plan approval is a one-time interactive decision
@@ -246,6 +245,8 @@ export interface PersistedSdkSession {
   pendingRepoSelection?: PendingRepoSelection;
   pendingPrompt?: string;
   pendingApprovalPrompt?: string;
+  draftPrompt?: string;
+  draftImages?: SdkImageContent[];
   planMode?: PlanModeState;
   noteMode?: NoteModeState;
   sdkSessionId?: string;
@@ -330,6 +331,14 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
     }));
   }
 
+  if (typeof session.draftPrompt !== 'string') {
+    session.draftPrompt = undefined;
+  }
+
+  if (!Array.isArray(session.draftImages)) {
+    session.draftImages = undefined;
+  }
+
   // Migrate old sessions without lastActivityAt
   if (!session.lastActivityAt) {
     session.lastActivityAt = session.createdAt;
@@ -350,6 +359,12 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
   const modelProvider = getProviderForModel(session.model);
   if (session.provider !== modelProvider) {
     session.provider = modelProvider;
+  }
+
+  // Resolve repoId from cwd for sessions that predate the repoId field
+  if (!session.repoId && session.cwd && session.cwd !== '.') {
+    const reposList = get(repos).list;
+    session.repoId = reposList.find(r => r.path === session.cwd)?.id;
   }
 
   return session;

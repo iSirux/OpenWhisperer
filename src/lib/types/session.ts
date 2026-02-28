@@ -63,4 +63,11 @@ export interface DisplaySession {
 
   // SDK todo/task progress (from TodoWrite tool calls)
   todoProgress?: { completed: number; total: number };
+
+  // Fork lineage (SDK sessions)
+  forkInfo?: {
+    parentSessionId: string;
+    parentLabel?: string;
+    inheritedMessageCount: number;
+  };
 }

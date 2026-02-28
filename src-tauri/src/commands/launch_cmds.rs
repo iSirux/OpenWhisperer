@@ -326,20 +326,23 @@ pub fn launch_profile(
     }
 
     let repo_path = repo.path.clone();
+    let terminal = cfg.system.launch_terminal.clone();
     drop(cfg);
 
-    launch_mgr.launch_commands(&repo_id, &repo_path, &commands_to_launch)
+    launch_mgr.launch_commands(&repo_id, &repo_path, &commands_to_launch, &terminal)
 }
 
 /// Launch specific commands directly (for ad-hoc subset launches)
 #[tauri::command]
 pub fn launch_commands(
     launch_mgr: State<Arc<LaunchManager>>,
+    config: State<ConfigState>,
     repo_id: String,
     repo_path: String,
     commands: Vec<LaunchCommand>,
 ) -> Result<(), String> {
-    launch_mgr.launch_commands(&repo_id, &repo_path, &commands)
+    let terminal = config.lock().system.launch_terminal.clone();
+    launch_mgr.launch_commands(&repo_id, &repo_path, &commands, &terminal)
 }
 
 /// Stop all running processes for a given repo

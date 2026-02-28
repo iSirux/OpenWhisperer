@@ -3480,26 +3480,28 @@ async function runClaudeQueryItem(
       });
     }
 
-    // Build the prompt - for images we need to use AsyncIterable<SDKUserMessage>
-    // For text-only prompts we can use a simple string
-    let promptInput: string | AsyncGenerator<SDKUserMessageForInput>;
+    // Always use AsyncIterable<SDKUserMessage> to enable streaming input mode.
+    // This is required for streamInput() to work (injecting follow-up messages into
+    // a running query without waiting for it to finish). Single-string mode does not
+    // support streamInput(). See: https://platform.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
+    const streamSessionId = session.sdkSessionId || msg.id;
+    const promptInput = createUserMessageStream(
+      promptToSend,
+      msg.images ?? [],
+      streamSessionId
+    );
     if (hasImages) {
-      // Use the session ID if we have one, otherwise use the message ID as placeholder
-      const sessionId = session.sdkSessionId || msg.id;
-      promptInput = createUserMessageStream(
-        promptToSend,
-        msg.images!,
-        sessionId
-      );
       send({
         type: "debug",
         id: msg.id,
-        message: `Built multimodal prompt stream with ${
-          msg.images!.length
-        } image(s)`,
+        message: `Built multimodal prompt stream with ${msg.images!.length} image(s)`,
       });
     } else {
-      promptInput = promptToSend;
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Built streaming prompt (streaming input mode enabled for streamInput() support)`,
+      });
     }
 
     // Common options for both text and multimodal queries
@@ -3615,9 +3617,10 @@ async function runClaudeQueryItem(
     // Use the query function from the SDK
     let queryIterator;
     try {
-      // The SDK accepts either a string or AsyncIterable<SDKUserMessage> for prompt
+      // promptInput is always AsyncIterable<SDKUserMessageForInput> (streaming input mode)
+      // The SDK accepts AsyncIterable<SDKUserMessage> — our SDKUserMessageForInput is structurally compatible
       queryIterator = query({
-        prompt: promptInput as string, // Type assertion - SDK accepts both
+        prompt: promptInput as unknown as string, // SDK accepts AsyncIterable here; string cast satisfies TS
         options: queryOptions,
       });
     } catch (spawnError) {
@@ -3848,7 +3851,41 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     return handleCodexQuery(msg);
   }
 
-  // === Claude provider path (non-interrupting FIFO queue) ===
+  // === Claude provider path ===
+  // If there is an active query running in streaming input mode, inject the new
+  // message directly via streamInput() so the agent sees it immediately without
+  // waiting for the current query to finish.  This is the preferred path; the
+  // FIFO queue is kept as a fallback for edge-cases (e.g. race before queryIterator
+  // is assigned, or if streamInput throws).
+  if (session.claudeProcessing && session.queryIterator) {
+    const injectSessionId = session.sdkSessionId || msg.id;
+    const injectStream = createUserMessageStream(
+      msg.prompt,
+      msg.images ?? [],
+      injectSessionId
+    );
+    try {
+      // streamInput() is only available in streaming input mode (AsyncIterable prompt).
+      // Since we now always start queries in streaming input mode this will succeed.
+      await (session.queryIterator as Query).streamInput(
+        injectStream as unknown as AsyncIterable<Parameters<Query["streamInput"]>[0] extends AsyncIterable<infer T> ? T : never>
+      );
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `[claude stream-inject] injected prompt directly into running query (no queue wait)`,
+      });
+      return;
+    } catch (e) {
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `[claude stream-inject] streamInput() failed, falling back to queue: ${e}`,
+      });
+    }
+  }
+
+  // Queue the prompt for sequential processing (agent idle, or streamInput() failed above).
   const queryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   session.claudeQueue.push({ queryId, prompt: msg.prompt, images: msg.images });
   send({

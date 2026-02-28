@@ -43,7 +43,11 @@
     onStopRecording: () => void;
     onStartInlineRecording: () => void;
     onStopInlineRecording: () => void;
-    onDraftChange?: (prompt: string, images: SdkImageContent[]) => void;
+    onDraftChange?: (
+      sessionId: string,
+      prompt: string,
+      images: SdkImageContent[],
+    ) => void;
   } = $props();
 
   // Local state for immediate responsiveness, synced from props
@@ -89,21 +93,32 @@
     }));
   }
 
-  function flushDraftChange() {
+  function emitDraftChange(
+    targetSessionId: string,
+    targetPrompt: string,
+    targetImages: SdkImageContent[],
+  ) {
+    onDraftChange?.(targetSessionId, targetPrompt, targetImages);
+  }
+
+  function flushDraftChange(targetSessionId = prevSessionId) {
     if (!onDraftChange) return;
     if (draftChangeTimeout) {
       clearTimeout(draftChangeTimeout);
       draftChangeTimeout = null;
     }
-    onDraftChange(prompt, getImageContent());
+    emitDraftChange(targetSessionId, prompt, getImageContent());
   }
 
   function notifyDraftChange() {
     if (!onDraftChange) return;
     if (draftChangeTimeout) clearTimeout(draftChangeTimeout);
+    const targetSessionId = prevSessionId;
+    const targetPrompt = prompt;
+    const targetImages = getImageContent();
     draftChangeTimeout = setTimeout(() => {
       draftChangeTimeout = null;
-      onDraftChange(prompt, getImageContent());
+      emitDraftChange(targetSessionId, targetPrompt, targetImages);
     }, 300);
   }
 
@@ -113,11 +128,7 @@
     const draftImagesKey = JSON.stringify(draftImages);
 
     if (sessionId !== prevSessionId) {
-      // Clear any pending debounced save (the parent handles saving before switch)
-      if (draftChangeTimeout) {
-        clearTimeout(draftChangeTimeout);
-        draftChangeTimeout = null;
-      }
+      flushDraftChange(prevSessionId);
 
       // Update to the new session's values
       applyDraftPropsToLocalState();
@@ -164,7 +175,7 @@
     // Keep prevDraft in sync so the $effect guard doesn't re-apply stale store values
     prevDraftPrompt = "";
     prevDraftImagesKey = "[]";
-    onDraftChange?.("", []);
+    emitDraftChange(prevSessionId, "", []);
   }
 
   // Expose method to get current draft values (for flushing before session switch)
@@ -186,7 +197,7 @@
   }
 
   onDestroy(() => {
-    flushDraftChange();
+    flushDraftChange(prevSessionId);
   });
 
   // Expose method to append transcribed text to the current prompt
@@ -217,7 +228,7 @@
     prompt = "";
     pendingImages = [];
     // Clear draft in parent store
-    onDraftChange?.("", []);
+    emitDraftChange(prevSessionId, "", []);
     onSendPrompt(currentPrompt, imageContent);
   }
 

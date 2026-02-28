@@ -1,10 +1,40 @@
 <script lang="ts">
-  import { settings } from "$lib/stores/settings";
+  import { settings, type LaunchTerminal } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
   import "./toggle.css";
+
+  const isWindows = navigator.userAgent.includes("Windows");
 </script>
 
 <div class="space-y-4">
+  {#if isWindows}
+    <div class="flex items-center justify-between">
+      <div>
+        <label class="text-sm font-medium text-text-secondary"
+          >Launch Terminal</label
+        >
+        <p class="text-xs text-text-muted">
+          Terminal emulator for launch profiles
+        </p>
+      </div>
+      <select
+        class="bg-surface-elevated border border-border rounded px-2 py-1 text-sm text-text-primary"
+        value={$settings.system.launch_terminal ?? "Cmd"}
+        onchange={(e) => {
+          const val = (e.target as HTMLSelectElement).value as LaunchTerminal;
+          settings.update((s) => ({
+            ...s,
+            system: { ...s.system, launch_terminal: val },
+          }));
+        }}
+      >
+        <option value="Cmd">Command Prompt (cmd)</option>
+        <option value="PowerShell">PowerShell (pwsh)</option>
+        <option value="WindowsTerminal">Windows Terminal (wt)</option>
+      </select>
+    </div>
+  {/if}
+
   <div class="flex items-center justify-between">
     <div>
       <label class="text-sm font-medium text-text-secondary"

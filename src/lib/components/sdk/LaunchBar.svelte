@@ -37,7 +37,9 @@
       elapsedMs = Date.now() - runtime.startedAt;
       intervalId = setInterval(() => {
         elapsedMs = Date.now() - runtime!.startedAt;
-      }, 1000);
+        // Poll backend to detect manually closed terminals
+        launchStore.refreshStatus(repoId);
+      }, 2000);
     } else {
       elapsedMs = 0;
       if (intervalId) clearInterval(intervalId);
@@ -81,10 +83,11 @@
   }
 
   function handleProfileClick(e: MouseEvent, profileId: string) {
-    if (e.shiftKey && isAgentRunning) {
-      // Shift+click = queue after agent
+    if (isAgentRunning && !e.shiftKey) {
+      // Agent running + normal click = queue after agent finishes
       handleQueueProfile(profileId);
     } else {
+      // Agent idle (normal click) or force launch (Shift+click while running)
       handleLaunchProfile(profileId);
     }
   }
@@ -167,7 +170,7 @@
             class="profile-btn"
             onclick={(e) => handleProfileClick(e, profile.id)}
             oncontextmenu={(e) => handleContextMenu(e, profile.id)}
-            title={isAgentRunning ? "Click to launch, Shift+click to queue after agent" : `Launch ${profile.name}`}
+            title={isAgentRunning ? "Click to queue after agent, Shift+click to launch now" : `Launch ${profile.name}`}
           >
             {profile.name}
             <span class="profile-count">{profile.command_ids.length}</span>
