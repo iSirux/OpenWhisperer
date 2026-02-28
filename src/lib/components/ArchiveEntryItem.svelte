@@ -1,15 +1,18 @@
 <script lang="ts">
   import type { ArchiveEntry } from '$lib/stores/archive';
+  import type { RepoConfig } from '$lib/stores/repos';
+  import RepoIcon from './RepoIcon.svelte';
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
 
   interface Props {
     entry: ArchiveEntry;
+    repo?: RepoConfig | null;
     ondelete: (id: string) => void;
     onrestore: (id: string) => void;
     restoring?: boolean;
   }
 
-  let { entry, ondelete, onrestore, restoring = false }: Props = $props();
+  let { entry, repo = null, ondelete, onrestore, restoring = false }: Props = $props();
 
   function formatDate(timestamp: number): string {
     const date = new Date(timestamp);
@@ -22,6 +25,22 @@
     if (diffDays < 7) return `${diffDays}d ago`;
     if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
     return date.toLocaleDateString();
+  }
+
+  function formatTimestamp(timestamp: number): string {
+    if (!timestamp) return '';
+    return new Date(timestamp).toLocaleString();
+  }
+
+  function formatShortTimestamp(timestamp: number): string {
+    if (!timestamp) return '';
+    return new Date(timestamp).toLocaleString([], {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
   }
 
   function formatDuration(ms: number): string {
@@ -46,35 +65,14 @@
     const parts = path.replace(/\\/g, '/').split('/');
     return parts[parts.length - 1] || '';
   }
-
-  function getTypeBadge(type: string): { label: string; class: string } {
-    switch (type) {
-      case 'sdk':
-        return { label: 'SDK', class: 'bg-accent/20 text-accent' };
-      case 'pty':
-        return { label: 'PTY', class: 'bg-emerald-500/20 text-emerald-400' };
-      case 'sequence':
-        return { label: 'Sequence', class: 'bg-indigo-500/20 text-indigo-400' };
-      default:
-        return { label: type, class: 'bg-text-muted/20 text-text-muted' };
-    }
-  }
-
-  const typeBadge = $derived(getTypeBadge(entry.sessionType));
-  const isRestorable = $derived(entry.sessionType === 'sdk' || entry.sessionType === 'pty');
+  const isRestorable = $derived(entry.sessionType === 'sdk');
 </script>
 
 <div class="archive-entry p-3 border-b border-border/50 hover:bg-surface-elevated/50 transition-all group">
   <!-- Header row -->
   <div class="flex items-center justify-between mb-1">
     <div class="flex items-center gap-2 min-w-0 flex-1">
-      <!-- Type badge -->
-      <span class="px-1.5 py-0.5 text-[10px] font-medium rounded shrink-0 {typeBadge.class}">
-        {typeBadge.label}
-      </span>
-
-      <!-- Model badge (SDK only) -->
-      {#if entry.model && entry.sessionType === 'sdk'}
+      {#if entry.model}
         <span
           class="px-1.5 py-0.5 text-[10px] font-medium rounded shrink-0"
           style="background-color: {getModelBadgeBgColor(entry.model)}; color: {getModelTextColor(entry.model)};"
@@ -84,7 +82,7 @@
       {/if}
 
       <!-- Date -->
-      <span class="text-[10px] text-text-muted shrink-0">
+      <span class="text-[10px] text-text-muted shrink-0" title={formatTimestamp(entry.archivedAt)}>
         {formatDate(entry.archivedAt)}
       </span>
 
@@ -105,7 +103,7 @@
 
     <!-- Action buttons -->
     <div class="flex items-center gap-1">
-      <!-- Restore button (SDK and PTY only) -->
+      <!-- Restore button (SDK only) -->
       {#if isRestorable}
         <button
           class="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-accent/20 hover:text-accent transition-all shrink-0"
@@ -154,18 +152,34 @@
     {/if}
   </div>
 
-  <!-- Repo and message count -->
-  <div class="flex items-center gap-2 mt-1">
+  <!-- AI summary -->
+  {#if entry.summary}
+    <div class="mt-1 text-xs text-text-secondary line-clamp-2">
+      {entry.summary}
+    </div>
+  {/if}
+
+  <!-- Repo and metadata -->
+  <div class="flex items-center gap-2 mt-1 min-w-0">
     {#if entry.repoPath}
-      <span class="text-[10px] text-text-muted truncate">
-        {getRepoName(entry.repoPath)}
-      </span>
+      <div class="flex items-center gap-1.5 min-w-0">
+        <RepoIcon repo={repo} size="xs" />
+        <span class="text-[10px] text-text-muted truncate">
+          {repo?.name ?? getRepoName(entry.repoPath)}
+        </span>
+      </div>
     {/if}
     {#if entry.messageCount > 0}
       <span class="text-[10px] text-text-muted">
         {entry.messageCount} msg{entry.messageCount !== 1 ? 's' : ''}
       </span>
     {/if}
+    <span class="text-[10px] text-text-muted" title={formatTimestamp(entry.archivedAt)}>
+      Archived {formatShortTimestamp(entry.archivedAt)}
+    </span>
+    <span class="text-[10px] text-text-muted" title={formatTimestamp(entry.createdAt)}>
+      Created {formatShortTimestamp(entry.createdAt)}
+    </span>
     {#if entry.category}
       <span class="text-[10px] text-text-muted px-1 py-0.5 bg-surface-elevated rounded">
         {entry.category}

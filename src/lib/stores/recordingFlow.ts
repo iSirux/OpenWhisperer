@@ -24,7 +24,7 @@ import { openMic } from '$lib/stores/openMic';
 import { DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
 
 // Transcript processor (Phase 1)
-import { handleTranscriptReady } from '$lib/stores/transcriptProcessor';
+import { handlePrepareTranscriptReady, handleTranscriptReady } from '$lib/stores/transcriptProcessor';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -155,6 +155,12 @@ function createRecordingFlowStore() {
     capturedVoskTranscript: string | undefined,
     isNoteMode: boolean = false
   ) {
+    const currentSettings = get(settings);
+    const shouldPrepareOnStop =
+      !isNoteMode &&
+      getEffectiveTerminalMode(currentSettings) === 'Sdk' &&
+      currentSettings.audio.record_and_send_action === 'prepare';
+
     recording
       .stopRecording(true)
       .then(async (transcript) => {
@@ -166,12 +172,20 @@ function createRecordingFlowStore() {
         }
 
         if (transcript) {
-          await handleTranscriptReady(
-            transcript,
-            sessionIdToProcess,
-            capturedVoskTranscript,
-            isNoteMode
-          );
+          if (shouldPrepareOnStop && sessionIdToProcess) {
+            await handlePrepareTranscriptReady(
+              transcript,
+              sessionIdToProcess,
+              capturedVoskTranscript
+            );
+          } else {
+            await handleTranscriptReady(
+              transcript,
+              sessionIdToProcess,
+              capturedVoskTranscript,
+              isNoteMode
+            );
+          }
         } else if (sessionIdToProcess) {
           sdkSessions.updatePendingTranscription(sessionIdToProcess, {
             transcriptionError: 'No transcription returned',

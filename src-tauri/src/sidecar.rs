@@ -100,6 +100,18 @@ pub enum OutboundMessage {
         repo_path: String,
         repo_name: String,
     },
+    /// Generate launch profile (commands + profiles) using Claude SDK
+    GenerateLaunchProfile {
+        id: String,
+        repo_path: String,
+        repo_name: String,
+    },
+    /// Generate launch profile (commands + profiles) using Codex SDK
+    GenerateLaunchProfileWithCodex {
+        id: String,
+        repo_path: String,
+        repo_name: String,
+    },
     /// User's answers to AskUserQuestion tool
     AnswerAskUserQuestion {
         id: String,
@@ -305,6 +317,17 @@ pub enum InboundMessage {
         id: String,
         error: String,
     },
+    /// Result from launch profile generation (commands + profiles)
+    LaunchProfileResult {
+        id: String,
+        commands: Vec<LaunchProfileCommandResult>,
+        profiles: Vec<LaunchProfileGroupResult>,
+    },
+    /// Error from launch profile generation
+    LaunchProfileError {
+        id: String,
+        error: String,
+    },
     /// SDK session ID captured from system/init message for session persistence
     SdkSessionId {
         id: String,
@@ -316,6 +339,22 @@ pub enum InboundMessage {
         id: String,
         message: String,
     },
+}
+
+/// A command result from launch profile generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchProfileCommandResult {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+}
+
+/// A profile group result from launch profile generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchProfileGroupResult {
+    pub name: String,
+    pub command_names: Vec<String>,
 }
 
 /// Planning question option
@@ -807,6 +846,29 @@ impl SidecarManager {
             InboundMessage::RepoDescriptionError { id, error } => {
                 log::error!("[sidecar] Repo description error for {}: {}", id, error);
                 let _ = app.emit(&format!("repo-description-error-{}", id), &error);
+            }
+            InboundMessage::LaunchProfileResult {
+                id,
+                commands,
+                profiles,
+            } => {
+                log::info!(
+                    "[sidecar] Launch profile result for {}: {} commands, {} profiles",
+                    id,
+                    commands.len(),
+                    profiles.len()
+                );
+                let _ = app.emit(
+                    &format!("launch-profile-result-{}", id),
+                    serde_json::json!({
+                        "commands": commands,
+                        "profiles": profiles,
+                    }),
+                );
+            }
+            InboundMessage::LaunchProfileError { id, error } => {
+                log::error!("[sidecar] Launch profile error for {}: {}", id, error);
+                let _ = app.emit(&format!("launch-profile-error-{}", id), &error);
             }
             InboundMessage::SdkSessionId { id, sdk_session_id } => {
                 log::info!(

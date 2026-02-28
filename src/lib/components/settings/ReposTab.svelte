@@ -6,6 +6,7 @@
   import { onMount } from "svelte";
   import RepoIcon from "$lib/components/RepoIcon.svelte";
   import { REPO_ICON_NAMES, REPO_COLORS, getDefaultRepoColor } from "$lib/utils/repoIcons";
+  import type { LaunchCommand, LaunchProfile } from "$lib/types/launch";
 
   interface RepoDescriptionResult {
     description: string;
@@ -23,6 +24,18 @@
 
   // Track which repos have their worktree section expanded
   let worktreeExpandedIndices = $state(new Set<number>());
+
+  // Track which repos have their launch profiles section expanded
+  let launchExpandedIndices = $state(new Set<number>());
+  let scanningIndices = $state(new Set<number>());
+  let generatingLaunchClaudeIndices = $state(new Set<number>());
+  let generatingLaunchCodexIndices = $state(new Set<number>());
+  // New command form state per repo
+  let newCmdName = $state<Record<number, string>>({});
+  let newCmdCommand = $state<Record<number, string>>({});
+  let newCmdWorkingDir = $state<Record<number, string>>({});
+  let newProfileName = $state<Record<number, string>>({});
+  let newProfileCmdIds = $state<Record<number, Set<string>>>({});
 
   // Provider availability
   let claudeAvailable = $state(false);
@@ -162,6 +175,206 @@
       errorListener();
       return false;
     }
+  }
+
+  // ---- Launch Profile handlers ----
+
+  async function scanRepoCommands(index: number) {
+    const repo = $repos.list[index];
+    if (!repo || scanningIndices.has(index)) return;
+    scanningIndices = new Set([...scanningIndices, index]);
+    try {
+      const detected = await invoke<LaunchCommand[]>("scan_repo_launch_commands", { repoPath: repo.path });
+      if (detected.length > 0) {
+        const existing = repo.launch_commands ?? [];
+        // Merge: keep existing non-auto-detected, add new auto-detected
+        const manualCmds = existing.filter(c => !c.auto_detected);
+        const merged = [...manualCmds, ...detected];
+        await repos.updateRepo(index, { launch_commands: merged });
+      }
+    } catch (error) {
+      console.error("[scanRepoCommands] Failed:", error);
+      alert(`Scan failed: ${error}`);
+    } finally {
+      scanningIndices = new Set([...scanningIndices].filter(i => i !== index));
+    }
+  }
+
+  async function generateLaunchWithClaude(index: number) {
+    const repo = $repos.list[index];
+    if (!repo || generatingLaunchClaudeIndices.has(index)) return;
+    generatingLaunchClaudeIndices = new Set([...generatingLaunchClaudeIndices, index]);
+
+    const requestId = `claude-launch-${index}-${Date.now()}`;
+
+    const resultListener = await listen<{ commands: Array<{ name: string; command: string; working_dir?: string }>; profiles: Array<{ name: string; command_names: string[] }> }>(
+      `launch-profile-result-${requestId}`,
+      (event) => {
+        applyLaunchProfileResult(index, event.payload);
+        generatingLaunchClaudeIndices = new Set([...generatingLaunchClaudeIndices].filter(i => i !== index));
+        resultListener();
+        errorListener();
+      }
+    );
+
+    const errorListener = await listen<string>(
+      `launch-profile-error-${requestId}`,
+      (event) => {
+        console.error("Claude launch profile failed:", event.payload);
+        alert(`Failed to generate launch profiles with Claude: ${event.payload}`);
+        generatingLaunchClaudeIndices = new Set([...generatingLaunchClaudeIndices].filter(i => i !== index));
+        resultListener();
+        errorListener();
+      }
+    );
+
+    try {
+      await invoke("generate_launch_profile_with_claude", {
+        id: requestId,
+        repoPath: repo.path,
+        repoName: repo.name,
+      });
+    } catch (error) {
+      console.error("Failed to invoke Claude launch profile:", error);
+      alert(`Failed to start Claude generation: ${error}`);
+      generatingLaunchClaudeIndices = new Set([...generatingLaunchClaudeIndices].filter(i => i !== index));
+      resultListener();
+      errorListener();
+    }
+  }
+
+  async function generateLaunchWithCodex(index: number) {
+    const repo = $repos.list[index];
+    if (!repo || generatingLaunchCodexIndices.has(index)) return;
+    generatingLaunchCodexIndices = new Set([...generatingLaunchCodexIndices, index]);
+
+    const requestId = `codex-launch-${index}-${Date.now()}`;
+
+    const resultListener = await listen<{ commands: Array<{ name: string; command: string; working_dir?: string }>; profiles: Array<{ name: string; command_names: string[] }> }>(
+      `launch-profile-result-${requestId}`,
+      (event) => {
+        applyLaunchProfileResult(index, event.payload);
+        generatingLaunchCodexIndices = new Set([...generatingLaunchCodexIndices].filter(i => i !== index));
+        resultListener();
+        errorListener();
+      }
+    );
+
+    const errorListener = await listen<string>(
+      `launch-profile-error-${requestId}`,
+      (event) => {
+        console.error("Codex launch profile failed:", event.payload);
+        alert(`Failed to generate launch profiles with Codex: ${event.payload}`);
+        generatingLaunchCodexIndices = new Set([...generatingLaunchCodexIndices].filter(i => i !== index));
+        resultListener();
+        errorListener();
+      }
+    );
+
+    try {
+      await invoke("generate_launch_profile_with_codex", {
+        id: requestId,
+        repoPath: repo.path,
+        repoName: repo.name,
+      });
+    } catch (error) {
+      console.error("Failed to invoke Codex launch profile:", error);
+      alert(`Failed to start Codex generation: ${error}`);
+      generatingLaunchCodexIndices = new Set([...generatingLaunchCodexIndices].filter(i => i !== index));
+      resultListener();
+      errorListener();
+    }
+  }
+
+  function applyLaunchProfileResult(index: number, payload: { commands: Array<{ name: string; command: string; working_dir?: string }>; profiles: Array<{ name: string; command_names: string[] }> }) {
+    const cmds: LaunchCommand[] = payload.commands.map(c => ({
+      id: crypto.randomUUID(),
+      name: c.name,
+      command: c.command,
+      working_dir: c.working_dir,
+      auto_detected: true,
+    }));
+
+    // Build profiles: resolve command_names to command IDs
+    const profiles: LaunchProfile[] = payload.profiles.map(p => ({
+      id: crypto.randomUUID(),
+      name: p.name,
+      command_ids: p.command_names
+        .map(name => cmds.find(c => c.name === name)?.id)
+        .filter((id): id is string => !!id),
+    }));
+
+    repos.updateRepo(index, {
+      launch_commands: cmds,
+      launch_profiles: profiles,
+    });
+  }
+
+  function addLaunchCommand(index: number) {
+    const name = newCmdName[index]?.trim();
+    const command = newCmdCommand[index]?.trim();
+    if (!name || !command) return;
+
+    const repo = $repos.list[index];
+    const existing = repo.launch_commands ?? [];
+    const newCmd: LaunchCommand = {
+      id: crypto.randomUUID(),
+      name,
+      command,
+      working_dir: newCmdWorkingDir[index]?.trim() || undefined,
+      auto_detected: false,
+    };
+
+    repos.updateRepo(index, { launch_commands: [...existing, newCmd] });
+    newCmdName[index] = "";
+    newCmdCommand[index] = "";
+    newCmdWorkingDir[index] = "";
+  }
+
+  function removeLaunchCommand(repoIndex: number, cmdId: string) {
+    const repo = $repos.list[repoIndex];
+    const cmds = (repo.launch_commands ?? []).filter(c => c.id !== cmdId);
+    // Also remove from any profiles
+    const profiles = (repo.launch_profiles ?? []).map(p => ({
+      ...p,
+      command_ids: p.command_ids.filter(id => id !== cmdId),
+    }));
+    repos.updateRepo(repoIndex, { launch_commands: cmds, launch_profiles: profiles });
+  }
+
+  function addLaunchProfile(index: number) {
+    const name = newProfileName[index]?.trim();
+    const cmdIds = newProfileCmdIds[index];
+    if (!name || !cmdIds || cmdIds.size === 0) return;
+
+    const repo = $repos.list[index];
+    const existing = repo.launch_profiles ?? [];
+    const newProfile: LaunchProfile = {
+      id: crypto.randomUUID(),
+      name,
+      command_ids: [...cmdIds],
+    };
+
+    repos.updateRepo(index, { launch_profiles: [...existing, newProfile] });
+    newProfileName[index] = "";
+    newProfileCmdIds[index] = new Set();
+  }
+
+  function removeLaunchProfile(repoIndex: number, profileId: string) {
+    const repo = $repos.list[repoIndex];
+    const profiles = (repo.launch_profiles ?? []).filter(p => p.id !== profileId);
+    repos.updateRepo(repoIndex, { launch_profiles: profiles });
+  }
+
+  function toggleProfileCommand(repoIndex: number, cmdId: string) {
+    const current = newProfileCmdIds[repoIndex] ?? new Set<string>();
+    const next = new Set(current);
+    if (next.has(cmdId)) {
+      next.delete(cmdId);
+    } else {
+      next.add(cmdId);
+    }
+    newProfileCmdIds[repoIndex] = next;
   }
 
   async function addRepo() {
@@ -515,6 +728,200 @@
               {/if}
             </div>
           </div>
+        </div>
+
+        <!-- Launch Profiles (collapsible) -->
+        <div class="text-xs mt-2 pt-2 border-t border-border/30">
+          <button
+            class="flex items-center gap-1 text-text-muted hover:text-text-secondary transition-colors w-full text-left"
+            onclick={() => {
+              const next = new Set(launchExpandedIndices);
+              if (next.has(index)) {
+                next.delete(index);
+              } else {
+                next.add(index);
+              }
+              launchExpandedIndices = next;
+            }}
+          >
+            <svg
+              class="w-3 h-3 transition-transform {launchExpandedIndices.has(index) ? 'rotate-90' : ''}"
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span class="font-medium">Launch Profiles</span>
+            {#if (repo.launch_commands?.length || 0) + (repo.launch_profiles?.length || 0) > 0}
+              <span class="text-text-muted text-[10px] ml-1">
+                ({repo.launch_commands?.length || 0} cmds, {repo.launch_profiles?.length || 0} profiles)
+              </span>
+            {/if}
+          </button>
+
+          {#if launchExpandedIndices.has(index)}
+            <div class="mt-2 space-y-3 pl-4">
+              <!-- Action buttons -->
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  class="px-2 py-0.5 bg-surface-elevated hover:bg-border rounded text-[10px] transition-colors flex items-center gap-1"
+                  onclick={() => scanRepoCommands(index)}
+                  disabled={scanningIndices.has(index)}
+                >
+                  {#if scanningIndices.has(index)}
+                    <span class="animate-spin">⏳</span> Scanning...
+                  {:else}
+                    🔍 Scan Repo
+                  {/if}
+                </button>
+                {#if claudeAvailable}
+                  <button
+                    class="px-2 py-0.5 bg-surface-elevated hover:bg-border rounded text-[10px] transition-colors flex items-center gap-1"
+                    onclick={() => generateLaunchWithClaude(index)}
+                    disabled={generatingLaunchClaudeIndices.has(index)}
+                  >
+                    {#if generatingLaunchClaudeIndices.has(index)}
+                      <span class="animate-spin">⏳</span> Claude...
+                    {:else}
+                      🤖 Claude
+                    {/if}
+                  </button>
+                {/if}
+                {#if codexAvailable}
+                  <button
+                    class="px-2 py-0.5 bg-surface-elevated hover:bg-border rounded text-[10px] transition-colors flex items-center gap-1"
+                    onclick={() => generateLaunchWithCodex(index)}
+                    disabled={generatingLaunchCodexIndices.has(index)}
+                  >
+                    {#if generatingLaunchCodexIndices.has(index)}
+                      <span class="animate-spin">⏳</span> Codex...
+                    {:else}
+                      🤖 Codex
+                    {/if}
+                  </button>
+                {/if}
+              </div>
+
+              <!-- Commands list -->
+              <div>
+                <div class="text-[10px] font-medium text-text-muted mb-1">Commands</div>
+                {#if repo.launch_commands && repo.launch_commands.length > 0}
+                  <div class="space-y-1">
+                    {#each repo.launch_commands as cmd (cmd.id)}
+                      <div class="flex items-center gap-2 bg-background/50 px-2 py-1 rounded group">
+                        <span class="text-text-primary font-medium min-w-0 truncate">{cmd.name}</span>
+                        <span class="text-text-muted font-mono truncate flex-1">{cmd.command}</span>
+                        {#if cmd.working_dir}
+                          <span class="text-text-muted/60 text-[9px] shrink-0">📂 {cmd.working_dir}</span>
+                        {/if}
+                        {#if cmd.auto_detected}
+                          <span class="text-text-muted/50 text-[9px] shrink-0">auto</span>
+                        {/if}
+                        <button
+                          class="p-0.5 text-text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                          onclick={() => removeLaunchCommand(index, cmd.id)}
+                          title="Remove command"
+                        >✕</button>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-text-muted/60 text-[10px] italic">No commands — use Scan or Claude/Codex to detect</div>
+                {/if}
+
+                <!-- Add command form -->
+                <div class="flex gap-1 mt-1.5">
+                  <input
+                    type="text"
+                    class="w-24 px-1.5 py-0.5 bg-background border border-border rounded text-[10px] focus:outline-none focus:border-accent"
+                    bind:value={newCmdName[index]}
+                    placeholder="Name"
+                  />
+                  <input
+                    type="text"
+                    class="flex-1 px-1.5 py-0.5 bg-background border border-border rounded text-[10px] font-mono focus:outline-none focus:border-accent"
+                    bind:value={newCmdCommand[index]}
+                    placeholder="Command (e.g., npm run dev)"
+                  />
+                  <input
+                    type="text"
+                    class="w-20 px-1.5 py-0.5 bg-background border border-border rounded text-[10px] focus:outline-none focus:border-accent"
+                    bind:value={newCmdWorkingDir[index]}
+                    placeholder="Subdir"
+                  />
+                  <button
+                    class="px-2 py-0.5 bg-accent/80 hover:bg-accent text-white rounded text-[10px] transition-colors shrink-0"
+                    onclick={() => addLaunchCommand(index)}
+                    disabled={!newCmdName[index]?.trim() || !newCmdCommand[index]?.trim()}
+                  >+ Add</button>
+                </div>
+              </div>
+
+              <!-- Profiles list -->
+              <div>
+                <div class="text-[10px] font-medium text-text-muted mb-1">Profiles</div>
+                {#if repo.launch_profiles && repo.launch_profiles.length > 0}
+                  <div class="space-y-1">
+                    {#each repo.launch_profiles as profile (profile.id)}
+                      <div class="flex items-center gap-2 bg-background/50 px-2 py-1 rounded group">
+                        <span class="text-text-primary font-medium">{profile.name}</span>
+                        <div class="flex gap-1 flex-1 min-w-0 overflow-hidden">
+                          {#each profile.command_ids as cmdId}
+                            {@const cmd = repo.launch_commands?.find(c => c.id === cmdId)}
+                            {#if cmd}
+                              <span class="px-1.5 py-0 bg-border/50 rounded text-[9px] text-text-muted truncate">{cmd.name}</span>
+                            {/if}
+                          {/each}
+                        </div>
+                        <button
+                          class="p-0.5 text-text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                          onclick={() => removeLaunchProfile(index, profile.id)}
+                          title="Remove profile"
+                        >✕</button>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-text-muted/60 text-[10px] italic">No profiles configured</div>
+                {/if}
+
+                <!-- Add profile form -->
+                {#if repo.launch_commands && repo.launch_commands.length > 0}
+                  <div class="mt-1.5 space-y-1">
+                    <div class="flex gap-1">
+                      <input
+                        type="text"
+                        class="flex-1 px-1.5 py-0.5 bg-background border border-border rounded text-[10px] focus:outline-none focus:border-accent"
+                        bind:value={newProfileName[index]}
+                        placeholder="Profile name (e.g., Full Stack)"
+                      />
+                      <button
+                        class="px-2 py-0.5 bg-accent/80 hover:bg-accent text-white rounded text-[10px] transition-colors shrink-0"
+                        onclick={() => addLaunchProfile(index)}
+                        disabled={!newProfileName[index]?.trim() || !(newProfileCmdIds[index]?.size)}
+                      >+ Add</button>
+                    </div>
+                    <div class="flex flex-wrap gap-1">
+                      {#each repo.launch_commands as cmd (cmd.id)}
+                        <label class="flex items-center gap-1 px-1.5 py-0.5 bg-background/50 rounded text-[10px] cursor-pointer hover:bg-border/30 transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={newProfileCmdIds[index]?.has(cmd.id) ?? false}
+                            onchange={() => toggleProfileCommand(index, cmd.id)}
+                            class="w-3 h-3"
+                          />
+                          {cmd.name}
+                        </label>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
         </div>
 
         <!-- Worktree Setup (collapsible) -->

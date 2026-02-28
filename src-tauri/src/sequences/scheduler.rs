@@ -63,7 +63,7 @@ pub struct ScheduleInfo {
 pub struct SequenceScheduler {
     running: Arc<AtomicBool>,
     handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
-    state: parking_lot::Mutex<SchedulerState>,
+    state: Arc<parking_lot::Mutex<SchedulerState>>,
 }
 
 impl SequenceScheduler {
@@ -71,7 +71,7 @@ impl SequenceScheduler {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             handle: parking_lot::Mutex::new(None),
-            state: parking_lot::Mutex::new(SchedulerState::load()),
+            state: Arc::new(parking_lot::Mutex::new(SchedulerState::load())),
         }
     }
 
@@ -83,11 +83,9 @@ impl SequenceScheduler {
         }
         self.running.store(true, Ordering::Relaxed);
         let running = self.running.clone();
-        let state = self.state.lock().clone();
+        let state = self.state.clone();
 
         let handle = tauri::async_runtime::spawn(async move {
-            let mut state = state;
-
             while running.load(Ordering::Relaxed) {
                 // Sleep 30 seconds between checks
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -105,13 +103,13 @@ impl SequenceScheduler {
                             let schedule_key = format!("{}:{}", def.id, cron);
 
                             // Check enabled state
-                            let enabled = state.enabled.get(&schedule_key).copied().unwrap_or(true);
+                            let enabled = state.lock().enabled.get(&schedule_key).copied().unwrap_or(true);
                             if !enabled {
                                 continue;
                             }
 
-                            // Parse cron expression
-                            let schedule = match cron::Schedule::from_str(cron) {
+                            // Parse cron expression (supports standard 5-field by prefixing seconds)
+                            let schedule = match parse_cron_schedule(cron) {
                                 Ok(s) => s,
                                 Err(e) => {
                                     log::error!("[scheduler] Invalid cron '{}' for sequence '{}': {}", cron, def.id, e);
@@ -120,7 +118,7 @@ impl SequenceScheduler {
                             };
 
                             // Check if any scheduled time fell between last_run and now
-                            let last_run = state.last_runs.get(&schedule_key).copied()
+                            let last_run = state.lock().last_runs.get(&schedule_key).copied()
                                 .unwrap_or_else(|| now - chrono::Duration::seconds(31)); // First run: check last 31s
 
                             let mut should_fire = false;
@@ -144,8 +142,9 @@ impl SequenceScheduler {
                                         log::error!("[scheduler] Failed to start '{}': {}", def.name, e);
                                     }
                                 }
-                                state.last_runs.insert(schedule_key, now);
-                                if let Err(e) = state.save() {
+                                let mut state_guard = state.lock();
+                                state_guard.last_runs.insert(schedule_key, now);
+                                if let Err(e) = state_guard.save() {
                                     log::error!("[scheduler] Failed to save state: {}", e);
                                 }
                             }
@@ -180,10 +179,19 @@ impl SequenceScheduler {
                     let enabled = state.enabled.get(&schedule_key).copied().unwrap_or(true);
                     let last_run = state.last_runs.get(&schedule_key).map(|dt| dt.to_rfc3339());
 
-                    // Calculate next fire time
-                    let next_fire = cron::Schedule::from_str(cron).ok().and_then(|sched| {
-                        sched.upcoming(Utc).next().map(|dt| dt.to_rfc3339())
-                    });
+                    // Calculate next fire time using the same parsing behavior as runtime scheduling
+                    let next_fire = match parse_cron_schedule(cron) {
+                        Ok(sched) => sched.upcoming(Utc).next().map(|dt| dt.to_rfc3339()),
+                        Err(e) => {
+                            log::warn!(
+                                "[scheduler] Could not compute next_fire for sequence '{}' cron '{}': {}",
+                                def.id,
+                                cron,
+                                e
+                            );
+                            None
+                        }
+                    };
 
                     schedules.push(ScheduleInfo {
                         sequence_id: def.id.clone(),
@@ -207,5 +215,23 @@ impl SequenceScheduler {
         let mut state = self.state.lock();
         state.enabled.insert(schedule_key, enabled);
         state.save()
+    }
+}
+
+fn parse_cron_schedule(cron_expr: &str) -> Result<cron::Schedule, String> {
+    let normalized = normalize_cron_expr(cron_expr);
+    cron::Schedule::from_str(&normalized)
+        .map_err(|e| e.to_string())
+}
+
+fn normalize_cron_expr(cron_expr: &str) -> String {
+    let trimmed = cron_expr.trim();
+    let field_count = trimmed.split_whitespace().count();
+
+    // Accept standard 5-field cron by prepending "seconds = 0".
+    if field_count == 5 {
+        format!("0 {}", trimmed)
+    } else {
+        trimmed.to_string()
     }
 }

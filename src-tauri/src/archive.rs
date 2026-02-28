@@ -174,10 +174,15 @@ impl ArchiveIndex {
         &self,
         query: &str,
         session_type: Option<&str>,
+        repo_path: Option<&str>,
         offset: usize,
         limit: usize,
     ) -> (Vec<ArchiveEntry>, usize) {
         let query_lower = query.to_lowercase();
+        let normalized_repo_filter = repo_path
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|p| p.replace('\\', "/").to_lowercase());
 
         let filtered: Vec<&ArchiveEntry> = self
             .entries
@@ -186,6 +191,17 @@ impl ArchiveIndex {
                 // Filter by session type if specified
                 if let Some(st) = session_type {
                     if e.session_type != st {
+                        return false;
+                    }
+                }
+
+                // Filter by repo path if specified
+                if let Some(repo_filter) = normalized_repo_filter.as_ref() {
+                    let entry_repo = e
+                        .repo_path
+                        .as_ref()
+                        .map(|p| p.replace('\\', "/").to_lowercase());
+                    if entry_repo.as_ref() != Some(repo_filter) {
                         return false;
                     }
                 }

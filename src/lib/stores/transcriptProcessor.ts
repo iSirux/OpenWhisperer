@@ -993,6 +993,7 @@ export async function handleSetupSessionStart(
     readOnlyMode: boolean;
     provider?: import('$lib/utils/models').SdkProvider;
     worktreeRepoPath?: string;
+    worktreeBranch?: string;
   }
 ) {
   const currentSettings = get(settings);
@@ -1055,5 +1056,6 @@ export async function handleSetupSessionStart(
     noteMode: config.noteMode,
     readOnlyMode: config.readOnlyMode,
     provider: config.provider,
+    createdBranch: config.worktreeBranch,
   });
 }

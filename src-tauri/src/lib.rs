@@ -1,6 +1,7 @@
 mod archive;
 mod commands;
 mod config;
+mod launch;
 mod llm;
 mod git;
 mod sequences;
@@ -10,7 +11,7 @@ mod terminal;
 mod realtime;
 mod whisper;
 
-use commands::{archive_cmds, audio_cmds, git_cmds, llm_cmds, input_cmds, log_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, realtime_cmds};
+use commands::{archive_cmds, audio_cmds, git_cmds, launch_cmds, llm_cmds, input_cmds, log_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, realtime_cmds};
 use sequences::SequenceManager;
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -79,6 +80,7 @@ pub fn run() {
     let terminal_manager = Arc::new(TerminalManager::new());
     let sidecar_manager = Arc::new(SidecarManager::new());
     let realtime_manager = Arc::new(RealtimeSessionManager::new());
+    let launch_manager = Arc::new(launch::LaunchManager::new());
     let config_load_status = ConfigLoadStatus(Mutex::new(config_loaded_ok));
 
     // Set up backend file logging via tauri-plugin-log (date-stamped, 7-day rolling)
@@ -152,6 +154,7 @@ pub fn run() {
         .manage(terminal_manager)
         .manage(sidecar_manager)
         .manage(realtime_manager)
+        .manage(launch_manager)
         .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
             #[cfg(target_os = "windows")]
@@ -193,6 +196,8 @@ pub fn run() {
                             // Properly shutdown before quitting
                             let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
                             sidecar.shutdown();
+                            let launch_mgr: tauri::State<Arc<launch::LaunchManager>> = app.state();
+                            launch_mgr.stop_all_repos();
                             // Remove tray icon before exit to prevent orphaned icon on Windows
                             if let Some(tray) = app.tray_by_id("main-tray") {
                                 let _ = tray.set_visible(false);
@@ -272,6 +277,8 @@ pub fn run() {
                         // Actually quit the app when closing and not minimizing to tray
                         let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
                         sidecar.shutdown();
+                        let launch_mgr: tauri::State<Arc<launch::LaunchManager>> = app.state();
+                        launch_mgr.stop_all_repos();
                         // Remove tray icon before exit to prevent orphaned icon on Windows
                         if let Some(tray) = app.tray_by_id("main-tray") {
                             let _ = tray.set_visible(false);
@@ -321,6 +328,8 @@ pub fn run() {
             sdk_cmds::answer_plan_approval,
             sdk_cmds::generate_repo_description_with_claude,
             sdk_cmds::generate_repo_description_with_codex,
+            sdk_cmds::generate_launch_profile_with_claude,
+            sdk_cmds::generate_launch_profile_with_codex,
             sdk_cmds::check_openai_codex_auth,
             sdk_cmds::run_codex_login,
             sdk_cmds::save_openai_api_key,
@@ -373,6 +382,11 @@ pub fn run() {
             realtime_cmds::start_realtime_session,
             realtime_cmds::send_realtime_audio,
             realtime_cmds::stop_realtime_session,
+            launch_cmds::scan_repo_launch_commands,
+            launch_cmds::launch_profile,
+            launch_cmds::launch_commands,
+            launch_cmds::stop_launch_profile,
+            launch_cmds::get_launch_status,
             mcp_cmds::test_mcp_server,
             mcp_cmds::save_mcp_bearer_token,
             mcp_cmds::get_mcp_bearer_token,

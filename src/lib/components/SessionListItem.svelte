@@ -394,16 +394,16 @@
 
   <!-- Repo name and branch (skip for pending_repo; setup sessions show repo when one is selected) -->
   {#if session.status !== "pending_repo" && session.repoPath && session.repoPath !== "."}
-    <div class="flex items-center gap-1.5 text-text-muted" class:mt-1.5={!hasTextContent}>
+    <div class="flex items-center gap-1.5 text-text-muted min-w-0 overflow-hidden" class:mt-1.5={!hasTextContent}>
       <RepoIcon
         repo={session.repoId ? findRepoById($repos.list, session.repoId) : findRepoByPath($repos.list, session.repoPath)}
         size="xs"
       />
-      <span class="text-xs truncate">{displayedRepoName}</span>
+      <span class="text-xs truncate min-w-0 max-w-[50%]">{displayedRepoName}</span>
       {#if session.branch}
-        <span class="text-xs text-text-muted">·</span>
+        <span class="text-xs text-text-muted flex-shrink-0">·</span>
         <span
-          class="text-xs text-blue-400/70"
+          class="text-xs text-blue-400/70 truncate min-w-0 max-w-[50%]"
           title="Git branch: {session.branch}"
         >
           {session.branch}

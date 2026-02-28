@@ -1,18 +1,131 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use crate::config::AppConfig;
 use crate::sequences::types::SequenceDefinition;
 use crate::sequences::state::{ExecutionSummary, SequenceExecution};
 
+const SEQUENCES_DIR_ENV: &str = "CLAUDE_WHISPERER_SEQUENCES_DIR";
+const SEQUENCES_DIR_ENV_DEV: &str = "CLAUDE_WHISPERER_SEQUENCES_DIR_DEV";
+const SEQUENCES_DIR_ENV_PROD: &str = "CLAUDE_WHISPERER_SEQUENCES_DIR_PROD";
+
+static SEQUENCES_DIR_OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
+
 /// Directory for sequence YAML definitions and execution data
 pub fn sequences_dir() -> PathBuf {
-    AppConfig::config_dir().join("sequences")
+    if let Some(path) = SEQUENCES_DIR_OVERRIDE
+        .get_or_init(resolve_sequences_dir_override)
+        .as_ref()
+    {
+        return path.clone();
+    }
+
+    // Keep dev/prod sequence definitions separated by default.
+    if cfg!(debug_assertions) {
+        AppConfig::config_dir().join("sequences.dev")
+    } else {
+        AppConfig::config_dir().join("sequences")
+    }
 }
 
 /// Directory for execution JSON snapshots
 pub fn executions_dir() -> PathBuf {
     sequences_dir().join("executions")
+}
+
+fn resolve_sequences_dir_override() -> Option<PathBuf> {
+    let env_specific = if cfg!(debug_assertions) {
+        SEQUENCES_DIR_ENV_DEV
+    } else {
+        SEQUENCES_DIR_ENV_PROD
+    };
+
+    for key in [env_specific, SEQUENCES_DIR_ENV] {
+        if let Some(value) = read_env_key(key) {
+            let resolved = PathBuf::from(value);
+            log::info!("[sequences] Using {} override: {}", key, resolved.display());
+            return Some(resolved);
+        }
+    }
+
+    None
+}
+
+fn read_env_key(key: &str) -> Option<String> {
+    if let Ok(value) = std::env::var(key) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    for path in env_file_candidates() {
+        if let Some(value) = parse_env_file_for_key(&path, key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn env_file_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let suffix = if cfg!(debug_assertions) {
+        "development"
+    } else {
+        "production"
+    };
+
+    let mut names = Vec::new();
+    names.push(format!(".env.{}.local", suffix));
+    names.push(format!(".env.{}", suffix));
+    names.push(".env.local".to_string());
+    names.push(".env".to_string());
+
+    if let Ok(cwd) = std::env::current_dir() {
+        for name in &names {
+            paths.push(cwd.join(name));
+        }
+        for name in &names {
+            paths.push(cwd.join("src-tauri").join(name));
+        }
+    }
+
+    paths
+}
+
+fn parse_env_file_for_key(path: &std::path::Path, key: &str) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let line = line.strip_prefix("export ").unwrap_or(line).trim();
+        let (k, v) = line.split_once('=')?;
+        if k.trim() != key {
+            continue;
+        }
+
+        let mut value = v.trim().to_string();
+        if value.len() >= 2 {
+            let bytes = value.as_bytes();
+            let first = bytes[0] as char;
+            let last = bytes[value.len() - 1] as char;
+            if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+                value = value[1..value.len() - 1].to_string();
+            }
+        }
+        return Some(value);
+    }
+
+    None
 }
 
 /// Load all sequence definitions from `sequences/*.yaml` files.

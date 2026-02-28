@@ -31,6 +31,9 @@
   let recordingForNewSession = $derived($isRecordingForNewSession);
   let pending = $derived($pendingTranscriptions);
   let currentPath = $derived($page.url.pathname);
+  let recordStopVerb = $derived(
+    $settings.audio.record_and_send_action === 'prepare' ? 'prepare' : 'send'
+  );
 
   // Check if current model is auto
   const isAuto = $derived(currentProvider === 'claude' && isAutoModel(selectedModel));
@@ -331,10 +334,14 @@
       <button
         class="px-3 py-1.5 text-sm bg-recording hover:bg-recording/90 text-white rounded transition-colors flex items-center gap-2"
         onclick={handleStopRecording}
-        title="Stop recording and send"
+        title={`Stop recording and ${recordStopVerb}`}
       >
         <div class="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-        Stop & Send
+        {#if recordStopVerb === 'prepare'}
+          Stop & Prepare
+        {:else}
+          Stop & Send
+        {/if}
       </button>
     {:else if !recording}
       <div class="flex items-center gap-2">

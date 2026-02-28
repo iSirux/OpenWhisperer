@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Claude Whisperer is a Tauri v2 desktop application that provides a voice-controlled interface for Claude Code. Users can record voice prompts via hotkeys, which are transcribed using a Whisper API endpoint, then sent to Claude Code either through embedded terminal sessions (PTY mode) or directly via the Claude Agent SDK (SDK mode). The app supports multimodal prompts (text + images), session persistence, usage tracking, thinking levels, voice commands, real-time transcription via Vosk, and LLM-powered intelligent features via Gemini or other providers.
 
+> **Log files:** `%APPDATA%\claude-whisperer\logs\` (Windows) / `~/Library/Application Support/claude-whisperer/logs/` (macOS) — named `backend[-dev]-YYYY-MM-DD.log` and `frontend[-dev]-YYYY-MM-DD.log`.
+
 ## Development Commands
 
 ```bash

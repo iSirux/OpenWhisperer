@@ -242,6 +242,8 @@ export const OPEN_MIC_PRESETS = [
   "wake up",
 ] as const;
 
+export type RecordAndSendAction = "send" | "prepare";
+
 export interface AudioConfig {
   device_id: string | null;
   use_hotkey: boolean;
@@ -254,6 +256,8 @@ export interface AudioConfig {
   recording_linger_ms: number;
   include_transcription_notice: boolean;
   require_transcription_approval: boolean;
+  /** What "Record & Send" should do when recording stops */
+  record_and_send_action: RecordAndSendAction;
   /** Voice command configuration for triggering prompt send */
   voice_commands: VoiceCommandConfig;
   /** Open mic configuration for passive voice listening */
@@ -572,6 +576,7 @@ const defaultConfig: AppConfig = {
     recording_linger_ms: 500,
     include_transcription_notice: true,
     require_transcription_approval: false,
+    record_and_send_action: "send",
     voice_commands: {
       enabled: false,
       active_commands: ["go go"],

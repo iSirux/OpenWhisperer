@@ -1,6 +1,7 @@
 import { writable, derived } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import type { LaunchCommand, LaunchProfile } from "$lib/types/launch";
 
 // ---- Types ----
 
@@ -34,6 +35,10 @@ export interface RepoConfig {
   worktree_post_create_commands?: string[];
   /** Last selected worktree mode for this repo: "main", "new", or "existing" */
   worktree_mode?: 'main' | 'new' | 'existing';
+  /** Launch commands available for this repository (dev servers, watchers, etc.) */
+  launch_commands?: LaunchCommand[];
+  /** Launch profiles - named groups of launch commands for one-click startup */
+  launch_profiles?: LaunchProfile[];
 }
 
 /** Helper: treat undefined/missing active field as true for backward compatibility */

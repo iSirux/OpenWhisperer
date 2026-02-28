@@ -228,6 +228,76 @@ const repoDescriptionMcpServer = createSdkMcpServer({
   ],
 });
 
+// Create the in-process launch profile MCP server
+const launchProfileMcpServer = createSdkMcpServer({
+  name: "launch-profile-tools",
+  version: "1.0.0",
+  tools: [
+    tool(
+      "submit_launch_profile",
+      "Submit the discovered launch commands and profiles. You MUST call this tool after analyzing the repository. Each command is a runnable service/script. Profiles group commands into logical launch sets.",
+      {
+        commands: z
+          .array(
+            z.object({
+              name: z
+                .string()
+                .describe(
+                  "Short display name for the command (e.g., 'Frontend Dev', 'API Server', 'Database')"
+                ),
+              command: z
+                .string()
+                .describe(
+                  "Shell command to run (e.g., 'npm run dev', 'docker compose up db')"
+                ),
+              working_dir: z
+                .string()
+                .optional()
+                .describe(
+                  "Relative path from repo root if the command must run in a subdirectory (e.g., 'frontend', 'packages/api'). Omit for repo root."
+                ),
+            })
+          )
+          .min(1)
+          .max(20)
+          .describe(
+            "List of runnable commands/services found in the repository"
+          ),
+        profiles: z
+          .array(
+            z.object({
+              name: z
+                .string()
+                .describe(
+                  "Profile name (e.g., 'Full Stack', 'Frontend Only', 'API + DB')"
+                ),
+              command_names: z
+                .array(z.string())
+                .describe(
+                  "Names of commands to include (must match the 'name' field in commands)"
+                ),
+            })
+          )
+          .min(1)
+          .max(10)
+          .describe(
+            "Logical groupings of commands into launch profiles"
+          ),
+      },
+      async (args) => {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Launch profile submitted successfully.",
+            },
+          ],
+        };
+      }
+    ),
+  ],
+});
+
 // Message types for conversation history restoration
 interface HistoryUserMessage {
   type: "user";
@@ -343,6 +413,22 @@ interface GenerateRepoDescriptionWithCodexMessage {
   id: string; // Request ID for tracking
   repo_path: string; // Path to the repository
   repo_name: string; // Name of the repository
+}
+
+// Generate launch profile using Claude SDK
+interface GenerateLaunchProfileMessage {
+  type: "generate_launch_profile";
+  id: string;
+  repo_path: string;
+  repo_name: string;
+}
+
+// Generate launch profile using Codex SDK
+interface GenerateLaunchProfileWithCodexMessage {
+  type: "generate_launch_profile_with_codex";
+  id: string;
+  repo_path: string;
+  repo_name: string;
 }
 
 // User's answers to AskUserQuestion tool (from frontend via Rust)
@@ -673,6 +759,21 @@ function sendRepoDescriptionResult(
 
 function sendRepoDescriptionError(id: string, error: string): void {
   send({ type: "repo_description_error", id, error });
+}
+
+// Launch profile result event
+function sendLaunchProfileResult(
+  id: string,
+  result: {
+    commands: Array<{ name: string; command: string; working_dir?: string }>;
+    profiles: Array<{ name: string; command_names: string[] }>;
+  }
+): void {
+  send({ type: "launch_profile_result", id, ...result });
+}
+
+function sendLaunchProfileError(id: string, error: string): void {
+  send({ type: "launch_profile_error", id, error });
 }
 
 // =============================================================================
@@ -2529,6 +2630,235 @@ Path: ${msg.repo_path}
   }
 }
 
+// Handler for generating launch profiles using Claude SDK
+async function handleGenerateLaunchProfile(
+  msg: GenerateLaunchProfileMessage
+): Promise<void> {
+  const requestId = msg.id;
+
+  send({
+    type: "debug",
+    id: requestId,
+    message: `Starting launch profile generation for: ${msg.repo_name} at ${msg.repo_path}`,
+  });
+
+  const prompt = `You are analyzing a software repository to discover runnable commands and services. Your task is to explore the codebase and generate launch commands and profiles.
+
+Repository: ${msg.repo_name}
+Path: ${msg.repo_path}
+
+## Your Task
+
+1. **Explore the codebase** - Look at:
+   - package.json files (npm/yarn/pnpm scripts like dev, start, serve, build, test)
+   - docker-compose.yml / compose.yml files (services)
+   - Makefile files (targets like dev, run, serve)
+   - Cargo.toml files (cargo run)
+   - pyproject.toml / manage.py files (Django, FastAPI, Flask)
+   - Procfile, turbo.json, nx.json for task runners
+   - IMPORTANT: Check subdirectories too! Monorepos often have separate frontend/, backend/, api/, packages/* folders with their own scripts.
+
+2. **Generate commands** - Each command should be a single runnable service or script:
+   - Use descriptive short names (e.g., "Frontend Dev", "API Server", "Database", "Worker")
+   - For commands in subdirectories, set working_dir to the relative path (e.g., "frontend", "packages/api")
+   - Include the package manager appropriate for the project (npm, yarn, pnpm, etc.)
+
+3. **Generate profiles** - Group commands into logical sets users would launch together:
+   - "Full Stack" or "All" - everything needed for full development
+   - Subsets like "Frontend Only", "API + DB", etc.
+   - Reference commands by their exact name
+
+**IMPORTANT**: You MUST call the \`submit_launch_profile\` tool to complete this task. Do not just output text.`;
+
+  const options: Options = {
+    cwd: msg.repo_path,
+    permissionMode: "acceptEdits",
+    model: "claude-haiku-4-5-20251001",
+    mcpServers: {
+      "launch-profile-tools": launchProfileMcpServer,
+    },
+    allowedTools: [
+      "mcp__launch-profile-tools__submit_launch_profile",
+      "Read",
+      "Glob",
+      "Grep",
+    ],
+    settingSources: [],
+  };
+
+  let result: {
+    commands: Array<{ name: string; command: string; working_dir?: string }>;
+    profiles: Array<{ name: string; command_names: string[] }>;
+  } | null = null;
+
+  try {
+    send({ type: "debug", id: requestId, message: `Calling SDK query()...` });
+    const iterator = query({ prompt, options });
+
+    for await (const message of iterator) {
+      if (message.type === "assistant") {
+        for (const block of message.message.content) {
+          if (
+            block.type === "tool_use" &&
+            block.name === "mcp__launch-profile-tools__submit_launch_profile"
+          ) {
+            const input = block.input as {
+              commands: Array<{ name: string; command: string; working_dir?: string }>;
+              profiles: Array<{ name: string; command_names: string[] }>;
+            };
+            result = {
+              commands: input.commands,
+              profiles: input.profiles,
+            };
+            send({
+              type: "debug",
+              id: requestId,
+              message: `Captured launch profile: ${result.commands.length} commands, ${result.profiles.length} profiles`,
+            });
+          }
+        }
+      }
+    }
+
+    if (result) {
+      sendLaunchProfileResult(requestId, result);
+    } else {
+      sendLaunchProfileError(
+        requestId,
+        "Claude did not call the submit_launch_profile tool"
+      );
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Error generating launch profile: ${errorMessage}`,
+    });
+    sendLaunchProfileError(requestId, errorMessage);
+  }
+}
+
+// Handler for generating launch profiles using Codex SDK
+async function handleGenerateLaunchProfileWithCodex(
+  msg: GenerateLaunchProfileWithCodexMessage
+): Promise<void> {
+  const requestId = msg.id;
+
+  send({
+    type: "debug",
+    id: requestId,
+    message: `Starting Codex launch profile generation for: ${msg.repo_name} at ${msg.repo_path}`,
+  });
+
+  const prompt = `You are analyzing a software repository to discover runnable commands and services. Your task is to explore the codebase and output a JSON result.
+
+Repository: ${msg.repo_name}
+Path: ${msg.repo_path}
+
+## Your Task
+
+1. **Explore the codebase** - Look at:
+   - package.json files (npm/yarn/pnpm scripts like dev, start, serve, build, test)
+   - docker-compose.yml / compose.yml files (services)
+   - Makefile files (targets like dev, run, serve)
+   - Cargo.toml files (cargo run)
+   - pyproject.toml / manage.py files (Django, FastAPI, Flask)
+   - IMPORTANT: Check subdirectories too! Monorepos often have separate frontend/, backend/, packages/* folders.
+
+2. **Output a JSON block** with:
+   - **commands**: Array of runnable commands/services, each with:
+     - \`name\`: Short display name (e.g., "Frontend Dev", "API Server")
+     - \`command\`: Shell command to run (e.g., "npm run dev")
+     - \`working_dir\`: (optional) Relative path from repo root for subdirectory commands
+   - **profiles**: Array of launch profiles, each with:
+     - \`name\`: Profile name (e.g., "Full Stack", "Frontend Only")
+     - \`command_names\`: Array of command names to include
+
+**IMPORTANT**: Output a JSON block wrapped in \`\`\`json ... \`\`\` fences:
+\`\`\`json
+{"commands": [{"name": "...", "command": "...", "working_dir": "..."}], "profiles": [{"name": "...", "command_names": ["..."]}]}
+\`\`\``;
+
+  try {
+    const codex = getCodexInstance();
+    const thread = codex.startThread({
+      workingDirectory: msg.repo_path,
+      skipGitRepoCheck: true,
+    });
+
+    let fullText = "";
+    const { events } = await thread.runStreamed(prompt, {});
+
+    for await (const event of events) {
+      if (event.type === "item.completed") {
+        const typedItem = event.item as { type: string; text?: string };
+        if (typedItem.type === "agent_message" && typedItem.text) {
+          fullText += typedItem.text;
+        }
+      }
+    }
+
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Codex response collected (${fullText.length} chars), parsing JSON...`,
+    });
+
+    let jsonStr: string | null = null;
+    const jsonBlockMatch = fullText.match(/```json\s*([\s\S]*?)```/);
+    if (jsonBlockMatch) {
+      jsonStr = jsonBlockMatch[1].trim();
+    } else {
+      const jsonObjMatch = fullText.match(/\{[\s\S]*"commands"[\s\S]*\}/);
+      if (jsonObjMatch) {
+        jsonStr = jsonObjMatch[0];
+      }
+    }
+
+    if (!jsonStr) {
+      sendLaunchProfileError(
+        requestId,
+        "Codex did not output a valid JSON block with launch profile"
+      );
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(jsonStr) as {
+        commands: Array<{ name: string; command: string; working_dir?: string }>;
+        profiles: Array<{ name: string; command_names: string[] }>;
+      };
+
+      if (!parsed.commands || !parsed.profiles) {
+        sendLaunchProfileError(
+          requestId,
+          "Codex JSON output missing required fields (commands, profiles)"
+        );
+        return;
+      }
+
+      sendLaunchProfileResult(requestId, {
+        commands: parsed.commands,
+        profiles: parsed.profiles,
+      });
+    } catch (parseErr) {
+      sendLaunchProfileError(
+        requestId,
+        `Failed to parse Codex JSON output: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`
+      );
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Error generating launch profile with Codex: ${errorMessage}`,
+    });
+    sendLaunchProfileError(requestId, errorMessage);
+  }
+}
+
 async function handleCreate(msg: CreateMessage): Promise<void> {
   const options: Options = {
     cwd: msg.cwd,
@@ -3924,6 +4254,24 @@ async function handleStop(msg: StopMessage): Promise<void> {
     return;
   }
 
+  // Reject any pending blocking Promises so runClaudeQueryItem / canUseTool
+  // can unblock.  Without this, the queue worker stays permanently stuck if
+  // stop is called while awaiting plan approval or user answers.
+  if (session.pendingPlanApproval) {
+    send({ type: "debug", id: msg.id, message: "Rejecting pending plan approval due to stop" });
+    session.pendingPlanApproval.reject(new Error("Query stopped by user"));
+    session.pendingPlanApproval = undefined;
+  }
+  if (session.pendingAskUserAnswer) {
+    send({ type: "debug", id: msg.id, message: "Rejecting pending AskUserQuestion due to stop" });
+    session.pendingAskUserAnswer.reject(new Error("Query stopped by user"));
+    session.pendingAskUserAnswer = undefined;
+  }
+  if (session.pendingExitPlanModeGate) {
+    send({ type: "debug", id: msg.id, message: "Clearing pending ExitPlanMode gate due to stop" });
+    session.pendingExitPlanModeGate = undefined;
+  }
+
   // Use interrupt() on the query iterator - this is the proper way to stop
   // the query and all subagents. The abort controller alone doesn't properly
   // stop subagents that are already running.
@@ -3974,6 +4322,11 @@ async function handleStop(msg: StopMessage): Promise<void> {
   } else {
     send({ type: "debug", id: msg.id, message: "No active query to stop" });
   }
+
+  // Safety: force claudeProcessing to false so new queries can start.
+  // The stuck processClaudeQueue will eventually exit via catch/finally,
+  // but this ensures startClaudeQueueWorker won't bail out early.
+  session.claudeProcessing = false;
 }
 
 async function handleUpdateModel(msg: UpdateModelMessage): Promise<void> {
@@ -4086,6 +4439,12 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "generate_repo_description_with_codex":
       await handleGenerateRepoDescriptionWithCodex(msg);
+      break;
+    case "generate_launch_profile":
+      await handleGenerateLaunchProfile(msg);
+      break;
+    case "generate_launch_profile_with_codex":
+      await handleGenerateLaunchProfileWithCodex(msg);
       break;
     case "answer_ask_user_question": {
       const session = sessions.get(msg.id);

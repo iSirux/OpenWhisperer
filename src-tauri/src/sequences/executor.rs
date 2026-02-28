@@ -115,6 +115,47 @@ impl SequenceExecutor {
         {
             let mut exec = execution.lock();
             exec.update_status(ExecutionStatus::Running);
+
+            // Mark trigger nodes as processed so they don't appear as perpetually
+            // pending in execution views. We mark the selected trigger (if any)
+            // as completed and the rest as skipped.
+            let trigger_nodes: Vec<&NodeDefinition> = definition
+                .nodes
+                .iter()
+                .filter(|n| matches!(n.node_type, NodeType::Trigger(_)))
+                .collect();
+
+            if !trigger_nodes.is_empty() {
+                let selected_trigger_idx = if let Some(ref entry_id) = entry_node_id {
+                    definition.triggers.iter().position(|t| match t {
+                        SequenceTrigger::Manual { entry_node_id }
+                        | SequenceTrigger::Schedule { entry_node_id, .. }
+                        | SequenceTrigger::Event { entry_node_id, .. } => {
+                            entry_node_id.as_ref() == Some(entry_id)
+                        }
+                    })
+                } else {
+                    definition
+                        .triggers
+                        .iter()
+                        .position(|t| matches!(t, SequenceTrigger::Manual { .. }))
+                };
+
+                let selected_trigger_idx = selected_trigger_idx.or(Some(0));
+
+                for (idx, trigger_node) in trigger_nodes.iter().enumerate() {
+                    if selected_trigger_idx == Some(idx) {
+                        exec.record_node_complete(
+                            &trigger_node.id,
+                            Some(serde_json::json!({ "trigger": true })),
+                            None,
+                            None,
+                        );
+                    } else {
+                        exec.record_node_skipped(&trigger_node.id);
+                    }
+                }
+            }
         }
         self.emit_status(&execution_id, &ExecutionStatus::Running);
         let _ = persistence::save_execution(&execution.lock());
@@ -1159,6 +1200,22 @@ impl SequenceExecutor {
         let _ = self.app.emit(
             &format!("sequence-notification-{}", execution_id),
             serde_json::json!({
+                "title": title_str,
+                "message": rendered_message,
+                "channel": notify.channel,
+                "preset": notify.preset,
+                "system_notification": notify.system_notification,
+                "play_sound": notify.play_sound,
+                "sound": notify.sound.unwrap_or(1),
+            }),
+        );
+
+        // Also emit a global notification event so frontend handling does not
+        // depend on per-execution listener registration timing.
+        let _ = self.app.emit(
+            "sequence-notification",
+            serde_json::json!({
+                "execution_id": execution_id,
                 "title": title_str,
                 "message": rendered_message,
                 "channel": notify.channel,

@@ -3,6 +3,11 @@
   import HotkeyInput from "$lib/components/HotkeyInput.svelte";
 
   const noteModeAvailable = $derived(isNoteModeAvailable());
+  const recordAndSendActionText = $derived(
+    $settings.audio.record_and_send_action === "prepare"
+      ? "transcribes and prepares a draft session"
+      : "transcribes and sends the prompt"
+  );
 </script>
 
 <div class="space-y-4">
@@ -14,7 +19,7 @@
     </p>
     <ul class="text-xs text-text-muted mt-1 ml-4 list-disc">
       <li>
-        <strong>Record & Send</strong> — transcribes and sends the prompt
+        <strong>Record & Send</strong> — {recordAndSendActionText}
       </li>
       <li>
         <strong>Transcribe Only</strong> — transcribes and pastes to current
@@ -30,6 +35,20 @@
     </p>
   </div>
 
+  <div class="border-t border-border pt-4">
+    <label class="text-sm font-medium text-text-secondary block mb-1">Record & Send action</label>
+    <p class="text-xs text-text-muted mb-2">
+      Controls what happens when you stop recording with Record & Send (button, hotkey, and overlay send action).
+    </p>
+    <select
+      class="w-full px-2 py-1.5 text-sm bg-surface-elevated border border-border rounded text-text-primary"
+      bind:value={$settings.audio.record_and_send_action}
+    >
+      <option value="send">Send immediately</option>
+      <option value="prepare">Prepare draft session</option>
+    </select>
+  </div>
+
   <!-- Record & Send -->
   <div>
     <div class="flex items-center justify-between mb-1">
@@ -41,7 +60,7 @@
       />
     </div>
     <p class="text-xs text-text-muted mb-2">
-      Starts recording. Press again to transcribe and send the prompt.
+      Starts recording. Press again to {recordAndSendActionText}.
     </p>
     <HotkeyInput
       bind:value={$settings.hotkeys.toggle_recording}

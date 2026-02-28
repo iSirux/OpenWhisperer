@@ -159,6 +159,8 @@ impl SequenceManager {
             self.sidecar.clone(),
             self.rate_limiter.clone(),
         );
+        let def_id = definition.id.clone();
+        let def_name = definition.name.clone();
         let cancel = cancel_flag.clone();
         let pause = pause_signal.clone();
 
@@ -174,6 +176,18 @@ impl SequenceManager {
         self.pause_signals
             .lock()
             .insert(execution_id.clone(), pause_signal);
+
+        // Emit a global execution-started event so the frontend can attach
+        // per-execution listeners even for scheduler/event-triggered runs.
+        let _ = self.app.emit(
+            "sequence-execution-started",
+            serde_json::json!({
+                "execution_id": execution_id.clone(),
+                "sequence_id": def_id,
+                "sequence_name": def_name,
+                "started_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
 
         // Spawn the execution task
         let eid = execution_id.clone();

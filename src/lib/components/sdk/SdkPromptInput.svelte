@@ -62,6 +62,8 @@
 
   // Track session ID to detect session switches (not draft content)
   let prevSessionId = $state(sessionId);
+  let prevDraftPrompt = $state(draftPrompt);
+  let prevDraftImagesKey = $state(JSON.stringify(draftImages));
 
   // Notify parent of draft changes (debounced to avoid too many updates)
   let draftChangeTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -72,6 +74,18 @@
       base64Data: img.base64Data,
       width: img.width,
       height: img.height,
+    }));
+  }
+
+  function applyDraftPropsToLocalState() {
+    prompt = draftPrompt;
+    pendingImages = draftImages.map((img) => ({
+      mediaType: img.mediaType,
+      base64Data: img.base64Data,
+      width: img.width ?? 0,
+      height: img.height ?? 0,
+      originalSize: 0,
+      compressedSize: 0,
     }));
   }
 
@@ -96,6 +110,8 @@
   // Reset local state ONLY when session ID changes (actual session switch)
   // This prevents resetting when tool calls update the session store
   $effect(() => {
+    const draftImagesKey = JSON.stringify(draftImages);
+
     if (sessionId !== prevSessionId) {
       // Clear any pending debounced save (the parent handles saving before switch)
       if (draftChangeTimeout) {
@@ -104,16 +120,29 @@
       }
 
       // Update to the new session's values
-      prompt = draftPrompt;
-      pendingImages = draftImages.map((img) => ({
-        mediaType: img.mediaType,
-        base64Data: img.base64Data,
-        width: img.width ?? 0,
-        height: img.height ?? 0,
-        originalSize: 0,
-        compressedSize: 0,
-      }));
+      applyDraftPropsToLocalState();
       prevSessionId = sessionId;
+      prevDraftPrompt = draftPrompt;
+      prevDraftImagesKey = draftImagesKey;
+      return;
+    }
+
+    // Same session: apply incoming draft updates only when they changed AND
+    // local state still matches the previous props (avoid clobbering active typing).
+    const draftPropsChanged =
+      draftPrompt !== prevDraftPrompt || draftImagesKey !== prevDraftImagesKey;
+
+    if (draftPropsChanged) {
+      const localMatchesPreviousProps =
+        prompt === prevDraftPrompt &&
+        JSON.stringify(getImageContent()) === prevDraftImagesKey;
+
+      if (localMatchesPreviousProps) {
+        applyDraftPropsToLocalState();
+      }
+
+      prevDraftPrompt = draftPrompt;
+      prevDraftImagesKey = draftImagesKey;
     }
   });
   let isProcessingImages = $state(false);
@@ -122,6 +151,20 @@
   // Expose focus function for external use
   export function focus() {
     textareaEl?.focus();
+  }
+
+  // Expose method to imperatively clear the input (e.g. after voice sends that bypass the UI)
+  export function clearInput() {
+    if (draftChangeTimeout) {
+      clearTimeout(draftChangeTimeout);
+      draftChangeTimeout = null;
+    }
+    prompt = "";
+    pendingImages = [];
+    // Keep prevDraft in sync so the $effect guard doesn't re-apply stale store values
+    prevDraftPrompt = "";
+    prevDraftImagesKey = "[]";
+    onDraftChange?.("", []);
   }
 
   // Expose method to get current draft values (for flushing before session switch)

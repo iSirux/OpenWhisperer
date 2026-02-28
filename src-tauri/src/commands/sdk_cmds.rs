@@ -171,6 +171,51 @@ pub fn generate_repo_description_with_codex(
     })
 }
 
+/// Generate launch profile (commands + profiles) using Claude SDK.
+/// This explores the codebase and generates runnable commands and logical profiles.
+/// Results are returned via `launch-profile-result-{id}` event.
+/// Errors are returned via `launch-profile-error-{id}` event.
+#[tauri::command]
+pub fn generate_launch_profile_with_claude(
+    app: AppHandle,
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    repo_path: String,
+    repo_name: String,
+) -> Result<(), String> {
+    if !sidecar.is_started() {
+        sidecar.start(app)?;
+    }
+
+    sidecar.send(OutboundMessage::GenerateLaunchProfile {
+        id,
+        repo_path,
+        repo_name,
+    })
+}
+
+/// Generate launch profile (commands + profiles) using Codex SDK.
+/// Results are returned via `launch-profile-result-{id}` event.
+/// Errors are returned via `launch-profile-error-{id}` event.
+#[tauri::command]
+pub fn generate_launch_profile_with_codex(
+    app: AppHandle,
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    repo_path: String,
+    repo_name: String,
+) -> Result<(), String> {
+    if !sidecar.is_started() {
+        sidecar.start(app)?;
+    }
+
+    sidecar.send(OutboundMessage::GenerateLaunchProfileWithCodex {
+        id,
+        repo_path,
+        repo_name,
+    })
+}
+
 /// Check if OpenAI Codex authentication is available
 /// Checks for ~/.codex/auth.json and codex CLI presence
 #[tauri::command]

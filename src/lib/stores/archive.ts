@@ -31,6 +31,7 @@ function createArchiveStore() {
   const isLoading = writable<boolean>(false);
   const searchQuery = writable<string>('');
   const filterType = writable<string | null>(null);
+  const filterRepoPath = writable<string | null>(null);
   const currentPage = writable<number>(0);
   const archiveCount = writable<number>(0);
   let hasLoaded = false;
@@ -41,18 +42,25 @@ function createArchiveStore() {
     isLoading,
     searchQuery,
     filterType,
+    filterRepoPath,
     currentPage,
     archiveCount,
 
     /**
      * Load archive entries with optional search and type filter
      */
-    async load(query = '', sessionType: string | null = null, page = 0): Promise<void> {
+    async load(
+      query = '',
+      sessionType: string | null = null,
+      repoPath: string | null = null,
+      page = 0,
+    ): Promise<void> {
       isLoading.set(true);
       try {
         const result = await invoke<ArchiveSearchResult>('get_archive_entries', {
           query: query || null,
           sessionType: sessionType || null,
+          repoPath: repoPath || null,
           offset: page * PAGE_SIZE,
           limit: PAGE_SIZE,
         });
@@ -61,6 +69,7 @@ function createArchiveStore() {
         currentPage.set(page);
         searchQuery.set(query);
         filterType.set(sessionType);
+        filterRepoPath.set(repoPath);
         hasLoaded = true;
       } catch (error) {
         console.error('[archive] Failed to load entries:', error);
@@ -76,12 +85,14 @@ function createArchiveStore() {
       const page = get(currentPage);
       const query = get(searchQuery);
       const type = get(filterType);
+      const repoPath = get(filterRepoPath);
 
       isLoading.set(true);
       try {
         const result = await invoke<ArchiveSearchResult>('get_archive_entries', {
           query: query || null,
           sessionType: type || null,
+          repoPath: repoPath || null,
           offset: (page + 1) * PAGE_SIZE,
           limit: PAGE_SIZE,
         });
@@ -202,11 +213,13 @@ function createArchiveStore() {
       if (!hasLoaded) return;
       const query = get(searchQuery);
       const type = get(filterType);
+      const repoPath = get(filterRepoPath);
       isLoading.set(true);
       try {
         const result = await invoke<ArchiveSearchResult>('get_archive_entries', {
           query: query || null,
           sessionType: type || null,
+          repoPath: repoPath || null,
           offset: 0,
           limit: PAGE_SIZE,
         });

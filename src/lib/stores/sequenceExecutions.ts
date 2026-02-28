@@ -46,9 +46,111 @@ export const runningCount = derived(executions, ($execs) =>
 // ─── Event Listeners ────────────────────────────────────────────────────────
 
 const listeners: Map<string, UnlistenFn[]> = new Map();
+let globalStartedUnlisten: UnlistenFn | null = null;
+let globalNotificationUnlisten: UnlistenFn | null = null;
+
+type SequenceExecutionStartedEvent = {
+  execution_id: string;
+  sequence_id: string;
+  sequence_name: string;
+  started_at: string;
+};
+
+type SequenceNotificationEvent = {
+  execution_id: string;
+  title: string;
+  message: string;
+  system_notification?: boolean;
+  play_sound?: boolean;
+  sound?: number;
+};
+
+async function handleExecutionStarted(
+  payload: SequenceExecutionStartedEvent
+): Promise<void> {
+  const executionId = payload.execution_id;
+  const exists = get(executions).some((e) => e.id === executionId);
+
+  if (!exists) {
+    executions.update((execs) => [
+      {
+        id: executionId,
+        sequence_id: payload.sequence_id,
+        sequence_name: payload.sequence_name || payload.sequence_id,
+        started_at: payload.started_at || new Date().toISOString(),
+        status: { status: "initializing" } as ExecutionStatus,
+        node_results: {},
+        session_ids: [],
+        inputs: {},
+        total_tokens: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read: 0,
+          cache_creation: 0,
+        },
+        total_cost: 0,
+        log: [],
+        completed_node_ids: [],
+        total_nodes: 0,
+      },
+      ...execs,
+    ]);
+  }
+
+  if (!listeners.has(executionId)) {
+    await setupListeners(executionId);
+  }
+
+  // Sync from backend in case this execution is very short-lived and events
+  // complete before listeners are attached.
+  await loadFullExecution(executionId);
+  setTimeout(() => {
+    void loadFullExecution(executionId);
+  }, 250);
+}
+
+export async function initSequenceExecutionListeners(): Promise<void> {
+  if (globalStartedUnlisten) return;
+
+  globalStartedUnlisten = await listen<SequenceExecutionStartedEvent>(
+    "sequence-execution-started",
+    (event) => {
+      void handleExecutionStarted(event.payload);
+    }
+  );
+
+  globalNotificationUnlisten = await listen<SequenceNotificationEvent>(
+    "sequence-notification",
+    (event) => {
+      const { title, message, system_notification, play_sound, sound } = event.payload;
+      if (system_notification) {
+        (async () => {
+          try {
+            let granted = await isPermissionGranted();
+            if (!granted) {
+              const perm = await requestPermission();
+              granted = perm === "granted";
+            }
+            if (granted) {
+              sendNotification({ title, body: message });
+            }
+          } catch (e) {
+            console.warn("Failed to send system notification:", e);
+          }
+        })();
+      }
+      if (play_sound) {
+        playNotificationSound(sound);
+      }
+    }
+  );
+}
 
 /** Set up event listeners for an execution */
 export async function setupListeners(executionId: string): Promise<void> {
+  if (listeners.has(executionId)) {
+    return;
+  }
   console.log(`[sequence] Setting up listeners for ${executionId.slice(0, 8)}`);
   const unlisteners: UnlistenFn[] = [];
 
@@ -233,42 +335,6 @@ export async function setupListeners(executionId: string): Promise<void> {
     )
   );
 
-  // Notification events (system notifications + sounds)
-  unlisteners.push(
-    await listen<{
-      title: string;
-      message: string;
-      system_notification?: boolean;
-      play_sound?: boolean;
-      sound?: number;
-    }>(
-      `sequence-notification-${executionId}`,
-      (event) => {
-        console.log(`[sequence][${executionId.slice(0, 8)}] notification event:`, event.payload);
-        const { title, message, system_notification, play_sound, sound } = event.payload;
-        if (system_notification) {
-          (async () => {
-            try {
-              let granted = await isPermissionGranted();
-              if (!granted) {
-                const perm = await requestPermission();
-                granted = perm === 'granted';
-              }
-              if (granted) {
-                sendNotification({ title, body: message });
-              }
-            } catch (e) {
-              console.warn('Failed to send system notification:', e);
-            }
-          })();
-        }
-        if (play_sound) {
-          playNotificationSound(sound);
-        }
-      }
-    )
-  );
-
   listeners.set(executionId, unlisteners);
 }
 
@@ -287,6 +353,15 @@ export function cleanupAllListeners(): void {
     unlisteners.forEach((unlisten) => unlisten());
   });
   listeners.clear();
+
+  if (globalStartedUnlisten) {
+    globalStartedUnlisten();
+    globalStartedUnlisten = null;
+  }
+  if (globalNotificationUnlisten) {
+    globalNotificationUnlisten();
+    globalNotificationUnlisten = null;
+  }
 }
 
 // ─── Actions ────────────────────────────────────────────────────────────────
@@ -391,36 +466,57 @@ export async function retryNode(
 export async function loadExecutionHistory(): Promise<void> {
   try {
     const summaries = await invoke<ExecutionSummary[]>("list_executions");
-    // Merge with existing active executions
-    // Only add completed ones that aren't already tracked
+    const fullExecutions = await Promise.all(
+      summaries.map(async (s) => {
+        try {
+          return await invoke<SequenceExecution>("get_execution", {
+            executionId: s.id,
+          });
+        } catch {
+          // Fallback to summary shape if full execution cannot be loaded.
+          return {
+            id: s.id,
+            sequence_id: s.sequence_id,
+            sequence_name: s.sequence_name,
+            started_at: s.started_at,
+            completed_at: s.completed_at,
+            status: s.status,
+            node_results: {},
+            session_ids: [],
+            inputs: {},
+            total_tokens: {
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_read: 0,
+              cache_creation: 0,
+            },
+            total_cost: s.total_cost,
+            log: [],
+            error: s.error,
+            completed_node_ids: [],
+            total_nodes: s.total_nodes,
+          } as SequenceExecution;
+        }
+      })
+    );
+
     executions.update((execs) => {
       const activeIds = new Set(execs.map((e) => e.id));
-      const historicalExecs: SequenceExecution[] = summaries
-        .filter((s) => !activeIds.has(s.id))
-        .map((s) => ({
-          id: s.id,
-          sequence_id: s.sequence_id,
-          sequence_name: s.sequence_name,
-          started_at: s.started_at,
-          completed_at: s.completed_at,
-          status: s.status,
-          node_results: {},
-          session_ids: [],
-          inputs: {},
-          total_tokens: {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read: 0,
-            cache_creation: 0,
-          },
-          total_cost: s.total_cost,
-          log: [],
-          error: s.error,
-          completed_node_ids: [],
-          total_nodes: s.total_nodes,
-        }));
+      const historicalExecs = fullExecutions.filter((s) => !activeIds.has(s.id));
       return [...execs, ...historicalExecs];
     });
+
+    for (const exec of fullExecutions) {
+      const status = getStatusString(exec.status);
+      if (!isTerminal(exec.status) && !listeners.has(exec.id)) {
+        await setupListeners(exec.id);
+      }
+      // If a persisted execution is still running, refresh once to sync any
+      // near-real-time progress that occurred during startup.
+      if (status === "running" || status === "initializing") {
+        void loadFullExecution(exec.id);
+      }
+    }
   } catch (error) {
     console.error("Failed to load execution history:", error);
   }

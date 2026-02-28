@@ -14,6 +14,8 @@ Supporting folders:
 - `docs/` for design and architecture notes.
 - `.github/workflows/` for release automation (`release.yml`).
 
+> **Log files:** `%APPDATA%\claude-whisperer\logs\` (Windows) / `~/Library/Application Support/claude-whisperer/logs/` (macOS) — named `backend[-dev]-YYYY-MM-DD.log` and `frontend[-dev]-YYYY-MM-DD.log`.
+
 ## Build, Test, and Development Commands
 
 - `pnpm install`: install frontend dependencies.

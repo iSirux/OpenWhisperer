@@ -585,10 +585,12 @@ function createSdkSessionsStore() {
           // proven to work — it already renders the tool card in the UI.
           const toolName = e.payload.tool;
           const isExitPlanMode = toolName === 'ExitPlanMode';
+          const isCompletePlanning = toolName === 'complete_planning' || toolName === 'mcp__planning-tools__complete_planning';
+          const isPlanApprovalTool = isExitPlanMode || isCompletePlanning;
           const isAskUserQuestion = toolName === 'AskUserQuestion';
 
-          // Extract allowedPrompts from ExitPlanMode input
-          const exitPlanAllowedPrompts = isExitPlanMode
+          // Extract allowedPrompts from ExitPlanMode input (complete_planning has no allowedPrompts)
+          const exitPlanAllowedPrompts = isPlanApprovalTool
             ? ((e.payload.input as { allowedPrompts?: Array<{ tool: string; prompt: string }> })?.allowedPrompts || [])
             : undefined;
 
@@ -616,8 +618,8 @@ function createSdkSessionsStore() {
                         timestamp: Date.now(),
                       },
                     ],
-                    // Set pendingPlanApproval when ExitPlanMode is detected
-                    ...(isExitPlanMode ? {
+                    // Set pendingPlanApproval when ExitPlanMode or complete_planning is detected
+                    ...(isPlanApprovalTool ? {
                       pendingPlanApproval: {
                         allowedPrompts: exitPlanAllowedPrompts!,
                       },
@@ -1467,6 +1469,8 @@ function createSdkSessionsStore() {
                 lastActivityAt: Date.now(),
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: Date.now() }],
                 aiMetadata: clearCompletionMetadata(s.aiMetadata),
+                draftPrompt: undefined,
+                draftImages: undefined,
               }
             : s
         )
@@ -1533,7 +1537,14 @@ function createSdkSessionsStore() {
       }
 
       update(sessions => sessions.map(s =>
-        s.id === id ? { ...s, status: 'idle' as const, stopRequestedAt: Date.now() } : s
+        s.id === id ? {
+          ...s,
+          status: 'idle' as const,
+          stopRequestedAt: Date.now(),
+          // Clear stale blocking-UI state so dialogs don't persist after stop
+          pendingPlanApproval: undefined,
+          askUserQuestion: undefined,
+        } : s
       ));
 
       try {
@@ -1739,7 +1750,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -1756,6 +1767,9 @@ function createSdkSessionsStore() {
                 status: 'initializing' as const,
                 planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
                 noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
+                // Pre-populate createdBranch from worktree creation so the header shows the correct
+                // branch immediately, without waiting for (or being overwritten by) the git query.
+                ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),
               }
             : s
         )

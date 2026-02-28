@@ -13,6 +13,7 @@ pub struct ArchiveSearchResult {
 pub fn get_archive_entries(
     query: Option<String>,
     session_type: Option<String>,
+    repo_path: Option<String>,
     offset: usize,
     limit: usize,
 ) -> Result<ArchiveSearchResult, String> {
@@ -20,6 +21,7 @@ pub fn get_archive_entries(
     let (entries, total_count) = index.search(
         query.as_deref().unwrap_or(""),
         session_type.as_deref(),
+        repo_path.as_deref(),
         offset,
         limit,
     );

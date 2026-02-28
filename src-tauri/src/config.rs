@@ -1,4 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -1026,6 +1027,14 @@ impl Default for OpenMicConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordAndSendAction {
+    #[default]
+    Send,
+    Prepare,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub device_id: Option<String>,
@@ -1046,6 +1055,8 @@ pub struct AudioConfig {
     pub include_transcription_notice: bool,
     #[serde(default)]
     pub require_transcription_approval: bool,
+    #[serde(default)]
+    pub record_and_send_action: RecordAndSendAction,
     /// Voice command configuration for triggering prompt send
     #[serde(default)]
     pub voice_commands: VoiceCommandConfig,
@@ -1086,6 +1097,7 @@ impl Default for AudioConfig {
             recording_linger_ms: 500,
             include_transcription_notice: true,
             require_transcription_approval: false,
+            record_and_send_action: RecordAndSendAction::Send,
             voice_commands: VoiceCommandConfig::default(),
             open_mic: OpenMicConfig::default(),
         }
@@ -1137,6 +1149,44 @@ pub struct RepoConfig {
     /// Last selected worktree mode for this repo: "main", "new", or "existing"
     #[serde(default = "default_worktree_mode")]
     pub worktree_mode: String,
+    /// Launch commands available for this repository (dev servers, watchers, etc.)
+    #[serde(default)]
+    pub launch_commands: Vec<LaunchCommand>,
+    /// Launch profiles - named groups of launch commands for one-click startup
+    #[serde(default)]
+    pub launch_profiles: Vec<LaunchProfile>,
+}
+
+/// A single runnable command/service for a repository (e.g., "npm run dev")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchCommand {
+    /// Unique identifier (UUID)
+    pub id: String,
+    /// Display name (e.g., "Frontend Dev Server")
+    pub name: String,
+    /// Shell command to execute (e.g., "npm run dev")
+    pub command: String,
+    /// Working directory relative to repo root (for monorepo sub-projects).
+    /// If None, uses the repo root.
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    /// Extra environment variables to set
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
+    /// Whether this command was auto-detected by scanning the repo
+    #[serde(default)]
+    pub auto_detected: bool,
+}
+
+/// A named group of launch commands that can be started together
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchProfile {
+    /// Unique identifier (UUID)
+    pub id: String,
+    /// Display name (e.g., "Full Stack", "Frontend Only")
+    pub name: String,
+    /// List of LaunchCommand IDs to include in this profile
+    pub command_ids: Vec<String>,
 }
 
 fn default_true() -> bool {

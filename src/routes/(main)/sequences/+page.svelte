@@ -64,6 +64,13 @@
     await toggleSchedule(schedule.sequence_id, schedule.cron, !schedule.enabled);
     schedules = await listSchedules();
   }
+
+  function formatScheduleTime(value?: string): string {
+    if (!value) return 'Not available';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Invalid time';
+    return date.toLocaleString();
+  }
 </script>
 
 <div class="flex flex-col flex-1 overflow-hidden">
@@ -185,12 +192,12 @@
               <code class="text-[10px] text-text-muted bg-surface-elevated px-1.5 py-0.5 rounded">{schedule.cron}</code>
             </div>
             <div class="flex items-center gap-3">
-              {#if schedule.next_fire}
-                <span class="text-[10px] text-text-muted">Next: {new Date(schedule.next_fire).toLocaleString()}</span>
-              {/if}
-              {#if schedule.last_run}
-                <span class="text-[10px] text-text-muted">Last: {new Date(schedule.last_run).toLocaleString()}</span>
-              {/if}
+              <span class="text-[10px] text-text-muted" title={schedule.next_fire || 'No next run available'}>
+                Next run: {formatScheduleTime(schedule.next_fire)}
+              </span>
+              <span class="text-[10px] text-text-muted" title={schedule.last_run || 'No previous run'}>
+                Last run: {formatScheduleTime(schedule.last_run)}
+              </span>
               <label class="flex items-center gap-1 cursor-pointer">
                 <input type="checkbox" checked={schedule.enabled}
                   onchange={() => handleToggleSchedule(schedule)}

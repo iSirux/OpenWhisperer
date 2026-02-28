@@ -137,7 +137,7 @@ pub fn save_config(
 pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Result<(), String> {
     log::info!("[add_repo] Called with path: {}, name: {}", path, name);
     let mut cfg = config.lock();
-    cfg.repos.push(RepoConfig { id: Some(uuid::Uuid::new_v4().to_string()), path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, icon: None, color: None, mcp_servers: None, note_mcp_servers: None, tags: Vec::new(), active: true, worktree_copy_files: Vec::new(), worktree_post_create_commands: Vec::new(), worktree_mode: "main".to_string() });
+    cfg.repos.push(RepoConfig { id: Some(uuid::Uuid::new_v4().to_string()), path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, icon: None, color: None, mcp_servers: None, note_mcp_servers: None, tags: Vec::new(), active: true, worktree_copy_files: Vec::new(), worktree_post_create_commands: Vec::new(), worktree_mode: "main".to_string(), launch_commands: Vec::new(), launch_profiles: Vec::new() });
     log::info!("[add_repo] Repo added to config, total repos: {}", cfg.repos.len());
     let result = cfg.save();
     match &result {

@@ -22,6 +22,8 @@
     setupPeriodicAutoSave,
   } from '$lib/stores/sessionPersistence';
   import {
+    initSequenceExecutionListeners,
+    cleanupAllListeners as cleanupSequenceExecutionListeners,
     loadExecutionHistory,
     runningCount as sequenceRunningCount,
   } from '$lib/stores/sequenceExecutions';
@@ -147,6 +149,7 @@
     }
 
     // Load sequences
+    await initSequenceExecutionListeners();
     await loadSequences();
     await loadExecutionHistory();
 
@@ -219,6 +222,7 @@
 
     if (cleanupAutoSave) cleanupAutoSave();
     if (cleanupPeriodicSave) cleanupPeriodicSave();
+    cleanupSequenceExecutionListeners();
 
     saveSessionsToDisk();
   });

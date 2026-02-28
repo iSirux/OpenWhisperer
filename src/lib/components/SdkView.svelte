@@ -28,6 +28,9 @@
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
+  import LaunchBar from "./sdk/LaunchBar.svelte";
+  import { launchStore, getLaunchRuntime, queuedLaunch } from "$lib/stores/launchProfiles";
+  import { findRepoById } from "$lib/stores/repos";
   import SdkTaskBlock from "./sdk/SdkTaskBlock.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import EffortToggle from "./EffortToggle.svelte";
@@ -168,17 +171,17 @@
   let planApprovalAnchorIndex = $derived.by(() => {
     if (!hasPlanApproval || !pendingPlanApproval) return -1;
 
-    const isExitPlanModeToolMessage = (msg: SdkMessage) =>
+    const isPlanApprovalToolMessage = (msg: SdkMessage) =>
       (msg.type === "tool_start" || msg.type === "tool_result") &&
-      msg.tool === "ExitPlanMode";
+      (msg.tool === "ExitPlanMode" || msg.tool === "complete_planning" || msg.tool === "mcp__planning-tools__complete_planning");
 
-    // Prefer anchoring directly after ExitPlanMode, since that tool triggers plan approval.
+    // Prefer anchoring directly after the plan-approval tool (ExitPlanMode or complete_planning).
     for (let i = renderItems.length - 1; i >= 0; i -= 1) {
       const item = renderItems[i];
       if (
-        (item.type === "message" && isExitPlanModeToolMessage(item.message)) ||
+        (item.type === "message" && isPlanApprovalToolMessage(item.message)) ||
         (item.type === "tool_group" &&
-          item.tools.some((toolMsg) => isExitPlanModeToolMessage(toolMsg)))
+          item.tools.some((toolMsg) => isPlanApprovalToolMessage(toolMsg)))
       ) {
         return i;
       }
@@ -201,6 +204,7 @@
   let promptInputRef:
     | {
         focus: () => void;
+        clearInput: () => void;
         getCurrentDraft: () => { prompt: string; images: SdkImageContent[] };
         appendToPrompt: (text: string) => void;
       }
@@ -288,6 +292,15 @@
   );
   let sessionModel = $derived(session?.model ?? "");
   let forkedMessageCount = $derived(session?.forkedMessageCount ?? 0);
+
+  // Launch profiles for the current repo
+  let sessionRepoId = $derived(session?.repoId ?? "");
+  let sessionRepo = $derived(
+    sessionRepoId ? findRepoById($repos.list, sessionRepoId) : null,
+  );
+  let repoLaunchProfiles = $derived(sessionRepo?.launch_profiles ?? []);
+  let repoLaunchCommands = $derived(sessionRepo?.launch_commands ?? []);
+  let hasLaunchProfiles = $derived(repoLaunchProfiles.length > 0);
   let branch = $state<string | null>(null);
   let lastFetchedBranchCwd = "";
 
@@ -905,6 +918,8 @@
         }
       }
 
+      // Clear the input box before sending so any typed draft doesn't linger
+      promptInputRef?.clearInput();
       await sdkSessions.sendPrompt(sessionId, finalTranscript);
       recording.clearTranscript();
     } finally {
@@ -1324,6 +1339,19 @@
       </button>
     {/if}
   </div>
+
+  {#if hasLaunchProfiles && sessionRepoId}
+    <LaunchBar
+      repoId={sessionRepoId}
+      repoPath={cwd}
+      profiles={repoLaunchProfiles}
+      commands={repoLaunchCommands}
+      runtime={$launchStore.runtimes[sessionRepoId] ?? null}
+      queued={$queuedLaunch?.repoId === sessionRepoId ? $queuedLaunch : null}
+      isAgentRunning={isQuerying}
+      {sessionId}
+    />
+  {/if}
 
   {#if !isPrepared}
     <SdkPromptInput
