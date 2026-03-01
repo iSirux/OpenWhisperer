@@ -15,7 +15,7 @@
     try {
       appVersion = await getVersion();
     } catch {
-      appVersion = "0.10.0";
+      appVersion = "0.11.0";
     }
 
     try {
