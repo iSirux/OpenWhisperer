@@ -30,7 +30,7 @@
   import { loadSequences } from '$lib/stores/sequences';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import { type VoiceCommandType } from '$lib/utils/voiceCommands';
-  import { eventMatchesHotkey, isEditableElement } from '$lib/utils/hotkeys';
+  import { eventMatchesHotkey } from '$lib/utils/hotkeys';
   import { createAndActivateNewSession } from '$lib/utils/sessionCreation';
 
   // Composables (now layout-level — survive route changes)
@@ -118,7 +118,6 @@
   function handleAppKeydown(event: KeyboardEvent): void {
     if (event.repeat) return;
     if (!$settings.hotkeys_enabled.new_session) return;
-    if (isEditableElement(event.target)) return;
     if (!eventMatchesHotkey(event, $settings.hotkeys.new_session)) return;
 
     event.preventDefault();

@@ -27,25 +27,31 @@
   let collapsed = $state(false);
   let contextMenuProfileId = $state<string | null>(null);
   let selectedCommandIds = $state<Set<string>>(new Set());
+  let isStopping = $state(false);
+  let isRestarting = $state(false);
 
   /** Elapsed time since launch */
   let elapsedMs = $state(0);
-  let intervalId: ReturnType<typeof setInterval> | undefined;
+  let tickId: ReturnType<typeof setInterval> | undefined;
+  let pollId: ReturnType<typeof setInterval> | undefined;
 
   $effect(() => {
     if (runtime?.startedAt) {
       elapsedMs = Date.now() - runtime.startedAt;
-      intervalId = setInterval(() => {
+      tickId = setInterval(() => {
         elapsedMs = Date.now() - runtime!.startedAt;
-        // Poll backend to detect manually closed terminals
+      }, 1000);
+      pollId = setInterval(() => {
         launchStore.refreshStatus(repoId);
       }, 2000);
     } else {
       elapsedMs = 0;
-      if (intervalId) clearInterval(intervalId);
+      if (tickId) clearInterval(tickId);
+      if (pollId) clearInterval(pollId);
     }
     return () => {
-      if (intervalId) clearInterval(intervalId);
+      if (tickId) clearInterval(tickId);
+      if (pollId) clearInterval(pollId);
     };
   });
 
@@ -71,10 +77,27 @@
   }
 
   async function handleStopAll() {
+    isStopping = true;
     try {
       await launchStore.stopAll(repoId);
     } catch (e) {
       console.error("[LaunchBar] Stop failed:", e);
+    } finally {
+      isStopping = false;
+    }
+  }
+
+  async function handleRestart() {
+    if (!runtime?.profileId) return;
+    const profileId = runtime.profileId;
+    isRestarting = true;
+    try {
+      await launchStore.stopAll(repoId);
+      await launchStore.launchProfile(repoId, profileId);
+    } catch (e) {
+      console.error("[LaunchBar] Restart failed:", e);
+    } finally {
+      isRestarting = false;
     }
   }
 
@@ -137,12 +160,35 @@
         <span class="running-label">
           {runtime.profileName ?? "Custom"} running
         </span>
-        <button class="stop-btn" onclick={handleStopAll} title="Stop all processes">
-          <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-            <rect x="3" y="3" width="10" height="10" rx="1" />
-          </svg>
-          Stop All
+        <button class="stop-btn" onclick={handleStopAll} disabled={isStopping || isRestarting} title="Stop all processes">
+          {#if isStopping}
+            <svg class="spin" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+              <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5A.75.75 0 0 1 16 8a8 8 0 1 1-8-8 .75.75 0 0 1 0 1.5z"/>
+            </svg>
+            Stopping…
+          {:else}
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+              <rect x="3" y="3" width="10" height="10" rx="1" />
+            </svg>
+            Stop All
+          {/if}
         </button>
+        {#if runtime.profileId}
+          <button class="restart-btn" onclick={handleRestart} disabled={isStopping || isRestarting} title="Restart">
+            {#if isRestarting}
+              <svg class="spin" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5A.75.75 0 0 1 16 8a8 8 0 1 1-8-8 .75.75 0 0 1 0 1.5z"/>
+              </svg>
+              Restarting…
+            {:else}
+              <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/>
+                <path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/>
+              </svg>
+              Restart
+            {/if}
+          </button>
+        {/if}
         <span class="elapsed">{formatElapsed(elapsedMs)}</span>
       </div>
     {:else if isQueued && queued}
@@ -329,8 +375,42 @@
     transition: background 0.15s;
   }
 
-  .stop-btn:hover {
+  .stop-btn:hover:not(:disabled) {
     background: rgba(239, 68, 68, 0.1);
+  }
+
+  .stop-btn:disabled,
+  .restart-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .restart-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-text-tertiary);
+    font-size: 0.7rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .restart-btn:hover:not(:disabled) {
+    background: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
+  }
+
+  .spin {
+    animation: spin 0.7s linear infinite;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
 
   .elapsed {

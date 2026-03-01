@@ -225,8 +225,17 @@
       })
     );
 
+    // Cancel any pending debounced draft change to prevent restoring stale text
+    if (draftChangeTimeout) {
+      clearTimeout(draftChangeTimeout);
+      draftChangeTimeout = null;
+    }
+
     prompt = "";
     pendingImages = [];
+    // Keep prevDraft in sync so the $effect guard doesn't re-apply stale store values
+    prevDraftPrompt = "";
+    prevDraftImagesKey = "[]";
     // Clear draft in parent store
     emitDraftChange(prevSessionId, "", []);
     onSendPrompt(currentPrompt, imageContent);
