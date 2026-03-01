@@ -101,6 +101,8 @@ export function getToolCallSummary(
       return truncate(String(input.url || ''), maxLen);
     case 'WebSearch':
       return `"${truncate(String(input.query || ''), Math.max(1, maxLen - 2))}"`;
+    case 'Skill':
+      return truncate(String(input.skill || ''), maxLen);
     case 'Task':
       return truncate(
         String(input.description || input.prompt || ''),

@@ -1802,6 +1802,12 @@ function createSdkSessionsStore() {
                 effortLevel: config.noteMode ? null : config.effortLevel, // Note mode doesn't use effort
                 readOnlyMode: config.noteMode ? false : (config.readOnlyMode ?? false),
                 status: 'initializing' as const,
+                // Setup drafts should not carry into the live SDK composer.
+                // If they remain on the session while SdkView mounts, the prompt input
+                // can briefly hydrate with the setup prompt and then get cleared by
+                // sendPrompt(), leaving textarea sizing out of sync.
+                draftPrompt: undefined,
+                draftImages: undefined,
                 planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
                 noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
                 // Pre-populate createdBranch from worktree creation so the header shows the correct

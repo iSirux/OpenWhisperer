@@ -2863,10 +2863,9 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   const options: Options = {
     cwd: msg.cwd,
     permissionMode: "acceptEdits",
-    // Load CLAUDE.md and settings from filesystem like Claude Code does
+    // Load CLAUDE.md, settings, and filesystem-backed Skills like Claude Code does
     settingSources: ["user", "project", "local"],
     ...(msg.model && { model: msg.model }),
-    ...(msg.system_prompt && { systemPrompt: msg.system_prompt }),
     ...msg.options,
     // Allow all MCP tools to execute without permission prompts
     // This callback fires when Claude would show a permission prompt
@@ -2931,6 +2930,16 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     },
   };
 
+  // Preserve Claude Code's built-in prompt and tool setup so repo/global Skills
+  // can load, while still appending session-specific instructions from the app.
+  options.systemPrompt = buildClaudeSystemPrompt(
+    msg.system_prompt,
+    options.systemPrompt
+  );
+  if (!options.tools) {
+    options.tools = { type: "preset", preset: "claude_code" };
+  }
+
   // Add in-process MCP server for plan mode at creation time
   // Using createSdkMcpServer for reliable in-process tool registration
   if (msg.plan_mode) {
@@ -2965,6 +2974,10 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     // from seeing all the tool descriptions in its system prompt. We only want
     // Claude to see the read-only tools and MCP tools that are actually allowed.
     options.settingSources = [];
+    options.systemPrompt = msg.system_prompt?.trim()
+      ? msg.system_prompt.trim()
+      : undefined;
+    delete options.tools;
 
     // Start with read-only codebase tools only
     // MCP tool patterns will be added below when MCP servers are registered
@@ -3109,6 +3122,10 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     }
   }
 
+  if (!msg.note_mode) {
+    options.allowedTools = appendAllowedTool(options.allowedTools, "Skill");
+  }
+
   const provider = inferProvider(msg.provider, msg.model);
   const openaiMode: OpenAiExecutionMode =
     provider === "openai" ? "app_server" : "sdk";
@@ -3177,6 +3194,43 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     });
   }
 
+  if (provider === "claude") {
+    const systemPromptMode =
+      typeof options.systemPrompt === "string"
+        ? "custom-string"
+        : options.systemPrompt?.type === "preset" &&
+            options.systemPrompt.preset === "claude_code"
+          ? options.systemPrompt.append?.trim()
+            ? "claude_code+append"
+            : "claude_code"
+          : "unset";
+    const toolsMode =
+      Array.isArray(options.tools)
+        ? `custom-list(${options.tools.length})`
+        : options.tools?.type === "preset" &&
+            options.tools.preset === "claude_code"
+          ? "claude_code"
+          : "unset";
+    const allowedTools = options.allowedTools;
+    const skillToolAccess =
+      !allowedTools
+        ? "unrestricted"
+        : allowedTools.includes("Skill")
+          ? "explicitly-allowed"
+          : "not-listed";
+
+    send({
+      type: "debug",
+      id: msg.id,
+      message:
+        `[claude skills] systemPrompt=${systemPromptMode} ` +
+        `tools=${toolsMode} ` +
+        `settingSources=${options.settingSources?.join(",") || "(none)"} ` +
+        `skillToolAccess=${skillToolAccess} ` +
+        `allowedToolsRestricted=${Array.isArray(allowedTools)}`,
+    });
+  }
+
   // Detect parallel sessions in the same CWD and queue notifications
   const parallelNotification =
     "<system-message>\n" +
@@ -3227,6 +3281,50 @@ interface SDKUserMessageForInput {
   };
   parent_tool_use_id: null;
   session_id: string;
+}
+
+function appendAllowedTool(
+  allowedTools: string[] | undefined,
+  toolName: string
+): string[] | undefined {
+  if (!allowedTools) return allowedTools;
+  return allowedTools.includes(toolName)
+    ? allowedTools
+    : [...allowedTools, toolName];
+}
+
+function buildClaudeSystemPrompt(
+  sessionSystemPrompt?: string,
+  optionSystemPrompt?: Options["systemPrompt"]
+): Options["systemPrompt"] {
+  const appendParts: string[] = [];
+
+  if (typeof optionSystemPrompt === "string" && optionSystemPrompt.trim()) {
+    appendParts.push(optionSystemPrompt.trim());
+  } else if (
+    optionSystemPrompt &&
+    typeof optionSystemPrompt === "object" &&
+    optionSystemPrompt.type === "preset" &&
+    optionSystemPrompt.preset === "claude_code" &&
+    optionSystemPrompt.append?.trim()
+  ) {
+    appendParts.push(optionSystemPrompt.append.trim());
+  }
+
+  if (sessionSystemPrompt?.trim()) {
+    appendParts.push(sessionSystemPrompt.trim());
+  }
+
+  return appendParts.length > 0
+    ? {
+        type: "preset",
+        preset: "claude_code",
+        append: appendParts.join("\n\n"),
+      }
+    : {
+        type: "preset",
+        preset: "claude_code",
+      };
 }
 
 /**
@@ -3742,6 +3840,15 @@ async function runClaudeQueryItem(
             type: "debug",
             id: msg.id,
             message: `Captured SDK session ID: ${message.session_id}`,
+          });
+          send({
+            type: "debug",
+            id: msg.id,
+            message:
+              `[claude init] model=${message.model} ` +
+              `permissionMode=${message.permissionMode} ` +
+              `tools=${message.tools.includes("Skill") ? "Skill-enabled" : "Skill-missing"}(${message.tools.length}) ` +
+              `skills=${message.skills.length > 0 ? message.skills.join(", ") : "(none)"}`,
           });
           // Send SDK session ID to frontend so it can be persisted for proper resume
           sendSdkSessionId(msg.id, message.session_id);
