@@ -214,7 +214,9 @@
         <div class="task-children">
           {#each childRenderItems() as item, index (item.type === 'tool_group' ? `tool-group-${index}` : item.message.timestamp)}
             {#if item.type === 'tool_group'}
-              <SdkToolGrid tools={item.tools} />
+              <div class="task-tool-grid-wrapper">
+                <SdkToolGrid tools={item.tools} />
+              </div>
             {:else}
               <SdkMessageComponent
                 message={item.message}
@@ -391,6 +393,12 @@
     overflow-y: auto;
     overflow-x: hidden;
     border-top: 1px solid color-mix(in srgb, var(--color-model-opus) 10%, var(--color-border));
+  }
+
+  .task-tool-grid-wrapper {
+    max-height: 6.75rem; /* ~2 rows of tool cards */
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .task-children {

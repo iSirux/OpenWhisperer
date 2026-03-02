@@ -187,6 +187,7 @@ export interface AskUserQuestionState {
 
 export interface PlanApprovalState {
   allowedPrompts: Array<{ tool: string; prompt: string }>;
+  plan?: string;
 }
 
 export interface NoteModeState {
@@ -633,9 +634,12 @@ function createSdkSessionsStore() {
             console.log(`[sdkSessions] Plan approval tool detected via tool_start: ${toolName} (session: ${id})`);
           }
 
-          // Extract allowedPrompts from ExitPlanMode input (complete_planning has no allowedPrompts)
+          // Extract allowedPrompts and plan from ExitPlanMode input
           const exitPlanAllowedPrompts = isPlanApprovalTool
             ? ((e.payload.input as { allowedPrompts?: Array<{ tool: string; prompt: string }> })?.allowedPrompts || [])
+            : undefined;
+          const exitPlanContent = isPlanApprovalTool
+            ? ((e.payload.input as { plan?: string })?.plan || undefined)
             : undefined;
 
           // Extract questions from AskUserQuestion input
@@ -666,6 +670,7 @@ function createSdkSessionsStore() {
                     ...(isPlanApprovalTool ? {
                       pendingPlanApproval: {
                         allowedPrompts: exitPlanAllowedPrompts!,
+                        plan: exitPlanContent,
                       },
                     } : {}),
                     // Set askUserQuestion when AskUserQuestion is detected
@@ -688,6 +693,11 @@ function createSdkSessionsStore() {
     // Tool result events
     unlisteners.push(
       await listen<{ tool: string; output: string; toolUseId: string; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-tool-result-${id}`, (e) => {
+        const toolName = e.payload.tool;
+        const isPlanApprovalResult = toolName === 'ExitPlanMode' || toolName === 'complete_planning' || toolName === 'mcp__planning-tools__complete_planning';
+        if (isPlanApprovalResult) {
+          console.log(`[sdkSessions] Plan approval tool_result received: ${toolName} (session: ${id}, output: ${e.payload.output.slice(0, 100)})`);
+        }
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -778,6 +788,12 @@ function createSdkSessionsStore() {
             needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
             const isActiveSession = get(activeSdkSessionId) === id;
+            if (s.pendingPlanApproval) {
+              console.log(`[sdkSessions] sdk-done fired while pendingPlanApproval is set (session: ${id}, wasStoppedByUser: ${wasStoppedByUser})`);
+            }
+            if (s.askUserQuestion) {
+              console.log(`[sdkSessions] sdk-done fired while askUserQuestion is set (session: ${id}, wasStoppedByUser: ${wasStoppedByUser})`);
+            }
             return {
               ...s,
               status: 'idle' as const,
@@ -1016,15 +1032,19 @@ function createSdkSessionsStore() {
 
     // Plan approval request - ExitPlanMode intercepted, waiting for user decision
     unlisteners.push(
-      await listen<{ allowedPrompts: Array<{ tool: string; prompt: string }> }>(
+      await listen<{ allowedPrompts: Array<{ tool: string; prompt: string }>; plan?: string | null }>(
         `sdk-plan-approval-request-${id}`, (e) => {
-          console.log(`[sdkSessions] Plan approval request received (session: ${id}, allowedPrompts: ${e.payload.allowedPrompts.length})`);
+          console.log(`[sdkSessions] Plan approval request received (session: ${id}, allowedPrompts: ${e.payload.allowedPrompts.length}, hasPlan: ${!!e.payload.plan})`);
           update(sessions => sessions.map(s => {
             if (s.id !== id) return s;
+            // Pause the timer while waiting for plan approval - avoids 24h+ display if user waits overnight
+            const workPeriod = calculateWorkPeriod(s);
             return {
               ...s,
+              ...workPeriod,
               pendingPlanApproval: {
                 allowedPrompts: e.payload.allowedPrompts,
+                plan: e.payload.plan || undefined,
               },
             };
           }));
@@ -1575,16 +1595,23 @@ function createSdkSessionsStore() {
         return;
       }
 
-      update(sessions => sessions.map(s =>
-        s.id === id ? {
+      update(sessions => sessions.map(s => {
+        if (s.id !== id) return s;
+        if (s.pendingPlanApproval) {
+          console.log(`[sdkSessions] Clearing pendingPlanApproval due to stop (session: ${id})`);
+        }
+        if (s.askUserQuestion) {
+          console.log(`[sdkSessions] Clearing askUserQuestion due to stop (session: ${id})`);
+        }
+        return {
           ...s,
           status: 'idle' as const,
           stopRequestedAt: Date.now(),
           // Clear stale blocking-UI state so dialogs don't persist after stop
           pendingPlanApproval: undefined,
           askUserQuestion: undefined,
-        } : s
-      ));
+        };
+      }));
 
       try {
         await invoke('stop_sdk_query', { id });

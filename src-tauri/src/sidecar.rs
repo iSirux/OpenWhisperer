@@ -302,6 +302,7 @@ pub enum InboundMessage {
         id: String,
         #[serde(rename = "allowedPrompts")]
         allowed_prompts: Vec<serde_json::Value>,
+        plan: Option<String>,
     },
     /// Result from Claude SDK repo description generation
     RepoDescriptionResult {
@@ -806,16 +807,19 @@ impl SidecarManager {
             InboundMessage::PlanApprovalRequest {
                 id,
                 allowed_prompts,
+                plan,
             } => {
                 log::info!(
-                    "[sidecar] Plan approval request for session {}: {} allowed prompts",
+                    "[sidecar] Plan approval request for session {}: {} allowed prompts, has_plan: {}",
                     id,
-                    allowed_prompts.len()
+                    allowed_prompts.len(),
+                    plan.is_some()
                 );
                 let _ = app.emit(
                     &format!("sdk-plan-approval-request-{}", id),
                     serde_json::json!({
                         "allowedPrompts": allowed_prompts,
+                        "plan": plan,
                     }),
                 );
             }

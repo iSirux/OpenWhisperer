@@ -8,7 +8,7 @@
     "postinstall": "node scripts/patch-sdk.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.50",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.63",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@openai/codex-sdk": "^0.104.0",
     "zod": "^4.3.6"

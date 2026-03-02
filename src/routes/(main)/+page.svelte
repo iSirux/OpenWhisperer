@@ -40,9 +40,6 @@
     handleSetupSessionStart,
   } from '$lib/stores/transcriptProcessor';
 
-  // Constants
-  const PROMPT_PREVIEW_LENGTH = 80;
-
   // Initialize composables (page-specific)
   const sidebar = useSidebarResize();
 
@@ -69,9 +66,7 @@
   let activeSdkFirstPrompt = $derived(() => {
     const firstUserMessage = $activeSdkSession?.messages.find((m) => m.type === 'user');
     if (!firstUserMessage?.content) return null;
-    const content = firstUserMessage.content.trim();
-    if (content.length <= PROMPT_PREVIEW_LENGTH) return content;
-    return content.slice(0, PROMPT_PREVIEW_LENGTH) + '...';
+    return firstUserMessage.content.trim() || null;
   });
 
   // Refresh current branch metadata when active SDK session changes.

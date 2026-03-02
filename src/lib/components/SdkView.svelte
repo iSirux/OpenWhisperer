@@ -168,8 +168,33 @@
   let hasAskUserQuestions = $derived(!!(askUserQuestion?.questions?.length));
 
   // Plan approval state (ExitPlanMode interception)
-  let pendingPlanApproval = $derived(session?.pendingPlanApproval);
-  let hasPlanApproval = $derived(!!pendingPlanApproval);
+  let pendingPlanApprovalRaw = $derived(session?.pendingPlanApproval);
+  let hasPlanApproval = $derived(!!pendingPlanApprovalRaw);
+  // Enrich pendingPlanApproval with plan content from ExitPlanMode message input
+  // (fallback for sessions where plan wasn't extracted into state)
+  let pendingPlanApproval = $derived.by(() => {
+    if (!pendingPlanApprovalRaw) return undefined;
+    if (pendingPlanApprovalRaw.plan) return pendingPlanApprovalRaw;
+    // Find the ExitPlanMode message and extract plan from its input
+    const messages = session?.messages;
+    if (!messages) return pendingPlanApprovalRaw;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.type === 'tool_start' && (msg.tool === 'ExitPlanMode' || msg.tool === 'complete_planning' || msg.tool === 'mcp__planning-tools__complete_planning')) {
+        const plan = (msg.input as { plan?: string })?.plan;
+        if (plan) {
+          return { ...pendingPlanApprovalRaw, plan };
+        }
+        break;
+      }
+    }
+    return pendingPlanApprovalRaw;
+  });
+  $effect(() => {
+    if (hasPlanApproval) {
+      console.log(`[SdkView] Plan approval dialog should render (session: ${sessionId}, anchorIndex: ${planApprovalAnchorIndex}, renderItems: ${renderItems.length})`);
+    }
+  });
   let planApprovalAnchorIndex = $derived.by(() => {
     if (!hasPlanApproval || !pendingPlanApproval) return -1;
 
@@ -315,18 +340,19 @@
   });
 
   // Get the first user prompt to display as session identifier
-  const PROMPT_PREVIEW_LENGTH = 80;
   let firstPrompt = $derived(() => {
     const firstUserMessage = messages.find((m) => m.type === "user");
     if (!firstUserMessage?.content) return null;
-    const content = firstUserMessage.content.trim();
-    if (content.length <= PROMPT_PREVIEW_LENGTH) return content;
-    return content.slice(0, PROMPT_PREVIEW_LENGTH) + "…";
+    return firstUserMessage.content.trim() || null;
   });
 
   onMount(() => {
+    console.log(`[SdkView] Mount (session: ${sessionId})`);
     unsubscribe = sdkSessions.subscribe((sessions) => {
       const found = sessions.find((s) => s.id === sessionId);
+      if (!session && found?.pendingPlanApproval) {
+        console.log(`[SdkView] Initial mount found pendingPlanApproval (session: ${sessionId})`);
+      }
       // Only update if session changed meaningfully (avoid reactive updates from audio visualization)
       if (found !== session) {
         // Check if key fields actually changed
@@ -408,6 +434,9 @@
           draftChanged ||
           planApprovalChanged
         ) {
+          if (planApprovalChanged) {
+            console.log(`[SdkView] pendingPlanApproval changed (session: ${sessionId}, was: ${!!session?.pendingPlanApproval}, now: ${!!found?.pendingPlanApproval})`);
+          }
           session = found || null;
         }
       }
@@ -415,6 +444,7 @@
   });
 
   onDestroy(() => {
+    console.log(`[SdkView] Destroy (session: ${sessionId}, hasPlanApproval: ${hasPlanApproval})`);
     persistCurrentScrollState(sessionId);
     unsubscribe?.();
   });

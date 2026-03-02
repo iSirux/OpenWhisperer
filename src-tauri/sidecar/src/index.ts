@@ -735,9 +735,10 @@ function sendAskUserQuestions(
 // Plan approval request (ExitPlanMode intercepted)
 function sendPlanApprovalRequest(
   id: string,
-  allowedPrompts: Array<{ tool: string; prompt: string }>
+  allowedPrompts: Array<{ tool: string; prompt: string }>,
+  plan?: string
 ): void {
-  send({ type: "plan_approval_request", id, allowedPrompts });
+  send({ type: "plan_approval_request", id, allowedPrompts, ...(plan ? { plan } : {}) });
 }
 
 // Repo description result event
@@ -2914,9 +2915,9 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       // canUseTool IS called for ExitPlanMode (confirmed by Anthropic engineers, issue #12288).
       // The SDK awaits this promise, so the agent genuinely pauses here.
       if (toolName === "ExitPlanMode") {
-        const exitInput = input as { allowedPrompts?: Array<{ tool: string; prompt: string }> };
+        const exitInput = input as { allowedPrompts?: Array<{ tool: string; prompt: string }>; plan?: string };
         send({ type: "debug", id: msg.id, message: `ExitPlanMode intercepted via canUseTool, waiting for user approval` });
-        sendPlanApprovalRequest(msg.id, exitInput.allowedPrompts || []);
+        sendPlanApprovalRequest(msg.id, exitInput.allowedPrompts || [], exitInput.plan || undefined);
 
         const decision = await new Promise<{ action: string; feedback?: string }>((resolve, reject) => {
           const s = sessions.get(msg.id);
