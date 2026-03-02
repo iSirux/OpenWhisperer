@@ -78,7 +78,10 @@ impl GitManager {
         start_point: Option<&str>,
     ) -> Result<(), String> {
         let mut cmd = Command::new("git");
-        let mut args = vec!["worktree", "add", "-b", branch_name, worktree_path];
+        // Use --no-track to prevent the new branch from automatically tracking the
+        // start point (e.g., origin/master). Without this, `git push` would push
+        // directly to the base branch instead of the feature branch's own remote.
+        let mut args = vec!["worktree", "add", "--no-track", "-b", branch_name, worktree_path];
         if let Some(sp) = start_point {
             args.push(sp);
         }
