@@ -69,6 +69,9 @@
   );
   let thinkingDuration = $derived(formatDuration(message.thinkingDurationMs));
   let isThinkingComplete = $derived(message.type === "thinking" && message.thinkingDurationMs !== undefined);
+  let isPlanApprovalTool = $derived(
+    message.tool === "ExitPlanMode" || message.tool === "complete_planning" || message.tool === "mcp__planning-tools__complete_planning"
+  );
 </script>
 
 <div class="message message-{message.type}">
@@ -163,24 +166,36 @@
       </div>
     </div>
   {:else if message.type === "tool_start"}
-    <details class="tool-call tool-running">
+    <details class="tool-call" class:tool-running={!isPlanApprovalTool} class:tool-plan-complete={isPlanApprovalTool}>
       <summary class="tool-header">
         <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
           <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
         </svg>
         <div class="tool-icon-wrapper">
-          {@html getToolSvgIcon(message.tool || "")}
+          {#if isPlanApprovalTool}
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-.018-1.042.751.751 0 0 0-1.042-.018L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042l2 2a.75.75 0 0 0 1.06 0Z"/></svg>
+          {:else}
+            {@html getToolSvgIcon(message.tool || "")}
+          {/if}
         </div>
-        <span class="tool-name">{message.tool}</span>
-        {#if toolSummary}
-          <span class="tool-summary">{toolSummary}</span>
+        {#if isPlanApprovalTool}
+          <span class="tool-name">Plan Complete</span>
+          <span class="tool-badge plan-ready">
+            <svg viewBox="0 0 16 16" fill="currentColor" style="width: 0.625rem; height: 0.625rem;"><path d="M9 12l2 2 4-4"/></svg>
+            Ready for Review
+          </span>
+        {:else}
+          <span class="tool-name">{message.tool}</span>
+          {#if toolSummary}
+            <span class="tool-summary">{toolSummary}</span>
+          {/if}
+          <span class="tool-badge running">
+            <span class="spinner"></span>
+            Running
+          </span>
         {/if}
-        <span class="tool-badge running">
-          <span class="spinner"></span>
-          Running
-        </span>
       </summary>
-      {#if message.input && Object.keys(message.input).length > 0}
+      {#if !isPlanApprovalTool && message.input && Object.keys(message.input).length > 0}
         <pre class="tool-params">{formatInput(message.input, message.tool)}</pre>
       {/if}
     </details>
@@ -191,11 +206,19 @@
           <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
         </svg>
         <div class="tool-icon-wrapper">
-          {@html getToolSvgIcon(message.tool || "")}
+          {#if isPlanApprovalTool}
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-.018-1.042.751.751 0 0 0-1.042-.018L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042l2 2a.75.75 0 0 0 1.06 0Z"/></svg>
+          {:else}
+            {@html getToolSvgIcon(message.tool || "")}
+          {/if}
         </div>
-        <span class="tool-name">{message.tool}</span>
-        {#if toolSummary}
-          <span class="tool-summary">{toolSummary}</span>
+        {#if isPlanApprovalTool}
+          <span class="tool-name">Plan Reviewed</span>
+        {:else}
+          <span class="tool-name">{message.tool}</span>
+          {#if toolSummary}
+            <span class="tool-summary">{toolSummary}</span>
+          {/if}
         {/if}
         <span class="tool-badge completed">
           <svg viewBox="0 0 16 16" fill="currentColor">
@@ -204,7 +227,7 @@
           Done
         </span>
       </summary>
-      {#if message.output}
+      {#if !isPlanApprovalTool && message.output}
         <pre class="tool-output-content">{message.output}</pre>
       {/if}
     </details>
@@ -629,6 +652,15 @@
     background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
   }
 
+  .tool-call.tool-plan-complete {
+    background: color-mix(in srgb, #10b981 10%, var(--color-surface));
+    border-color: rgba(16, 185, 129, 0.3);
+  }
+
+  .tool-call.tool-plan-complete .tool-icon-wrapper {
+    color: #10b981;
+  }
+
   .tool-call.tool-completed {
     background: var(--color-surface);
   }
@@ -727,6 +759,12 @@
   .tool-badge.running {
     background: color-mix(in srgb, var(--color-accent) 15%, transparent);
     color: var(--color-accent);
+  }
+
+  .tool-badge.plan-ready {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    gap: 0.25rem;
   }
 
   .tool-badge.completed {

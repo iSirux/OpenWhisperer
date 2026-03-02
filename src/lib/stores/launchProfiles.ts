@@ -30,9 +30,9 @@ function createLaunchStore() {
     subscribe,
 
     /** Launch a specific profile by its ID */
-    async launchProfile(repoId: string, profileId: string): Promise<void> {
+    async launchProfile(repoId: string, profileId: string, launchedFromCwd?: string): Promise<void> {
       try {
-        await invoke("launch_profile", { repoId, profileId });
+        await invoke("launch_profile", { repoId, profileId, cwd: launchedFromCwd });
 
         // Get profile info for display
         const reposList = get(repos).list;
@@ -49,6 +49,7 @@ function createLaunchStore() {
               profileName: profile?.name,
               runningCommandIds: profile?.command_ids ?? [],
               startedAt: Date.now(),
+              launchedFromCwd,
             },
           },
         }));
@@ -59,7 +60,7 @@ function createLaunchStore() {
     },
 
     /** Launch specific commands directly */
-    async launchCommands(repoId: string, repoPath: string, commands: LaunchCommand[]): Promise<void> {
+    async launchCommands(repoId: string, repoPath: string, commands: LaunchCommand[], launchedFromCwd?: string): Promise<void> {
       try {
         await invoke("launch_commands", { repoId, repoPath, commands });
 
@@ -71,6 +72,7 @@ function createLaunchStore() {
               repoId,
               runningCommandIds: commands.map((c) => c.id),
               startedAt: Date.now(),
+              launchedFromCwd,
             },
           },
         }));

@@ -75,10 +75,14 @@ impl GitManager {
         repo_path: &str,
         branch_name: &str,
         worktree_path: &str,
+        start_point: Option<&str>,
     ) -> Result<(), String> {
         let mut cmd = Command::new("git");
-        cmd.args(["worktree", "add", "-b", branch_name, worktree_path])
-            .current_dir(repo_path);
+        let mut args = vec!["worktree", "add", "-b", branch_name, worktree_path];
+        if let Some(sp) = start_point {
+            args.push(sp);
+        }
+        cmd.args(&args).current_dir(repo_path);
 
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -89,6 +93,72 @@ impl GitManager {
 
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        Ok(())
+    }
+
+    /// Detect the default remote branch (e.g., "origin/main" or "origin/master")
+    pub fn get_default_remote_branch(repo_path: &str) -> Result<String, String> {
+        // Try git symbolic-ref refs/remotes/origin/HEAD first
+        let mut cmd = Command::new("git");
+        cmd.args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                // Convert refs/remotes/origin/main → origin/main
+                if let Some(short) = full_ref.strip_prefix("refs/remotes/") {
+                    return Ok(short.to_string());
+                }
+            }
+        }
+
+        // Fallback: check if origin/main or origin/master exists
+        for candidate in &["origin/main", "origin/master"] {
+            let mut cmd = Command::new("git");
+            cmd.args(["rev-parse", "--verify", candidate])
+                .current_dir(repo_path);
+
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+
+            if let Ok(output) = cmd.output() {
+                if output.status.success() {
+                    return Ok(candidate.to_string());
+                }
+            }
+        }
+
+        Err("Could not detect remote default branch. Set a base branch in repo settings.".to_string())
+    }
+
+    /// Fetch the latest from remote for a given branch ref
+    pub fn fetch_remote(repo_path: &str, remote_branch: &str) -> Result<(), String> {
+        // Extract the branch name from "origin/main" → "main"
+        let branch = remote_branch
+            .strip_prefix("origin/")
+            .unwrap_or(remote_branch);
+
+        let mut cmd = Command::new("git");
+        cmd.args(["fetch", "origin", branch])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run git fetch: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            log::warn!("[git] Fetch failed (will proceed anyway): {}", stderr);
+            // Don't fail — the user might be offline; we'll still use whatever ref is available locally
         }
 
         Ok(())
@@ -278,6 +348,7 @@ impl GitManager {
         worktree_path: Option<&str>,
         copy_files: &[String],
         post_create_commands: &[String],
+        base_branch: Option<&str>,
     ) -> Result<WorktreeCreationResult, String> {
         // Calculate worktree path if not provided
         let effective_path = match worktree_path {
@@ -285,8 +356,19 @@ impl GitManager {
             None => Self::get_worktree_path(repo_path, branch_name),
         };
 
+        // Resolve the start point: use provided base_branch, or auto-detect
+        let start_point = match base_branch.filter(|b| !b.is_empty()) {
+            Some(b) => Some(b.to_string()),
+            None => Self::get_default_remote_branch(repo_path).ok(),
+        };
+
+        // Fetch latest from remote before creating the worktree
+        if let Some(ref sp) = start_point {
+            let _ = Self::fetch_remote(repo_path, sp);
+        }
+
         // Create the worktree
-        Self::create_worktree(repo_path, branch_name, &effective_path)?;
+        Self::create_worktree(repo_path, branch_name, &effective_path, start_point.as_deref())?;
 
         // Copy files from main worktree
         for file in copy_files {

@@ -26,6 +26,7 @@ pub async fn create_git_worktree_with_setup(
     worktree_path: Option<String>,
     copy_files: Vec<String>,
     post_create_commands: Vec<String>,
+    base_branch: Option<String>,
 ) -> Result<WorktreeCreationResult, String> {
     // Run in a blocking task since git operations and shell commands are blocking
     tokio::task::spawn_blocking(move || {
@@ -35,6 +36,7 @@ pub async fn create_git_worktree_with_setup(
             worktree_path.as_deref(),
             &copy_files,
             &post_create_commands,
+            base_branch.as_deref(),
         )
     })
     .await

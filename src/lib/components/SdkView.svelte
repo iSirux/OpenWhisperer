@@ -1212,6 +1212,16 @@
           </div>
         {/if}
         {#if item.type === "message"}
+          {@const isPlanApprovalMsg = (item.message.type === "tool_start" || item.message.type === "tool_result") && (item.message.tool === "ExitPlanMode" || item.message.tool === "complete_planning" || item.message.tool === "mcp__planning-tools__complete_planning")}
+          {#if isPlanApprovalMsg && hasPlanApproval && pendingPlanApproval}
+            <!-- Replace ExitPlanMode tool card with plan approval UI -->
+            <PlanApprovalDialog
+              {pendingPlanApproval}
+              onApprove={handleApprovePlan}
+              onApproveNewSession={handleApprovePlanNewSession}
+              onDeny={handleDenyPlan}
+            />
+          {:else}
           <div class:forked-context={isForked}>
             <SdkMessageComponent
               message={item.message}
@@ -1225,6 +1235,7 @@
               session={session ?? undefined}
             />
           </div>
+          {/if}
         {:else if item.type === "tool_group"}
           <div class:forked-context={isForked}>
             <SdkToolGrid tools={item.tools} />
@@ -1244,7 +1255,8 @@
           </div>
         {/if}
 
-        {#if hasPlanApproval && pendingPlanApproval && index === planApprovalAnchorIndex}
+        {#if hasPlanApproval && pendingPlanApproval && index === planApprovalAnchorIndex && item.type === "tool_group"}
+          <!-- Plan approval after tool_group containing ExitPlanMode (grid mode) -->
           <PlanApprovalDialog
             {pendingPlanApproval}
             onApprove={handleApprovePlan}
@@ -1348,6 +1360,7 @@
     <LaunchBar
       repoId={sessionRepoId}
       repoPath={cwd}
+      repoBasePath={sessionRepo?.path ?? ''}
       profiles={repoLaunchProfiles}
       commands={repoLaunchCommands}
       runtime={$launchStore.runtimes[sessionRepoId] ?? null}

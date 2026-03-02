@@ -33,6 +33,8 @@ export interface RepoConfig {
   worktree_copy_files?: string[];
   /** Commands to run in a new worktree after creation (e.g., "npm install") */
   worktree_post_create_commands?: string[];
+  /** Base branch for new worktrees (e.g., "origin/main", "origin/dev"). If empty, auto-detects remote default. */
+  worktree_base_branch?: string;
   /** Last selected worktree mode for this repo: "main", "new", or "existing" */
   worktree_mode?: 'main' | 'new' | 'existing';
   /** Launch commands available for this repository (dev servers, watchers, etc.) */

@@ -1515,7 +1515,13 @@ impl SequenceExecutor {
             None => GitManager::get_worktree_path(&cwd, &rendered_branch),
         };
 
-        GitManager::create_worktree(&cwd, &rendered_branch, &worktree_path)
+        let start_point = git_wt
+            .base_branch
+            .as_ref()
+            .map(|b| TemplateEngine::render(b, context))
+            .transpose()?;
+
+        GitManager::create_worktree(&cwd, &rendered_branch, &worktree_path, start_point.as_deref())
             .map_err(|e| format!("Failed to create worktree: {}", e))?;
 
         Ok(Some(serde_json::json!({

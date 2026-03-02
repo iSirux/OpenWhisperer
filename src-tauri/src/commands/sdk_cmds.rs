@@ -387,19 +387,37 @@ pub async fn fetch_claude_rate_limits() -> Result<ClaudeRateLimits, String> {
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let url = "https://api.anthropic.com/api/oauth/usage";
     let response = client
-        .get("https://api.anthropic.com/api/oauth/usage")
+        .get(url)
         .header("Authorization", format!("Bearer {}", token))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("User-Agent", "claude-code/2.0.32")
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch rate limits: {}", e))?;
+        .map_err(|e| {
+            let cause = if e.is_timeout() {
+                "request timed out"
+            } else if e.is_connect() {
+                "connection failed (check internet connectivity)"
+            } else if e.is_request() {
+                "failed to build request"
+            } else {
+                "unknown network error"
+            };
+            format!(
+                "Failed to fetch rate limits from {}: {} ({})",
+                url, cause, e
+            )
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("API error ({}): {}", status, body));
+        return Err(format!(
+            "Rate limits API error ({}) from {}: {}",
+            status, url, body
+        ));
     }
 
     let data: serde_json::Value = response

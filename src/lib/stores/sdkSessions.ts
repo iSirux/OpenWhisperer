@@ -629,6 +629,10 @@ function createSdkSessionsStore() {
           const isPlanApprovalTool = isExitPlanMode || isCompletePlanning;
           const isAskUserQuestion = toolName === 'AskUserQuestion';
 
+          if (isPlanApprovalTool) {
+            console.log(`[sdkSessions] Plan approval tool detected via tool_start: ${toolName} (session: ${id})`);
+          }
+
           // Extract allowedPrompts from ExitPlanMode input (complete_planning has no allowedPrompts)
           const exitPlanAllowedPrompts = isPlanApprovalTool
             ? ((e.payload.input as { allowedPrompts?: Array<{ tool: string; prompt: string }> })?.allowedPrompts || [])
@@ -1014,6 +1018,7 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<{ allowedPrompts: Array<{ tool: string; prompt: string }> }>(
         `sdk-plan-approval-request-${id}`, (e) => {
+          console.log(`[sdkSessions] Plan approval request received (session: ${id}, allowedPrompts: ${e.payload.allowedPrompts.length})`);
           update(sessions => sessions.map(s => {
             if (s.id !== id) return s;
             return {
@@ -2535,6 +2540,7 @@ function createSdkSessionsStore() {
     // --- Plan Approval (ExitPlanMode interception) ---
 
     async approvePlan(id: string, feedback?: string): Promise<void> {
+      console.log(`[sdkSessions] Approving plan (session: ${id}, feedback: ${feedback ? 'yes' : 'no'})`);
       this.clearPlanApproval(id);
       await invoke('answer_plan_approval', { id, action: 'approve', feedback: feedback ?? null });
     },
@@ -2569,11 +2575,13 @@ function createSdkSessionsStore() {
     },
 
     async denyPlan(id: string, feedback: string): Promise<void> {
+      console.log(`[sdkSessions] Denying plan (session: ${id})`);
       this.clearPlanApproval(id);
       await invoke('answer_plan_approval', { id, action: 'deny', feedback });
     },
 
     clearPlanApproval(id: string): void {
+      console.log(`[sdkSessions] Clearing plan approval (session: ${id})`);
       update(sessions => sessions.map(s => {
         if (s.id !== id) return s;
         return { ...s, pendingPlanApproval: undefined };

@@ -948,15 +948,31 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
             </svg>
             <span class="font-medium">Worktree Setup</span>
-            {#if (repo.worktree_copy_files?.length || 0) + (repo.worktree_post_create_commands?.length || 0) > 0}
+            {#if (repo.worktree_copy_files?.length || 0) + (repo.worktree_post_create_commands?.length || 0) > 0 || repo.worktree_base_branch}
               <span class="text-text-muted text-[10px] ml-1">
-                ({(repo.worktree_copy_files?.length || 0) + (repo.worktree_post_create_commands?.length || 0)} configured)
+                ({(repo.worktree_copy_files?.length || 0) + (repo.worktree_post_create_commands?.length || 0) + (repo.worktree_base_branch ? 1 : 0)} configured)
               </span>
             {/if}
           </button>
 
           {#if worktreeExpandedIndices.has(index)}
             <div class="mt-2 space-y-3 pl-4">
+              <!-- Base Branch -->
+              <div>
+                <span class="text-text-secondary font-medium">Base Branch</span>
+                <div class="text-text-muted text-[10px] mb-1">Branch to base new worktrees on. Leave empty to auto-detect remote default.</div>
+                <input
+                  type="text"
+                  class="w-full px-2 py-1 bg-surface border border-border rounded text-[11px] font-mono focus:outline-none focus:border-accent text-text-primary"
+                  value={repo.worktree_base_branch || ''}
+                  placeholder="Auto-detect (e.g., origin/main)"
+                  onchange={(e) => {
+                    const val = (e.currentTarget as HTMLInputElement).value.trim();
+                    repos.updateRepo(index, { worktree_base_branch: val || undefined });
+                  }}
+                />
+              </div>
+
               <!-- Copy Files -->
               <div>
                 <div class="flex items-center justify-between mb-1">

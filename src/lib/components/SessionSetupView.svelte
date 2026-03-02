@@ -317,6 +317,7 @@
             worktreePath: null,
             copyFiles: repo?.worktree_copy_files || [],
             postCreateCommands: repo?.worktree_post_create_commands || [],
+            baseBranch: repo?.worktree_base_branch || null,
           });
 
           worktreeRepoPath = cwd;

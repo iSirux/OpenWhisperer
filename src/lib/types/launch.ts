@@ -31,6 +31,8 @@ export interface LaunchRuntime {
   profileName?: string;
   runningCommandIds: string[];
   startedAt: number;
+  /** The session cwd at the time of launch — may be a worktree path */
+  launchedFromCwd?: string;
 }
 
 /** A launch that's queued to execute after the current agent finishes */

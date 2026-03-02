@@ -381,6 +381,9 @@ pub struct GitWorktreeNode {
     pub branch_name: String,
     #[serde(default)]
     pub worktree_path: Option<String>,
+    /// Start point for the new worktree (e.g., "origin/main"). If None, uses current HEAD.
+    #[serde(default)]
+    pub base_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

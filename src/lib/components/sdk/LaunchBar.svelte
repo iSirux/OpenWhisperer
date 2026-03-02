@@ -5,6 +5,7 @@
   interface Props {
     repoId: string;
     repoPath: string;
+    repoBasePath: string;
     profiles: LaunchProfile[];
     commands: LaunchCommand[];
     runtime: LaunchRuntime | null;
@@ -16,6 +17,7 @@
   let {
     repoId,
     repoPath,
+    repoBasePath,
     profiles,
     commands,
     runtime,
@@ -64,7 +66,7 @@
 
   async function handleLaunchProfile(profileId: string) {
     try {
-      await launchStore.launchProfile(repoId, profileId);
+      await launchStore.launchProfile(repoId, profileId, repoPath);
     } catch (e) {
       console.error("[LaunchBar] Launch failed:", e);
     }
@@ -93,7 +95,7 @@
     isRestarting = true;
     try {
       await launchStore.stopAll(repoId);
-      await launchStore.launchProfile(repoId, profileId);
+      await launchStore.launchProfile(repoId, profileId, repoPath);
     } catch (e) {
       console.error("[LaunchBar] Restart failed:", e);
     } finally {
@@ -103,6 +105,17 @@
 
   function handleCancelQueue() {
     launchStore.cancelQueue();
+  }
+
+  async function handleStartNow() {
+    if (!queued) return;
+    const { repoId: qRepoId, profileId } = queued;
+    launchStore.cancelQueue();
+    try {
+      await launchStore.launchProfile(qRepoId, profileId, repoPath);
+    } catch (e) {
+      console.error("[LaunchBar] Start now failed:", e);
+    }
   }
 
   function handleProfileClick(e: MouseEvent, profileId: string) {
@@ -140,7 +153,7 @@
     const cmds = commands.filter((c) => selectedCommandIds.has(c.id));
     if (cmds.length === 0) return;
     try {
-      await launchStore.launchCommands(repoId, repoPath, cmds);
+      await launchStore.launchCommands(repoId, repoPath, cmds, repoPath);
     } catch (e) {
       console.error("[LaunchBar] Subset launch failed:", e);
     }
@@ -149,6 +162,13 @@
 
   const isRunning = $derived(!!runtime);
   const isQueued = $derived(!!queued && queued.repoId === repoId);
+
+  /** Worktree folder name to show when the launch was started from a worktree */
+  const worktreeName = $derived((): string | null => {
+    const from = runtime?.launchedFromCwd;
+    if (!from || !repoBasePath || from === repoBasePath) return null;
+    return from.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? null;
+  });
 </script>
 
 {#if !collapsed}
@@ -160,6 +180,14 @@
         <span class="running-label">
           {runtime.profileName ?? "Custom"} running
         </span>
+        {#if worktreeName()}
+          <span class="worktree-badge" title={runtime.launchedFromCwd}>
+            <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
+              <path fill-rule="evenodd" d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0zm0 2.122a2.25 2.25 0 1 0-1.5 0v.878A2.25 2.25 0 0 0 5.75 8.5h1.5v2.128a2.251 2.251 0 1 0 1.5 0V8.5h1.5a2.25 2.25 0 0 0 2.25-2.25v-.878a2.25 2.25 0 1 0-1.5 0v.878a.75.75 0 0 1-.75.75h-4.5A.75.75 0 0 1 5 6.25v-.878zm3.75 7.378a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0zm3-8.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0z"/>
+            </svg>
+            {worktreeName()}
+          </span>
+        {/if}
         <button class="stop-btn" onclick={handleStopAll} disabled={isStopping || isRestarting} title="Stop all processes">
           {#if isStopping}
             <svg class="spin" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
@@ -201,6 +229,9 @@
         <span class="queued-label">
           "{queued.profileName}" queued after agent
         </span>
+        <button class="start-now-btn" onclick={handleStartNow} title="Launch immediately without waiting">
+          Start Now
+        </button>
         <button class="cancel-btn" onclick={handleCancelQueue} title="Cancel queued launch">
           Cancel
         </button>
@@ -361,6 +392,19 @@
     font-weight: 500;
   }
 
+  .worktree-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-tertiary);
+    font-size: 0.68rem;
+    white-space: nowrap;
+  }
+
   .stop-btn {
     display: inline-flex;
     align-items: center;
@@ -424,6 +468,26 @@
   .queued-label {
     color: var(--color-text-secondary);
     font-style: italic;
+  }
+
+  .start-now-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-accent);
+    font-size: 0.7rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .start-now-btn:hover {
+    background: var(--color-accent);
+    color: var(--color-text-on-accent, #fff);
+    border-color: var(--color-accent);
   }
 
   .cancel-btn {

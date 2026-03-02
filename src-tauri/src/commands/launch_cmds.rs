@@ -299,13 +299,15 @@ fn scan_python_project(dir: &Path, subdir: Option<&str>, commands: &mut Vec<Laun
     }
 }
 
-/// Launch a specific profile by its ID for a given repo
+/// Launch a specific profile by its ID for a given repo.
+/// `cwd` overrides the repo's configured path as the working directory (e.g. a worktree).
 #[tauri::command]
 pub fn launch_profile(
     launch_mgr: State<Arc<LaunchManager>>,
     config: State<ConfigState>,
     repo_id: String,
     profile_id: String,
+    cwd: Option<String>,
 ) -> Result<(), String> {
     let cfg = config.lock();
     let repo = cfg.repos.iter()
@@ -325,7 +327,8 @@ pub fn launch_profile(
         return Err("No commands found for this profile".to_string());
     }
 
-    let repo_path = repo.path.clone();
+    // Use the provided cwd override (worktree path) if given, otherwise fall back to the repo's configured path.
+    let repo_path = cwd.unwrap_or_else(|| repo.path.clone());
     let terminal = cfg.system.launch_terminal.clone();
     drop(cfg);
 

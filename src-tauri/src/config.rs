@@ -1161,6 +1161,10 @@ pub struct RepoConfig {
     /// Commands to run in a new worktree after creation (e.g., "npm install")
     #[serde(default)]
     pub worktree_post_create_commands: Vec<String>,
+    /// Base branch for new worktrees (e.g., "origin/main", "origin/dev").
+    /// If empty/None, auto-detects the remote default branch.
+    #[serde(default)]
+    pub worktree_base_branch: Option<String>,
     /// Last selected worktree mode for this repo: "main", "new", or "existing"
     #[serde(default = "default_worktree_mode")]
     pub worktree_mode: String,
