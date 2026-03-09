@@ -92,10 +92,11 @@
   async function handleRestart() {
     if (!runtime?.profileId) return;
     const profileId = runtime.profileId;
+    const launchCwd = runtime.launchedFromCwd ?? repoPath;
     isRestarting = true;
     try {
       await launchStore.stopAll(repoId);
-      await launchStore.launchProfile(repoId, profileId, repoPath);
+      await launchStore.launchProfile(repoId, profileId, launchCwd);
     } catch (e) {
       console.error("[LaunchBar] Restart failed:", e);
     } finally {
