@@ -125,13 +125,7 @@ function createLaunchStore() {
     },
 
     /** Queue a profile launch to auto-trigger when a session finishes */
-    async queueAfterAgent(
-      repoId: string,
-      profileId: string,
-      profileName: string,
-      sessionId: string,
-      launchedFromCwd?: string,
-    ): Promise<void> {
+    async queueAfterAgent(repoId: string, profileId: string, profileName: string, sessionId: string, launchedFromCwd?: string): Promise<void> {
       // Clean up any existing queue
       this.cancelQueue();
 

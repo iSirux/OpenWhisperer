@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { EffortLevel } from "$lib/stores/sdkSessions";
-  import type { AutoModelEffort } from "$lib/stores/settings";
+  import { normalizeAutoModelEffort, type AutoModelEffort } from "$lib/stores/settings";
   import { modelSupportsEffort, getMaxEffort } from "$lib/utils/models";
+  import { normalizeEffortLevel } from "$lib/stores/sdkSessions";
 
   interface Props {
     effortLevel: EffortLevel;
@@ -51,9 +52,9 @@
   // Determine display state
   const displayMode = $derived.by(() => {
     if (isAutoModel) {
-      return autoModelEffort; // 'off' | 'low' | 'medium' | 'high' | 'max' | 'dynamic'
+      return normalizeAutoModelEffort(autoModelEffort);
     }
-    return effortLevel === null ? 'off' : effortLevel;
+    return normalizeEffortLevel(effortLevel);
   });
 
   const filledDots = $derived.by(() => {
@@ -66,9 +67,9 @@
   // Cycle order for effort levels
   const cycleOrder = $derived.by((): string[] => {
     if (isAutoModel) {
-      return ['off', 'low', 'medium', 'high', 'dynamic'];
+      return ['low', 'medium', 'high', 'dynamic'];
     }
-    const levels = ['off', 'low', 'medium', 'high'];
+    const levels = ['low', 'medium', 'high'];
     if (maxLevel === 'max') levels.push('max');
     return levels;
   });
@@ -79,36 +80,34 @@
       const nextIndex = (currentIndex + 1) % cycleOrder.length;
       onChangeAutoModelEffort(cycleOrder[nextIndex] as AutoModelEffort);
     } else {
-      const currentVal = effortLevel === null ? 'off' : effortLevel;
+      const currentVal = normalizeEffortLevel(effortLevel);
       const currentIndex = cycleOrder.indexOf(currentVal);
       const nextIndex = (currentIndex + 1) % cycleOrder.length;
       const next = cycleOrder[nextIndex];
-      onchange(next === 'off' ? null : next as EffortLevel);
+      onchange(next as EffortLevel);
     }
   }
 
   const buttonTitle = $derived.by(() => {
     if (isDynamic) return "Effort: Dynamic (AI decides) - click to cycle";
     const labels: Record<string, string> = {
-      off: "Effort: Off",
       low: "Effort: Low",
       medium: "Effort: Medium",
       high: "Effort: High",
       max: "Effort: Max",
     };
-    return `${labels[displayMode] || 'Effort: Off'} - click to cycle`;
+    return `${labels[displayMode] || 'Effort: Low'} - click to cycle`;
   });
 
   const displayLabel = $derived.by(() => {
     if (isDynamic) return "Dynamic";
     const labels: Record<string, string> = {
-      off: "Off",
       low: "Low",
       medium: "Med",
       high: "High",
       max: "Max",
     };
-    return labels[displayMode] || "Off";
+    return labels[displayMode] || "Low";
   });
 
   const sizeClasses = {

@@ -179,7 +179,9 @@
           initialModel={activeSession.model}
           initialProvider={activeSession.provider}
           initialEffortLevel={activeSession.effortLevel}
-          initialCwd={activeSession.cwd || $activeRepo?.path || ''}
+          initialCwd={activeSession.setupRepoPath || activeSession.cwd || $activeRepo?.path || ''}
+          initialWorktreeMode={activeSession.setupWorktreeMode || 'main'}
+          initialWorktreePath={activeSession.setupWorktreePath || ''}
           initialPlanMode={activeSession.planMode?.isActive || false}
           initialReadOnlyMode={activeSession.readOnlyMode || false}
           initialDraftPrompt={activeSession.draftPrompt || ''}

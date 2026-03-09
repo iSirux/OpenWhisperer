@@ -395,10 +395,6 @@
               <span class="effort-badge effort-on">
                 Effort: {pendingTranscription.modelRecommendation.effortLevel}
               </span>
-            {:else if autoModelEffort === "dynamic"}
-              <span class="effort-badge effort-off">
-                No effort
-              </span>
             {/if}
           </div>
           <p class="reasoning">

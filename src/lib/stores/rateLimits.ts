@@ -30,8 +30,18 @@ interface RateLimitState {
 	lastFetched: number | null; // timestamp ms
 }
 
-const REFRESH_INTERVAL_MS = 60_000; // 60 seconds
+const DEFAULT_REFRESH_INTERVAL_MS = 60_000; // 60 seconds
+const CLAUDE_BASE_REFRESH_INTERVAL_MS = 60_000; // 1 minute
+const CLAUDE_MAX_BACKOFF_MS = 15 * 60_000; // 15 minutes
+const CODEX_BASE_REFRESH_INTERVAL_MS = 60_000; // 1 minute
+const CODEX_MAX_BACKOFF_MS = 15 * 60_000; // 15 minutes
 const INVOKE_TIMEOUT_MS = 15_000; // 15 seconds — JS safety net in case Rust hangs
+
+interface RateLimitStoreOptions {
+	refreshIntervalMs?: number;
+	enable429Backoff?: boolean;
+	maxBackoffMs?: number;
+}
 
 /** Wrap an invoke call with a timeout so it never hangs forever */
 function invokeWithTimeout<T>(command: string, timeoutMs: number): Promise<T> {
@@ -62,7 +72,14 @@ function invokeWithTimeout<T>(command: string, timeoutMs: number): Promise<T> {
 	});
 }
 
-function createProviderRateLimitStore(commandName: string) {
+function createProviderRateLimitStore(
+	commandName: string,
+	options: RateLimitStoreOptions = {}
+) {
+	const baseRefreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
+	const enable429Backoff = options.enable429Backoff ?? false;
+	const maxBackoffMs = Math.max(options.maxBackoffMs ?? baseRefreshIntervalMs, baseRefreshIntervalMs);
+
 	const { subscribe, set, update } = writable<RateLimitState>({
 		data: null,
 		loading: false,
@@ -70,8 +87,24 @@ function createProviderRateLimitStore(commandName: string) {
 		lastFetched: null
 	});
 
-	let refreshTimer: ReturnType<typeof setInterval> | null = null;
+	let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let fetchInFlight = false; // guard against concurrent fetches
+	let autoRefreshEnabled = false;
+	let currentRefreshIntervalMs = baseRefreshIntervalMs;
+	let consecutive429Failures = 0;
+
+	function isRateLimited(error: unknown): boolean {
+		const text = String(error).toLowerCase();
+		return text.includes('429') || text.includes('rate limited') || text.includes('too many requests');
+	}
+
+	function scheduleNextFetch(delayMs = currentRefreshIntervalMs) {
+		if (!autoRefreshEnabled) return;
+		if (refreshTimer) clearTimeout(refreshTimer);
+		refreshTimer = setTimeout(() => {
+			void store.fetch();
+		}, delayMs);
+	}
 
 	const store = {
 		subscribe,
@@ -90,6 +123,8 @@ function createProviderRateLimitStore(commandName: string) {
 					commandName,
 					INVOKE_TIMEOUT_MS
 				);
+				consecutive429Failures = 0;
+				currentRefreshIntervalMs = baseRefreshIntervalMs;
 				console.log(`[RateLimits] ${commandName} OK:`, data);
 				set({
 					data,
@@ -98,6 +133,20 @@ function createProviderRateLimitStore(commandName: string) {
 					lastFetched: Date.now()
 				});
 			} catch (error) {
+				if (enable429Backoff && isRateLimited(error)) {
+					consecutive429Failures += 1;
+					const nextInterval = Math.min(
+						maxBackoffMs,
+						baseRefreshIntervalMs * 2 ** consecutive429Failures
+					);
+					currentRefreshIntervalMs = nextInterval;
+					console.warn(
+						`[RateLimits] ${commandName} received 429; backing off to ${Math.round(currentRefreshIntervalMs / 1000)}s`
+					);
+				} else {
+					consecutive429Failures = 0;
+					currentRefreshIntervalMs = baseRefreshIntervalMs;
+				}
 				console.error(`[RateLimits] ${commandName} FAILED:`, error);
 				update((s) => ({
 					...s,
@@ -106,10 +155,11 @@ function createProviderRateLimitStore(commandName: string) {
 				}));
 			} finally {
 				fetchInFlight = false;
+				scheduleNextFetch();
 			}
 		},
 
-		/** Fetch only if data is stale (older than REFRESH_INTERVAL_MS) */
+		/** Fetch only if data is stale (older than current refresh interval) */
 		async fetchIfStale() {
 			let currentState: RateLimitState | null = null;
 			const unsub = subscribe((s) => {
@@ -120,7 +170,7 @@ function createProviderRateLimitStore(commandName: string) {
 				currentState &&
 				!(currentState as RateLimitState).loading &&
 				(!(currentState as RateLimitState).lastFetched ||
-					Date.now() - (currentState as RateLimitState).lastFetched! > REFRESH_INTERVAL_MS)
+					Date.now() - (currentState as RateLimitState).lastFetched! > currentRefreshIntervalMs)
 			) {
 				await store.fetch();
 			}
@@ -128,15 +178,16 @@ function createProviderRateLimitStore(commandName: string) {
 
 		/** Start periodic auto-refresh */
 		startAutoRefresh() {
-			if (refreshTimer) return;
-			store.fetch();
-			refreshTimer = setInterval(() => store.fetch(), REFRESH_INTERVAL_MS);
+			if (autoRefreshEnabled) return;
+			autoRefreshEnabled = true;
+			void store.fetch();
 		},
 
 		/** Stop periodic auto-refresh */
 		stopAutoRefresh() {
+			autoRefreshEnabled = false;
 			if (refreshTimer) {
-				clearInterval(refreshTimer);
+				clearTimeout(refreshTimer);
 				refreshTimer = null;
 			}
 		},
@@ -151,6 +202,8 @@ function createProviderRateLimitStore(commandName: string) {
 		reset() {
 			store.stopAutoRefresh();
 			fetchInFlight = false;
+			consecutive429Failures = 0;
+			currentRefreshIntervalMs = baseRefreshIntervalMs;
 			set({ data: null, loading: false, error: null, lastFetched: null });
 		}
 	};
@@ -159,13 +212,27 @@ function createProviderRateLimitStore(commandName: string) {
 }
 
 // --- Claude ---
-export const rateLimits = createProviderRateLimitStore('fetch_claude_rate_limits');
+export const rateLimits = createProviderRateLimitStore(
+	'fetch_claude_rate_limits',
+	{
+		refreshIntervalMs: CLAUDE_BASE_REFRESH_INTERVAL_MS,
+		enable429Backoff: true,
+		maxBackoffMs: CLAUDE_MAX_BACKOFF_MS
+	}
+);
 export const rateLimitData = derived(rateLimits, ($rl) => $rl.data);
 export const rateLimitError = derived(rateLimits, ($rl) => $rl.error);
 export const isRateLimitLoading = derived(rateLimits, ($rl) => $rl.loading);
 
 // --- Codex ---
-export const codexRateLimits = createProviderRateLimitStore('fetch_codex_rate_limits');
+export const codexRateLimits = createProviderRateLimitStore(
+	'fetch_codex_rate_limits',
+	{
+		refreshIntervalMs: CODEX_BASE_REFRESH_INTERVAL_MS,
+		enable429Backoff: true,
+		maxBackoffMs: CODEX_MAX_BACKOFF_MS
+	}
+);
 export const codexRateLimitData = derived(codexRateLimits, ($rl) => $rl.data);
 export const codexRateLimitError = derived(codexRateLimits, ($rl) => $rl.error);
 export const isCodexRateLimitLoading = derived(codexRateLimits, ($rl) => $rl.loading);

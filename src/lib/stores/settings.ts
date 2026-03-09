@@ -351,8 +351,16 @@ export type RepoAutoSelectConfidence = "high" | "medium" | "low";
 // low/medium/high/max: Always use that effort level
 // dynamic: Let the LLM decide based on prompt complexity
 export type AutoModelEffort = "off" | "low" | "medium" | "high" | "max" | "dynamic";
+export type SelectableAutoModelEffort = "low" | "medium" | "high" | "max" | "dynamic";
 /** @deprecated Use AutoModelEffort instead */
 export type AutoModelThinking = AutoModelEffort;
+
+export function normalizeAutoModelEffort(
+  effort: AutoModelEffort | null | undefined,
+): SelectableAutoModelEffort {
+  if (!effort || effort === "off") return "low";
+  return effort;
+}
 
 export interface LlmFeaturesConfig {
   auto_name_sessions: boolean;
@@ -610,8 +618,9 @@ const defaultConfig: AppConfig = {
   terminal_mode: "Sdk",
   codex_mode: "AppServer",
   sdk_provider: "Claude",
-  openai_model: "gpt-5.3-codex",
+  openai_model: "gpt-5.4",
   enabled_openai_models: [
+    "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.2-codex",

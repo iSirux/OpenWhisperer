@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { rateLimits, rateLimitData, rateLimitError, codexRateLimits, codexRateLimitData, codexRateLimitError, calculatePace, formatTimeRemaining, registerVisibilityHandler } from '$lib/stores/rateLimits';
-  import { goto } from '$app/navigation';
+  import { openUrl } from '@tauri-apps/plugin-opener';
 
   let claude = $derived($rateLimitData);
   let codex = $derived($codexRateLimitData);
@@ -42,7 +42,12 @@
     name: 'Claude' | 'Codex',
     error: string | null = null
   ): string {
-    if (!data) return '';
+    if (!data) {
+      if (error) {
+        return `${name} Rate Limits\n⚠ No data available\n${error}`;
+      }
+      return '';
+    }
     const lines: string[] = [`${name} Rate Limits`];
     if (error) {
       lines.push('⚠ Data may be stale — last fetch failed');
@@ -67,6 +72,12 @@
     return 'var(--color-text-primary)';
   }
 
+  function usageUrlFor(name: 'Claude' | 'Codex'): string {
+    return name === 'Claude'
+      ? 'https://claude.ai/settings/usage'
+      : 'https://chatgpt.com/codex/settings/usage';
+  }
+
   onMount(() => {
     rateLimits.startAutoRefresh();
     codexRateLimits.startAutoRefresh();
@@ -80,26 +91,31 @@
 </script>
 
 {#snippet providerIndicator(data: typeof claude, p5h: typeof claudePace5h, p7d: typeof claudePace7d, name: 'Claude' | 'Codex', error: string | null)}
-  {#if data}
+  {#if data || error}
     <button
       class="indicator"
       class:indicator-claude={name === 'Claude'}
       class:indicator-codex={name === 'Codex'}
       class:indicator-stale={!!error}
-      onclick={() => goto('/usage')}
+      onclick={() => openUrl(usageUrlFor(name))}
       title={buildTooltip(data, p5h, p7d, name, error)}
     >
       <div class="row">
-        <span class="val" style="color: {p5h ? getPaceColor(p5h.paceRatio, data.five_hour.utilization) : 'var(--color-text-secondary)'}">{Math.round(data.five_hour.utilization)}%</span>
+        <span class="val" style="color: {data && p5h ? getPaceColor(p5h.paceRatio, data.five_hour.utilization) : 'var(--color-text-secondary)'}">
+          {#if data}{Math.round(data.five_hour.utilization)}%{:else}N/A{/if}
+        </span>
         <span class="sep">·</span>
-        <span class="val" style="color: {p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">{Math.round(data.seven_day.utilization)}%</span>
-        {#if error}<span class="stale-badge">!</span>{/if}
+        <span class="val" style="color: {data && p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">
+          {#if data}{Math.round(data.seven_day.utilization)}%{:else}N/A{/if}
+        </span>
       </div>
       <div class="row sub">
         {#if error}
           <span class="stale-label">stale</span>
-        {:else}
+        {:else if data}
           <span>{formatTimeRemaining(data.five_hour.resets_at)}</span>
+        {:else}
+          <span>no data</span>
         {/if}
       </div>
     </button>
@@ -168,13 +184,6 @@
 
   .indicator-stale {
     opacity: 0.5;
-  }
-
-  .stale-badge {
-    font-size: 9px;
-    font-weight: 700;
-    color: var(--color-warning, #f59e0b);
-    line-height: 1;
   }
 
   .stale-label {

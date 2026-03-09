@@ -282,6 +282,7 @@ export function transformToDisplaySessions(
       const smartStatus = getSdkSmartStatus(s);
       const finished = isFinishedStatus(smartStatus.status);
       const todoProgress = getTodoProgress(s.messages);
+      const showBranch = smartStatus.status !== 'setup';
       return {
         id: s.id,
         type: 'sdk' as const,
@@ -300,7 +301,7 @@ export function transformToDisplaySessions(
         repoId: s.repoId,
         // Seed branch from session metadata (e.g. worktree branch set during setup)
         // so it displays immediately before the async git fetch fills it in.
-        branch: s.currentBranch || undefined,
+        branch: showBranch ? (s.currentBranch || undefined) : undefined,
         model: s.model,
         createdAt: Math.floor(s.createdAt / 1000),
         lastActivityAt: Math.floor(s.lastActivityAt / 1000),
@@ -377,6 +378,7 @@ export async function fetchBranchesForSessions(
 
   await Promise.all(
     sessions.map(async (session) => {
+      if (session.status === 'setup') return;
       const branch = await getGitBranch(session.repoPath);
       if (branch) {
         updates.set(session.id, branch);

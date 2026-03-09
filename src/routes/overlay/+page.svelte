@@ -5,7 +5,7 @@
   import { repos } from '$lib/stores/repos';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
-  import { primaryMonitor } from '@tauri-apps/api/window';
+  import { availableMonitors, primaryMonitor } from '@tauri-apps/api/window';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
   let overlayElement: HTMLDivElement;
@@ -17,6 +17,68 @@
 
   let lastWidth = 0;
   let lastHeight = 0;
+
+  const DEFAULT_OVERLAY_WIDTH = 380;
+  const DEFAULT_OVERLAY_HEIGHT = 140;
+  const OVERLAY_SCREEN_MARGIN = 20;
+
+  function clamp(value: number, min: number, max: number) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function getCenteredTopPosition(monitor: Awaited<ReturnType<typeof primaryMonitor>>) {
+    if (!monitor) {
+      return null;
+    }
+
+    return {
+      x: Math.round(monitor.workArea.position.x + (monitor.workArea.size.width - DEFAULT_OVERLAY_WIDTH) / 2),
+      y: monitor.workArea.position.y + OVERLAY_SCREEN_MARGIN,
+    };
+  }
+
+  async function getSafeOverlayPosition(savedX: number, savedY: number) {
+    const monitors = await availableMonitors();
+    const primary = await primaryMonitor();
+    const fallbackMonitor = primary ?? monitors[0];
+
+    if (!fallbackMonitor) {
+      return { x: savedX, y: savedY, corrected: false };
+    }
+
+    const savedMonitor = monitors.find((monitor) => {
+      const minX = monitor.workArea.position.x;
+      const maxX = monitor.workArea.position.x + monitor.workArea.size.width;
+      const minY = monitor.workArea.position.y;
+      const maxY = monitor.workArea.position.y + monitor.workArea.size.height;
+
+      return savedX >= minX && savedX < maxX && savedY >= minY && savedY < maxY;
+    });
+    const monitorForPoint = savedMonitor ?? fallbackMonitor;
+
+    const minX = monitorForPoint.workArea.position.x + OVERLAY_SCREEN_MARGIN;
+    const maxX = Math.max(
+      minX,
+      monitorForPoint.workArea.position.x +
+        monitorForPoint.workArea.size.width -
+        DEFAULT_OVERLAY_WIDTH -
+        OVERLAY_SCREEN_MARGIN
+    );
+    const minY = monitorForPoint.workArea.position.y + OVERLAY_SCREEN_MARGIN;
+    const maxY = Math.max(
+      minY,
+      monitorForPoint.workArea.position.y +
+        monitorForPoint.workArea.size.height -
+        DEFAULT_OVERLAY_HEIGHT -
+        OVERLAY_SCREEN_MARGIN
+    );
+
+    const x = clamp(savedX, minX, maxX);
+    const y = clamp(savedY, minY, maxY);
+    const corrected = !savedMonitor || x !== savedX || y !== savedY;
+
+    return { x, y, corrected };
+  }
 
   async function resizeWindow(width: number, height: number) {
     // Skip if size hasn't changed
@@ -69,14 +131,17 @@
       const savedY = $settings.overlay.position_y;
 
       if (savedX !== null && savedY !== null) {
-        console.log('[overlay] Loading saved position:', savedX, savedY);
-        await overlayWindow.setPosition(new PhysicalPosition(savedX, savedY));
+        const { x, y, corrected } = await getSafeOverlayPosition(savedX, savedY);
+        console.log('[overlay] Loading saved position:', savedX, savedY, 'resolved to:', x, y);
+        await overlayWindow.setPosition(new PhysicalPosition(x, y));
+        if (corrected) {
+          savePosition(x, y);
+        }
       } else {
         // Center at top if no saved position
-        const monitor = await primaryMonitor();
-        if (monitor) {
-          const x = Math.round((monitor.size.width - 380) / 2);
-          const y = 20;
+        const position = getCenteredTopPosition(await primaryMonitor());
+        if (position) {
+          const { x, y } = position;
           console.log('[overlay] Centering at top:', x, y);
           await overlayWindow.setPosition(new PhysicalPosition(x, y));
         }

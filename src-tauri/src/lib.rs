@@ -160,6 +160,16 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             set_windows_app_user_model_id(&app.config().identifier);
 
+            // Explicitly set the main window icon so the taskbar icon survives
+            // icon-cache invalidation, explorer.exe restarts, and dev rebuilds.
+            if let Some(main_window) = app.get_webview_window("main") {
+                if let Ok(win_icon) = Image::from_bytes(include_bytes!("../icons/icon.ico"))
+                    .or_else(|_| Image::from_bytes(include_bytes!("../icons/128x128.png")))
+                {
+                    let _ = main_window.set_icon(win_icon);
+                }
+            }
+
             // Build tray menu
             let show_item = MenuItemBuilder::new("Show")
                 .id("show")
