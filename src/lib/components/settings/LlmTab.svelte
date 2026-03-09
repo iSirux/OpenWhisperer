@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings } from "$lib/stores/settings";
+  import { normalizeAutoModelEffort, settings } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import "./toggle.css";
@@ -16,6 +16,9 @@
   let savingGeminiKey = $state(false);
   let geminiStatus: "idle" | "success" | "error" = $state("idle");
   let geminiTestResult: LlmTestResult | null = $state(null);
+  let normalizedAutoModelEffort = $derived(
+    normalizeAutoModelEffort($settings.llm.features.auto_model_effort)
+  );
 
   onMount(() => {
     checkGeminiApiKey();
@@ -891,8 +894,7 @@
                     >
                     <div class="flex gap-1">
                       <button
-                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
-                          .llm.features.auto_model_effort === 'off'
+                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {normalizedAutoModelEffort === 'low'
                           ? 'bg-accent text-white'
                           : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
                         onclick={() =>
@@ -902,16 +904,15 @@
                               ...s.llm,
                               features: {
                                 ...s.llm.features,
-                                auto_model_effort: "off",
+                                auto_model_effort: "low",
                               },
                             },
                           }))}
                       >
-                        Off
+                        Low
                       </button>
                       <button
-                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
-                          .llm.features.auto_model_effort === 'high'
+                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {normalizedAutoModelEffort === 'high'
                           ? 'bg-accent text-white'
                           : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
                         onclick={() =>
@@ -929,8 +930,7 @@
                         High
                       </button>
                       <button
-                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {$settings
-                          .llm.features.auto_model_effort === 'dynamic'
+                        class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {normalizedAutoModelEffort === 'dynamic'
                           ? 'bg-accent text-white'
                           : 'bg-surface-secondary text-text-secondary hover:bg-surface-secondary/80'}"
                         onclick={() =>
@@ -949,12 +949,10 @@
                       </button>
                     </div>
                     <p class="text-xs text-text-muted mt-1">
-                      {#if $settings.llm.features.auto_model_effort === 'off'}
-                        Effort is always disabled when using auto model
-                      {:else if $settings.llm.features.auto_model_effort === 'dynamic'}
+                      {#if normalizedAutoModelEffort === 'dynamic'}
                         LLM decides effort level based on prompt complexity
                       {:else}
-                        Effort is always set to {$settings.llm.features.auto_model_effort} when using auto model
+                        Effort is always set to {normalizedAutoModelEffort} when using auto model
                       {/if}
                     </p>
                   </div>

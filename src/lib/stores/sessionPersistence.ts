@@ -147,6 +147,23 @@ function deserializeFromPersistence<T extends object>(
   return result as T;
 }
 
+function resolveRepoIdFromPath(cwd: string): string | undefined {
+  if (!cwd || cwd === '.') return undefined;
+  const reposList = get(repos).list;
+  const normalize = (value: string) => value.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+  const normalizedCwd = normalize(cwd);
+
+  const exact = reposList.find(r => normalize(r.path) === normalizedCwd)?.id;
+  if (exact) return exact;
+
+  const fromWorktree = reposList.find((r) => {
+    const repoBase = normalize(r.path);
+    return normalizedCwd.startsWith(`${repoBase}-worktrees/`);
+  })?.id;
+
+  return fromWorktree;
+}
+
 // ============================================================================
 // PERSISTED TYPES
 // ============================================================================
@@ -220,6 +237,9 @@ export interface PersistedPendingTranscriptionInfo {
 export interface PersistedSdkSession {
   id: string;
   cwd: string;
+  setupRepoPath?: string;
+  setupWorktreeMode?: 'main' | 'new' | 'existing';
+  setupWorktreePath?: string;
   repoId?: string;
   createdBranch?: string | null;
   currentBranch?: string | null;
@@ -353,16 +373,26 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
   }
 
   // Normalize provider for legacy/mismatched sessions: derive from model.
-  // This prevents invalid pairs like provider=claude with model=gpt-5.3-codex.
+  // This prevents invalid pairs like provider=claude with model=gpt-5.4.
   const modelProvider = getProviderForModel(session.model);
   if (session.provider !== modelProvider) {
     session.provider = modelProvider;
   }
 
   // Resolve repoId from cwd for sessions that predate the repoId field
-  if (!session.repoId && session.cwd && session.cwd !== '.') {
-    const reposList = get(repos).list;
-    session.repoId = reposList.find(r => r.path === session.cwd)?.id;
+  if (!session.repoId) {
+    session.repoId = resolveRepoIdFromPath(session.cwd)
+      || resolveRepoIdFromPath(session.setupRepoPath || '');
+  }
+
+  // Backward-compat for older persisted setup sessions that only had cwd.
+  if (session.status === 'setup') {
+    if (!session.setupRepoPath) {
+      session.setupRepoPath = session.cwd;
+    }
+    if (!session.setupWorktreeMode) {
+      session.setupWorktreeMode = session.setupWorktreePath ? 'existing' : 'main';
+    }
   }
 
   return session;

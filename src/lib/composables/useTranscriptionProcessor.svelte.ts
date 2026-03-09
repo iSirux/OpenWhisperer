@@ -3,7 +3,7 @@
  * Handles cleanup, model/repo recommendations, and system prompt building
  */
 
-import { settings } from '$lib/stores/settings';
+import { normalizeAutoModelEffort, settings } from '$lib/stores/settings';
 import { sdkSessions, settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
 import {
   cleanTranscription,
@@ -172,8 +172,10 @@ export async function getModelRecommendation(
 ): Promise<{ model: string; effortLevel: EffortLevel | null; recommendation?: ModelRecommendation }> {
   const currentSettings = get(settings);
   let model = currentSettings.default_model;
-  let effortLevel = settingsToStoreEffort(currentSettings.default_effort_level);
-  const autoModelEffort = currentSettings.llm.features.auto_model_effort ?? currentSettings.llm.features.auto_model_thinking;
+  let effortLevel: EffortLevel = settingsToStoreEffort(currentSettings.default_effort_level);
+  const autoModelEffort = normalizeAutoModelEffort(
+    currentSettings.llm.features.auto_model_effort ?? currentSettings.llm.features.auto_model_thinking
+  );
 
   if (!isAutoModel(model)) {
     return { model, effortLevel };
@@ -181,9 +183,7 @@ export async function getModelRecommendation(
 
   // Apply auto model effort setting when using auto model
   // This applies even if model recommendation is disabled
-  if (autoModelEffort === 'off') {
-    effortLevel = null;
-  } else if (autoModelEffort !== 'dynamic') {
+  if (autoModelEffort !== 'dynamic') {
     effortLevel = autoModelEffort as EffortLevel;
   }
   // 'dynamic' will let the LLM decide if recommendation is enabled

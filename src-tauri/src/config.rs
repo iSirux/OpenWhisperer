@@ -602,6 +602,7 @@ pub struct ModelUsageStats {
     pub opus_sessions: u64,
     pub sonnet_sessions: u64,
     pub haiku_sessions: u64,
+    pub codex_54_sessions: u64,
     pub codex_53_sessions: u64,
     pub codex_53_spark_sessions: u64,
     pub codex_52_sessions: u64,
@@ -745,6 +746,8 @@ impl UsageStats {
             self.model_usage.sonnet_sessions += 1;
         } else if model_lower.contains("haiku") {
             self.model_usage.haiku_sessions += 1;
+        } else if model_lower == "gpt-5.4" || model_lower == "gpt-5.4-codex" {
+            self.model_usage.codex_54_sessions += 1;
         } else if model_lower == "gpt-5.3-codex-spark" {
             self.model_usage.codex_53_spark_sessions += 1;
         } else if model_lower == "gpt-5.3-codex" {
@@ -1882,11 +1885,12 @@ fn default_enabled_models() -> Vec<String> {
 }
 
 fn default_openai_model() -> String {
-    "gpt-5.3-codex".to_string()
+    "gpt-5.4".to_string()
 }
 
 fn default_enabled_openai_models() -> Vec<String> {
     vec![
+        "gpt-5.4".to_string(),
         "gpt-5.3-codex".to_string(),
         "gpt-5.3-codex-spark".to_string(),
         "gpt-5.2-codex".to_string(),
@@ -2105,19 +2109,41 @@ impl AppConfig {
             // Migrate removed OpenAI alias model id
             if let Some(serde_json::Value::String(openai_model)) = obj.get("openai_model") {
                 if openai_model == "codex-mini-latest" {
-                    log::error!("[config.fix] Migrating openai_model 'codex-mini-latest' → 'gpt-5.3-codex'");
-                    obj.insert("openai_model".to_string(), serde_json::Value::String("gpt-5.3-codex".to_string()));
+                    log::error!("[config.fix] Migrating openai_model 'codex-mini-latest' → 'gpt-5.4'");
+                    obj.insert("openai_model".to_string(), serde_json::Value::String("gpt-5.4".to_string()));
+                } else if openai_model == "gpt-5.4-codex" {
+                    log::error!("[config.fix] Migrating openai_model 'gpt-5.4-codex' → 'gpt-5.4'");
+                    obj.insert("openai_model".to_string(), serde_json::Value::String("gpt-5.4".to_string()));
                 }
             }
 
             if let Some(serde_json::Value::Array(enabled_models)) = obj.get_mut("enabled_openai_models") {
-                let original_len = enabled_models.len();
+                let mut removed_deprecated_alias = false;
+                let mut replaced_legacy_primary = false;
+                for model in enabled_models.iter_mut() {
+                    if let serde_json::Value::String(s) = model {
+                        if s == "codex-mini-latest" {
+                            *s = "gpt-5.4".to_string();
+                            removed_deprecated_alias = true;
+                        } else if s == "gpt-5.4-codex" {
+                            *s = "gpt-5.4".to_string();
+                            replaced_legacy_primary = true;
+                        }
+                    }
+                }
+
+                // Deduplicate after alias migrations.
+                let mut seen = std::collections::HashSet::new();
                 enabled_models.retain(|v| match v {
-                    serde_json::Value::String(s) => s != "codex-mini-latest",
+                    serde_json::Value::String(s) => seen.insert(s.clone()),
                     _ => true,
                 });
-                if enabled_models.len() != original_len {
-                    log::error!("[config.fix] Removed deprecated model 'codex-mini-latest' from enabled_openai_models");
+
+                if removed_deprecated_alias {
+                    log::error!("[config.fix] Migrated deprecated model 'codex-mini-latest' to 'gpt-5.4' in enabled_openai_models");
+                }
+                if replaced_legacy_primary {
+                    log::error!("[config.fix] Migrated model 'gpt-5.4-codex' to 'gpt-5.4' in enabled_openai_models");
                 }
                 if enabled_models.is_empty() {
                     enabled_models.push(serde_json::Value::String(default_openai_model()));

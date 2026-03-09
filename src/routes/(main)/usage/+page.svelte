@@ -22,7 +22,7 @@
 
   // Model usage totals by provider
   let totalClaude = $derived($usageStats.model_usage.opus_sessions + $usageStats.model_usage.sonnet_sessions + $usageStats.model_usage.haiku_sessions);
-  let totalCodex = $derived(($usageStats.model_usage.codex_53_sessions || 0) + ($usageStats.model_usage.codex_53_spark_sessions || 0) + ($usageStats.model_usage.codex_52_sessions || 0) + ($usageStats.model_usage.codex_51_mini_sessions || 0));
+  let totalCodex = $derived(($usageStats.model_usage.codex_54_sessions || 0) + ($usageStats.model_usage.codex_53_sessions || 0) + ($usageStats.model_usage.codex_53_spark_sessions || 0) + ($usageStats.model_usage.codex_52_sessions || 0) + ($usageStats.model_usage.codex_51_mini_sessions || 0));
   let totalModelsAll = $derived(totalClaude + totalCodex);
 
   let resettingStats = $state(false);
@@ -710,11 +710,20 @@
               {#if totalCodex > 0}
                 {#if totalClaude > 0}<div class="border-t border-border my-1"></div>{/if}
                 <div class="text-xs font-medium text-text-muted uppercase tracking-wider">Codex</div>
+                {#if ($usageStats.model_usage.codex_54_sessions || 0) > 0}
+                  <div class="flex items-center gap-3">
+                    <div class="w-20 text-sm text-text-secondary">5.4</div>
+                    <div class="flex-1 bg-border rounded-full h-2">
+                      <div class="bg-green-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_54_sessions || 0, totalModelsAll)}%"></div>
+                    </div>
+                    <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_54_sessions || 0}</div>
+                  </div>
+                {/if}
                 {#if ($usageStats.model_usage.codex_53_sessions || 0) > 0}
                   <div class="flex items-center gap-3">
                     <div class="w-20 text-sm text-text-secondary">5.3 Codex</div>
                     <div class="flex-1 bg-border rounded-full h-2">
-                      <div class="bg-green-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_53_sessions || 0, totalModelsAll)}%"></div>
+                      <div class="bg-green-400 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_53_sessions || 0, totalModelsAll)}%"></div>
                     </div>
                     <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_53_sessions || 0}</div>
                   </div>
@@ -723,7 +732,7 @@
                   <div class="flex items-center gap-3">
                     <div class="w-20 text-sm text-text-secondary">5.3 Spark</div>
                     <div class="flex-1 bg-border rounded-full h-2">
-                      <div class="bg-green-400 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_53_spark_sessions || 0, totalModelsAll)}%"></div>
+                      <div class="bg-green-300 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_53_spark_sessions || 0, totalModelsAll)}%"></div>
                     </div>
                     <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_53_spark_sessions || 0}</div>
                   </div>

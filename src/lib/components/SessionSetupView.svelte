@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { sdkSessions, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
+  import { normalizeEffortLevel, sdkSessions, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
   import { settings, isNoteModeAvailable } from '$lib/stores/settings';
   import { repos, type RepoConfig } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
@@ -41,6 +41,8 @@
     initialProvider?: SdkProvider;
     initialEffortLevel?: EffortLevel;
     initialCwd?: string;
+    initialWorktreeMode?: 'main' | 'new' | 'existing';
+    initialWorktreePath?: string;
     initialPlanMode?: boolean;
     initialNoteMode?: boolean;
     initialReadOnlyMode?: boolean;
@@ -77,8 +79,10 @@
     sessionId,
     initialModel = DEFAULT_MODEL_ID,
     initialProvider = undefined,
-    initialEffortLevel = null,
+    initialEffortLevel = 'low',
     initialCwd = '',
+    initialWorktreeMode = 'main',
+    initialWorktreePath = '',
     initialPlanMode = false,
     initialNoteMode = false,
     initialReadOnlyMode = false,
@@ -97,7 +101,7 @@
   // Local state
   let prompt = $state(initialDraftPrompt);
   let model = $state(initialModel);
-  let effortLevel = $state<EffortLevel>(initialEffortLevel);
+  let effortLevel = $state<EffortLevel>(normalizeEffortLevel(initialEffortLevel));
   let cwd = $state(initialCwd);
   let planMode = $state(initialPlanMode);
   let noteMode = $state(initialNoteMode);
@@ -113,9 +117,9 @@
   let prevSessionId = $state(sessionId);
 
   // Worktree state
-  let worktreeMode = $state<'main' | 'new' | 'existing'>('main');
+  let worktreeMode = $state<'main' | 'new' | 'existing'>(initialWorktreeMode);
   let existingWorktrees = $state<WorktreeInfo[]>([]);
-  let selectedWorktreePath = $state<string>('');
+  let selectedWorktreePath = $state<string>(initialWorktreePath);
   let isLoadingWorktrees = $state(false);
   let isCreatingWorktree = $state(false);
   let showWorktreeDropdown = $state(false);
@@ -151,9 +155,18 @@
     }
   });
 
-  // Restore draft when switching between setup sessions.
+  // Restore full setup state when switching between setup sessions.
   $effect(() => {
     if (sessionId !== prevSessionId) {
+      model = initialModel;
+      provider = initialProvider ?? getProviderForModel(initialModel);
+      effortLevel = normalizeEffortLevel(initialEffortLevel);
+      cwd = initialCwd;
+      worktreeMode = initialWorktreeMode;
+      selectedWorktreePath = initialWorktreePath;
+      planMode = initialPlanMode;
+      noteMode = initialNoteMode;
+      readOnlyMode = initialReadOnlyMode;
       prompt = initialDraftPrompt;
       pendingImages = toImageData(initialDraftImages);
       prevSessionId = sessionId;
@@ -195,18 +208,6 @@
           model = $settings.default_model || DEFAULT_MODEL_ID;
         }
       });
-  });
-
-  // Initialize worktreeMode from repo config when cwd changes
-  $effect(() => {
-    const repo = currentRepo;
-    if (repo) {
-      worktreeMode = repo.worktree_mode || 'main';
-      selectedWorktreePath = '';
-    } else {
-      worktreeMode = 'main';
-      selectedWorktreePath = '';
-    }
   });
 
   // Load existing worktrees when "existing" mode is selected
@@ -251,28 +252,16 @@
     onDraftChange?.(sessionId, prompt, toSdkImageContent(pendingImages));
   });
 
-  // Sync local config back to the store so the session list reflects changes
-  // (model badge, plan/note badges, repo name, worktree branch, etc.) in real time.
+  // Sync local config back to the store so setup-session state survives session switching.
   $effect(() => {
-    // When an existing worktree is selected, use its path as the display cwd
-    // so the session list shows the worktree branch (fetched via git).
-    const usingExistingWorktree = worktreeMode === 'existing' && !!selectedWorktreePath;
-    const displayCwd = usingExistingWorktree ? selectedWorktreePath : cwd;
-    // Keep repoId linked to the main repo when using a worktree path
-    const explicitRepoId = usingExistingWorktree
-      ? $repos.list.find(r => r.path === cwd)?.id
-      : undefined;
-    // Provide worktree branch immediately (before async git fetch)
-    const worktreeBranch = usingExistingWorktree
-      ? (existingWorktrees.find(w => w.path === selectedWorktreePath)?.branch ?? null)
-      : undefined;
-
     sdkSessions.updateSetupConfig(sessionId, {
       model,
       effortLevel,
-      cwd: displayCwd,
-      repoId: explicitRepoId,
-      currentBranch: worktreeBranch,
+      cwd,
+      setupRepoPath: cwd,
+      setupWorktreeMode: worktreeMode,
+      setupWorktreePath: selectedWorktreePath,
+      currentBranch: null,
       provider,
       planMode: planMode
         ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false }
@@ -441,12 +430,17 @@
   // Repo handling
   function handleRepoSelect(path: string) {
     cwd = path;
+    const repo = activeRepos.find(r => r.path === path);
+    worktreeMode = repo?.worktree_mode || 'main';
+    selectedWorktreePath = '';
     showRepoDropdown = false;
   }
 
   function handleAutoRepoClick() {
     if (autoRepoEnabled) {
       cwd = '';
+      worktreeMode = 'main';
+      selectedWorktreePath = '';
       showRepoDropdown = false;
     } else {
       showRepoDropdown = false;
@@ -545,116 +539,142 @@
     </div>
 
     <div class="options-grid">
-      <!-- Mode Toggle -->
-      <div class="option-row">
-        <label class="option-label">Mode</label>
-        <div class="mode-toggle">
-          <button
-            class="mode-btn"
-            class:active={!planMode && !noteMode}
-            onclick={() => { planMode = false; noteMode = false; }}
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-            Execute
-          </button>
-          <button
-            class="mode-btn plan"
-            class:active={planMode}
-            onclick={() => { planMode = true; noteMode = false; }}
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-            </svg>
-            Plan
-          </button>
-          {#if noteModeAvailable && !providerLocked}
-            <button
-              class="mode-btn note"
-              class:active={noteMode}
-              onclick={() => { noteMode = true; planMode = false; }}
-            >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-              Note
-            </button>
+      <div class="option-row option-row--wide">
+        <div class="session-control-row session-control-row--double">
+          <div class="option-cell">
+            <label class="option-label">Mode</label>
+            <div class="mode-toggle">
+              <button
+                class="mode-btn"
+                class:active={!planMode && !noteMode}
+                onclick={() => { planMode = false; noteMode = false; }}
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Execute
+              </button>
+              <button
+                class="mode-btn plan"
+                class:active={planMode}
+                onclick={() => { planMode = true; noteMode = false; }}
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                </svg>
+                Plan
+              </button>
+              {#if noteModeAvailable && !providerLocked}
+                <button
+                  class="mode-btn note"
+                  class:active={noteMode}
+                  onclick={() => { noteMode = true; planMode = false; }}
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  Note
+                </button>
+              {/if}
+            </div>
+          </div>
+
+          {#if !noteMode}
+            <div class="option-cell">
+              <label class="option-label">Access</label>
+              <div class="mode-toggle">
+                <button
+                  class="mode-btn"
+                  class:active={!readOnlyMode}
+                  onclick={() => { readOnlyMode = false; }}
+                >
+                  Full
+                </button>
+                <button
+                  class="mode-btn readonly"
+                  class:active={readOnlyMode}
+                  onclick={() => { readOnlyMode = true; }}
+                  title="Read-only tools (Read, Glob, Grep) + WebSearch"
+                >
+                  Readonly
+                </button>
+              </div>
+            </div>
           {/if}
         </div>
       </div>
 
-      <!-- Provider Toggle (only show when both providers are available) -->
-      {#if openaiAvailable && !noteMode && !providerLocked}
-        <div class="option-row">
-          <label class="option-label">Provider</label>
-          <div class="mode-toggle">
-            <button
-              class="mode-btn"
-              class:active={provider === 'claude'}
-              onclick={() => handleProviderSwitch('claude')}
-              style={provider === 'claude' ? 'background: var(--color-accent);' : ''}
-            >
-              Claude
-            </button>
-            <button
-              class="mode-btn"
-              class:active={provider === 'openai'}
-              onclick={() => handleProviderSwitch('openai')}
-              style={provider === 'openai' ? 'background: #16a34a;' : ''}
-            >
-              Codex
-            </button>
-          </div>
-        </div>
-      {:else if !noteMode && providerLocked}
-        <div class="option-row">
-          <label class="option-label">Provider</label>
-          <div class="locked-provider">
-            <span class="locked-provider-badge">{provider === 'openai' ? 'Codex' : 'Claude'}</span>
-            <span class="locked-provider-text">Locked for forked sessions</span>
-          </div>
-        </div>
-      {/if}
+      <div class="option-row option-row--wide">
+        <div class="session-control-row" class:session-control-row--triple={!noteMode && (openaiAvailable || providerLocked) && (modelSupportsEffort(model) || isAutoModel(model))} class:session-control-row--double={noteMode || !(openaiAvailable || providerLocked) || !(modelSupportsEffort(model) || isAutoModel(model))}>
+          {#if openaiAvailable && !noteMode && !providerLocked}
+            <div class="option-cell">
+              <label class="option-label">Provider</label>
+              <div class="mode-toggle">
+                <button
+                  class="mode-btn"
+                  class:active={provider === 'claude'}
+                  onclick={() => handleProviderSwitch('claude')}
+                  style={provider === 'claude' ? 'background: var(--color-accent);' : ''}
+                >
+                  Claude
+                </button>
+                <button
+                  class="mode-btn"
+                  class:active={provider === 'openai'}
+                  onclick={() => handleProviderSwitch('openai')}
+                  style={provider === 'openai' ? 'background: #16a34a;' : ''}
+                >
+                  Codex
+                </button>
+              </div>
+            </div>
+          {:else if !noteMode && providerLocked}
+            <div class="option-cell">
+              <label class="option-label">Provider</label>
+              <div class="locked-provider">
+                <span class="locked-provider-badge">{provider === 'openai' ? 'Codex' : 'Claude'}</span>
+                <span class="locked-provider-text">Locked for forked sessions</span>
+              </div>
+            </div>
+          {/if}
 
-      <!-- Model Selector -->
-      <div class="option-row">
-        <label class="option-label">Model</label>
-        <div class="model-selector">
-          {#each models as { id, label, title }}
-            <button
-              class={getModelButtonClasses(id, model === id, isSmartModelEnabled)}
-              onclick={() => handleModelClick(id)}
-              title={isAutoModel(id) && !isSmartModelEnabled ? 'Enable in LLM settings' : title}
-            >
-              {label}
-            </button>
-          {/each}
+          <div class="option-cell option-cell--grow">
+            <label class="option-label">Model</label>
+            <div class="model-selector">
+              {#each models as { id, label, title }}
+                <button
+                  class={getModelButtonClasses(id, model === id, isSmartModelEnabled)}
+                  onclick={() => handleModelClick(id)}
+                  title={isAutoModel(id) && !isSmartModelEnabled ? 'Enable in LLM settings' : title}
+                >
+                  {label}
+                </button>
+              {/each}
+            </div>
+          </div>
+
+          {#if modelSupportsEffort(model) || isAutoModel(model)}
+            <div class="option-cell">
+              <label class="option-label">Effort</label>
+              <div class="effort-options">
+                {#each (['low', 'medium', 'high', ...(getMaxEffort(model) === 'max' ? ['max'] : [])] as const) as level}
+                  <button
+                    class="effort-option-btn"
+                    class:active={effortLevel === level}
+                    onclick={() => effortLevel = level as EffortLevel}
+                  >
+                    {level.charAt(0).toUpperCase() + level.slice(1)}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
       </div>
 
-      <!-- Effort Level -->
-      {#if modelSupportsEffort(model) || isAutoModel(model)}
-        <div class="option-row">
-          <label class="option-label">Effort</label>
-          <div class="effort-options">
-            {#each (['off', 'low', 'medium', 'high', ...(getMaxEffort(model) === 'max' ? ['max'] : [])] as const) as level}
-              <button
-                class="effort-option-btn"
-                class:active={level === 'off' ? effortLevel === null : effortLevel === level}
-                onclick={() => effortLevel = level === 'off' ? null : level as EffortLevel}
-              >
-                {level === 'off' ? 'Off' : level.charAt(0).toUpperCase() + level.slice(1)}
-              </button>
-            {/each}
-          </div>
-        </div>
-      {/if}
-
       <!-- Repository Selector -->
       <div class="option-row option-row--wide">
-        <div class="repo-access-grid">
-          <div class="repo-access-cell">
+        <div class="repo-selector-cell">
             <label class="option-label">Repository</label>
             <div class="repo-selector-container relative">
               <button
@@ -744,30 +764,6 @@
               {/if}
             </div>
           </div>
-
-          {#if !noteMode}
-            <div class="repo-access-cell">
-              <label class="option-label">Access</label>
-              <div class="mode-toggle">
-                <button
-                  class="mode-btn"
-                  class:active={!readOnlyMode}
-                  onclick={() => { readOnlyMode = false; }}
-                >
-                  Full
-                </button>
-                <button
-                  class="mode-btn readonly"
-                  class:active={readOnlyMode}
-                  onclick={() => { readOnlyMode = true; }}
-                  title="Read-only tools (Read, Glob, Grep) + WebSearch"
-                >
-                  Readonly
-                </button>
-              </div>
-            </div>
-          {/if}
-        </div>
       </div>
 
       <!-- Worktree Toggle - only show when a specific repo is selected -->
@@ -1071,6 +1067,32 @@
     width: 100%;
   }
 
+  .session-control-row {
+    display: grid;
+    gap: 0.85rem var(--control-column-gap);
+    width: 100%;
+  }
+
+  .session-control-row--double {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .session-control-row--triple {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .option-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .option-cell--grow {
+    min-width: 0;
+  }
+
   .worktree-grid {
     display: grid;
     grid-template-columns: var(--control-columns);
@@ -1087,20 +1109,13 @@
     min-width: 0;
   }
 
-  .repo-access-grid {
-    display: grid;
-    grid-template-columns: var(--control-columns);
-    column-gap: var(--control-column-gap);
-    row-gap: 0.85rem;
-    width: 100%;
-  }
-
-  .repo-access-cell {
+  .repo-selector-cell {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     gap: 0.4rem;
     min-width: 0;
+    width: 100%;
   }
 
   .option-label {
@@ -1718,11 +1733,10 @@
       grid-template-columns: 1fr;
     }
 
+    .session-control-row,
+    .session-control-row--double,
+    .session-control-row--triple,
     .worktree-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .repo-access-grid {
       grid-template-columns: 1fr;
     }
   }

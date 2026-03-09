@@ -96,7 +96,7 @@
   }
 
   async function handleChangeEffort(level: EffortLevel) {
-    const settingsLevel = level === null ? 'off' : level;
+    const settingsLevel = level === null ? 'low' : level;
     settings.update((s) => ({ ...s, default_effort_level: settingsLevel }));
     await settings.save({ ...$settings, default_effort_level: settingsLevel });
   }
@@ -307,7 +307,7 @@
       model={selectedModel}
       onchange={handleChangeModel}
       size="sm"
-      provider={currentProvider}
+      provider={currentProvider as 'openai' | 'claude'}
     />
 
     <!-- Global Effort Toggle -->

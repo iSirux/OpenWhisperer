@@ -41,4 +41,6 @@ export interface QueuedLaunch {
   profileId: string;
   profileName: string;
   sessionId: string;
+  /** The session cwd at queue time — may be a worktree path */
+  launchedFromCwd?: string;
 }

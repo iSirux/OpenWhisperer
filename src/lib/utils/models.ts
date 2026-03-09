@@ -46,6 +46,13 @@ export const ALL_MODELS: ModelInfo[] = [
 
 export const OPENAI_MODELS: ModelInfo[] = [
   {
+    id: "gpt-5.4",
+    label: "5.4",
+    title: "GPT-5.4 - Most capable agentic coding model",
+    supportsEffort: true,
+    maxEffort: "high",
+  },
+  {
     id: "gpt-5.3-codex",
     label: "5.3 Codex",
     title: "GPT-5.3 Codex - Most capable agentic coding model",
@@ -75,10 +82,11 @@ export const OPENAI_MODELS: ModelInfo[] = [
   },
 ];
 
-export const DEFAULT_OPENAI_MODEL_ID = "gpt-5.3-codex";
+export const DEFAULT_OPENAI_MODEL_ID = "gpt-5.4";
 
 const OPENAI_MODEL_ALIASES: Record<string, string> = {
   "codex-mini-latest": DEFAULT_OPENAI_MODEL_ID,
+  "gpt-5.4-codex": DEFAULT_OPENAI_MODEL_ID,
 };
 
 export function normalizeOpenAiModelId(modelId: string): string {

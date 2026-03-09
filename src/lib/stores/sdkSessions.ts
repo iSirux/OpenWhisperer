@@ -42,7 +42,21 @@ function debouncedSave(): void {
 function resolveRepoId(cwd: string): string | undefined {
   if (!cwd || cwd === '.') return undefined;
   const reposList = get(repos).list;
-  return reposList.find(r => r.path === cwd)?.id || undefined;
+  const normalize = (value: string) => value.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+  const normalizedCwd = normalize(cwd);
+
+  // Exact repo root match
+  const exact = reposList.find(r => normalize(r.path) === normalizedCwd)?.id;
+  if (exact) return exact;
+
+  // Heuristic: worktree paths are typically under "<repoPath>-worktrees/<branch>"
+  // Example: F:/Repos/my-repo-worktrees/feature-x -> repo F:/Repos/my-repo
+  const fromWorktree = reposList.find((r) => {
+    const repoBase = normalize(r.path);
+    return normalizedCwd.startsWith(`${repoBase}-worktrees/`);
+  })?.id;
+
+  return fromWorktree || undefined;
 }
 
 // =============================================================================
@@ -86,6 +100,8 @@ export interface SdkUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  // True when inputTokens already includes cached tokens (OpenAI/Codex usage semantics).
+  inputTokensIncludeCache?: boolean;
   totalCostUsd: number;
   durationMs: number;
   durationApiMs: number;
@@ -103,6 +119,8 @@ export interface SdkProgressiveUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  // True when inputTokens already includes cached tokens (OpenAI/Codex usage semantics).
+  inputTokensIncludeCache?: boolean;
 }
 
 export interface SdkSessionUsage {
@@ -197,6 +215,7 @@ export interface NoteModeState {
 }
 
 export type EffortLevel = null | 'low' | 'medium' | 'high' | 'max';
+export type SelectableEffortLevel = 'low' | 'medium' | 'high' | 'max';
 export type SettingsEffortLevel = 'off' | 'low' | 'medium' | 'high' | 'max';
 
 /** @deprecated Use EffortLevel instead */
@@ -204,17 +223,21 @@ export type ThinkingLevel = EffortLevel;
 /** @deprecated Use SettingsEffortLevel instead */
 export type SettingsThinkingLevel = SettingsEffortLevel;
 
-export function settingsToStoreEffort(level: SettingsEffortLevel): EffortLevel {
-  return level === 'off' ? null : level;
+export function normalizeEffortLevel(level: EffortLevel | undefined): SelectableEffortLevel {
+  return level ?? 'low';
+}
+
+export function settingsToStoreEffort(level: SettingsEffortLevel): SelectableEffortLevel {
+  return level === 'off' ? 'low' : level;
 }
 
 export function storeToSettingsEffort(level: EffortLevel): SettingsEffortLevel {
-  return level === null ? 'off' : level;
+  return level === null ? 'low' : level;
 }
 
 /** @deprecated Use settingsToStoreEffort instead */
 export function settingsToStoreThinking(level: string): EffortLevel {
-  if (level === 'off') return null;
+  if (level === 'off') return 'low';
   if (level === 'on') return 'high'; // Legacy: 'on' maps to 'high' effort
   return level as EffortLevel;
 }
@@ -264,6 +287,12 @@ export interface PendingTranscriptionInfo {
 export interface SdkSession {
   id: string;
   cwd: string;
+  /** Setup-only selected repository path (main repo, not worktree path). */
+  setupRepoPath?: string;
+  /** Setup-only selected worktree mode. */
+  setupWorktreeMode?: 'main' | 'new' | 'existing';
+  /** Setup-only selected existing worktree path. */
+  setupWorktreePath?: string;
   /** Stable reference to the repository entity by ID. Used for display/icon/color resolution.
    *  Survives worktree path changes — the cwd may point to a worktree while this links to the parent repo. */
   repoId?: string;
@@ -443,9 +472,11 @@ function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: S
   const contextOutputTokens = queryUsage.mainAgentOutputTokens ?? queryUsage.outputTokens;
   const contextCacheReadTokens = queryUsage.mainAgentCacheReadTokens ?? queryUsage.cacheReadTokens;
   const contextCacheCreationTokens = queryUsage.mainAgentCacheCreationTokens ?? queryUsage.cacheCreationTokens;
-  // Total input tokens includes uncached + cached tokens (cache_read + cache_creation)
-  // See: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
-  const totalContextInputTokens = contextInputTokens + contextCacheReadTokens + contextCacheCreationTokens;
+  // Claude usage reports cached tokens separately from input tokens.
+  // Codex/OpenAI usage reports cached tokens as part of input_tokens.
+  const totalContextInputTokens = queryUsage.inputTokensIncludeCache
+    ? contextInputTokens
+    : contextInputTokens + contextCacheReadTokens + contextCacheCreationTokens;
   const currentContextTokens = totalContextInputTokens + contextOutputTokens;
   const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
@@ -477,8 +508,12 @@ function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progres
   const progressiveOutputTokens = progressiveUsage.outputTokens;
   const progressiveCacheReadTokens = progressiveUsage.cacheReadTokens;
   const progressiveCacheCreationTokens = progressiveUsage.cacheCreationTokens;
-  // Total tokens includes uncached + cached tokens for accurate context usage
-  const liveCurrentTokens = progressiveInputTokens + progressiveCacheReadTokens + progressiveCacheCreationTokens + progressiveOutputTokens;
+  // Claude progressive usage reports cached tokens separately from input tokens.
+  // Codex/OpenAI progressive usage reports cached tokens as part of input_tokens.
+  const liveContextInputTokens = progressiveUsage.inputTokensIncludeCache
+    ? progressiveInputTokens
+    : progressiveInputTokens + progressiveCacheReadTokens + progressiveCacheCreationTokens;
+  const liveCurrentTokens = liveContextInputTokens + progressiveOutputTokens;
   const contextUsagePercent = Math.min(100, (liveCurrentTokens / prev.contextWindow) * 100);
 
   return {
@@ -1281,14 +1316,14 @@ function createSdkSessionsStore() {
       sidecarStarted = true;
     },
 
-    async createSession(cwd: string, model: string, effortLevel: EffortLevel = null, systemPrompt?: string, planMode?: boolean, provider?: SdkProvider): Promise<string> {
+    async createSession(cwd: string, model: string, effortLevel: EffortLevel = 'low', systemPrompt?: string, planMode?: boolean, provider?: SdkProvider): Promise<string> {
       await this.ensureSidecarStarted();
 
       const id = crypto.randomUUID();
       const autoModelRequested = isAutoModel(model);
       const resolvedProvider = normalizeSdkProvider(provider, model);
 
-      const effectiveEffort = modelSupportsEffort(model) ? effortLevel : null;
+      const effectiveEffort = modelSupportsEffort(model) ? normalizeEffortLevel(effortLevel) : null;
 
       const session: SdkSession = {
         id,
@@ -1693,13 +1728,14 @@ function createSdkSessionsStore() {
     },
 
     async updateSessionEffort(id: string, effortLevel: EffortLevel): Promise<void> {
-      update(sessions => sessions.map(s => s.id === id ? { ...s, effortLevel } : s));
+      const normalizedEffort = normalizeEffortLevel(effortLevel);
+      update(sessions => sessions.map(s => s.id === id ? { ...s, effortLevel: normalizedEffort } : s));
 
       if (!liveSessions.has(id)) return;
 
       // Get the session's model to check effort support
       const session = get({ subscribe }).find(s => s.id === id);
-      const effectiveEffort = session && modelSupportsEffort(session.model) ? effortLevel : null;
+      const effectiveEffort = session && modelSupportsEffort(session.model) ? normalizedEffort : null;
 
       try {
         await invoke('update_sdk_effort', { id, effortLevel: effectiveEffort });
@@ -1745,6 +1781,9 @@ function createSdkSessionsStore() {
       model?: string;
       effortLevel?: EffortLevel;
       cwd?: string;
+      setupRepoPath?: string;
+      setupWorktreeMode?: 'main' | 'new' | 'existing';
+      setupWorktreePath?: string;
       repoId?: string;
       currentBranch?: string | null;
       provider?: SdkProvider;
@@ -1765,6 +1804,9 @@ function createSdkSessionsStore() {
           // Explicit repoId takes priority (e.g. worktree cwd won't resolve to a repo)
           updated.repoId = config.repoId ?? resolveRepoId(config.cwd);
         }
+        if (config.setupRepoPath !== undefined) updated.setupRepoPath = config.setupRepoPath;
+        if (config.setupWorktreeMode !== undefined) updated.setupWorktreeMode = config.setupWorktreeMode;
+        if (config.setupWorktreePath !== undefined) updated.setupWorktreePath = config.setupWorktreePath;
         if (config.currentBranch !== undefined) updated.currentBranch = config.currentBranch;
         if (config.provider !== undefined) updated.provider = normalizeSdkProvider(config.provider, updated.model);
         if (config.planMode !== undefined) updated.planMode = config.planMode;
@@ -1802,6 +1844,9 @@ function createSdkSessionsStore() {
       const session: SdkSession = {
         id,
         cwd: initialCwd,
+        setupRepoPath: initialCwd,
+        setupWorktreeMode: 'main',
+        setupWorktreePath: undefined,
         repoId: resolveRepoId(initialCwd),
         model,
         provider: resolvedProvider,
@@ -1840,6 +1885,9 @@ function createSdkSessionsStore() {
                 // sendPrompt(), leaving textarea sizing out of sync.
                 draftPrompt: undefined,
                 draftImages: undefined,
+                setupRepoPath: undefined,
+                setupWorktreeMode: undefined,
+                setupWorktreePath: undefined,
                 planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
                 noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
                 // Pre-populate createdBranch from worktree creation so the header shows the correct

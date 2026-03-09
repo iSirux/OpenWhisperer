@@ -23,7 +23,16 @@ import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
 
-const OPENAI_MODEL_FALLBACK = "gpt-5.3-codex";
+const OPENAI_MODEL_FALLBACK = "gpt-5.4";
+
+function inferOpenAiContextWindow(model: string | undefined): number {
+  const normalized = model?.toLowerCase() ?? "";
+  // GPT-5 family models use 400k context windows.
+  if (normalized.includes("gpt-5")) {
+    return 400000;
+  }
+  return 200000;
+}
 
 function inferProvider(
   provider: string | undefined,
@@ -623,6 +632,7 @@ function sendUsage(
     outputTokens: number;
     cacheReadTokens: number;
     cacheCreationTokens: number;
+    inputTokensIncludeCache?: boolean;
     totalCostUsd: number;
     durationMs: number;
     durationApiMs: number;
@@ -645,6 +655,7 @@ function sendProgressiveUsage(
     outputTokens: number;
     cacheReadTokens: number;
     cacheCreationTokens: number;
+    inputTokensIncludeCache?: boolean;
   }
 ): void {
   send({ type: "progressive_usage", id, ...usage });
@@ -1290,7 +1301,7 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
   const extractContextWindow = (
     source: Record<string, unknown> | undefined
   ): number => {
-    if (!source) return 200000;
+    if (!source) return inferOpenAiContextWindow(session.codexModel);
     const direct =
       asNumber(source.model_context_window) ||
       asNumber(source.modelContextWindow) ||
@@ -1315,7 +1326,7 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
         asNumber(eventObj.contextWindow);
       if (eventWindow > 0) return eventWindow;
     }
-    return 200000;
+    return inferOpenAiContextWindow(session.codexModel);
   };
   const emitAppServerUsage = (
     source: Record<string, unknown> | undefined,
@@ -1325,13 +1336,14 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
     if (!usage) return false;
     sendUsage(id, {
       ...usage,
+      inputTokensIncludeCache: true,
       totalCostUsd: 0,
       durationMs: 0,
       durationApiMs: 0,
       numTurns,
       contextWindow: extractContextWindow(source),
     });
-    sendProgressiveUsage(id, usage);
+    sendProgressiveUsage(id, { ...usage, inputTokensIncludeCache: true });
     return true;
   };
   const turn = params.turn as Record<string, unknown> | undefined;
@@ -1500,6 +1512,7 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
           outputTokens: finalOutput,
           cacheReadTokens: finalCacheRead,
           cacheCreationTokens: finalCacheCreation,
+          inputTokensIncludeCache: true,
           totalCostUsd: 0,
           durationMs: 0,
           durationApiMs: 0,
@@ -1513,6 +1526,7 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
             outputTokens: lastOutput,
             cacheReadTokens: lastCached,
             cacheCreationTokens: lastCacheCreation,
+            inputTokensIncludeCache: true,
           });
         }
       } else {
@@ -1937,6 +1951,8 @@ async function handleCodexAppServerQuery(
 
 // Map Codex thread events to our IPC protocol
 function handleCodexEvent(id: string, event: ThreadEvent): void {
+  const session = sessions.get(id);
+  const contextWindow = inferOpenAiContextWindow(session?.codexModel);
   switch (event.type) {
     case "thread.started":
       // Capture thread ID as SDK session ID for resume
@@ -1961,11 +1977,12 @@ function handleCodexEvent(id: string, event: ThreadEvent): void {
           outputTokens: event.usage.output_tokens || 0,
           cacheReadTokens: event.usage.cached_input_tokens || 0,
           cacheCreationTokens: 0,
+          inputTokensIncludeCache: true,
           totalCostUsd: 0, // Codex SDK doesn't report cost directly
           durationMs: 0,
           durationApiMs: 0,
           numTurns: 1,
-          contextWindow: 200000,
+          contextWindow,
         });
       }
       break;

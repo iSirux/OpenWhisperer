@@ -160,6 +160,18 @@ pub struct PersistedPendingRepoSelection {
 pub struct PersistedSdkSession {
     pub id: String,
     pub cwd: String,
+    /// Stable repo entity ID (frontend repo config ID)
+    #[serde(default)]
+    pub repo_id: Option<String>,
+    /// Setup-only selected repository path (main repo, not worktree path)
+    #[serde(default)]
+    pub setup_repo_path: Option<String>,
+    /// Setup-only selected worktree mode: "main" | "new" | "existing"
+    #[serde(default)]
+    pub setup_worktree_mode: Option<String>,
+    /// Setup-only selected existing worktree path
+    #[serde(default)]
+    pub setup_worktree_path: Option<String>,
     /// Branch captured when the session was first associated with this repo
     #[serde(default)]
     pub created_branch: Option<String>,
@@ -207,6 +219,12 @@ pub struct PersistedSdkSession {
     pub pending_prompt: Option<String>,
     /// Pending approval prompt text
     pub pending_approval_prompt: Option<String>,
+    /// Setup draft prompt text
+    #[serde(default)]
+    pub draft_prompt: Option<String>,
+    /// Setup draft images
+    #[serde(default)]
+    pub draft_images: Option<Vec<PersistedSdkImageContent>>,
     /// Plan mode state (opaque JSON - complex nested type)
     #[serde(default)]
     pub plan_mode: Option<serde_json::Value>,

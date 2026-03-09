@@ -125,13 +125,13 @@ function createLaunchStore() {
     },
 
     /** Queue a profile launch to auto-trigger when a session finishes */
-    async queueAfterAgent(repoId: string, profileId: string, profileName: string, sessionId: string): Promise<void> {
+    async queueAfterAgent(repoId: string, profileId: string, profileName: string, sessionId: string, launchedFromCwd?: string): Promise<void> {
       // Clean up any existing queue
       this.cancelQueue();
 
       const unlistenDone = await listen(`sdk-done-${sessionId}`, () => {
         console.log("[launch] Agent done, launching queued profile");
-        this.launchProfile(repoId, profileId);
+        this.launchProfile(repoId, profileId, launchedFromCwd);
         this.cancelQueue();
       });
 
@@ -147,7 +147,7 @@ function createLaunchStore() {
 
       update((s) => ({
         ...s,
-        queued: { repoId, profileId, profileName, sessionId },
+        queued: { repoId, profileId, profileName, sessionId, launchedFromCwd },
       }));
     },
 

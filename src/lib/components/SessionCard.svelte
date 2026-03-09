@@ -369,7 +369,7 @@
   <div class="flex items-center gap-1.5 text-text-muted">
     <RepoIcon repo={session.repoId ? findRepoById($repos.list, session.repoId) : findRepoByPath($repos.list, session.repoPath)} size="xs" />
     <span class="{sizeClasses.text} truncate">{displayedRepoName()}</span>
-    {#if session.branch}
+    {#if session.branch && session.status !== 'setup'}
       <span class="{sizeClasses.text} text-text-muted">·</span>
       <span class="{sizeClasses.text} text-blue-400/70" title="Git branch: {session.branch}">
         {session.branch}

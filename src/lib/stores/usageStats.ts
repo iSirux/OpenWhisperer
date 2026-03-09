@@ -54,6 +54,7 @@ export interface ModelUsageStats {
   opus_sessions: number;
   sonnet_sessions: number;
   haiku_sessions: number;
+  codex_54_sessions: number;
   codex_53_sessions: number;
   codex_53_spark_sessions: number;
   codex_52_sessions: number;
@@ -138,6 +139,7 @@ const defaultStats: UsageStats = {
     opus_sessions: 0,
     sonnet_sessions: 0,
     haiku_sessions: 0,
+    codex_54_sessions: 0,
     codex_53_sessions: 0,
     codex_53_spark_sessions: 0,
     codex_52_sessions: 0,

@@ -334,7 +334,7 @@
     </div>
     {#if showSessionSummary && session.aiMetadata.outcome}
       <p
-        class="text-xs text-text-muted leading-snug mb-1.5"
+        class="text-xs text-text-muted leading-snug mb-1.5 session-text-wrap"
         title={session.aiMetadata.outcome}
       >
         {session.aiMetadata.outcome}
@@ -343,7 +343,7 @@
   {:else if session.prompt}
     <!-- Original prompt text (only show if we have actual content) -->
     <p
-      class="text-sm text-text-primary leading-snug mb-1.5 select-text overflow-hidden"
+      class="text-sm text-text-primary leading-snug mb-1.5 select-text overflow-hidden session-text-wrap"
       class:font-semibold={session.unread}
       style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {promptRows};"
       title={session.prompt}
@@ -397,7 +397,7 @@
   <!-- Latest message preview (SDK sessions only, hide when showing outcome) -->
   {#if showLatestMessage && session.type === "sdk" && session.latestMessage && !session.aiMetadata?.outcome}
     <p
-      class="text-xs text-text-muted leading-snug mb-1.5 italic overflow-hidden"
+      class="text-xs text-text-muted leading-snug mb-1.5 italic overflow-hidden session-text-wrap"
       style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {responseRows};"
       title={session.latestMessage}
     >
@@ -431,7 +431,7 @@
         size="xs"
       />
       <span class="text-xs truncate min-w-0 max-w-[50%]">{displayedRepoName}</span>
-      {#if session.branch}
+      {#if session.branch && session.status !== "setup"}
         <span class="text-xs text-text-muted flex-shrink-0">·</span>
         <span
           class="text-xs text-blue-400/70 truncate min-w-0 max-w-[50%]"
@@ -470,6 +470,11 @@
     font-size: 0.72rem;
     color: rgb(251, 191, 36);
     min-width: 0;
+  }
+
+  .session-text-wrap {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   /* Active/focused session - white background */
