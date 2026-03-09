@@ -75,7 +75,7 @@
   async function handleQueueProfile(profileId: string) {
     const profile = profiles.find((p) => p.id === profileId);
     if (!profile) return;
-    await launchStore.queueAfterAgent(repoId, profileId, profile.name, sessionId);
+    await launchStore.queueAfterAgent(repoId, profileId, profile.name, sessionId, repoPath);
   }
 
   async function handleStopAll() {
@@ -92,10 +92,11 @@
   async function handleRestart() {
     if (!runtime?.profileId) return;
     const profileId = runtime.profileId;
+    const launchCwd = runtime.launchedFromCwd ?? repoPath;
     isRestarting = true;
     try {
       await launchStore.stopAll(repoId);
-      await launchStore.launchProfile(repoId, profileId, repoPath);
+      await launchStore.launchProfile(repoId, profileId, launchCwd);
     } catch (e) {
       console.error("[LaunchBar] Restart failed:", e);
     } finally {
@@ -109,10 +110,10 @@
 
   async function handleStartNow() {
     if (!queued) return;
-    const { repoId: qRepoId, profileId } = queued;
+    const { repoId: qRepoId, profileId, launchedFromCwd } = queued;
     launchStore.cancelQueue();
     try {
-      await launchStore.launchProfile(qRepoId, profileId, repoPath);
+      await launchStore.launchProfile(qRepoId, profileId, launchedFromCwd ?? repoPath);
     } catch (e) {
       console.error("[LaunchBar] Start now failed:", e);
     }
