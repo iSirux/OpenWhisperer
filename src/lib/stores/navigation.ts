@@ -8,15 +8,19 @@ import { writable } from 'svelte/store';
  * (/settings, /sequences, /usage, /sessions-view) rather than internal navigation.
  */
 
-export type MainView = 'sessions' | 'start' | 'sequences' | 'archive';
+export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository';
 
 interface NavigationState {
   mainView: MainView;
+  selectedRepoId: string | null;
+  repositoryAddMode: boolean;
 }
 
 function createNavigationStore() {
   const { subscribe, set, update } = writable<NavigationState>({
     mainView: 'start',
+    selectedRepoId: null,
+    repositoryAddMode: false,
   });
 
   return {
@@ -26,42 +30,63 @@ function createNavigationStore() {
      * Set the current main view
      */
     setView(view: MainView) {
-      update(state => ({ ...state, mainView: view }));
+      update((state) => ({
+        ...state,
+        mainView: view,
+        repositoryAddMode: view === 'repository' ? state.repositoryAddMode : false,
+      }));
     },
 
     /**
      * Show sessions view
      */
     showSessions() {
-      set({ mainView: 'sessions' });
+      update((state) => ({ ...state, mainView: 'sessions', repositoryAddMode: false }));
     },
 
     /**
      * Show start view
      */
     showStart() {
-      update(state => ({ ...state, mainView: 'start' }));
+      update((state) => ({ ...state, mainView: 'start', repositoryAddMode: false }));
     },
 
     /**
      * Show sequence execution view
      */
     showSequences() {
-      update(state => ({ ...state, mainView: 'sequences' }));
+      update((state) => ({ ...state, mainView: 'sequences', repositoryAddMode: false }));
     },
 
     /**
      * Show archive view
      */
     showArchive() {
-      update(state => ({ ...state, mainView: 'archive' }));
+      update((state) => ({ ...state, mainView: 'archive', repositoryAddMode: false }));
+    },
+
+    showRepository(repoId: string | null | undefined) {
+      update((state) => ({
+        ...state,
+        mainView: 'repository',
+        selectedRepoId: repoId === undefined ? state.selectedRepoId : repoId,
+        repositoryAddMode: false,
+      }));
+    },
+
+    showRepositoryAdd() {
+      update((state) => ({
+        ...state,
+        mainView: 'repository',
+        repositoryAddMode: true,
+      }));
     },
 
     /**
      * Reset to initial state (used on first launch)
      */
     reset() {
-      set({ mainView: 'start' });
+      set({ mainView: 'start', selectedRepoId: null, repositoryAddMode: false });
     },
   };
 }

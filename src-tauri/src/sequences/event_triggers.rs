@@ -123,7 +123,8 @@ impl EventTriggerManager {
                                     Err(e) => {
                                         log::error!(
                                             "[event-trigger] Failed to fire '{}': {}",
-                                            seq_id, e
+                                            seq_id,
+                                            e
                                         );
                                     }
                                 }
@@ -144,8 +145,12 @@ impl EventTriggerManager {
 
                         if !include_seq {
                             // Check if payload contains a session ID from our triggered list
-                            if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
-                                if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
+                            if let Ok(payload) =
+                                serde_json::from_str::<serde_json::Value>(event.payload())
+                            {
+                                if let Some(sid) =
+                                    payload.get("session_id").and_then(|v| v.as_str())
+                                {
                                     if sid.starts_with("seq-") {
                                         return; // Skip sequence-spawned sessions
                                     }
@@ -176,7 +181,10 @@ impl EventTriggerManager {
 
                             // Update guards
                             gs.last_fire.insert(trigger_key_clone.clone(), now);
-                            let entry = gs.daily_count.entry(trigger_key_clone.clone()).or_insert((today, 0));
+                            let entry = gs
+                                .daily_count
+                                .entry(trigger_key_clone.clone())
+                                .or_insert((today, 0));
                             if entry.0 != today {
                                 *entry = (today, 0);
                             }
@@ -200,13 +208,15 @@ impl EventTriggerManager {
                                     tids.lock().push(exec_id.clone());
                                     log::info!(
                                         "[event-trigger] Fired '{}' -> execution {}",
-                                        seq_id, exec_id
+                                        seq_id,
+                                        exec_id
                                     );
                                 }
                                 Err(e) => {
                                     log::error!(
                                         "[event-trigger] Failed to fire '{}': {}",
-                                        seq_id, e
+                                        seq_id,
+                                        e
                                     );
                                 }
                             }
@@ -232,7 +242,9 @@ impl EventTriggerManager {
     /// Check if an execution was spawned by an event trigger (for self-exclusion).
     #[allow(dead_code)]
     pub fn is_triggered_execution(&self, execution_id: &str) -> bool {
-        self.triggered_execution_ids.lock().contains(&execution_id.to_string())
+        self.triggered_execution_ids
+            .lock()
+            .contains(&execution_id.to_string())
     }
 
     /// Get info about active event triggers.
@@ -252,7 +264,6 @@ impl EventTriggerManager {
                     once_per_day,
                     ..
                 } = trigger
-
                 {
                     let trigger_key = format!("{}:{}", def.id, event_type);
                     let last_fire = gs.last_fire.get(&trigger_key).cloned();

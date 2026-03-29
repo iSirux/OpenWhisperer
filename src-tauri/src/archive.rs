@@ -106,15 +106,13 @@ impl ArchiveIndex {
     /// Save full session data to an individual file
     fn save_session_data(&self, id: &str, data: &impl Serialize) -> Result<(), String> {
         let dir = Self::sessions_dir();
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create sessions dir: {}", e))?;
+        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {}", e))?;
 
         let path = dir.join(format!("{}.json", id));
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("Failed to serialize session data: {}", e))?;
 
-        fs::write(&path, &content)
-            .map_err(|e| format!("Failed to write session data: {}", e))?;
+        fs::write(&path, &content).map_err(|e| format!("Failed to write session data: {}", e))?;
         Ok(())
     }
 
@@ -164,8 +162,7 @@ impl ArchiveIndex {
         let content =
             fs::read_to_string(&path).map_err(|e| format!("Failed to read session data: {}", e))?;
 
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse session data: {}", e))
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse session data: {}", e))
     }
 
     /// Search archive entries by query string and optional type filter
@@ -270,7 +267,8 @@ impl ArchiveIndex {
         }
 
         // Sort by archived_at descending (keep newest)
-        self.entries.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
+        self.entries
+            .sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
 
         // Remove oldest entries beyond the limit
         let to_remove: Vec<String> = self
@@ -326,8 +324,7 @@ impl ArchiveIndex {
 
         let path = Self::sessions_dir().join(format!("{}.json", id));
         if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| format!("Failed to delete session file: {}", e))?;
+            fs::remove_file(&path).map_err(|e| format!("Failed to delete session file: {}", e))?;
         }
 
         Ok(())
@@ -368,14 +365,8 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession) -> ArchiveEntry {
     ArchiveEntry {
         id: session.id.clone(),
         session_type: "sdk".to_string(),
-        name: session
-            .ai_metadata
-            .as_ref()
-            .and_then(|m| m.name.clone()),
-        summary: session
-            .ai_metadata
-            .as_ref()
-            .and_then(|m| m.summary.clone()),
+        name: session.ai_metadata.as_ref().and_then(|m| m.name.clone()),
+        summary: session.ai_metadata.as_ref().and_then(|m| m.summary.clone()),
         category: session
             .ai_metadata
             .as_ref()

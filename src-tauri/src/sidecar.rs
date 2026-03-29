@@ -27,10 +27,20 @@ pub struct ImageData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HistoryMessage {
-    User { content: String },
-    Assistant { content: String },
-    ToolUse { tool: String, input: serde_json::Value },
-    ToolResult { tool: String, output: String },
+    User {
+        content: String,
+    },
+    Assistant {
+        content: String,
+    },
+    ToolUse {
+        tool: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool: String,
+        output: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -412,11 +422,12 @@ impl SidecarManager {
             .ok_or("Failed to get exe directory")?
             .to_path_buf();
 
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Failed to get cwd: {}", e))?;
+        let cwd = std::env::current_dir().map_err(|e| format!("Failed to get cwd: {}", e))?;
 
         // Get resource directory for bundled release
-        let resource_dir = app.path().resource_dir()
+        let resource_dir = app
+            .path()
+            .resource_dir()
             .map_err(|e| format!("Failed to get resource dir: {}", e))?;
 
         // Possible paths (in order of priority):
@@ -429,7 +440,10 @@ impl SidecarManager {
             resource_dir.join("dist").join("index.js"),
             resource_dir.join("sidecar").join("dist").join("index.js"),
             cwd.join("sidecar").join("dist").join("index.js"),
-            cwd.join("src-tauri").join("sidecar").join("dist").join("index.js"),
+            cwd.join("src-tauri")
+                .join("sidecar")
+                .join("dist")
+                .join("index.js"),
             exe_dir.join("sidecar").join("dist").join("index.js"),
         ];
 
@@ -453,7 +467,10 @@ impl SidecarManager {
 
         // Convert to string and strip Windows extended path prefix if present
         let path_str = path.to_string_lossy().to_string();
-        let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
+        let path_str = path_str
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&path_str)
+            .to_string();
 
         log::info!("[sidecar] Using sidecar at: {}", path_str);
 
@@ -476,10 +493,16 @@ impl SidecarManager {
         // Inject API keys from keyring into sidecar environment
         {
             use tauri_plugin_keyring::KeyringExt;
-            if let Ok(Some(key)) = app.keyring().get_password("claude-whisperer", "anthropic-api-key") {
+            if let Ok(Some(key)) = app
+                .keyring()
+                .get_password("claude-whisperer", "anthropic-api-key")
+            {
                 cmd.env("ANTHROPIC_API_KEY", key);
             }
-            if let Ok(Some(key)) = app.keyring().get_password("claude-whisperer", "openai-api-key") {
+            if let Ok(Some(key)) = app
+                .keyring()
+                .get_password("claude-whisperer", "openai-api-key")
+            {
                 cmd.env("OPENAI_API_KEY", key);
             }
         }
@@ -495,14 +518,8 @@ impl SidecarManager {
             .spawn()
             .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("Failed to get stdout")?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("Failed to get stdin")?;
+        let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+        let stdin = child.stdin.take().ok_or("Failed to get stdin")?;
         let stderr = child.stderr.take();
 
         *self.stdin.lock() = Some(stdin);
@@ -552,8 +569,17 @@ impl SidecarManager {
                 log::info!("[sidecar] Emitting sdk-created-{}", id);
                 let _ = app.emit(&format!("sdk-created-{}", id), ());
             }
-            InboundMessage::Text { id, ref content, ref parent_tool_use_id, ref turn_uuid } => {
-                log::info!("[sidecar] Emitting sdk-text-{} with {} bytes", id, content.len());
+            InboundMessage::Text {
+                id,
+                ref content,
+                ref parent_tool_use_id,
+                ref turn_uuid,
+            } => {
+                log::info!(
+                    "[sidecar] Emitting sdk-text-{} with {} bytes",
+                    id,
+                    content.len()
+                );
                 let result = app.emit(
                     &format!("sdk-text-{}", id),
                     serde_json::json!({ "content": content, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
@@ -562,25 +588,51 @@ impl SidecarManager {
                     log::error!("[sidecar] Failed to emit text event: {}", e);
                 }
             }
-            InboundMessage::ToolStart { id, tool, input, tool_use_id, parent_tool_use_id, ref turn_uuid } => {
+            InboundMessage::ToolStart {
+                id,
+                tool,
+                input,
+                tool_use_id,
+                parent_tool_use_id,
+                ref turn_uuid,
+            } => {
                 let _ = app.emit(
                     &format!("sdk-tool-start-{}", id),
                     serde_json::json!({ "tool": tool, "input": input, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
             }
-            InboundMessage::ToolResult { id, tool, output, tool_use_id, parent_tool_use_id, ref turn_uuid } => {
+            InboundMessage::ToolResult {
+                id,
+                tool,
+                output,
+                tool_use_id,
+                parent_tool_use_id,
+                ref turn_uuid,
+            } => {
                 let _ = app.emit(
                     &format!("sdk-tool-result-{}", id),
                     serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
             }
-            InboundMessage::ThinkingStart { id, content, timestamp, parent_tool_use_id, ref turn_uuid } => {
+            InboundMessage::ThinkingStart {
+                id,
+                content,
+                timestamp,
+                parent_tool_use_id,
+                ref turn_uuid,
+            } => {
                 let _ = app.emit(
                     &format!("sdk-thinking-start-{}", id),
                     serde_json::json!({ "content": content, "timestamp": timestamp, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
                 );
             }
-            InboundMessage::ThinkingEnd { id, duration_ms, content, parent_tool_use_id, ref turn_uuid } => {
+            InboundMessage::ThinkingEnd {
+                id,
+                duration_ms,
+                content,
+                parent_tool_use_id,
+                ref turn_uuid,
+            } => {
                 let _ = app.emit(
                     &format!("sdk-thinking-end-{}", id),
                     serde_json::json!({ "durationMs": duration_ms, "content": content, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
@@ -611,7 +663,10 @@ impl SidecarManager {
             } => {
                 log::info!(
                     "[sidecar] Emitting sdk-usage-{}: {} input, {} output, ${:.4}",
-                    id, input_tokens, output_tokens, total_cost_usd
+                    id,
+                    input_tokens,
+                    output_tokens,
+                    total_cost_usd
                 );
                 let mut payload = serde_json::json!({
                     "inputTokens": input_tokens,
@@ -637,10 +692,7 @@ impl SidecarManager {
                 if let Some(v) = main_agent_cache_creation_tokens {
                     payload["mainAgentCacheCreationTokens"] = serde_json::json!(v);
                 }
-                let _ = app.emit(
-                    &format!("sdk-usage-{}", id),
-                    payload,
-                );
+                let _ = app.emit(&format!("sdk-usage-{}", id), payload);
             }
             InboundMessage::ProgressiveUsage {
                 id,
@@ -679,7 +731,9 @@ impl SidecarManager {
             } => {
                 log::info!(
                     "[sidecar] Subagent started: {} (type: {}) for session {}",
-                    agent_id, agent_type, id
+                    agent_id,
+                    agent_type,
+                    id
                 );
                 let _ = app.emit(
                     &format!("sdk-subagent-start-{}", id),
@@ -696,7 +750,8 @@ impl SidecarManager {
             } => {
                 log::info!(
                     "[sidecar] Subagent stopped: {} for session {}",
-                    agent_id, id
+                    agent_id,
+                    id
                 );
                 let _ = app.emit(
                     &format!("sdk-subagent-stop-{}", id),
@@ -715,7 +770,9 @@ impl SidecarManager {
             } => {
                 log::info!(
                     "[sidecar] Task started: {} (toolUseId: {:?}) for session {}",
-                    task_id, tool_use_id, id
+                    task_id,
+                    tool_use_id,
+                    id
                 );
                 let _ = app.emit(
                     &format!("sdk-task-started-{}", id),
@@ -737,7 +794,9 @@ impl SidecarManager {
             } => {
                 log::info!(
                     "[sidecar] Task completed: {} ({}) for session {}",
-                    task_id, status, id
+                    task_id,
+                    status,
+                    id
                 );
                 let _ = app.emit(
                     &format!("sdk-task-completed-{}", id),
@@ -750,18 +809,9 @@ impl SidecarManager {
                     }),
                 );
             }
-            InboundMessage::EffortUpdated {
-                id,
-                effort_level,
-            } => {
-                log::info!(
-                    "[sidecar] Effort updated for {}: {:?}",
-                    id, effort_level
-                );
-                let _ = app.emit(
-                    &format!("sdk-effort-updated-{}", id),
-                    &effort_level,
-                );
+            InboundMessage::EffortUpdated { id, effort_level } => {
+                log::info!("[sidecar] Effort updated for {}: {:?}", id, effort_level);
+                let _ = app.emit(&format!("sdk-effort-updated-{}", id), &effort_level);
             }
             InboundMessage::PlanningQuestions { id, questions } => {
                 log::info!(
@@ -782,7 +832,8 @@ impl SidecarManager {
             } => {
                 log::info!(
                     "[sidecar] Planning complete for session {}: {}",
-                    id, feature_name
+                    id,
+                    feature_name
                 );
                 let _ = app.emit(
                     &format!("sdk-planning-complete-{}", id),
@@ -875,21 +926,16 @@ impl SidecarManager {
                 let _ = app.emit(&format!("launch-profile-error-{}", id), &error);
             }
             InboundMessage::SdkSessionId { id, sdk_session_id } => {
-                log::info!(
-                    "[sidecar] SDK session ID for {}: {}",
-                    id, sdk_session_id
-                );
+                log::info!("[sidecar] SDK session ID for {}: {}", id, sdk_session_id);
                 let _ = app.emit(&format!("sdk-session-id-{}", id), &sdk_session_id);
             }
             InboundMessage::ParallelSessionNotification { id, message } => {
                 log::info!(
                     "[sidecar] Parallel session notification for {}: {}",
-                    id, message
+                    id,
+                    message
                 );
-                let _ = app.emit(
-                    &format!("sdk-parallel-notification-{}", id),
-                    &message,
-                );
+                let _ = app.emit(&format!("sdk-parallel-notification-{}", id), &message);
             }
         }
     }

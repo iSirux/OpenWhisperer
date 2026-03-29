@@ -34,6 +34,17 @@ function inferOpenAiContextWindow(model: string | undefined): number {
   return 200000;
 }
 
+function inferClaudeContextWindow(model: string | undefined): number {
+  const normalized = model?.toLowerCase() ?? "";
+  if (
+    normalized.startsWith("claude-opus-4-6") ||
+    normalized.startsWith("claude-sonnet-4-6")
+  ) {
+    return 1000000;
+  }
+  return 200000;
+}
+
 function inferProvider(
   provider: string | undefined,
   model: string | undefined
@@ -1093,10 +1104,18 @@ function handleAppServerItemEvent(
 ): void {
   const itemId = (item.id as string) || `item-${Date.now()}`;
   const type = normalizeItemType(item.type as string | undefined);
+  const parentToolUseId =
+    (item.parentToolUseId as string | null | undefined) ||
+    (item.parent_tool_use_id as string | null | undefined) ||
+    null;
+  const turnUuid =
+    (item.turnUuid as string | null | undefined) ||
+    (item.turn_uuid as string | null | undefined) ||
+    null;
 
   if (type === "commandexecution") {
     if (phase === "started") {
-      sendToolStart(id, "Bash", { command: item.command }, itemId);
+      sendToolStart(id, "Bash", { command: item.command }, itemId, parentToolUseId, turnUuid);
     } else {
       const output =
         (item.aggregatedOutput as string) ||
@@ -1104,7 +1123,7 @@ function handleAppServerItemEvent(
         (item.stdout as string) ||
         (item.stderr as string) ||
         `exit code: ${String(item.exitCode ?? item.exit_code ?? "unknown")}`;
-      sendToolResult(id, "Bash", output, itemId);
+      sendToolResult(id, "Bash", output, itemId, parentToolUseId, turnUuid);
     }
     return;
   }
@@ -1113,13 +1132,20 @@ function handleAppServerItemEvent(
     const changes = (item.changes as Array<Record<string, unknown>>) || [];
     if (phase === "started") {
       const files = changes.map((c) => c.path).filter(Boolean).join(", ");
-      sendToolStart(id, "Edit", { files: files || "unknown" }, itemId);
+      sendToolStart(
+        id,
+        "Edit",
+        { files: files || "unknown" },
+        itemId,
+        parentToolUseId,
+        turnUuid
+      );
     } else {
       const summary =
         changes
           .map((c) => `${String(c.kind || "change")}: ${String(c.path || "")}`)
           .join("\n") || "File changes applied";
-      sendToolResult(id, "Edit", summary, itemId);
+      sendToolResult(id, "Edit", summary, itemId, parentToolUseId, turnUuid);
     }
     return;
   }
@@ -1129,7 +1155,7 @@ function handleAppServerItemEvent(
     const tool = String(item.tool || "");
     const toolName = tool ? `mcp__${server}__${tool}` : `mcp__${server}`;
     if (phase === "started") {
-      sendToolStart(id, toolName, item.arguments, itemId);
+      sendToolStart(id, toolName, item.arguments, itemId, parentToolUseId, turnUuid);
     } else {
       const err = item.error as Record<string, unknown> | undefined;
       const result = item.result;
@@ -1138,7 +1164,57 @@ function handleAppServerItemEvent(
         : typeof result === "string"
           ? result
           : JSON.stringify(result ?? "");
-      sendToolResult(id, toolName, output, itemId);
+      sendToolResult(id, toolName, output, itemId, parentToolUseId, turnUuid);
+    }
+    return;
+  }
+
+  if (type === "collabtoolcall") {
+    const tool = String(item.tool || "Task");
+    const prompt = typeof item.prompt === "string" ? item.prompt : "";
+    const agentStatus = String(item.agentStatus || item.agent_status || "");
+    const agentId =
+      (item.receiverThreadId as string | undefined) ||
+      (item.receiver_thread_id as string | undefined) ||
+      (item.newThreadId as string | undefined) ||
+      (item.new_thread_id as string | undefined) ||
+      itemId;
+    const taskInput = {
+      prompt,
+      description: prompt,
+      subagent_type: tool,
+      senderThreadId:
+        (item.senderThreadId as string | undefined) ||
+        (item.sender_thread_id as string | undefined),
+      receiverThreadId:
+        (item.receiverThreadId as string | undefined) ||
+        (item.receiver_thread_id as string | undefined),
+      newThreadId:
+        (item.newThreadId as string | undefined) ||
+        (item.new_thread_id as string | undefined),
+    };
+
+    if (phase === "started") {
+      sendTaskStarted(id, itemId, itemId, prompt, tool);
+      sendToolStart(id, "Task", taskInput, itemId, parentToolUseId, turnUuid);
+      sendSubagentStart(id, agentId, tool);
+    } else if (phase === "completed") {
+      sendToolResult(
+        id,
+        "Task",
+        agentStatus || `Task ${String(item.status || "completed")}`,
+        itemId,
+        parentToolUseId,
+        turnUuid
+      );
+      sendTaskCompleted(
+        id,
+        itemId,
+        itemId,
+        String(item.status || "completed"),
+        agentStatus,
+      );
+      sendSubagentStop(id, agentId, "");
     }
     return;
   }
@@ -1149,10 +1225,19 @@ function handleAppServerItemEvent(
         id,
         "WebSearch",
         { query: getWebSearchQuery(item) || "unknown" },
-        itemId
+        itemId,
+        parentToolUseId,
+        turnUuid
       );
     } else {
-      sendToolResult(id, "WebSearch", getWebSearchResultText(item), itemId);
+      sendToolResult(
+        id,
+        "WebSearch",
+        getWebSearchResultText(item),
+        itemId,
+        parentToolUseId,
+        turnUuid
+      );
     }
     return;
   }
@@ -1166,13 +1251,15 @@ function handleAppServerItemEvent(
   if (type === "todolist") {
     const input = toTodoWriteInput(item);
     if (phase === "started") {
-      sendToolStart(id, "TodoWrite", input, itemId);
+      sendToolStart(id, "TodoWrite", input, itemId, parentToolUseId, turnUuid);
     } else {
       sendToolResult(
         id,
         "TodoWrite",
         `Updated ${input.todos.length} todo item${input.todos.length === 1 ? "" : "s"}`,
-        itemId
+        itemId,
+        parentToolUseId,
+        turnUuid
       );
     }
     return;
@@ -1187,7 +1274,7 @@ function handleAppServerItemEvent(
   if (type === "agentmessage" && phase === "completed") {
     const text = item.text;
     if (typeof text === "string" && text) {
-      sendText(id, text);
+      sendText(id, text, parentToolUseId, turnUuid);
     }
   }
 }
@@ -1301,7 +1388,11 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
   const extractContextWindow = (
     source: Record<string, unknown> | undefined
   ): number => {
-    if (!source) return inferOpenAiContextWindow(session.codexModel);
+    const fallbackContextWindow =
+      session.provider === "openai"
+        ? inferOpenAiContextWindow(session.codexModel)
+        : inferClaudeContextWindow(session.options.model);
+    if (!source) return fallbackContextWindow;
     const direct =
       asNumber(source.model_context_window) ||
       asNumber(source.modelContextWindow) ||
@@ -1326,7 +1417,7 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
         asNumber(eventObj.contextWindow);
       if (eventWindow > 0) return eventWindow;
     }
-    return inferOpenAiContextWindow(session.codexModel);
+    return fallbackContextWindow;
   };
   const emitAppServerUsage = (
     source: Record<string, unknown> | undefined,
@@ -1470,7 +1561,9 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
         asNumber(params.model_context_window) ||
         asNumber(params.contextWindow) ||
         asNumber(params.context_window) ||
-        200000;
+        (session.provider === "openai"
+          ? inferOpenAiContextWindow(session.codexModel)
+          : inferClaudeContextWindow(session.options.model));
 
       if (last || total) {
         const lastInput =
@@ -2041,15 +2134,31 @@ function handleCodexItemEvent(
     action?: Record<string, unknown>;
     items?: Array<{ text?: string; completed?: boolean }>;
     message?: string;
+    parentToolUseId?: string | null;
+    parent_tool_use_id?: string | null;
+    turnUuid?: string | null;
+    turn_uuid?: string | null;
+    prompt?: string;
+    status?: string;
+    agentStatus?: string;
+    agent_status?: string;
+    senderThreadId?: string;
+    sender_thread_id?: string;
+    receiverThreadId?: string;
+    receiver_thread_id?: string;
+    newThreadId?: string;
+    new_thread_id?: string;
   };
+  const parentToolUseId = typedItem.parentToolUseId || typedItem.parent_tool_use_id || null;
+  const turnUuid = typedItem.turnUuid || typedItem.turn_uuid || null;
 
   switch (typedItem.type) {
     case "agent_message":
       if (phase === "completed" && typedItem.text) {
-        sendText(id, typedItem.text);
+        sendText(id, typedItem.text, parentToolUseId, turnUuid);
       } else if (phase === "updated" && typedItem.text) {
         // Stream partial text as it comes in
-        sendText(id, typedItem.text);
+        sendText(id, typedItem.text, parentToolUseId, turnUuid);
       }
       break;
 
@@ -2084,14 +2193,18 @@ function handleCodexItemEvent(
           id,
           "Bash",
           { command: typedItem.command },
-          typedItem.id
+          typedItem.id,
+          parentToolUseId,
+          turnUuid
         );
       } else if (phase === "completed") {
         sendToolResult(
           id,
           "Bash",
           typedItem.aggregated_output || `exit code: ${typedItem.exit_code}`,
-          typedItem.id
+          typedItem.id,
+          parentToolUseId,
+          turnUuid
         );
       }
       break;
@@ -2104,14 +2217,16 @@ function handleCodexItemEvent(
           id,
           "Edit",
           { files: filePaths },
-          typedItem.id
+          typedItem.id,
+          parentToolUseId,
+          turnUuid
         );
       } else if (phase === "completed") {
         const summary =
           typedItem.changes
             ?.map((c) => `${c.kind}: ${c.path}`)
             .join("\n") || "File changes applied";
-        sendToolResult(id, "Edit", summary, typedItem.id);
+        sendToolResult(id, "Edit", summary, typedItem.id, parentToolUseId, turnUuid);
       }
       break;
 
@@ -2120,7 +2235,7 @@ function handleCodexItemEvent(
         const toolName = typedItem.tool
           ? `mcp__${typedItem.server}__${typedItem.tool}`
           : `mcp__${typedItem.server}`;
-        sendToolStart(id, toolName, typedItem.arguments, typedItem.id);
+        sendToolStart(id, toolName, typedItem.arguments, typedItem.id, parentToolUseId, turnUuid);
       } else if (phase === "completed") {
         const toolName = typedItem.tool
           ? `mcp__${typedItem.server}__${typedItem.tool}`
@@ -2131,9 +2246,54 @@ function handleCodexItemEvent(
         } else if (typedItem.result) {
           output = JSON.stringify(typedItem.result.content);
         }
-        sendToolResult(id, toolName, output, typedItem.id);
+        sendToolResult(id, toolName, output, typedItem.id, parentToolUseId, turnUuid);
       }
       break;
+
+    case "collab_tool_call":
+    case "collabToolCall": {
+      const taskType = typedItem.tool || "Task";
+      const prompt = typedItem.prompt || "";
+      const agentStatus = typedItem.agentStatus || typedItem.agent_status || "";
+      const agentId =
+        typedItem.receiverThreadId ||
+        typedItem.receiver_thread_id ||
+        typedItem.newThreadId ||
+        typedItem.new_thread_id ||
+        typedItem.id;
+      const taskInput = {
+        prompt,
+        description: prompt,
+        subagent_type: taskType,
+        senderThreadId: typedItem.senderThreadId || typedItem.sender_thread_id,
+        receiverThreadId: typedItem.receiverThreadId || typedItem.receiver_thread_id,
+        newThreadId: typedItem.newThreadId || typedItem.new_thread_id,
+      };
+
+      if (phase === "started") {
+        sendTaskStarted(id, typedItem.id, typedItem.id, prompt, taskType);
+        sendToolStart(id, "Task", taskInput, typedItem.id, parentToolUseId, turnUuid);
+        sendSubagentStart(id, agentId, taskType);
+      } else if (phase === "completed") {
+        sendToolResult(
+          id,
+          "Task",
+          agentStatus || `Task ${typedItem.status || "completed"}`,
+          typedItem.id,
+          parentToolUseId,
+          turnUuid
+        );
+        sendTaskCompleted(
+          id,
+          typedItem.id,
+          typedItem.id,
+          typedItem.status || "completed",
+          agentStatus
+        );
+        sendSubagentStop(id, agentId, "");
+      }
+      break;
+    }
 
     case "web_search":
     case "web_search_request":
@@ -2145,14 +2305,18 @@ function handleCodexItemEvent(
           id,
           "WebSearch",
           { query },
-          typedItem.id
+          typedItem.id,
+          parentToolUseId,
+          turnUuid
         );
       } else if (phase === "completed") {
         sendToolResult(
           id,
           "WebSearch",
           getWebSearchResultText(typedItem as unknown as Record<string, unknown>),
-          typedItem.id
+          typedItem.id,
+          parentToolUseId,
+          turnUuid
         );
       }
       break;
@@ -2166,13 +2330,15 @@ function handleCodexItemEvent(
     case "todo_list": {
       const input = toTodoWriteInput(typedItem as unknown as Record<string, unknown>);
       if (phase === "started" || phase === "updated") {
-        sendToolStart(id, "TodoWrite", input, typedItem.id);
+        sendToolStart(id, "TodoWrite", input, typedItem.id, parentToolUseId, turnUuid);
       } else if (phase === "completed") {
         sendToolResult(
           id,
           "TodoWrite",
           `Updated ${input.todos.length} todo item${input.todos.length === 1 ? "" : "s"}`,
-          typedItem.id
+          typedItem.id,
+          parentToolUseId,
+          turnUuid
         );
       }
       break;
@@ -4190,7 +4356,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         const contextWindow =
           modelUsageValues.length > 0
             ? modelUsageValues[0].contextWindow
-            : 200000;
+            : inferClaudeContextWindow(session.options.model);
 
         sendUsage(id, {
           inputTokens: message.usage?.input_tokens || 0,
@@ -4214,7 +4380,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           const contextWindow =
             modelUsageValues.length > 0
               ? modelUsageValues[0].contextWindow
-              : 200000;
+              : inferClaudeContextWindow(session.options.model);
 
           sendUsage(id, {
             inputTokens: message.usage?.input_tokens || 0,

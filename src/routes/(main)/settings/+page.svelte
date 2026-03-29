@@ -18,21 +18,24 @@
     LlmTab,
     HotkeysTab,
     OverlayTab,
-    ReposTab,
     McpTab,
     VoiceCommandsTab,
     SequencesTab,
     AboutTab,
   } from "$lib/components/settings";
 
+  function normalizeTab(tab: string | null): string {
+    return tab === 'repos' ? 'llm' : tab || 'claude';
+  }
+
   // Read initial tab from URL query param (e.g. /settings?tab=llm)
-  let activeTab = $state($page.url.searchParams.get('tab') || 'claude');
+  let activeTab = $state(normalizeTab($page.url.searchParams.get('tab')));
 
   // Update tab when URL changes
   $effect(() => {
     const tabFromUrl = $page.url.searchParams.get('tab');
     if (tabFromUrl) {
-      activeTab = tabFromUrl;
+      activeTab = normalizeTab(tabFromUrl);
     }
   });
 
@@ -120,7 +123,6 @@
     { id: "mcp", label: "MCP Servers" },
     { id: "hotkeys", label: "Hotkeys" },
     { id: "overlay", label: "Overlay" },
-    { id: "repos", label: "Repositories" },
     { id: "sequences", label: "Sequences" },
     { id: "about", label: "About" },
   ];
@@ -174,8 +176,6 @@
         <HotkeysTab />
       {:else if activeTab === "overlay"}
         <OverlayTab />
-      {:else if activeTab === "repos"}
-        <ReposTab />
       {:else if activeTab === "sequences"}
         <SequencesTab />
       {:else if activeTab === "about"}

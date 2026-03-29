@@ -50,7 +50,7 @@
     }
     const lines: string[] = [`${name} Rate Limits`];
     if (error) {
-      lines.push('⚠ Data may be stale — last fetch failed');
+      lines.push('⚠ Data may be stale — repeated fetches failed');
       lines.push(error);
       lines.push('');
     }

@@ -754,7 +754,10 @@ impl UsageStats {
             self.model_usage.codex_53_sessions += 1;
         } else if model_lower == "gpt-5.2-codex" {
             self.model_usage.codex_52_sessions += 1;
-        } else if model_lower == "gpt-5.1-codex-mini" {
+        } else if model_lower == "gpt-5.4-mini"
+            || model_lower == "gpt-5-mini"
+            || model_lower == "gpt-5.1-codex-mini"
+        {
             self.model_usage.codex_51_mini_sessions += 1;
         }
 
@@ -800,7 +803,11 @@ impl UsageStats {
         self.session_stats.total_tool_calls += 1;
 
         // Update most used tools
-        if let Some(tool) = self.most_used_tools.iter_mut().find(|(name, _)| name == tool_name) {
+        if let Some(tool) = self
+            .most_used_tools
+            .iter_mut()
+            .find(|(name, _)| name == tool_name)
+        {
             tool.1 += 1;
         } else {
             self.most_used_tools.push((tool_name.to_string(), 1));
@@ -846,12 +853,7 @@ impl UsageStats {
     }
 
     /// Track token usage from the LLM integration layer (Gemini/OpenAI/Groq/Local)
-    pub fn track_llm_token_usage(
-        &mut self,
-        feature: &str,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) {
+    pub fn track_llm_token_usage(&mut self, feature: &str, input_tokens: u64, output_tokens: u64) {
         // Update totals
         self.llm_token_stats.total_input_tokens += input_tokens;
         self.llm_token_stats.total_output_tokens += output_tokens;
@@ -905,8 +907,14 @@ impl UsageStats {
             .to_string();
 
         // Check if we already have an entry for today
-        let has_today = self.daily_stats.iter().any(|d| d.date == today && d.sessions > 0);
-        let had_yesterday = self.daily_stats.iter().any(|d| d.date == yesterday && d.sessions > 0);
+        let has_today = self
+            .daily_stats
+            .iter()
+            .any(|d| d.date == today && d.sessions > 0);
+        let had_yesterday = self
+            .daily_stats
+            .iter()
+            .any(|d| d.date == yesterday && d.sessions > 0);
 
         if has_today {
             if had_yesterday {
@@ -1057,6 +1065,8 @@ pub enum RecordAndSendAction {
 pub struct AudioConfig {
     pub device_id: Option<String>,
     pub use_hotkey: bool,
+    #[serde(default = "default_hold_space_to_record_inline")]
+    pub hold_space_to_record_inline: bool,
     #[serde(default)]
     pub play_sound_on_completion: bool,
     #[serde(default = "default_play_sound_on_repo_select")]
@@ -1087,6 +1097,10 @@ fn default_recording_linger_ms() -> u32 {
     500
 }
 
+fn default_hold_space_to_record_inline() -> bool {
+    true
+}
+
 fn default_play_sound_on_repo_select() -> bool {
     true
 }
@@ -1108,6 +1122,7 @@ impl Default for AudioConfig {
         Self {
             device_id: None,
             use_hotkey: true,
+            hold_space_to_record_inline: default_hold_space_to_record_inline(),
             play_sound_on_completion: false,
             play_sound_on_repo_select: true,
             play_sound_on_open_mic_trigger: true,
@@ -1375,7 +1390,10 @@ impl<'de> Deserialize<'de> for EffortLevel {
                 EffortLevel::Max
             }
             other => {
-                log::error!("[config] Unknown effort level '{}', defaulting to Off", other);
+                log::error!(
+                    "[config] Unknown effort level '{}', defaulting to Off",
+                    other
+                );
                 EffortLevel::Off
             }
         })
@@ -1772,7 +1790,10 @@ impl<'de> Deserialize<'de> for AutoModelEffort {
                 AutoModelEffort::Max
             }
             other => {
-                log::error!("[config] Unknown auto_model_effort '{}', defaulting to Dynamic", other);
+                log::error!(
+                    "[config] Unknown auto_model_effort '{}', defaulting to Dynamic",
+                    other
+                );
                 AutoModelEffort::Dynamic
             }
         })
@@ -1849,7 +1870,7 @@ pub struct LlmConfig {
 }
 
 fn default_llm_model() -> String {
-    "meta-llama/llama-4-maverick-17b-128e-instruct".to_string()
+    "openai/gpt-oss-120b".to_string()
 }
 
 fn default_auto_model() -> bool {
@@ -1891,10 +1912,10 @@ fn default_openai_model() -> String {
 fn default_enabled_openai_models() -> Vec<String> {
     vec![
         "gpt-5.4".to_string(),
+        "gpt-5.4-mini".to_string(),
         "gpt-5.3-codex".to_string(),
         "gpt-5.3-codex-spark".to_string(),
         "gpt-5.2-codex".to_string(),
-        "gpt-5.1-codex-mini".to_string(),
     ]
 }
 
@@ -1973,6 +1994,21 @@ impl AppConfig {
         changed
     }
 
+    /// Migrate deprecated or removed model IDs in persisted config.
+    fn migrate_deprecated_llm_models(&mut self) -> bool {
+        if self.llm.provider == LlmProvider::Groq
+            && self.llm.model == "meta-llama/llama-4-maverick-17b-128e-instruct"
+        {
+            log::error!(
+                "[config.load] Migrating deprecated Groq model 'meta-llama/llama-4-maverick-17b-128e-instruct' -> 'openai/gpt-oss-120b'"
+            );
+            self.llm.model = "openai/gpt-oss-120b".to_string();
+            return true;
+        }
+
+        false
+    }
+
     /// Load config with graceful recovery.
     /// Returns (config, loaded_successfully).
     /// `loaded_successfully` is true if config was parsed from disk (even with field-level fixups),
@@ -2005,7 +2041,8 @@ impl AppConfig {
                     if release_path.exists() {
                         log::error!(
                             "[config.load] Debug config {:?} missing; loading {:?} instead.",
-                            path, release_path
+                            path,
+                            release_path
                         );
                         release_path
                     } else {
@@ -2032,15 +2069,28 @@ impl AppConfig {
         // Attempt 1: Normal deserialization (custom deserializers handle most legacy values)
         match serde_json::from_str::<AppConfig>(&content) {
             Ok(mut config) => {
-                log::info!("[config.load] Config loaded successfully ({} repos)", config.repos.len());
+                log::info!(
+                    "[config.load] Config loaded successfully ({} repos)",
+                    config.repos.len()
+                );
+                let mut changed = false;
                 if config.ensure_repo_ids() {
                     log::error!("[config.load] Assigned IDs to repos without IDs");
+                    changed = true;
+                }
+                if config.migrate_deprecated_llm_models() {
+                    changed = true;
+                }
+                if changed {
                     let _ = config.save();
                 }
                 return (config, true);
             }
             Err(e) => {
-                log::error!("[config.load] Normal parse failed: {}. Attempting field-level recovery...", e);
+                log::error!(
+                    "[config.load] Normal parse failed: {}. Attempting field-level recovery...",
+                    e
+                );
             }
         }
 
@@ -2050,20 +2100,36 @@ impl AppConfig {
                 Self::fix_known_fields(&mut value);
                 match serde_json::from_value::<AppConfig>(value) {
                     Ok(mut config) => {
-                        log::error!("[config.load] Recovery succeeded ({} repos)", config.repos.len());
+                        log::error!(
+                            "[config.load] Recovery succeeded ({} repos)",
+                            config.repos.len()
+                        );
+                        let mut changed = false;
                         if config.ensure_repo_ids() {
                             log::error!("[config.load] Assigned IDs to repos without IDs");
+                            changed = true;
+                        }
+                        if config.migrate_deprecated_llm_models() {
+                            changed = true;
+                        }
+                        if changed {
                             let _ = config.save();
                         }
                         return (config, true);
                     }
                     Err(e) => {
-                        log::error!("[config.load] Recovery also failed: {}. Falling back to defaults.", e);
+                        log::error!(
+                            "[config.load] Recovery also failed: {}. Falling back to defaults.",
+                            e
+                        );
                     }
                 }
             }
             Err(e) => {
-                log::error!("[config.load] Config is not valid JSON: {}. Falling back to defaults.", e);
+                log::error!(
+                    "[config.load] Config is not valid JSON: {}. Falling back to defaults.",
+                    e
+                );
             }
         }
 
@@ -2076,10 +2142,16 @@ impl AppConfig {
     fn fix_known_fields(value: &mut serde_json::Value) {
         if let serde_json::Value::Object(obj) = value {
             // Fix default_effort_level / default_thinking_level
-            if let Some(field) = obj.get("default_effort_level").or(obj.get("default_thinking_level")) {
+            if let Some(field) = obj
+                .get("default_effort_level")
+                .or(obj.get("default_thinking_level"))
+            {
                 if let serde_json::Value::Bool(_) | serde_json::Value::Number(_) = field {
                     log::error!("[config.fix] Fixing non-string default_effort_level");
-                    obj.insert("default_effort_level".to_string(), serde_json::Value::String("high".to_string()));
+                    obj.insert(
+                        "default_effort_level".to_string(),
+                        serde_json::Value::String("high".to_string()),
+                    );
                 }
             }
 
@@ -2088,9 +2160,13 @@ impl AppConfig {
                 if let Some(serde_json::Value::Object(features)) = llm.get_mut("features") {
                     for key in &["auto_model_effort", "auto_model_thinking"] {
                         if let Some(field) = features.get(*key) {
-                            if let serde_json::Value::Bool(_) | serde_json::Value::Number(_) = field {
+                            if let serde_json::Value::Bool(_) | serde_json::Value::Number(_) = field
+                            {
                                 log::error!("[config.fix] Fixing non-string {}", key);
-                                features.insert(key.to_string(), serde_json::Value::String("dynamic".to_string()));
+                                features.insert(
+                                    key.to_string(),
+                                    serde_json::Value::String("dynamic".to_string()),
+                                );
                             }
                         }
                     }
@@ -2099,27 +2175,54 @@ impl AppConfig {
 
             // Fix theme if it's a removed variant
             if let Some(serde_json::Value::String(theme)) = obj.get("theme") {
-                let valid_themes = ["Midnight", "Slate", "Void", "Ember", "Pearl", "Latte", "Snow", "Sand"];
+                let valid_themes = [
+                    "Midnight", "Slate", "Void", "Ember", "Pearl", "Latte", "Snow", "Sand",
+                ];
                 if !valid_themes.contains(&theme.as_str()) {
                     log::error!("[config.fix] Fixing unknown theme '{}' → Midnight", theme);
-                    obj.insert("theme".to_string(), serde_json::Value::String("Midnight".to_string()));
+                    obj.insert(
+                        "theme".to_string(),
+                        serde_json::Value::String("Midnight".to_string()),
+                    );
                 }
             }
 
             // Migrate removed OpenAI alias model id
             if let Some(serde_json::Value::String(openai_model)) = obj.get("openai_model") {
                 if openai_model == "codex-mini-latest" {
-                    log::error!("[config.fix] Migrating openai_model 'codex-mini-latest' → 'gpt-5.4'");
-                    obj.insert("openai_model".to_string(), serde_json::Value::String("gpt-5.4".to_string()));
+                    log::error!(
+                        "[config.fix] Migrating openai_model 'codex-mini-latest' → 'gpt-5.4'"
+                    );
+                    obj.insert(
+                        "openai_model".to_string(),
+                        serde_json::Value::String("gpt-5.4".to_string()),
+                    );
                 } else if openai_model == "gpt-5.4-codex" {
                     log::error!("[config.fix] Migrating openai_model 'gpt-5.4-codex' → 'gpt-5.4'");
-                    obj.insert("openai_model".to_string(), serde_json::Value::String("gpt-5.4".to_string()));
+                    obj.insert(
+                        "openai_model".to_string(),
+                        serde_json::Value::String("gpt-5.4".to_string()),
+                    );
+                } else if openai_model == "gpt-5-mini"
+                    || openai_model == "gpt-5.1-codex-mini"
+                {
+                    log::error!(
+                        "[config.fix] Migrating openai_model '{}' → 'gpt-5.4-mini'",
+                        openai_model
+                    );
+                    obj.insert(
+                        "openai_model".to_string(),
+                        serde_json::Value::String("gpt-5.4-mini".to_string()),
+                    );
                 }
             }
 
-            if let Some(serde_json::Value::Array(enabled_models)) = obj.get_mut("enabled_openai_models") {
+            if let Some(serde_json::Value::Array(enabled_models)) =
+                obj.get_mut("enabled_openai_models")
+            {
                 let mut removed_deprecated_alias = false;
                 let mut replaced_legacy_primary = false;
+                let mut migrated_legacy_mini = false;
                 for model in enabled_models.iter_mut() {
                     if let serde_json::Value::String(s) = model {
                         if s == "codex-mini-latest" {
@@ -2128,6 +2231,9 @@ impl AppConfig {
                         } else if s == "gpt-5.4-codex" {
                             *s = "gpt-5.4".to_string();
                             replaced_legacy_primary = true;
+                        } else if s == "gpt-5-mini" || s == "gpt-5.1-codex-mini" {
+                            *s = "gpt-5.4-mini".to_string();
+                            migrated_legacy_mini = true;
                         }
                     }
                 }
@@ -2144,6 +2250,11 @@ impl AppConfig {
                 }
                 if replaced_legacy_primary {
                     log::error!("[config.fix] Migrated model 'gpt-5.4-codex' to 'gpt-5.4' in enabled_openai_models");
+                }
+                if migrated_legacy_mini {
+                    log::error!(
+                        "[config.fix] Migrated legacy mini model IDs to 'gpt-5.4-mini' in enabled_openai_models"
+                    );
                 }
                 if enabled_models.is_empty() {
                     enabled_models.push(serde_json::Value::String(default_openai_model()));
@@ -2223,7 +2334,11 @@ impl AppConfig {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-        log::info!("[config.save] Writing {} bytes, repos count: {}", content.len(), self.repos.len());
+        log::info!(
+            "[config.save] Writing {} bytes, repos count: {}",
+            content.len(),
+            self.repos.len()
+        );
         fs::write(&path, &content).map_err(|e| format!("Failed to write config: {}", e))?;
         log::info!("[config.save] Write successful");
         Ok(())

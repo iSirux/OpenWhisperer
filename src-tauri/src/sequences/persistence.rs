@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use crate::config::AppConfig;
-use crate::sequences::types::SequenceDefinition;
 use crate::sequences::state::{ExecutionSummary, SequenceExecution};
+use crate::sequences::types::SequenceDefinition;
 
 const SEQUENCES_DIR_ENV: &str = "CLAUDE_WHISPERER_SEQUENCES_DIR";
 const SEQUENCES_DIR_ENV_DEV: &str = "CLAUDE_WHISPERER_SEQUENCES_DIR_DEV";
@@ -144,8 +144,8 @@ pub fn load_definitions() -> Result<Vec<SequenceDefinition>, String> {
 
     let mut definitions = Vec::new();
 
-    let entries = fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read sequences directory: {}", e))?;
+    let entries =
+        fs::read_dir(&dir).map_err(|e| format!("Failed to read sequences directory: {}", e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
@@ -172,10 +172,7 @@ pub fn load_definitions() -> Result<Vec<SequenceDefinition>, String> {
                     );
                     match repair_and_reload(&path, &content) {
                         Ok(def) => {
-                            log::error!(
-                                "[sequences] Successfully repaired {}",
-                                path.display()
-                            );
+                            log::error!("[sequences] Successfully repaired {}", path.display());
                             def
                         }
                         Err(repair_err) => {
@@ -188,11 +185,7 @@ pub fn load_definitions() -> Result<Vec<SequenceDefinition>, String> {
                         }
                     }
                 } else {
-                    log::error!(
-                        "[sequences] Failed to parse {}: {}",
-                        path.display(),
-                        e
-                    );
+                    log::error!("[sequences] Failed to parse {}: {}", path.display(), e);
                     continue;
                 }
             }
@@ -219,10 +212,7 @@ pub fn load_definitions() -> Result<Vec<SequenceDefinition>, String> {
 /// then re-parsing and re-saving the fixed version.
 ///
 /// Keeps a `.corrupt` backup of the original broken file.
-fn repair_and_reload(
-    path: &std::path::Path,
-    content: &str,
-) -> Result<SequenceDefinition, String> {
+fn repair_and_reload(path: &std::path::Path, content: &str) -> Result<SequenceDefinition, String> {
     let repaired = dedup_yaml_keys(content);
 
     let def = serde_yaml::from_str::<SequenceDefinition>(&repaired)
@@ -246,8 +236,7 @@ fn repair_and_reload(
     let tmp_path = path.with_extension("yaml.tmp");
     fs::write(&tmp_path, &clean_content)
         .map_err(|e| format!("Failed to write repaired file: {}", e))?;
-    fs::rename(&tmp_path, path)
-        .map_err(|e| format!("Failed to rename repaired file: {}", e))?;
+    fs::rename(&tmp_path, path).map_err(|e| format!("Failed to rename repaired file: {}", e))?;
 
     Ok(def)
 }
@@ -363,8 +352,7 @@ fn extract_yaml_key(trimmed: &str) -> Option<(String, bool)> {
 ///    partial writes on crash.
 pub fn save_definition(def: &SequenceDefinition) -> Result<(), String> {
     let dir = sequences_dir();
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create sequences directory: {}", e))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sequences directory: {}", e))?;
 
     let slug = if def.id.is_empty() {
         slugify(&def.name)
@@ -479,8 +467,8 @@ pub fn list_executions() -> Result<Vec<ExecutionSummary>, String> {
         return Ok(Vec::new());
     }
 
-    let entries = fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read executions directory: {}", e))?;
+    let entries =
+        fs::read_dir(&dir).map_err(|e| format!("Failed to read executions directory: {}", e))?;
 
     let mut summaries = Vec::new();
 
@@ -496,11 +484,7 @@ pub fn list_executions() -> Result<Vec<ExecutionSummary>, String> {
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                log::error!(
-                    "[sequences] Failed to read {}: {}",
-                    path.display(),
-                    e
-                );
+                log::error!("[sequences] Failed to read {}: {}", path.display(), e);
                 continue;
             }
         };
@@ -510,11 +494,7 @@ pub fn list_executions() -> Result<Vec<ExecutionSummary>, String> {
                 summaries.push(exec.to_summary());
             }
             Err(e) => {
-                log::error!(
-                    "[sequences] Failed to parse {}: {}",
-                    path.display(),
-                    e
-                );
+                log::error!("[sequences] Failed to parse {}: {}", path.display(), e);
                 continue;
             }
         }
@@ -549,8 +529,8 @@ pub fn cleanup_old_executions(max_age_days: u64) -> Result<usize, String> {
     let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days as i64);
     let mut deleted = 0;
 
-    let entries = fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read executions directory: {}", e))?;
+    let entries =
+        fs::read_dir(&dir).map_err(|e| format!("Failed to read executions directory: {}", e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
@@ -681,8 +661,15 @@ mod tests {
 
         let repaired = dedup_yaml_keys(corrupt);
         // Should only have one `outputs` line
-        let outputs_count = repaired.lines().filter(|l| l.trim_start().starts_with("outputs:")).count();
-        assert_eq!(outputs_count, 1, "Should have exactly one outputs key, got:\n{}", repaired);
+        let outputs_count = repaired
+            .lines()
+            .filter(|l| l.trim_start().starts_with("outputs:"))
+            .count();
+        assert_eq!(
+            outputs_count, 1,
+            "Should have exactly one outputs key, got:\n{}",
+            repaired
+        );
     }
 
     #[test]
@@ -701,10 +688,24 @@ mod tests {
   outputs: []";
 
         let repaired = dedup_yaml_keys(corrupt);
-        let timeout_count = repaired.lines().filter(|l| l.trim_start().starts_with("timeout:")).count();
-        let outputs_count = repaired.lines().filter(|l| l.trim_start().starts_with("outputs:")).count();
-        assert_eq!(timeout_count, 1, "Should have exactly one timeout key, got:\n{}", repaired);
-        assert_eq!(outputs_count, 1, "Should have exactly one outputs key, got:\n{}", repaired);
+        let timeout_count = repaired
+            .lines()
+            .filter(|l| l.trim_start().starts_with("timeout:"))
+            .count();
+        let outputs_count = repaired
+            .lines()
+            .filter(|l| l.trim_start().starts_with("outputs:"))
+            .count();
+        assert_eq!(
+            timeout_count, 1,
+            "Should have exactly one timeout key, got:\n{}",
+            repaired
+        );
+        assert_eq!(
+            outputs_count, 1,
+            "Should have exactly one outputs key, got:\n{}",
+            repaired
+        );
     }
 
     #[test]
@@ -723,8 +724,15 @@ nodes:
 
         let result = dedup_yaml_keys(valid);
         // outputs appears in different list items (different mappings) — both should be kept
-        let outputs_count = result.lines().filter(|l| l.trim_start().starts_with("outputs:")).count();
-        assert_eq!(outputs_count, 2, "Each list item should keep its outputs, got:\n{}", result);
+        let outputs_count = result
+            .lines()
+            .filter(|l| l.trim_start().starts_with("outputs:"))
+            .count();
+        assert_eq!(
+            outputs_count, 2,
+            "Each list item should keep its outputs, got:\n{}",
+            result
+        );
     }
 
     #[test]
@@ -761,7 +769,12 @@ triggers:
         let repaired = dedup_yaml_keys(corrupt);
         // The repaired YAML should be parseable by serde_yaml
         let result = serde_yaml::from_str::<SequenceDefinition>(&repaired);
-        assert!(result.is_ok(), "Repaired YAML should parse, error: {:?}\nRepaired:\n{}", result.err(), repaired);
+        assert!(
+            result.is_ok(),
+            "Repaired YAML should parse, error: {:?}\nRepaired:\n{}",
+            result.err(),
+            repaired
+        );
 
         let def = result.unwrap();
         assert_eq!(def.nodes.len(), 2);

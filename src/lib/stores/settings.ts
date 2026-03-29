@@ -247,6 +247,8 @@ export type RecordAndSendAction = "send" | "prepare";
 export interface AudioConfig {
   device_id: string | null;
   use_hotkey: boolean;
+  /** Hold Space in an active SDK session to record inline while the app is focused */
+  hold_space_to_record_inline: boolean;
   play_sound_on_completion: boolean;
   play_sound_on_repo_select: boolean;
   /** Play sound when open mic wake command is detected and recording starts */
@@ -580,6 +582,7 @@ const defaultConfig: AppConfig = {
   audio: {
     device_id: null,
     use_hotkey: true,
+    hold_space_to_record_inline: true,
     play_sound_on_completion: false,
     play_sound_on_repo_select: true,
     play_sound_on_open_mic_trigger: true,
@@ -621,10 +624,10 @@ const defaultConfig: AppConfig = {
   openai_model: "gpt-5.4",
   enabled_openai_models: [
     "gpt-5.4",
+    "gpt-5.4-mini",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.2-codex",
-    "gpt-5.1-codex-mini",
   ],
   openai_auth_method: "OAuth",
   claude_auth_method: "OAuth",

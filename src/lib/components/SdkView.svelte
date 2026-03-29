@@ -242,6 +242,14 @@
     promptInputRef?.focus();
   }
 
+  export async function startInlineRecording() {
+    await handleStartInlineRecording();
+  }
+
+  export async function stopInlineRecording() {
+    await handleStopInlineRecording();
+  }
+
   // Track previous session ID to save draft and scroll position before switching
   let prevSessionId = $state(sessionId);
   let restoredSessionId = $state<string | null>(null);

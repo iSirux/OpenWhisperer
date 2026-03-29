@@ -1,13 +1,13 @@
-pub mod types;
-pub mod state;
-pub mod persistence;
-pub mod template;
+pub mod ai_generation;
+pub mod event_triggers;
 pub mod executor;
 pub mod notifications;
-pub mod scheduler;
-pub mod ai_generation;
+pub mod persistence;
 pub mod rate_limiter;
-pub mod event_triggers;
+pub mod scheduler;
+pub mod state;
+pub mod template;
+pub mod types;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -18,12 +18,12 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-use crate::sidecar::SidecarManager;
+use self::event_triggers::EventTriggerManager;
 use self::executor::SequenceExecutor;
 use self::rate_limiter::SequenceRateLimiter;
-use self::event_triggers::EventTriggerManager;
 use self::state::{ExecutionStatus, ExecutionSummary, SequenceExecution};
 use self::types::SequenceDefinition;
+use crate::sidecar::SidecarManager;
 
 /// Central manager for sequence definitions and executions.
 ///
@@ -166,7 +166,11 @@ impl SequenceManager {
 
         // Use pre-generated ID from frontend, or generate one.
         let execution_id = pre_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        log::info!("[sequence] start_execution_inner: id={}, sequence={}", execution_id, sequence_id);
+        log::info!(
+            "[sequence] start_execution_inner: id={}, sequence={}",
+            execution_id,
+            sequence_id
+        );
         let exec_id = execution_id.clone();
 
         // Store coordination primitives
@@ -193,7 +197,15 @@ impl SequenceManager {
         let eid = execution_id.clone();
         let handle = tokio::spawn(async move {
             match executor
-                .execute(eid, definition, inputs, dry_run, cancel, pause, entry_node_id)
+                .execute(
+                    eid,
+                    definition,
+                    inputs,
+                    dry_run,
+                    cancel,
+                    pause,
+                    entry_node_id,
+                )
                 .await
             {
                 Ok(id) => {
@@ -287,11 +299,7 @@ impl SequenceManager {
     /// This cancels the current (failed) execution and re-starts it from the
     /// failed node.  For now, we re-start the entire sequence since resuming
     /// mid-sequence requires snapshotting execution context.
-    pub fn retry_node(
-        &self,
-        execution_id: &str,
-        _node_id: &str,
-    ) -> Result<(), String> {
+    pub fn retry_node(&self, execution_id: &str, _node_id: &str) -> Result<(), String> {
         // Load the execution to get the sequence_id and inputs
         let exec = self.get_execution(execution_id)?;
         let sequence_id = exec.sequence_id;

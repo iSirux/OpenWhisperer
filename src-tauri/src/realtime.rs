@@ -85,10 +85,7 @@ impl VoskSession {
     pub async fn send_audio(&mut self, samples: &[i16]) -> Result<(), String> {
         self.ensure_configured().await?;
 
-        let bytes: Vec<u8> = samples
-            .iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
 
         self.socket
             .send(Message::Binary(bytes.into()))
@@ -430,11 +427,8 @@ impl SpeachesSession {
                         "[realtime][speaches] recv(finalize): {}",
                         truncate_for_log(&text, 280)
                     );
-                    let _ = parse_speaches_event(
-                        &text,
-                        &mut self.partial_by_item,
-                        &mut self.last_text,
-                    );
+                    let _ =
+                        parse_speaches_event(&text, &mut self.partial_by_item, &mut self.last_text);
                 }
                 Ok(Some(Ok(Message::Close(_)))) => break,
                 Ok(Some(Ok(_))) => {}
@@ -492,10 +486,7 @@ fn parse_speaches_event(
     partial_by_item: &mut HashMap<String, String>,
     last_text: &mut String,
 ) -> Result<Option<RealtimeResponse>, String> {
-    log::info!(
-        "[realtime][speaches] recv: {}",
-        truncate_for_log(raw, 280)
-    );
+    log::info!("[realtime][speaches] recv: {}", truncate_for_log(raw, 280));
 
     let value: Value = serde_json::from_str(raw)
         .map_err(|e| format!("Failed to parse Speaches response: {} (raw: {})", e, raw))?;
@@ -743,10 +734,7 @@ impl VoiceStreamAISession {
     pub async fn send_audio(&mut self, samples: &[i16]) -> Result<(), String> {
         self.ensure_configured().await?;
 
-        let bytes: Vec<u8> = samples
-            .iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
 
         self.socket
             .send(Message::Binary(bytes.into()))
@@ -768,10 +756,15 @@ impl VoiceStreamAISession {
                         if transcription.is_empty() {
                             Ok(None)
                         } else {
-                            Ok(Some(RealtimeResponse::Final { text: transcription }))
+                            Ok(Some(RealtimeResponse::Final {
+                                text: transcription,
+                            }))
                         }
                     }
-                    Err(e) => Err(format!("Failed to parse VoiceStreamAI response: {} (raw: {})", e, text)),
+                    Err(e) => Err(format!(
+                        "Failed to parse VoiceStreamAI response: {} (raw: {})",
+                        e, text
+                    )),
                 }
             }
             Ok(Some(Ok(Message::Close(_)))) => Ok(None),
@@ -845,7 +838,10 @@ impl RealtimeSessionType {
 
 // ── Connection testing ────────────────────────────────────────────────────────
 
-pub async fn test_vosk_connection(endpoint: &str, sample_rate: u32) -> RealtimeConnectionTestResult {
+pub async fn test_vosk_connection(
+    endpoint: &str,
+    sample_rate: u32,
+) -> RealtimeConnectionTestResult {
     match connect_async(endpoint).await {
         Ok((mut ws, _)) => {
             let config_msg = VoskConfigMessage {
@@ -1061,15 +1057,15 @@ impl RealtimeSessionManager {
         }
     }
 
-    pub async fn get_session(
-        &self,
-        session_id: &str,
-    ) -> Option<Arc<Mutex<RealtimeSessionType>>> {
+    pub async fn get_session(&self, session_id: &str) -> Option<Arc<Mutex<RealtimeSessionType>>> {
         let sessions = self.sessions.lock().await;
         sessions.get(session_id).cloned()
     }
 
-    pub async fn remove_session(&self, session_id: &str) -> Option<Arc<Mutex<RealtimeSessionType>>> {
+    pub async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Option<Arc<Mutex<RealtimeSessionType>>> {
         let mut sessions = self.sessions.lock().await;
         sessions.remove(session_id)
     }

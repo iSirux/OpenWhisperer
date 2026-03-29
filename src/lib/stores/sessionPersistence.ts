@@ -511,6 +511,9 @@ export async function saveSessionsToDisk(): Promise<void> {
     if (hasOverflow) {
       console.log(`[sessionPersistence] Archiving ${result.overflowSdkSessions?.length ?? 0} SDK + ${result.overflowTerminalSessions?.length ?? 0} terminal overflow sessions`);
 
+      const overflowSdkIds = new Set((result.overflowSdkSessions || []).map((session) => session.id));
+      const overflowTerminalIds = new Set((result.overflowTerminalSessions || []).map((session) => session.id));
+
       for (const session of (result.overflowSdkSessions || [])) {
         try {
           await invoke('archive_sdk_session', { session });
@@ -531,6 +534,29 @@ export async function saveSessionsToDisk(): Promise<void> {
       await invoke('trim_archive', {
         maxEntries: currentSettings.session_persistence.max_archived_sessions ?? 500,
       });
+
+      // Keep the live session list aligned with persistence once overflow sessions are archived.
+      if (overflowSdkIds.size > 0) {
+        sdkSessions.set(
+          get(sdkSessions).filter((session) => !overflowSdkIds.has(session.id))
+        );
+
+        const currentActiveSdkSessionId = get(activeSdkSessionId);
+        if (currentActiveSdkSessionId && overflowSdkIds.has(currentActiveSdkSessionId)) {
+          activeSdkSessionId.set(null);
+        }
+      }
+
+      if (overflowTerminalIds.size > 0) {
+        sessions.update((currentSessions) =>
+          currentSessions.filter((session) => !overflowTerminalIds.has(session.id))
+        );
+
+        const currentActiveTerminalSessionId = get(activeSessionId);
+        if (currentActiveTerminalSessionId && overflowTerminalIds.has(currentActiveTerminalSessionId)) {
+          activeSessionId.set(null);
+        }
+      }
 
       // Refresh archive metadata and list
       const { archive } = await import('./archive');

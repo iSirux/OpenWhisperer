@@ -73,7 +73,9 @@ fn get_bearer_token_key(server_id: &str) -> String {
 pub async fn test_mcp_server(server_id: String) -> Result<McpTestResult, String> {
     let (config, _) = AppConfig::load();
 
-    let server = config.mcp.servers
+    let server = config
+        .mcp
+        .servers
         .iter()
         .find(|s| s.id == server_id)
         .ok_or_else(|| format!("Server not found: {}", server_id))?;
@@ -88,7 +90,9 @@ pub async fn test_mcp_server(server_id: String) -> Result<McpTestResult, String>
             })
         }
         crate::config::McpServerType::Http | crate::config::McpServerType::Sse => {
-            let url = server.url.clone()
+            let url = server
+                .url
+                .clone()
                 .ok_or_else(|| "Server URL not configured".to_string())?;
 
             // Try to connect to the server
@@ -111,12 +115,10 @@ pub async fn test_mcp_server(server_id: String) -> Result<McpTestResult, String>
                         })
                     }
                 }
-                Err(e) => {
-                    Ok(McpTestResult {
-                        success: false,
-                        error: Some(format!("Connection failed: {}", e)),
-                    })
-                }
+                Err(e) => Ok(McpTestResult {
+                    success: false,
+                    error: Some(format!("Connection failed: {}", e)),
+                }),
             }
         }
     }
@@ -137,7 +139,10 @@ pub async fn save_mcp_bearer_token(
 
 /// Get a bearer token for an MCP server
 #[tauri::command]
-pub async fn get_mcp_bearer_token(app: AppHandle, server_id: String) -> Result<Option<String>, String> {
+pub async fn get_mcp_bearer_token(
+    app: AppHandle,
+    server_id: String,
+) -> Result<Option<String>, String> {
     match app
         .keyring()
         .get_password(KEYRING_SERVICE, &get_bearer_token_key(&server_id))
@@ -526,7 +531,10 @@ pub async fn get_mcp_auth_header(
                         }
                     }
 
-                    Ok(Some(format!("{} {}", tokens.token_type, tokens.access_token)))
+                    Ok(Some(format!(
+                        "{} {}",
+                        tokens.token_type, tokens.access_token
+                    )))
                 }
                 Ok(None) => Ok(None),
                 Err(e) => Err(format!("Failed to get OAuth tokens: {}", e)),

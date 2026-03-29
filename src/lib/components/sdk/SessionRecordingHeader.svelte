@@ -149,6 +149,7 @@
 
   // Check if launch is allowed (repo must be selected)
   let canLaunch = $derived(showPrepared && !!selectedRepoCwd);
+  let useIconRepoToggleGroup = $derived(repos.length <= 5);
 
   // Determine if this was a voice recording vs typed text input
   // Voice recordings have audio data (visualization history, duration, or audio bytes)
@@ -459,21 +460,40 @@
                 {preparedRepoRecommendation.reasoning}
               </p>
             {/if}
-            <div class="picker-grid">
-              {#each repos as repo, index}
-                <button
-                  class="picker-repo-btn"
-                  class:recommended={repo.path === recommendedRepoPath}
-                  onclick={() => onSelectRepo?.(repo.path)}
-                >
-                  <RepoIcon repo={repo} size="xs" />
-                  <span class="picker-repo-name">{repo.name}</span>
-                  {#if repo.path === recommendedRepoPath}
-                    <span class="picker-ai-badge">AI</span>
-                  {/if}
-                </button>
-              {/each}
-            </div>
+            {#if useIconRepoToggleGroup}
+              <div class="picker-toggle-group" role="group" aria-label="Select repository">
+                {#each repos as repo}
+                  <button
+                    class="picker-repo-btn icon-only"
+                    class:recommended={repo.path === recommendedRepoPath}
+                    onclick={() => onSelectRepo?.(repo.path)}
+                    title={repo.name}
+                    aria-label={`Select ${repo.name} repository`}
+                  >
+                    <RepoIcon repo={repo} size="xs" />
+                    {#if repo.path === recommendedRepoPath}
+                      <span class="picker-ai-dot" aria-hidden="true"></span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            {:else}
+              <div class="picker-grid">
+                {#each repos as repo}
+                  <button
+                    class="picker-repo-btn"
+                    class:recommended={repo.path === recommendedRepoPath}
+                    onclick={() => onSelectRepo?.(repo.path)}
+                  >
+                    <RepoIcon repo={repo} size="xs" />
+                    <span class="picker-repo-name">{repo.name}</span>
+                    {#if repo.path === recommendedRepoPath}
+                      <span class="picker-ai-badge">AI</span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -1265,6 +1285,17 @@
     margin-top: 0.5rem;
   }
 
+  .picker-toggle-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    margin-top: 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--color-surface-elevated);
+  }
+
   .picker-repo-btn {
     display: flex;
     align-items: center;
@@ -1277,6 +1308,21 @@
     color: var(--color-text-secondary);
     cursor: pointer;
     transition: all 0.15s ease;
+  }
+
+  .picker-repo-btn.icon-only {
+    position: relative;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: 0;
+    border-right: 1px solid var(--color-border);
+    border-radius: 0;
+  }
+
+  .picker-toggle-group .picker-repo-btn:last-child {
+    border-right: 0;
   }
 
   .picker-repo-btn:hover {
@@ -1292,6 +1338,17 @@
 
   .picker-repo-name {
     font-weight: 500;
+  }
+
+  .picker-ai-dot {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    width: 0.35rem;
+    height: 0.35rem;
+    border-radius: 9999px;
+    background: linear-gradient(135deg, #8b5cf6 0%, #f59e0b 100%);
+    box-shadow: 0 0 0 2px var(--color-surface-elevated);
   }
 
   .picker-ai-badge {

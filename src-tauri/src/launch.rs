@@ -233,14 +233,30 @@ fn spawn_terminal_with_command(
 
     #[cfg(target_os = "linux")]
     {
-        let full_cmd = format!("cd '{}' && {}; exec bash", cwd_str.replace("'", "'\\''"), command);
+        let full_cmd = format!(
+            "cd '{}' && {}; exec bash",
+            cwd_str.replace("'", "'\\''"),
+            command
+        );
 
         // Try common terminal emulators
         let terminals: Vec<(&str, Vec<&str>)> = vec![
-            ("gnome-terminal", vec!["--title", title, "--", "bash", "-c", &full_cmd]),
-            ("konsole", vec!["--title", title, "-e", "bash", "-c", &full_cmd]),
-            ("xfce4-terminal", vec!["--title", title, "-e", &format!("bash -c '{}'", full_cmd)]),
-            ("xterm", vec!["-title", title, "-e", "bash", "-c", &full_cmd]),
+            (
+                "gnome-terminal",
+                vec!["--title", title, "--", "bash", "-c", &full_cmd],
+            ),
+            (
+                "konsole",
+                vec!["--title", title, "-e", "bash", "-c", &full_cmd],
+            ),
+            (
+                "xfce4-terminal",
+                vec!["--title", title, "-e", &format!("bash -c '{}'", full_cmd)],
+            ),
+            (
+                "xterm",
+                vec!["-title", title, "-e", "bash", "-c", &full_cmd],
+            ),
         ];
 
         for (term, args) in &terminals {

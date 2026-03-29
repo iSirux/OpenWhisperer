@@ -1,11 +1,13 @@
 # ClaudeWhisperer
 
-A desktop tool for voice-controlled Claude Code interactions. Speak your prompts, and ClaudeWhisperer transcribes, interprets, and spawns Claude Code instances—fire and forget.
+A desktop tool for voice-controlled Claude Code and Codex interactions. Speak your prompts, and ClaudeWhisperer transcribes, interprets, and spawns coding-agent sessions with a desktop UI on top.
 
 ## Features
 
 - **Voice-to-Code** — Speak naturally, get code. Local Whisper transcription with optional Haiku interpretation for cleaner prompts.
-- **Multi-Terminal Management** — Spawn and manage multiple Claude Code sessions with a tabbed interface.
+- **Multi-Provider Coding Agents** — Run Claude or OpenAI Codex sessions, including current GPT-5.4 and GPT-5.4 Mini model options.
+- **Task/Subagent Visibility** — Claude and Codex task delegation is surfaced in the session UI as grouped task blocks instead of a flat stream of child tool calls.
+- **Multi-Terminal Management** — Spawn and manage multiple coding-agent sessions with a tabbed interface.
 - **Recording Overlay** — Minimal, always-on-top overlay shows transcription status, active repo, and git settings.
 - **Git Workflow Integration** — Auto-create branches, auto-merge, or work directly on main. Handles merge conflicts automatically.
 - **Flexible Input Modes** — Open mic, push-to-talk hotkeys, or voice commands ("go go") to send prompts.

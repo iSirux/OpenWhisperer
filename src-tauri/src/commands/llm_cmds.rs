@@ -1,9 +1,8 @@
 use crate::commands::usage_cmds::UsageStatsState;
 use crate::config::{AppConfig, LlmProvider};
 use crate::llm::{
-    ConnectionTestResult, InteractionAnalysis, LlmClient, ModelRecommendation,
-    QuickActionsResult, RepoRecommendation, SessionNameResult,
-    SessionOutcomeResult, TranscriptionCleanupResult,
+    ConnectionTestResult, InteractionAnalysis, LlmClient, ModelRecommendation, QuickActionsResult,
+    RepoRecommendation, SessionNameResult, SessionOutcomeResult, TranscriptionCleanupResult,
 };
 use parking_lot::Mutex;
 use std::fs;
@@ -12,7 +11,12 @@ use tauri::{AppHandle, State};
 use tauri_plugin_keyring::KeyringExt;
 
 /// Helper to track LLM usage in the stats
-fn track_usage(stats: &State<UsageStatsState>, feature: &str, input_tokens: u64, output_tokens: u64) {
+fn track_usage(
+    stats: &State<UsageStatsState>,
+    feature: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+) {
     let mut s = stats.lock();
     s.track_llm_token_usage(feature, input_tokens, output_tokens);
     let _ = s.save();
@@ -48,8 +52,8 @@ fn migrate_legacy_key(app: &AppHandle) -> Result<bool, String> {
     }
 
     // Read and decode the legacy key
-    let encrypted = fs::read(&legacy_path)
-        .map_err(|e| format!("Failed to read legacy API key file: {}", e))?;
+    let encrypted =
+        fs::read(&legacy_path).map_err(|e| format!("Failed to read legacy API key file: {}", e))?;
 
     let decrypted = legacy_deobfuscate(&encrypted, LEGACY_OBFUSCATION_KEY);
 
@@ -66,7 +70,9 @@ fn migrate_legacy_key(app: &AppHandle) -> Result<bool, String> {
         log::error!("[keyring] Warning: Failed to delete legacy key file: {}", e);
         // Don't fail migration just because we couldn't delete the old file
     } else {
-        log::error!("[keyring] Successfully migrated API key from legacy storage to system keyring");
+        log::error!(
+            "[keyring] Successfully migrated API key from legacy storage to system keyring"
+        );
     }
 
     Ok(true)
@@ -152,7 +158,10 @@ pub async fn has_gemini_api_key(
 #[tauri::command]
 pub async fn delete_gemini_api_key(app: AppHandle) -> Result<(), String> {
     // Delete from keyring
-    match app.keyring().delete_password(KEYRING_SERVICE, KEYRING_LLM_KEY) {
+    match app
+        .keyring()
+        .delete_password(KEYRING_SERVICE, KEYRING_LLM_KEY)
+    {
         Ok(_) => {}
         Err(e) => {
             // Only error if it's not a "not found" type error
@@ -198,10 +207,17 @@ pub async fn generate_session_name(
     }
 
     let client = create_client(&app, &cfg)?;
-    let result = client.generate_session_name_with_usage(&user_prompt).await?;
+    let result = client
+        .generate_session_name_with_usage(&user_prompt)
+        .await?;
 
     // Track usage
-    track_usage(&stats, "session_naming", result.usage.input_tokens, result.usage.output_tokens);
+    track_usage(
+        &stats,
+        "session_naming",
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    );
 
     Ok(result.data)
 }
@@ -227,7 +243,12 @@ pub async fn generate_session_outcome(
         .await?;
 
     // Track usage
-    track_usage(&stats, "session_outcome", result.usage.input_tokens, result.usage.output_tokens);
+    track_usage(
+        &stats,
+        "session_outcome",
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    );
 
     Ok(result.data)
 }
@@ -247,10 +268,17 @@ pub async fn analyze_interaction_needed(
     }
 
     let client = create_client(&app, &cfg)?;
-    let result = client.analyze_interaction_needed_with_usage(&last_message).await?;
+    let result = client
+        .analyze_interaction_needed_with_usage(&last_message)
+        .await?;
 
     // Track usage
-    track_usage(&stats, "interaction_analysis", result.usage.input_tokens, result.usage.output_tokens);
+    track_usage(
+        &stats,
+        "interaction_analysis",
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    );
 
     Ok(result.data)
 }
@@ -291,7 +319,12 @@ pub async fn clean_transcription(
         .await?;
 
     // Track usage
-    track_usage(&stats, "transcription_cleanup", result.usage.input_tokens, result.usage.output_tokens);
+    track_usage(
+        &stats,
+        "transcription_cleanup",
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    );
 
     Ok(result.data)
 }
@@ -319,10 +352,17 @@ pub async fn recommend_model(
 
     // Use provided enabled_models or fall back to config
     let models_to_consider = enabled_models.as_ref().unwrap_or(&cfg.enabled_models);
-    let result = client.recommend_model_with_usage(&prompt, models_to_consider).await?;
+    let result = client
+        .recommend_model_with_usage(&prompt, models_to_consider)
+        .await?;
 
     // Track usage
-    track_usage(&stats, "model_recommendation", result.usage.input_tokens, result.usage.output_tokens);
+    track_usage(
+        &stats,
+        "model_recommendation",
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    );
 
     Ok(result.data)
 }
@@ -356,22 +396,37 @@ pub async fn recommend_repo(
         .filter(|(_, r)| r.active)
         .collect();
 
-    let repos: Vec<(String, String, Option<String>, Option<Vec<String>>, Option<Vec<String>>)> = active_repos_with_indices
+    let repos: Vec<(
+        String,
+        String,
+        Option<String>,
+        Option<Vec<String>>,
+        Option<Vec<String>>,
+    )> = active_repos_with_indices
         .iter()
-        .map(|(_, r)| (
-            r.name.clone(),
-            r.path.clone(),
-            r.description.clone(),
-            r.keywords.clone(),
-            r.vocabulary.clone(),
-        ))
+        .map(|(_, r)| {
+            (
+                r.name.clone(),
+                r.path.clone(),
+                r.description.clone(),
+                r.keywords.clone(),
+                r.vocabulary.clone(),
+            )
+        })
         .collect();
 
-    let result = client.recommend_repo_with_usage(&prompt, &repos, is_transcribed.unwrap_or(false)).await?;
+    let result = client
+        .recommend_repo_with_usage(&prompt, &repos, is_transcribed.unwrap_or(false))
+        .await?;
 
     // Track usage (only if we actually made an LLM call - not for empty repos)
     if !repos.is_empty() {
-        track_usage(&stats, "repo_recommendation", result.usage.input_tokens, result.usage.output_tokens);
+        track_usage(
+            &stats,
+            "repo_recommendation",
+            result.usage.input_tokens,
+            result.usage.output_tokens,
+        );
     }
 
     // Remap the returned index back to the original repos array index
@@ -411,7 +466,12 @@ pub async fn generate_quick_actions(
         .await?;
 
     // Track usage
-    track_usage(&stats, "quick_actions", result.usage.input_tokens, result.usage.output_tokens);
+    track_usage(
+        &stats,
+        "quick_actions",
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    );
 
     Ok(result.data)
 }

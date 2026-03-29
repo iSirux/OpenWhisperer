@@ -164,7 +164,14 @@
     // Initialize event handlers
     eventHandlers.init({
       onShowSessions: showSessionsView,
-      onOpenSettings: (tab) => goto(tab ? `/settings?tab=${tab}` : '/settings'),
+      onOpenSettings: (tab) => {
+        if (tab === 'repos') {
+          goto('/');
+          navigation.showRepositoryAdd();
+          return;
+        }
+        goto(tab ? `/settings?tab=${tab}` : '/settings');
+      },
       onCloseSettings: showSessionsView,
       onRetryTranscription: handleRetryTranscription,
       onApproveTranscription: handleApproveTranscription,

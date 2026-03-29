@@ -27,19 +27,22 @@ interface RateLimitState {
 	data: ProviderRateLimits | null;
 	loading: boolean;
 	error: string | null;
+	lastError: string | null;
 	lastFetched: number | null; // timestamp ms
+	consecutiveFailures: number;
 }
 
-const DEFAULT_REFRESH_INTERVAL_MS = 60_000; // 60 seconds
-const CLAUDE_BASE_REFRESH_INTERVAL_MS = 60_000; // 1 minute
+const DEFAULT_REFRESH_INTERVAL_MS = 3 * 60_000; // 3 minutes
+const CLAUDE_BASE_REFRESH_INTERVAL_MS = 3 * 60_000; // 3 minutes
 const CLAUDE_MAX_BACKOFF_MS = 15 * 60_000; // 15 minutes
-const CODEX_BASE_REFRESH_INTERVAL_MS = 60_000; // 1 minute
+const CODEX_BASE_REFRESH_INTERVAL_MS = 3 * 60_000; // 3 minutes
 const CODEX_MAX_BACKOFF_MS = 15 * 60_000; // 15 minutes
 const INVOKE_TIMEOUT_MS = 15_000; // 15 seconds — JS safety net in case Rust hangs
+const STALE_AFTER_CONSECUTIVE_FAILURES = 2;
+const STALE_AFTER_MS = 5 * 60_000; // don't show stale until data is 5+ minutes old
 
 interface RateLimitStoreOptions {
 	refreshIntervalMs?: number;
-	enable429Backoff?: boolean;
 	maxBackoffMs?: number;
 }
 
@@ -77,25 +80,26 @@ function createProviderRateLimitStore(
 	options: RateLimitStoreOptions = {}
 ) {
 	const baseRefreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
-	const enable429Backoff = options.enable429Backoff ?? false;
 	const maxBackoffMs = Math.max(options.maxBackoffMs ?? baseRefreshIntervalMs, baseRefreshIntervalMs);
 
 	const { subscribe, set, update } = writable<RateLimitState>({
 		data: null,
 		loading: false,
 		error: null,
-		lastFetched: null
+		lastError: null,
+		lastFetched: null,
+		consecutiveFailures: 0
 	});
 
 	let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let fetchInFlight = false; // guard against concurrent fetches
 	let autoRefreshEnabled = false;
 	let currentRefreshIntervalMs = baseRefreshIntervalMs;
-	let consecutive429Failures = 0;
 
-	function isRateLimited(error: unknown): boolean {
-		const text = String(error).toLowerCase();
-		return text.includes('429') || text.includes('rate limited') || text.includes('too many requests');
+	function shouldShowStale(state: Pick<RateLimitState, 'lastFetched' | 'consecutiveFailures'>): boolean {
+		if (state.consecutiveFailures < STALE_AFTER_CONSECUTIVE_FAILURES) return false;
+		if (state.lastFetched == null) return true;
+		return Date.now() - state.lastFetched >= STALE_AFTER_MS;
 	}
 
 	function scheduleNextFetch(delayMs = currentRefreshIntervalMs) {
@@ -117,42 +121,46 @@ function createProviderRateLimitStore(
 			}
 			fetchInFlight = true;
 			console.log(`[RateLimits] Fetching ${commandName}...`);
-			update((s) => ({ ...s, loading: true, error: null }));
+			update((s) => ({ ...s, loading: true, error: shouldShowStale(s) ? s.lastError : null }));
 			try {
 				const data = await invokeWithTimeout<ProviderRateLimits>(
 					commandName,
 					INVOKE_TIMEOUT_MS
 				);
-				consecutive429Failures = 0;
 				currentRefreshIntervalMs = baseRefreshIntervalMs;
 				console.log(`[RateLimits] ${commandName} OK:`, data);
 				set({
 					data,
 					loading: false,
 					error: null,
-					lastFetched: Date.now()
+					lastError: null,
+					lastFetched: Date.now(),
+					consecutiveFailures: 0
 				});
 			} catch (error) {
-				if (enable429Backoff && isRateLimited(error)) {
-					consecutive429Failures += 1;
+				const errorText = String(error);
+				console.error(`[RateLimits] ${commandName} FAILED:`, error);
+				update((s) => {
+					const consecutiveFailures = s.consecutiveFailures + 1;
 					const nextInterval = Math.min(
 						maxBackoffMs,
-						baseRefreshIntervalMs * 2 ** consecutive429Failures
+						baseRefreshIntervalMs * 2 ** (consecutiveFailures - 1)
 					);
 					currentRefreshIntervalMs = nextInterval;
 					console.warn(
-						`[RateLimits] ${commandName} received 429; backing off to ${Math.round(currentRefreshIntervalMs / 1000)}s`
+						`[RateLimits] ${commandName} failed ${consecutiveFailures}x; next retry in ${Math.round(currentRefreshIntervalMs / 1000)}s`
 					);
-				} else {
-					consecutive429Failures = 0;
-					currentRefreshIntervalMs = baseRefreshIntervalMs;
-				}
-				console.error(`[RateLimits] ${commandName} FAILED:`, error);
-				update((s) => ({
-					...s,
-					loading: false,
-					error: String(error)
-				}));
+					const nextState = {
+						...s,
+						loading: false,
+						lastError: errorText,
+						consecutiveFailures
+					};
+					return {
+						...nextState,
+						error: shouldShowStale(nextState) ? errorText : null
+					};
+				});
 			} finally {
 				fetchInFlight = false;
 				scheduleNextFetch();
@@ -168,9 +176,9 @@ function createProviderRateLimitStore(
 			unsub();
 			if (
 				currentState &&
-				!(currentState as RateLimitState).loading &&
-				(!(currentState as RateLimitState).lastFetched ||
-					Date.now() - (currentState as RateLimitState).lastFetched! > currentRefreshIntervalMs)
+				!currentState.loading &&
+				(!currentState.lastFetched ||
+					Date.now() - currentState.lastFetched > currentRefreshIntervalMs)
 			) {
 				await store.fetch();
 			}
@@ -202,9 +210,15 @@ function createProviderRateLimitStore(
 		reset() {
 			store.stopAutoRefresh();
 			fetchInFlight = false;
-			consecutive429Failures = 0;
 			currentRefreshIntervalMs = baseRefreshIntervalMs;
-			set({ data: null, loading: false, error: null, lastFetched: null });
+			set({
+				data: null,
+				loading: false,
+				error: null,
+				lastError: null,
+				lastFetched: null,
+				consecutiveFailures: 0
+			});
 		}
 	};
 
@@ -216,7 +230,6 @@ export const rateLimits = createProviderRateLimitStore(
 	'fetch_claude_rate_limits',
 	{
 		refreshIntervalMs: CLAUDE_BASE_REFRESH_INTERVAL_MS,
-		enable429Backoff: true,
 		maxBackoffMs: CLAUDE_MAX_BACKOFF_MS
 	}
 );
@@ -229,7 +242,6 @@ export const codexRateLimits = createProviderRateLimitStore(
 	'fetch_codex_rate_limits',
 	{
 		refreshIntervalMs: CODEX_BASE_REFRESH_INTERVAL_MS,
-		enable429Backoff: true,
 		maxBackoffMs: CODEX_MAX_BACKOFF_MS
 	}
 );

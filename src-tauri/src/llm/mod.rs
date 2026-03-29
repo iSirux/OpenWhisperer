@@ -6,22 +6,16 @@ mod providers;
 mod types;
 mod utils;
 
-pub use types::*;
 pub use providers::GenerationResult;
+pub use types::*;
 
 use crate::config::{LlmModelPriority, LlmProvider};
 
 /// Model fallback chains for Gemini provider
 /// Note: As of Dec 2025, free tier is severely limited to 20 RPD for both 2.5 Flash and 2.5 Flash-Lite
-const GEMINI_MODELS_SPEED: &[&str] = &[
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-];
+const GEMINI_MODELS_SPEED: &[&str] = &["gemini-2.5-flash-lite", "gemini-2.5-flash"];
 
-const GEMINI_MODELS_ACCURACY: &[&str] = &[
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-];
+const GEMINI_MODELS_ACCURACY: &[&str] = &["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
 /// Unified LLM client that supports multiple providers (Gemini, OpenAI, Groq, Local)
 pub struct LlmClient {
@@ -77,17 +71,12 @@ impl LlmClient {
                     model, self.api_key
                 )
             }
-            LlmProvider::OpenAI => {
-                "https://api.openai.com/v1/chat/completions".to_string()
-            }
-            LlmProvider::Groq => {
-                "https://api.groq.com/openai/v1/chat/completions".to_string()
-            }
-            LlmProvider::Local | LlmProvider::Custom => {
-                self.endpoint
-                    .clone()
-                    .unwrap_or_else(|| "http://localhost:1234/v1/chat/completions".to_string())
-            }
+            LlmProvider::OpenAI => "https://api.openai.com/v1/chat/completions".to_string(),
+            LlmProvider::Groq => "https://api.groq.com/openai/v1/chat/completions".to_string(),
+            LlmProvider::Local | LlmProvider::Custom => self
+                .endpoint
+                .clone()
+                .unwrap_or_else(|| "http://localhost:1234/v1/chat/completions".to_string()),
         }
     }
 

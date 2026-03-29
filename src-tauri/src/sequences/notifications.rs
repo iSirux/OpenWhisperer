@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::config::{NotificationChannelConfig, NotificationChannelType};
+use std::collections::HashMap;
 
 /// Extra payload options for notification delivery
 pub struct NotifyExtra {
@@ -90,10 +90,7 @@ impl NotificationSender {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<failed to read body>".to_string());
-            return Err(format!(
-                "Slack webhook returned {} — {}",
-                status, body_text
-            ));
+            return Err(format!("Slack webhook returned {} — {}", status, body_text));
         }
 
         log::info!("[notifications] Slack notification sent to {}", webhook_url);
@@ -178,9 +175,7 @@ impl NotificationSender {
             .ok_or("Webhook channel has no webhook_url configured")?;
 
         // Determine HTTP method (default POST)
-        let method_str = extra
-            .and_then(|e| e.method.as_deref())
-            .unwrap_or("POST");
+        let method_str = extra.and_then(|e| e.method.as_deref()).unwrap_or("POST");
 
         let method = match method_str.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,

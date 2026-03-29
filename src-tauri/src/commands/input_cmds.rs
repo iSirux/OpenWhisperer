@@ -1,4 +1,4 @@
-use enigo::{Enigo, Keyboard, Settings, Key, Direction};
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use std::thread;
 use std::time::Duration;
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -13,9 +13,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 #[tauri::command]
 pub async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
     // Save the original clipboard contents (if it's text)
-    let original_clipboard = app.clipboard()
-        .read_text()
-        .ok();
+    let original_clipboard = app.clipboard().read_text().ok();
 
     // Copy text to clipboard using Tauri plugin
     app.clipboard()
@@ -33,21 +31,27 @@ pub async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), Strin
         // Simulate Ctrl+V (Windows/Linux) or Cmd+V (macOS)
         #[cfg(target_os = "macos")]
         {
-            enigo.key(Key::Meta, Direction::Press)
+            enigo
+                .key(Key::Meta, Direction::Press)
                 .map_err(|e| format!("Failed to press Meta: {}", e))?;
-            enigo.key(Key::Unicode('v'), Direction::Click)
+            enigo
+                .key(Key::Unicode('v'), Direction::Click)
                 .map_err(|e| format!("Failed to press V: {}", e))?;
-            enigo.key(Key::Meta, Direction::Release)
+            enigo
+                .key(Key::Meta, Direction::Release)
                 .map_err(|e| format!("Failed to release Meta: {}", e))?;
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            enigo.key(Key::Control, Direction::Press)
+            enigo
+                .key(Key::Control, Direction::Press)
                 .map_err(|e| format!("Failed to press Ctrl: {}", e))?;
-            enigo.key(Key::Unicode('v'), Direction::Click)
+            enigo
+                .key(Key::Unicode('v'), Direction::Click)
                 .map_err(|e| format!("Failed to press V: {}", e))?;
-            enigo.key(Key::Control, Direction::Release)
+            enigo
+                .key(Key::Control, Direction::Release)
                 .map_err(|e| format!("Failed to release Ctrl: {}", e))?;
         }
 
@@ -83,9 +87,7 @@ pub async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), Strin
 #[tauri::command]
 pub async fn copy_selection(app: tauri::AppHandle) -> Result<String, String> {
     // Save the original clipboard contents (if it's text)
-    let original_clipboard = app.clipboard()
-        .read_text()
-        .ok();
+    let original_clipboard = app.clipboard().read_text().ok();
 
     // Clear clipboard so we can detect if copy produced new content
     app.clipboard()
@@ -102,21 +104,27 @@ pub async fn copy_selection(app: tauri::AppHandle) -> Result<String, String> {
 
         #[cfg(target_os = "macos")]
         {
-            enigo.key(Key::Meta, Direction::Press)
+            enigo
+                .key(Key::Meta, Direction::Press)
                 .map_err(|e| format!("Failed to press Meta: {}", e))?;
-            enigo.key(Key::Unicode('c'), Direction::Click)
+            enigo
+                .key(Key::Unicode('c'), Direction::Click)
                 .map_err(|e| format!("Failed to press C: {}", e))?;
-            enigo.key(Key::Meta, Direction::Release)
+            enigo
+                .key(Key::Meta, Direction::Release)
                 .map_err(|e| format!("Failed to release Meta: {}", e))?;
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            enigo.key(Key::Control, Direction::Press)
+            enigo
+                .key(Key::Control, Direction::Press)
                 .map_err(|e| format!("Failed to press Ctrl: {}", e))?;
-            enigo.key(Key::Unicode('c'), Direction::Click)
+            enigo
+                .key(Key::Unicode('c'), Direction::Click)
                 .map_err(|e| format!("Failed to press C: {}", e))?;
-            enigo.key(Key::Control, Direction::Release)
+            enigo
+                .key(Key::Control, Direction::Release)
                 .map_err(|e| format!("Failed to release Ctrl: {}", e))?;
         }
 
@@ -129,9 +137,7 @@ pub async fn copy_selection(app: tauri::AppHandle) -> Result<String, String> {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Read the copied text
-    let copied_text = app.clipboard()
-        .read_text()
-        .unwrap_or_default();
+    let copied_text = app.clipboard().read_text().unwrap_or_default();
 
     // Restore the original clipboard contents
     if let Some(original) = original_clipboard {

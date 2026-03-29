@@ -1,14 +1,14 @@
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 use tauri::{AppHandle, State};
 
 use crate::config::{AppConfig, LlmProvider};
 use crate::llm::LlmClient;
-use crate::sequences::SequenceManager;
-use crate::sequences::scheduler::{SequenceScheduler, ScheduleInfo};
+use crate::sequences::scheduler::{ScheduleInfo, SequenceScheduler};
+use crate::sequences::state::{ExecutionSummary, SequenceExecution};
 use crate::sequences::types::SequenceDefinition;
-use crate::sequences::state::{SequenceExecution, ExecutionSummary};
+use crate::sequences::SequenceManager;
 
 // ─── Definition CRUD ────────────────────────────────────────────────────────
 
@@ -24,7 +24,8 @@ pub fn get_sequence(
     manager: State<Arc<SequenceManager>>,
     id: String,
 ) -> Result<SequenceDefinition, String> {
-    manager.get_definition(&id)
+    manager
+        .get_definition(&id)
         .ok_or_else(|| format!("Sequence '{}' not found", id))
 }
 
@@ -37,10 +38,7 @@ pub fn save_sequence(
 }
 
 #[tauri::command]
-pub fn delete_sequence(
-    manager: State<Arc<SequenceManager>>,
-    id: String,
-) -> Result<(), String> {
+pub fn delete_sequence(manager: State<Arc<SequenceManager>>, id: String) -> Result<(), String> {
     manager.delete_definition(&id)
 }
 
@@ -53,10 +51,7 @@ pub fn import_sequence(
 }
 
 #[tauri::command]
-pub fn export_sequence(
-    manager: State<Arc<SequenceManager>>,
-    id: String,
-) -> Result<String, String> {
+pub fn export_sequence(manager: State<Arc<SequenceManager>>, id: String) -> Result<String, String> {
     manager.export_sequence(&id)
 }
 
@@ -260,7 +255,8 @@ pub async fn generate_sequence_yaml(
         (client, repos)
     };
 
-    let result = crate::sequences::ai_generation::generate_sequence(&client, &description, &repos).await?;
+    let result =
+        crate::sequences::ai_generation::generate_sequence(&client, &description, &repos).await?;
     Ok(result.data.yaml)
 }
 
@@ -277,5 +273,6 @@ pub async fn generate_node_config(
         create_llm_client(&app, &cfg)?
     };
 
-    crate::sequences::ai_generation::generate_node(&client, &node_type, &description, &context).await
+    crate::sequences::ai_generation::generate_node(&client, &node_type, &description, &context)
+        .await
 }

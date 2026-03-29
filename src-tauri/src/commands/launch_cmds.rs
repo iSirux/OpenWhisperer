@@ -4,8 +4,8 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::State;
 use std::sync::Arc;
+use tauri::State;
 
 type ConfigState = Mutex<AppConfig>;
 
@@ -29,7 +29,8 @@ pub fn scan_repo_launch_commands(repo_path: String) -> Result<Vec<LaunchCommand>
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let dir_name = path.file_name()
+                let dir_name = path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
@@ -66,7 +67,12 @@ fn scan_directory(dir: &Path, subdir: Option<&str>, commands: &mut Vec<LaunchCom
     }
 
     // docker-compose.yml / docker-compose.yaml
-    for name in &["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"] {
+    for name in &[
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+    ] {
         let compose_file = dir.join(name);
         if compose_file.exists() {
             if let Ok(content) = fs::read_to_string(&compose_file) {
@@ -161,7 +167,10 @@ fn scan_docker_compose(content: &str, subdir: Option<&str>, commands: &mut Vec<L
             }
             // Service name: indented exactly 2 spaces (or 1 tab), ends with ':'
             if let Some(stripped) = line.strip_prefix("  ") {
-                if !stripped.starts_with(' ') && stripped.ends_with(':') && !stripped.starts_with('#') {
+                if !stripped.starts_with(' ')
+                    && stripped.ends_with(':')
+                    && !stripped.starts_with('#')
+                {
                     let name = stripped.trim_end_matches(':').trim();
                     if !name.is_empty() {
                         service_names.push(name.to_string());
@@ -211,7 +220,11 @@ fn scan_makefile(content: &str, subdir: Option<&str>, commands: &mut Vec<LaunchC
         // Makefile targets: "target:" or "target: deps"
         if let Some(target) = line.split(':').next() {
             let target = target.trim();
-            if interesting_targets.contains(&target) && !target.contains(' ') && !target.starts_with('.') && !target.starts_with('#') {
+            if interesting_targets.contains(&target)
+                && !target.contains(' ')
+                && !target.starts_with('.')
+                && !target.starts_with('#')
+            {
                 let label = match target {
                     "dev" => "Make Dev",
                     "run" => "Make Run",
@@ -310,15 +323,21 @@ pub fn launch_profile(
     cwd: Option<String>,
 ) -> Result<(), String> {
     let cfg = config.lock();
-    let repo = cfg.repos.iter()
+    let repo = cfg
+        .repos
+        .iter()
         .find(|r| r.id.as_deref() == Some(&repo_id))
         .ok_or_else(|| format!("Repo not found: {}", repo_id))?;
 
-    let profile = repo.launch_profiles.iter()
+    let profile = repo
+        .launch_profiles
+        .iter()
         .find(|p| p.id == profile_id)
         .ok_or_else(|| format!("Profile not found: {}", profile_id))?;
 
-    let commands_to_launch: Vec<LaunchCommand> = profile.command_ids.iter()
+    let commands_to_launch: Vec<LaunchCommand> = profile
+        .command_ids
+        .iter()
         .filter_map(|cid| repo.launch_commands.iter().find(|c| c.id == *cid))
         .cloned()
         .collect();
@@ -359,9 +378,6 @@ pub fn stop_launch_profile(
 
 /// Get the list of currently running command IDs for a repo
 #[tauri::command]
-pub fn get_launch_status(
-    launch_mgr: State<Arc<LaunchManager>>,
-    repo_id: String,
-) -> Vec<String> {
+pub fn get_launch_status(launch_mgr: State<Arc<LaunchManager>>, repo_id: String) -> Vec<String> {
     launch_mgr.get_running_command_ids(&repo_id)
 }

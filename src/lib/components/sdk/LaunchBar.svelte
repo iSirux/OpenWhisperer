@@ -26,7 +26,7 @@
     sessionId,
   }: Props = $props();
 
-  let collapsed = $state(false);
+  let commandsExpanded = $state(false);
   let contextMenuProfileId = $state<string | null>(null);
   let selectedCommandIds = $state<Set<string>>(new Set());
   let isStopping = $state(false);
@@ -161,6 +161,14 @@
     contextMenuProfileId = null;
   }
 
+  async function handleLaunchCommand(command: LaunchCommand) {
+    try {
+      await launchStore.launchCommands(repoId, repoPath, [command], repoPath);
+    } catch (e) {
+      console.error("[LaunchBar] Command launch failed:", e);
+    }
+  }
+
   const isRunning = $derived(!!runtime);
   const isQueued = $derived(!!queued && queued.repoId === repoId);
 
@@ -172,8 +180,21 @@
   });
 </script>
 
-{#if !collapsed}
-  <div class="launch-bar">
+<div class="launch-bar">
+  <div class="launch-main-row">
+    <button
+      class:expanded={commandsExpanded}
+      class="commands-toggle"
+      onclick={() => (commandsExpanded = !commandsExpanded)}
+      title={commandsExpanded ? "Hide individual launch commands" : "Show individual launch commands"}
+      aria-expanded={commandsExpanded}
+      aria-label={commandsExpanded ? "Hide individual launch commands" : "Show individual launch commands"}
+    >
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path fill-rule="evenodd" d="M5.22 2.97a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 1 1-1.06-1.06L8.94 8 5.22 4.28a.75.75 0 0 1 0-1.06z"/>
+      </svg>
+    </button>
+
     {#if isRunning && runtime}
       <!-- Running state -->
       <div class="launch-running">
@@ -240,9 +261,6 @@
     {:else}
       <!-- Idle state: show profile buttons -->
       <div class="launch-idle">
-        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" class="launch-icon">
-          <path d="M11.596 8.697l-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/>
-        </svg>
         {#each profiles as profile (profile.id)}
           <button
             class="profile-btn"
@@ -256,59 +274,54 @@
         {/each}
       </div>
     {/if}
-
-    <button
-      class="collapse-toggle"
-      onclick={() => (collapsed = true)}
-      title="Hide launch bar"
-    >
-      <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
-        <path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/>
-      </svg>
-    </button>
   </div>
 
-  <!-- Context menu for subset command selection -->
-  {#if contextMenuProfileId}
-    <div class="context-overlay" onclick={() => (contextMenuProfileId = null)} role="presentation">
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="context-menu" onclick={(e) => e.stopPropagation()}>
-        <div class="context-header">Select commands to launch</div>
-        {#each commands as cmd (cmd.id)}
-          <label class="context-item">
-            <input
-              type="checkbox"
-              checked={selectedCommandIds.has(cmd.id)}
-              onchange={() => toggleCommandInSelection(cmd.id)}
-            />
-            <span class="cmd-name">{cmd.name}</span>
-            <span class="cmd-command">{cmd.command}</span>
-          </label>
-        {/each}
-        <button class="context-launch-btn" onclick={handleLaunchSubset} disabled={selectedCommandIds.size === 0}>
-          Launch Selected ({selectedCommandIds.size})
+  {#if commandsExpanded}
+    <div class="launch-commands-row">
+      {#each commands as command (command.id)}
+        <button
+          class="command-btn"
+          onclick={() => handleLaunchCommand(command)}
+          title={command.command}
+        >
+          <span class="command-name">{command.name}</span>
+          <span class="command-shell">{command.command}</span>
         </button>
-      </div>
+      {/each}
     </div>
   {/if}
-{:else}
-  <!-- Collapsed state: tiny expand button -->
-  <button
-    class="expand-toggle"
-    onclick={() => (collapsed = false)}
-    title="Show launch bar"
-  >
-    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-      <path d="M11.596 8.697l-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/>
-    </svg>
-  </button>
+</div>
+
+<!-- Context menu for subset command selection -->
+{#if contextMenuProfileId}
+  <div class="context-overlay" onclick={() => (contextMenuProfileId = null)} role="presentation">
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="context-menu" onclick={(e) => e.stopPropagation()}>
+      <div class="context-header">Select commands to launch</div>
+      {#each commands as cmd (cmd.id)}
+        <label class="context-item">
+          <input
+            type="checkbox"
+            checked={selectedCommandIds.has(cmd.id)}
+            onchange={() => toggleCommandInSelection(cmd.id)}
+          />
+          <span class="cmd-name">{cmd.name}</span>
+          <span class="cmd-command">{cmd.command}</span>
+        </label>
+      {/each}
+      <button class="context-launch-btn" onclick={handleLaunchSubset} disabled={selectedCommandIds.size === 0}>
+        Launch Selected ({selectedCommandIds.size})
+      </button>
+    </div>
+  </div>
 {/if}
 
 <style>
   .launch-bar {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
     gap: 0.5rem;
     padding: 0.375rem 1rem;
     border-top: 1px solid var(--color-border);
@@ -318,20 +331,51 @@
     min-height: 2rem;
   }
 
+  .launch-main-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
   .launch-idle,
   .launch-running,
   .launch-queued {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    flex-wrap: wrap;
     flex: 1;
     min-width: 0;
   }
 
-  .launch-icon,
   .queue-icon {
     color: var(--color-text-tertiary);
     flex-shrink: 0;
+  }
+
+  .commands-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-tertiary);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s, transform 0.15s;
+  }
+
+  .commands-toggle:hover {
+    background: var(--color-surface);
+    color: var(--color-text-secondary);
+  }
+
+  .commands-toggle.expanded svg {
+    transform: rotate(90deg);
   }
 
   .profile-btn {
@@ -465,6 +509,50 @@
     margin-left: auto;
   }
 
+  .launch-commands-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding-left: 2rem;
+  }
+
+  .command-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0.45rem 0.65rem;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+
+  .command-btn:hover {
+    background: var(--color-surface);
+    border-color: var(--color-accent);
+    color: var(--color-text-primary);
+  }
+
+  .command-name {
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  .command-shell {
+    max-width: 100%;
+    color: var(--color-text-tertiary);
+    font-family: monospace;
+    font-size: 0.68rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   /* Queued state */
   .queued-label {
     color: var(--color-text-secondary);
@@ -503,50 +591,6 @@
   }
 
   .cancel-btn:hover {
-    background: var(--color-surface-elevated);
-    color: var(--color-text-secondary);
-  }
-
-  /* Collapse/expand */
-  .collapse-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.25rem;
-    height: 1.25rem;
-    border: none;
-    border-radius: 3px;
-    background: transparent;
-    color: var(--color-text-tertiary);
-    cursor: pointer;
-    flex-shrink: 0;
-    margin-left: auto;
-  }
-
-  .collapse-toggle:hover {
-    background: var(--color-surface-elevated);
-    color: var(--color-text-secondary);
-  }
-
-  .expand-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    background: var(--color-surface);
-    color: var(--color-text-tertiary);
-    cursor: pointer;
-    position: absolute;
-    bottom: 4.5rem;
-    right: 1rem;
-    z-index: 5;
-    transition: background 0.15s, color 0.15s;
-  }
-
-  .expand-toggle:hover {
     background: var(--color-surface-elevated);
     color: var(--color-text-secondary);
   }

@@ -210,7 +210,10 @@ fn filter_json_parse(value: String) -> Result<Value, Error> {
 
     Err(Error::new(
         ErrorKind::InvalidOperation,
-        format!("Failed to parse JSON from string: {}", truncate_for_error(&value)),
+        format!(
+            "Failed to parse JSON from string: {}",
+            truncate_for_error(&value)
+        ),
     ))
 }
 
@@ -441,19 +444,15 @@ mod tests {
     #[test]
     fn test_render_nested() {
         let ctx = json!({"user": {"name": "Alice", "age": 30}});
-        let result =
-            TemplateEngine::render("{{ user.name }} is {{ user.age }}", &ctx).unwrap();
+        let result = TemplateEngine::render("{{ user.name }} is {{ user.age }}", &ctx).unwrap();
         assert_eq!(result, "Alice is 30");
     }
 
     #[test]
     fn test_render_array() {
         let ctx = json!({"items": ["a", "b", "c"]});
-        let result = TemplateEngine::render(
-            "{% for item in items %}{{ item }}{% endfor %}",
-            &ctx,
-        )
-        .unwrap();
+        let result =
+            TemplateEngine::render("{% for item in items %}{{ item }}{% endfor %}", &ctx).unwrap();
         assert_eq!(result, "abc");
     }
 
@@ -515,8 +514,7 @@ mod tests {
     #[test]
     fn test_filter_truncate_in_template() {
         let ctx = json!({"text": "hello world"});
-        let result =
-            TemplateEngine::render("{{ text | truncate(5) }}", &ctx).unwrap();
+        let result = TemplateEngine::render("{{ text | truncate(5) }}", &ctx).unwrap();
         assert_eq!(result, "hello...");
     }
 
@@ -524,10 +522,7 @@ mod tests {
     fn test_filter_slugify() {
         assert_eq!(filter_slugify("Hello World!".into()), "hello-world");
         assert_eq!(filter_slugify("  Hello World!  ".into()), "hello-world");
-        assert_eq!(
-            filter_slugify("This---is  a TEST".into()),
-            "this-is-a-test"
-        );
+        assert_eq!(filter_slugify("This---is  a TEST".into()), "this-is-a-test");
         assert_eq!(filter_slugify("---leading---".into()), "leading");
         assert_eq!(filter_slugify("CamelCase".into()), "camelcase");
     }
@@ -540,11 +535,7 @@ mod tests {
 
     #[test]
     fn test_filter_join() {
-        let items = Value::from(vec![
-            Value::from("a"),
-            Value::from("b"),
-            Value::from("c"),
-        ]);
+        let items = Value::from(vec![Value::from("a"), Value::from("b"), Value::from("c")]);
         assert_eq!(filter_join(items, ", ".into()).unwrap(), "a, b, c");
     }
 
@@ -564,56 +555,38 @@ mod tests {
     fn test_filter_default() {
         let val = Value::UNDEFINED;
         let def = Value::from("fallback");
-        assert_eq!(
-            filter_default(val, def).to_string(),
-            "fallback"
-        );
+        assert_eq!(filter_default(val, def).to_string(), "fallback");
 
         let val = Value::from("present");
         let def = Value::from("fallback");
-        assert_eq!(
-            filter_default(val, def).to_string(),
-            "present"
-        );
+        assert_eq!(filter_default(val, def).to_string(), "present");
     }
 
     #[test]
     fn test_filter_default_false_bool() {
         let val = Value::from(false);
         let def = Value::from("fallback");
-        assert_eq!(
-            filter_default(val, def).to_string(),
-            "fallback"
-        );
+        assert_eq!(filter_default(val, def).to_string(), "fallback");
     }
 
     #[test]
     fn test_filter_json_parse_direct() {
         let result = filter_json_parse(r#"{"key": "value"}"#.into()).unwrap();
-        assert_eq!(
-            result.get_attr("key").unwrap().to_string(),
-            "value"
-        );
+        assert_eq!(result.get_attr("key").unwrap().to_string(), "value");
     }
 
     #[test]
     fn test_filter_json_parse_with_fences() {
         let input = "```json\n{\"key\": \"value\"}\n```";
         let result = filter_json_parse(input.into()).unwrap();
-        assert_eq!(
-            result.get_attr("key").unwrap().to_string(),
-            "value"
-        );
+        assert_eq!(result.get_attr("key").unwrap().to_string(), "value");
     }
 
     #[test]
     fn test_filter_json_parse_extract_block() {
         let input = "Here is some text {\"key\": \"value\"} and more text";
         let result = filter_json_parse(input.into()).unwrap();
-        assert_eq!(
-            result.get_attr("key").unwrap().to_string(),
-            "value"
-        );
+        assert_eq!(result.get_attr("key").unwrap().to_string(), "value");
     }
 
     #[test]
@@ -694,17 +667,13 @@ mod tests {
             filter_shell_escape("it's a test".into()),
             "'it'\\''s a test'"
         );
-        assert_eq!(
-            filter_shell_escape("hello world".into()),
-            "'hello world'"
-        );
+        assert_eq!(filter_shell_escape("hello world".into()), "'hello world'");
     }
 
     #[test]
     fn test_filter_shell_escape_in_template() {
         let ctx = json!({"cmd": "echo 'hello'"});
-        let result =
-            TemplateEngine::render("{{ cmd | shell_escape }}", &ctx).unwrap();
+        let result = TemplateEngine::render("{{ cmd | shell_escape }}", &ctx).unwrap();
         assert_eq!(result, "'echo '\\''hello'\\'''");
     }
 
@@ -845,14 +814,8 @@ mod tests {
 
     #[test]
     fn test_strip_code_fences() {
-        assert_eq!(
-            strip_code_fences("```json\n{\"a\": 1}\n```"),
-            "{\"a\": 1}"
-        );
-        assert_eq!(
-            strip_code_fences("```\n{\"a\": 1}\n```"),
-            "{\"a\": 1}"
-        );
+        assert_eq!(strip_code_fences("```json\n{\"a\": 1}\n```"), "{\"a\": 1}");
+        assert_eq!(strip_code_fences("```\n{\"a\": 1}\n```"), "{\"a\": 1}");
         assert_eq!(strip_code_fences("no fences"), "no fences");
     }
 

@@ -81,7 +81,14 @@ impl GitManager {
         // Use --no-track to prevent the new branch from automatically tracking the
         // start point (e.g., origin/master). Without this, `git push` would push
         // directly to the base branch instead of the feature branch's own remote.
-        let mut args = vec!["worktree", "add", "--no-track", "-b", branch_name, worktree_path];
+        let mut args = vec![
+            "worktree",
+            "add",
+            "--no-track",
+            "-b",
+            branch_name,
+            worktree_path,
+        ];
         if let Some(sp) = start_point {
             args.push(sp);
         }
@@ -137,7 +144,10 @@ impl GitManager {
             }
         }
 
-        Err("Could not detect remote default branch. Set a base branch in repo settings.".to_string())
+        Err(
+            "Could not detect remote default branch. Set a base branch in repo settings."
+                .to_string(),
+        )
     }
 
     /// Fetch the latest from remote for a given branch ref
@@ -148,8 +158,7 @@ impl GitManager {
             .unwrap_or(remote_branch);
 
         let mut cmd = Command::new("git");
-        cmd.args(["fetch", "origin", branch])
-            .current_dir(repo_path);
+        cmd.args(["fetch", "origin", branch]).current_dir(repo_path);
 
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -207,8 +216,7 @@ impl GitManager {
 
     pub fn checkout_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
         let mut cmd = Command::new("git");
-        cmd.args(["checkout", branch_name])
-            .current_dir(repo_path);
+        cmd.args(["checkout", branch_name]).current_dir(repo_path);
 
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -371,7 +379,12 @@ impl GitManager {
         }
 
         // Create the worktree
-        Self::create_worktree(repo_path, branch_name, &effective_path, start_point.as_deref())?;
+        Self::create_worktree(
+            repo_path,
+            branch_name,
+            &effective_path,
+            start_point.as_deref(),
+        )?;
 
         // Copy files from main worktree
         for file in copy_files {
@@ -387,8 +400,7 @@ impl GitManager {
                         })?;
                     }
                 }
-                std::fs::copy(&src, &dst)
-                    .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
+                std::fs::copy(&src, &dst).map_err(|e| format!("Failed to copy {}: {}", file, e))?;
             }
             // Silently skip missing files — user may list files that only exist in some repos
         }
@@ -418,10 +430,7 @@ impl GitManager {
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                log::error!(
-                    "[git] Post-create command '{}' failed: {}",
-                    cmd_str, stderr
-                );
+                log::error!("[git] Post-create command '{}' failed: {}", cmd_str, stderr);
                 // Don't fail the whole operation — the worktree is already created
                 // Log the error but continue with remaining commands
             }

@@ -87,7 +87,8 @@ impl WhisperClient {
                 if r.status().is_success() {
                     result.health_ok = true;
                 } else {
-                    result.health_error = Some(format!("Health check returned status {}", r.status()));
+                    result.health_error =
+                        Some(format!("Health check returned status {}", r.status()));
                 }
             }
             Err(e) => {
@@ -130,7 +131,8 @@ impl WhisperClient {
                 } else {
                     let status = r.status();
                     let error_text = r.text().await.unwrap_or_default();
-                    result.transcription_error = Some(format!("Transcription error ({}): {}", status, error_text));
+                    result.transcription_error =
+                        Some(format!("Transcription error ({}): {}", status, error_text));
                 }
             }
             Err(e) => {

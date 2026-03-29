@@ -72,7 +72,10 @@
 
   function handleAddRepo() {
     showRepoSelector = false;
-    goto('/settings?tab=repos');
+    if (currentPath !== '/') {
+      goto('/');
+    }
+    navigation.showRepositoryAdd();
   }
 
   async function handleChangeModel(model: string) {

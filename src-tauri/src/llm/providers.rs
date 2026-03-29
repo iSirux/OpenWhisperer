@@ -37,7 +37,13 @@ impl LlmClient {
             generation_config: None,
         };
 
-        match self.client.post(&self.api_url()).json(&request).send().await {
+        match self
+            .client
+            .post(&self.api_url())
+            .json(&request)
+            .send()
+            .await
+        {
             Ok(response) => {
                 if response.status().is_success() {
                     match response.json::<GeminiResponse>().await {
@@ -202,11 +208,14 @@ impl LlmClient {
         }
 
         // Extract usage data
-        let usage = gemini_response.usage_metadata.map(|u| LlmUsage {
-            input_tokens: u.prompt_token_count.unwrap_or(0),
-            output_tokens: u.candidates_token_count.unwrap_or(0),
-            total_tokens: u.total_token_count.unwrap_or(0),
-        }).unwrap_or_default();
+        let usage = gemini_response
+            .usage_metadata
+            .map(|u| LlmUsage {
+                input_tokens: u.prompt_token_count.unwrap_or(0),
+                output_tokens: u.candidates_token_count.unwrap_or(0),
+                total_tokens: u.total_token_count.unwrap_or(0),
+            })
+            .unwrap_or_default();
 
         let text = gemini_response
             .candidates
@@ -244,7 +253,10 @@ impl LlmClient {
             }
 
             // All models failed
-            return Err(format!("All Gemini models failed. Last error: {}", last_error));
+            return Err(format!(
+                "All Gemini models failed. Last error: {}",
+                last_error
+            ));
         }
 
         // No fallback - use the configured model directly
@@ -298,11 +310,14 @@ impl LlmClient {
         }
 
         // Extract usage data
-        let usage = openai_response.usage.map(|u| LlmUsage {
-            input_tokens: u.prompt_tokens.unwrap_or(0),
-            output_tokens: u.completion_tokens.unwrap_or(0),
-            total_tokens: u.total_tokens.unwrap_or(0),
-        }).unwrap_or_default();
+        let usage = openai_response
+            .usage
+            .map(|u| LlmUsage {
+                input_tokens: u.prompt_tokens.unwrap_or(0),
+                output_tokens: u.completion_tokens.unwrap_or(0),
+                total_tokens: u.total_tokens.unwrap_or(0),
+            })
+            .unwrap_or_default();
 
         let text = openai_response
             .choices

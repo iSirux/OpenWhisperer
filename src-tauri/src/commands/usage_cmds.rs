@@ -22,7 +22,10 @@ pub fn track_session(
 }
 
 #[tauri::command]
-pub fn track_prompt(stats: State<UsageStatsState>, repo_path: Option<String>) -> Result<(), String> {
+pub fn track_prompt(
+    stats: State<UsageStatsState>,
+    repo_path: Option<String>,
+) -> Result<(), String> {
     let mut s = stats.lock();
     s.track_prompt(repo_path.as_deref());
     s.save()
@@ -59,7 +62,13 @@ pub fn track_token_usage(
     cost_usd: f64,
 ) -> Result<(), String> {
     let mut s = stats.lock();
-    s.track_token_usage(input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd);
+    s.track_token_usage(
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        cost_usd,
+    );
     s.save()
 }
 

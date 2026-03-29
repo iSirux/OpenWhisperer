@@ -7,6 +7,7 @@ export interface ModelInfo {
   label: string;
   title: string;
   isAuto?: boolean; // Special flag for auto model selection
+  maxContextTokens?: number;
   /** Whether this model supports the effort parameter */
   supportsEffort?: boolean;
   /** Maximum effort level supported: 'high' for most models, 'max' for Opus 4.6 */
@@ -19,6 +20,7 @@ export const AUTO_MODEL: ModelInfo = {
   label: "Auto",
   title: "Automatically select the best model using LLM integration",
   isAuto: true,
+  maxContextTokens: 1000000,
 };
 
 export const ALL_MODELS: ModelInfo[] = [
@@ -26,6 +28,7 @@ export const ALL_MODELS: ModelInfo[] = [
     id: "claude-opus-4-6",
     label: "Opus",
     title: "Opus 4.6 - Most capable model",
+    maxContextTokens: 1000000,
     supportsEffort: true,
     maxEffort: "high", // 'max' is API-key only, not available for Claude.ai subscribers
   },
@@ -33,6 +36,7 @@ export const ALL_MODELS: ModelInfo[] = [
     id: "claude-sonnet-4-6",
     label: "Sonnet",
     title: "Sonnet 4.6 - Balanced performance",
+    maxContextTokens: 1000000,
     supportsEffort: true,
     maxEffort: "high",
   },
@@ -40,6 +44,7 @@ export const ALL_MODELS: ModelInfo[] = [
     id: "claude-haiku-4-5-20251001",
     label: "Haiku",
     title: "Haiku 4.5 - Fastest model",
+    maxContextTokens: 200000,
     supportsEffort: false,
   },
 ];
@@ -49,6 +54,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     id: "gpt-5.4",
     label: "5.4",
     title: "GPT-5.4 - Most capable agentic coding model",
+    maxContextTokens: 400000,
     supportsEffort: true,
     maxEffort: "high",
   },
@@ -56,6 +62,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     id: "gpt-5.3-codex",
     label: "5.3 Codex",
     title: "GPT-5.3 Codex - Most capable agentic coding model",
+    maxContextTokens: 400000,
     supportsEffort: true,
     maxEffort: "high",
   },
@@ -63,6 +70,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     id: "gpt-5.3-codex-spark",
     label: "5.3 Spark",
     title: "GPT-5.3 Codex Spark - Near-instant real-time coding (Pro only)",
+    maxContextTokens: 400000,
     supportsEffort: true,
     maxEffort: "high",
   },
@@ -70,13 +78,15 @@ export const OPENAI_MODELS: ModelInfo[] = [
     id: "gpt-5.2-codex",
     label: "5.2 Codex",
     title: "GPT-5.2 Codex - Advanced production engineering",
+    maxContextTokens: 400000,
     supportsEffort: true,
     maxEffort: "high",
   },
   {
-    id: "gpt-5.1-codex-mini",
-    label: "5.1 Mini",
-    title: "GPT-5.1 Codex Mini - Cost-effective, up to 4x more usage",
+    id: "gpt-5.4-mini",
+    label: "5.4 Mini",
+    title: "GPT-5.4 Mini - Strong mini model for coding, computer use, and subagents",
+    maxContextTokens: 400000,
     supportsEffort: true,
     maxEffort: "high",
   },
@@ -87,6 +97,8 @@ export const DEFAULT_OPENAI_MODEL_ID = "gpt-5.4";
 const OPENAI_MODEL_ALIASES: Record<string, string> = {
   "codex-mini-latest": DEFAULT_OPENAI_MODEL_ID,
   "gpt-5.4-codex": DEFAULT_OPENAI_MODEL_ID,
+  "gpt-5-mini": "gpt-5.4-mini",
+  "gpt-5.1-codex-mini": "gpt-5.4-mini",
 };
 
 export function normalizeOpenAiModelId(modelId: string): string {
@@ -138,6 +150,13 @@ export function isOpenAiModel(modelId: string): boolean {
 // Get the provider for a model ID
 export function getProviderForModel(modelId: string): SdkProvider {
   return isOpenAiModel(modelId) ? "openai" : "claude";
+}
+
+export function getMaxContextTokens(modelId: string): number {
+  if (isAutoModel(modelId)) {
+    return AUTO_MODEL.maxContextTokens ?? 1000000;
+  }
+  return getModelById(modelId)?.maxContextTokens ?? (isOpenAiModel(modelId) ? 400000 : 200000);
 }
 
 /**

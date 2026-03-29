@@ -748,7 +748,7 @@
                 {/if}
                 {#if ($usageStats.model_usage.codex_51_mini_sessions || 0) > 0}
                   <div class="flex items-center gap-3">
-                    <div class="w-20 text-sm text-text-secondary">5.1 Mini</div>
+                    <div class="w-20 text-sm text-text-secondary">5.4 Mini</div>
                     <div class="flex-1 bg-border rounded-full h-2">
                       <div class="bg-green-300 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_51_mini_sessions || 0, totalModelsAll)}%"></div>
                     </div>

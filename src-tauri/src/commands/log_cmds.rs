@@ -1,6 +1,6 @@
+use parking_lot::Mutex;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
-use parking_lot::Mutex;
 
 const LOG_RETENTION_DAYS: i64 = 7;
 
@@ -18,8 +18,8 @@ pub fn logs_dir() -> std::path::PathBuf {
 ///   `backend-YYYY-MM-DD.log`, `backend-dev-YYYY-MM-DD.log`
 ///   `frontend-YYYY-MM-DD.log`, `frontend-dev-YYYY-MM-DD.log`
 pub fn cleanup_old_logs(dir: &std::path::Path) {
-    let cutoff = chrono::Local::now().naive_local().date()
-        - chrono::Duration::days(LOG_RETENTION_DAYS);
+    let cutoff =
+        chrono::Local::now().naive_local().date() - chrono::Duration::days(LOG_RETENTION_DAYS);
 
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -36,9 +36,7 @@ pub fn cleanup_old_logs(dir: &std::path::Path) {
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
             if stem.len() >= 10 {
                 let date_str = &stem[stem.len() - 10..];
-                if let Ok(file_date) =
-                    chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
-                {
+                if let Ok(file_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                     if file_date < cutoff {
                         let _ = fs::remove_file(&path);
                     }
@@ -91,11 +89,7 @@ pub fn init_frontend_logger() -> FrontendLogger {
 /// `level` should be one of "debug", "info", "warn", or "error".
 /// `message` is the already-formatted log string.
 #[tauri::command]
-pub fn write_frontend_log(
-    level: String,
-    message: String,
-    state: tauri::State<FrontendLogger>,
-) {
+pub fn write_frontend_log(level: String, message: String, state: tauri::State<FrontendLogger>) {
     let timestamp = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
     let line = format!("{} [{}] {}\n", timestamp, level.to_uppercase(), message);
 

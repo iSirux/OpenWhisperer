@@ -366,15 +366,13 @@ impl SessionIndex {
     /// Save the session index to disk
     pub fn save(&self) -> Result<(), String> {
         let dir = Self::sessions_dir();
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create sessions dir: {}", e))?;
+        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {}", e))?;
 
         let path = Self::index_path();
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize session index: {}", e))?;
 
-        fs::write(&path, &content)
-            .map_err(|e| format!("Failed to write session index: {}", e))?;
+        fs::write(&path, &content).map_err(|e| format!("Failed to write session index: {}", e))?;
         Ok(())
     }
 
@@ -388,8 +386,7 @@ impl SessionIndex {
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("Failed to serialize session data: {}", e))?;
 
-        fs::write(&path, &content)
-            .map_err(|e| format!("Failed to write session data: {}", e))?;
+        fs::write(&path, &content).map_err(|e| format!("Failed to write session data: {}", e))?;
         Ok(())
     }
 
@@ -400,11 +397,10 @@ impl SessionIndex {
             return Err(format!("Session data file not found: {}", id));
         }
 
-        let content = fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read session data: {}", e))?;
+        let content =
+            fs::read_to_string(&path).map_err(|e| format!("Failed to read session data: {}", e))?;
 
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse session data: {}", e))
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse session data: {}", e))
     }
 
     /// Delete a session data file
@@ -425,24 +421,22 @@ impl SessionIndex {
 
         for entry in &self.entries {
             match entry.session_type.as_str() {
-                "sdk" => {
-                    match self.load_session_data::<PersistedSdkSession>(&entry.id) {
-                        Ok(session) => sdk_sessions.push(session),
-                        Err(e) => log::error!(
-                            "[session_persistence] Skipping SDK session {}: {}",
-                            entry.id, e
-                        ),
-                    }
-                }
-                "pty" => {
-                    match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
-                        Ok(session) => terminal_sessions.push(session),
-                        Err(e) => log::error!(
-                            "[session_persistence] Skipping PTY session {}: {}",
-                            entry.id, e
-                        ),
-                    }
-                }
+                "sdk" => match self.load_session_data::<PersistedSdkSession>(&entry.id) {
+                    Ok(session) => sdk_sessions.push(session),
+                    Err(e) => log::error!(
+                        "[session_persistence] Skipping SDK session {}: {}",
+                        entry.id,
+                        e
+                    ),
+                },
+                "pty" => match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
+                    Ok(session) => terminal_sessions.push(session),
+                    Err(e) => log::error!(
+                        "[session_persistence] Skipping PTY session {}: {}",
+                        entry.id,
+                        e
+                    ),
+                },
                 _ => {}
             }
         }
@@ -486,7 +480,8 @@ impl SessionIndex {
             if let Err(e) = Self::delete_session_data(id) {
                 log::error!(
                     "[session_persistence] Failed to delete stale session {}: {}",
-                    id, e
+                    id,
+                    e
                 );
             }
         }
@@ -549,31 +544,30 @@ impl SessionIndex {
 
         for entry in &overflow_entries {
             match entry.session_type.as_str() {
-                "sdk" => {
-                    match self.load_session_data::<PersistedSdkSession>(&entry.id) {
-                        Ok(session) => overflow_sdk.push(session),
-                        Err(e) => log::error!(
-                            "[session_persistence] Failed to load overflow SDK session {}: {}",
-                            entry.id, e
-                        ),
-                    }
-                }
-                "pty" => {
-                    match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
-                        Ok(session) => overflow_terminal.push(session),
-                        Err(e) => log::error!(
-                            "[session_persistence] Failed to load overflow PTY session {}: {}",
-                            entry.id, e
-                        ),
-                    }
-                }
+                "sdk" => match self.load_session_data::<PersistedSdkSession>(&entry.id) {
+                    Ok(session) => overflow_sdk.push(session),
+                    Err(e) => log::error!(
+                        "[session_persistence] Failed to load overflow SDK session {}: {}",
+                        entry.id,
+                        e
+                    ),
+                },
+                "pty" => match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
+                    Ok(session) => overflow_terminal.push(session),
+                    Err(e) => log::error!(
+                        "[session_persistence] Failed to load overflow PTY session {}: {}",
+                        entry.id,
+                        e
+                    ),
+                },
                 _ => {}
             }
             // Delete the data file for the overflow session
             if let Err(e) = Self::delete_session_data(&entry.id) {
                 log::error!(
                     "[session_persistence] Failed to delete overflow session file {}: {}",
-                    entry.id, e
+                    entry.id,
+                    e
                 );
             }
         }
@@ -655,7 +649,8 @@ impl SessionIndex {
             if let Err(e) = index.save_session_data(&sdk.id, sdk) {
                 log::error!(
                     "[session_persistence] Failed to migrate SDK session {}: {}",
-                    sdk.id, e
+                    sdk.id,
+                    e
                 );
                 continue;
             }
@@ -667,7 +662,8 @@ impl SessionIndex {
             if let Err(e) = index.save_session_data(&pty.id, pty) {
                 log::error!(
                     "[session_persistence] Failed to migrate PTY session {}: {}",
-                    pty.id, e
+                    pty.id,
+                    e
                 );
                 continue;
             }
@@ -706,10 +702,7 @@ fn sdk_to_session_entry(session: &PersistedSdkSession) -> SessionEntry {
     SessionEntry {
         id: session.id.clone(),
         session_type: "sdk".to_string(),
-        name: session
-            .ai_metadata
-            .as_ref()
-            .and_then(|m| m.name.clone()),
+        name: session.ai_metadata.as_ref().and_then(|m| m.name.clone()),
         model: Some(session.model.clone()),
         cwd: Some(session.cwd.clone()),
         status: session.status.clone(),

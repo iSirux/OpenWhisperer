@@ -10,13 +10,13 @@ use tokio::sync::Notify;
 use crate::config::AppConfig;
 use crate::git::GitManager;
 use crate::llm::LlmClient;
-use crate::sidecar::{OutboundMessage, SidecarManager};
 use crate::sequences::notifications::{NotificationSender, NotifyExtra};
 use crate::sequences::persistence;
 use crate::sequences::rate_limiter::SequenceRateLimiter;
 use crate::sequences::state::*;
 use crate::sequences::template::TemplateEngine;
 use crate::sequences::types::*;
+use crate::sidecar::{OutboundMessage, SidecarManager};
 
 #[cfg(windows)]
 #[allow(unused_imports)]
@@ -59,7 +59,11 @@ pub struct SequenceExecutor {
 }
 
 impl SequenceExecutor {
-    pub fn new(app: AppHandle, sidecar: Arc<SidecarManager>, rate_limiter: Arc<SequenceRateLimiter>) -> Self {
+    pub fn new(
+        app: AppHandle,
+        sidecar: Arc<SidecarManager>,
+        rate_limiter: Arc<SequenceRateLimiter>,
+    ) -> Self {
         Self {
             app,
             sidecar,
@@ -86,8 +90,12 @@ impl SequenceExecutor {
         pause_signal: Arc<Notify>,
         entry_node_id: Option<String>,
     ) -> Result<String, String> {
-        log::info!("[sequence] Executor starting with id={}, sequence={} ({} nodes)",
-            execution_id, definition.name, definition.nodes.len());
+        log::info!(
+            "[sequence] Executor starting with id={}, sequence={} ({} nodes)",
+            execution_id,
+            definition.name,
+            definition.nodes.len()
+        );
 
         // 1. Validate required inputs
         self.validate_inputs(&definition, &inputs)?;
@@ -166,7 +174,9 @@ impl SequenceExecutor {
             Some(eid.clone())
         } else {
             // Default: first non-trigger node
-            definition.nodes.iter()
+            definition
+                .nodes
+                .iter()
                 .find(|n| !matches!(n.node_type, NodeType::Trigger(_)))
                 .map(|n| n.id.clone())
         };
@@ -236,12 +246,7 @@ impl SequenceExecutor {
                 let ctx_value = execution.lock().context.to_value();
 
                 node_result = self
-                    .execute_node(
-                        &node_def,
-                        &ctx_value,
-                        &execution_id,
-                        cancel_flag.clone(),
-                    )
+                    .execute_node(&node_def, &ctx_value, &execution_id, cancel_flag.clone())
                     .await;
 
                 match &node_result {
@@ -297,15 +302,17 @@ impl SequenceExecutor {
                         .map(|(t, c)| (Some(t), Some(c)))
                         .unwrap_or((None, None));
 
-                    execution
-                        .lock()
-                        .record_node_complete(&node_id, output.clone(), ai_tokens, ai_cost);
+                    execution.lock().record_node_complete(
+                        &node_id,
+                        output.clone(),
+                        ai_tokens,
+                        ai_cost,
+                    );
                     self.emit_node_complete(&execution_id, &node_id, 0, ai_cost);
 
                     // Determine next node.
                     // For route nodes the branch output overrides the static `next` field.
-                    current_node_id =
-                        self.next_node_id(&node_def, &definition, output.as_ref());
+                    current_node_id = self.next_node_id(&node_def, &definition, output.as_ref());
                 }
                 Err(error) => {
                     execution.lock().record_node_error(&node_id, &error);
@@ -332,8 +339,7 @@ impl SequenceExecutor {
                         }
                         ErrorStrategy::Skip => {
                             execution.lock().record_node_skipped(&node_id);
-                            current_node_id =
-                                self.next_node_id(&node_def, &definition, None);
+                            current_node_id = self.next_node_id(&node_def, &definition, None);
                         }
                         ErrorStrategy::Retry => {
                             // Retries already exhausted in the loop above — treat as failure.
@@ -382,8 +388,7 @@ impl SequenceExecutor {
         // 7. Finalize
         {
             let mut exec = execution.lock();
-            if exec.status == ExecutionStatus::Running
-                || exec.status == ExecutionStatus::CleaningUp
+            if exec.status == ExecutionStatus::Running || exec.status == ExecutionStatus::CleaningUp
             {
                 exec.update_status(ExecutionStatus::Completed);
             }
@@ -421,26 +426,17 @@ impl SequenceExecutor {
                 match input_def.input_type {
                     InputType::String => {
                         if !value.is_string() && !value.is_null() {
-                            return Err(format!(
-                                "Input '{}' must be a string",
-                                input_def.name
-                            ));
+                            return Err(format!("Input '{}' must be a string", input_def.name));
                         }
                     }
                     InputType::Number => {
                         if !value.is_number() && !value.is_null() {
-                            return Err(format!(
-                                "Input '{}' must be a number",
-                                input_def.name
-                            ));
+                            return Err(format!("Input '{}' must be a number", input_def.name));
                         }
                     }
                     InputType::Boolean => {
                         if !value.is_boolean() && !value.is_null() {
-                            return Err(format!(
-                                "Input '{}' must be a boolean",
-                                input_def.name
-                            ));
+                            return Err(format!("Input '{}' must be a boolean", input_def.name));
                         }
                     }
                     InputType::RepoList => {
@@ -529,29 +525,23 @@ impl SequenceExecutor {
         execution_id: &'a str,
         cancel_flag: Arc<AtomicBool>,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Option<serde_json::Value>, String>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<Option<serde_json::Value>, String>> + Send + 'a,
+        >,
     > {
         Box::pin(async move {
             match &node.node_type {
-                NodeType::Prompt(p) => {
-                    self.execute_prompt(node, p, context, execution_id).await
-                }
+                NodeType::Prompt(p) => self.execute_prompt(node, p, context, execution_id).await,
                 NodeType::Route(r) => self.execute_route(node, r, context).await,
-                NodeType::Script(s) => {
-                    self.execute_script(node, s, context, cancel_flag).await
-                }
-                NodeType::Notify(n) => {
-                    self.execute_notify(node, n, context, execution_id).await
-                }
+                NodeType::Script(s) => self.execute_script(node, s, context, cancel_flag).await,
+                NodeType::Notify(n) => self.execute_notify(node, n, context, execution_id).await,
                 NodeType::Delay(d) => self.execute_delay(node, d, context).await,
                 NodeType::Transform(t) => self.execute_transform(node, t, context),
                 NodeType::Approval(a) => {
                     self.execute_approval(node, a, context, execution_id).await
                 }
                 NodeType::GitBranch(g) => self.execute_git_branch(node, g, context).await,
-                NodeType::GitWorktree(g) => {
-                    self.execute_git_worktree(node, g, context).await
-                }
+                NodeType::GitWorktree(g) => self.execute_git_worktree(node, g, context).await,
                 NodeType::GitCommit(g) => self.execute_git_commit(node, g, context).await,
                 NodeType::GitPush(g) => self.execute_git_push(node, g, context).await,
                 NodeType::GitDeleteBranch(g) => {
@@ -565,12 +555,8 @@ impl SequenceExecutor {
                     self.execute_github_pr_wait(node, g, context, cancel_flag)
                         .await
                 }
-                NodeType::GithubPrMerge(g) => {
-                    self.execute_github_pr_merge(node, g, context).await
-                }
-                NodeType::Wait(w) => {
-                    self.execute_wait(node, w, context, cancel_flag).await
-                }
+                NodeType::GithubPrMerge(g) => self.execute_github_pr_merge(node, g, context).await,
+                NodeType::Wait(w) => self.execute_wait(node, w, context, cancel_flag).await,
                 NodeType::File(f) => self.execute_file(node, f, context).await,
                 NodeType::Http(h) => self.execute_http(node, h, context).await,
                 NodeType::Loop(l) => {
@@ -611,7 +597,8 @@ impl SequenceExecutor {
         if let Some(delay_ms) = self.rate_limiter.check_provider_rate(provider) {
             log::info!(
                 "[sequence] Rate limit: waiting {}ms for provider '{}'",
-                delay_ms, provider
+                delay_ms,
+                provider
             );
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
@@ -802,23 +789,18 @@ impl SequenceExecutor {
 
         // Apply timeout
         let timeout_secs = node.timeout.unwrap_or(300);
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            done_rx,
-        )
-        .await
-        .map_err(|_| {
-            format!(
-                "Prompt node '{}' timed out after {}s",
-                node.id, timeout_secs
-            )
-        })?
-        .map_err(|_| "Done channel dropped".to_string())?;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), done_rx)
+            .await
+            .map_err(|_| {
+                format!(
+                    "Prompt node '{}' timed out after {}s",
+                    node.id, timeout_secs
+                )
+            })?
+            .map_err(|_| "Done channel dropped".to_string())?;
 
         // 8. Close session
-        let _ = self
-            .sidecar
-            .send(OutboundMessage::Close { id: session_id });
+        let _ = self.sidecar.send(OutboundMessage::Close { id: session_id });
 
         // 9. Log response and capture usage
         match &result {
@@ -912,7 +894,9 @@ impl SequenceExecutor {
 
         // AI classification routing via LLM
         if let Some(ref prompt_template) = route.prompt {
-            return self.execute_route_ai(node, route, prompt_template, context).await;
+            return self
+                .execute_route_ai(node, route, prompt_template, context)
+                .await;
         }
 
         Err("Route node must have either 'eval' or 'prompt'".to_string())
@@ -930,14 +914,21 @@ impl SequenceExecutor {
         let mut branch_descriptions = Vec::new();
         for (key, branch) in &route.branches {
             let desc = match branch {
-                RouteBranch::Long { description: Some(d), .. } => format!("- {}: {}", key, d),
+                RouteBranch::Long {
+                    description: Some(d),
+                    ..
+                } => format!("- {}: {}", key, d),
                 _ => format!("- {}", key),
             };
             branch_descriptions.push(desc);
         }
 
         let is_multi = route.multi.unwrap_or(false);
-        let classification_mode = if is_multi { "multi-select" } else { "single-select" };
+        let classification_mode = if is_multi {
+            "multi-select"
+        } else {
+            "single-select"
+        };
 
         let system_prompt = format!(
             "You are a classifier. Given the user's input, select the most appropriate branch(es).\n\n\
@@ -1005,9 +996,7 @@ impl SequenceExecutor {
             LogLevel::Info,
             format!(
                 "LLM classified as '{}' ({} input, {} output tokens)",
-                response,
-                result.usage.input_tokens,
-                result.usage.output_tokens,
+                response, result.usage.input_tokens, result.usage.output_tokens,
             ),
         );
 
@@ -1036,7 +1025,9 @@ impl SequenceExecutor {
 
             for key in &selected {
                 let lower_key = key.to_lowercase();
-                if let Some((matched_key, branch)) = route.branches.iter()
+                if let Some((matched_key, branch)) = route
+                    .branches
+                    .iter()
                     .find(|(k, _)| k.to_lowercase() == lower_key)
                 {
                     matched_branches.push(matched_key.clone());
@@ -1070,7 +1061,9 @@ impl SequenceExecutor {
         } else {
             // Single-select: match branch key (case-insensitive)
             let lower_response = response.to_lowercase();
-            if let Some((matched_key, branch)) = route.branches.iter()
+            if let Some((matched_key, branch)) = route
+                .branches
+                .iter()
                 .find(|(k, _)| k.to_lowercase() == lower_response)
             {
                 return Ok(Some(serde_json::json!({
@@ -1269,9 +1262,10 @@ impl SequenceExecutor {
             let extra = NotifyExtra {
                 blocks: notify.blocks.clone(),
                 embed: notify.embed.clone(),
-                body: notify.body.as_ref().map(|b| {
-                    TemplateEngine::render(b, context).unwrap_or_else(|_| b.clone())
-                }),
+                body: notify
+                    .body
+                    .as_ref()
+                    .map(|b| TemplateEngine::render(b, context).unwrap_or_else(|_| b.clone())),
                 method: notify.method.clone(),
                 headers: notify.headers.clone(),
             };
@@ -1282,10 +1276,7 @@ impl SequenceExecutor {
                 .await;
 
             if let Err(ref err) = result {
-                let on_error = notify
-                    .on_notify_error
-                    .as_deref()
-                    .unwrap_or("stop");
+                let on_error = notify.on_notify_error.as_deref().unwrap_or("stop");
 
                 match on_error {
                     "warn" => {
@@ -1385,7 +1376,10 @@ impl SequenceExecutor {
                         serde_json::Value::Object(m) => m,
                         _ => serde_json::Map::new(),
                     };
-                    ctx.insert("value".to_string(), serde_json::Value::String(current.clone()));
+                    ctx.insert(
+                        "value".to_string(),
+                        serde_json::Value::String(current.clone()),
+                    );
                     let ctx_val = serde_json::Value::Object(ctx);
                     current = TemplateEngine::render(tmpl, &ctx_val)?;
                 }
@@ -1437,11 +1431,7 @@ impl SequenceExecutor {
 
         let timeout_secs = node.timeout.unwrap_or(3600);
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            rx,
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx).await;
 
         match result {
             Ok(Ok(true)) => Ok(Some(serde_json::json!({
@@ -1456,10 +1446,9 @@ impl SequenceExecutor {
                         "approved": false,
                         "timed_out": true,
                     }))),
-                    Some("fail") | None => Err(format!(
-                        "Approval timed out after {}s",
-                        timeout_secs
-                    )),
+                    Some("fail") | None => {
+                        Err(format!("Approval timed out after {}s", timeout_secs))
+                    }
                     Some(target_node) => {
                         // Return a routing hint — the caller can handle this
                         Ok(Some(serde_json::json!({
@@ -1487,8 +1476,9 @@ impl SequenceExecutor {
         // If `from` is specified, checkout that branch first
         if let Some(ref from_ref) = git_branch.from {
             let rendered_from = TemplateEngine::render(from_ref, context)?;
-            GitManager::checkout_branch(&cwd, &rendered_from)
-                .map_err(|e| format!("Failed to checkout base branch '{}': {}", rendered_from, e))?;
+            GitManager::checkout_branch(&cwd, &rendered_from).map_err(|e| {
+                format!("Failed to checkout base branch '{}': {}", rendered_from, e)
+            })?;
         }
 
         GitManager::create_branch(&cwd, &rendered_branch)
@@ -1521,8 +1511,13 @@ impl SequenceExecutor {
             .map(|b| TemplateEngine::render(b, context))
             .transpose()?;
 
-        GitManager::create_worktree(&cwd, &rendered_branch, &worktree_path, start_point.as_deref())
-            .map_err(|e| format!("Failed to create worktree: {}", e))?;
+        GitManager::create_worktree(
+            &cwd,
+            &rendered_branch,
+            &worktree_path,
+            start_point.as_deref(),
+        )
+        .map_err(|e| format!("Failed to create worktree: {}", e))?;
 
         Ok(Some(serde_json::json!({
             "branch": rendered_branch,
@@ -1552,7 +1547,9 @@ impl SequenceExecutor {
                 cmd.creation_flags(CREATE_NO_WINDOW);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
-                let output = cmd.output().await
+                let output = cmd
+                    .output()
+                    .await
                     .map_err(|e| format!("Failed to run git add: {}", e))?;
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1580,7 +1577,9 @@ impl SequenceExecutor {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| format!("Failed to run git commit: {}", e))?;
 
         if !output.status.success() {
@@ -1616,7 +1615,9 @@ impl SequenceExecutor {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| format!("Failed to run git push: {}", e))?;
 
         if !output.status.success() {
@@ -1650,12 +1651,17 @@ impl SequenceExecutor {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| format!("Failed to run git branch -D: {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("git branch -D '{}' failed: {}", rendered_branch, stderr));
+            return Err(format!(
+                "git branch -D '{}' failed: {}",
+                rendered_branch, stderr
+            ));
         }
 
         // Also delete remote branch if requested
@@ -1668,7 +1674,9 @@ impl SequenceExecutor {
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
 
-            let output = cmd.output().await
+            let output = cmd
+                .output()
+                .await
                 .map_err(|e| format!("Failed to run git push --delete: {}", e))?;
 
             if !output.status.success() {
@@ -1752,7 +1760,9 @@ impl SequenceExecutor {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| format!("Failed to run gh pr create: {}", e))?;
 
         if !output.status.success() {
@@ -1813,22 +1823,31 @@ impl SequenceExecutor {
                     cmd.creation_flags(CREATE_NO_WINDOW);
                     cmd.stdout(std::process::Stdio::piped());
                     cmd.stderr(std::process::Stdio::piped());
-                    let output = cmd.output().await
+                    let output = cmd
+                        .output()
+                        .await
                         .map_err(|e| format!("Failed to run gh pr checks: {}", e))?;
                     output.status.success()
                 }
                 "reviews" => {
                     let mut cmd = tokio::process::Command::new("gh");
                     cmd.args([
-                        "pr", "view", &rendered_pr, "--json", "reviewDecision",
-                        "-q", ".reviewDecision",
+                        "pr",
+                        "view",
+                        &rendered_pr,
+                        "--json",
+                        "reviewDecision",
+                        "-q",
+                        ".reviewDecision",
                     ]);
                     cmd.current_dir(&cwd);
                     #[cfg(windows)]
                     cmd.creation_flags(CREATE_NO_WINDOW);
                     cmd.stdout(std::process::Stdio::piped());
                     cmd.stderr(std::process::Stdio::piped());
-                    let output = cmd.output().await
+                    let output = cmd
+                        .output()
+                        .await
                         .map_err(|e| format!("Failed to run gh pr view: {}", e))?;
                     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     stdout == "APPROVED"
@@ -1836,15 +1855,22 @@ impl SequenceExecutor {
                 "merge" => {
                     let mut cmd = tokio::process::Command::new("gh");
                     cmd.args([
-                        "pr", "view", &rendered_pr, "--json", "state",
-                        "-q", ".state",
+                        "pr",
+                        "view",
+                        &rendered_pr,
+                        "--json",
+                        "state",
+                        "-q",
+                        ".state",
                     ]);
                     cmd.current_dir(&cwd);
                     #[cfg(windows)]
                     cmd.creation_flags(CREATE_NO_WINDOW);
                     cmd.stdout(std::process::Stdio::piped());
                     cmd.stderr(std::process::Stdio::piped());
-                    let output = cmd.output().await
+                    let output = cmd
+                        .output()
+                        .await
                         .map_err(|e| format!("Failed to run gh pr view: {}", e))?;
                     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     stdout == "MERGED"
@@ -1881,9 +1907,15 @@ impl SequenceExecutor {
         cmd.args(["pr", "merge", &rendered_pr]);
 
         match gh_merge.method.as_deref() {
-            Some("squash") => { cmd.arg("--squash"); }
-            Some("rebase") => { cmd.arg("--rebase"); }
-            Some("merge") | None => { cmd.arg("--merge"); }
+            Some("squash") => {
+                cmd.arg("--squash");
+            }
+            Some("rebase") => {
+                cmd.arg("--rebase");
+            }
+            Some("merge") | None => {
+                cmd.arg("--merge");
+            }
             Some(other) => {
                 return Err(format!("Unknown merge method: '{}'", other));
             }
@@ -1899,7 +1931,9 @@ impl SequenceExecutor {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| format!("Failed to run gh pr merge: {}", e))?;
 
         if !output.status.success() {
@@ -1959,9 +1993,8 @@ impl SequenceExecutor {
                 let rendered_cmd = TemplateEngine::render(poll_command, context)?;
                 let cwd = resolve_cwd(context);
 
-                let mut cmd = tokio::process::Command::new(
-                    if cfg!(windows) { "cmd" } else { "sh" },
-                );
+                let mut cmd =
+                    tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
                 if cfg!(windows) {
                     cmd.args(["/C", &rendered_cmd]);
                 } else {
@@ -1973,13 +2006,13 @@ impl SequenceExecutor {
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
 
-                let output = cmd.output().await
+                let output = cmd
+                    .output()
+                    .await
                     .map_err(|e| format!("Poll command failed: {}", e))?;
                 output.status.success()
             } else {
-                return Err(
-                    "Wait node must have either 'condition' or 'poll_command'".to_string(),
-                );
+                return Err("Wait node must have either 'condition' or 'poll_command'".to_string());
             };
 
             if condition_met {
@@ -2002,10 +2035,7 @@ impl SequenceExecutor {
     ) -> Result<Option<serde_json::Value>, String> {
         match file_node.operation.as_str() {
             "read" => {
-                let path = file_node
-                    .path
-                    .as_ref()
-                    .ok_or("File read requires 'path'")?;
+                let path = file_node.path.as_ref().ok_or("File read requires 'path'")?;
                 let rendered_path = TemplateEngine::render(path, context)?;
                 let content = tokio::fs::read_to_string(&rendered_path)
                     .await
@@ -2145,9 +2175,10 @@ impl SequenceExecutor {
             request = request.body(rendered_body);
         }
 
-        let response = request.send().await.map_err(|e| {
-            format!("HTTP request to '{}' failed: {}", rendered_url, e)
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request to '{}' failed: {}", rendered_url, e))?;
 
         let status = response.status().as_u16();
 
@@ -2165,17 +2196,13 @@ impl SequenceExecutor {
         let resp_headers: HashMap<String, String> = response
             .headers()
             .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str().to_string(),
-                    v.to_str().unwrap_or("").to_string(),
-                )
-            })
+            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
 
-        let resp_body = response.text().await.map_err(|e| {
-            format!("Failed to read HTTP response body: {}", e)
-        })?;
+        let resp_body = response
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read HTTP response body: {}", e))?;
 
         Ok(Some(serde_json::json!({
             "status": status,
@@ -2206,10 +2233,7 @@ impl SequenceExecutor {
             if iteration >= max_iterations {
                 match loop_node.on_max_iterations.as_deref() {
                     Some("fail") => {
-                        return Err(format!(
-                            "Loop reached max iterations ({})",
-                            max_iterations
-                        ));
+                        return Err(format!("Loop reached max iterations ({})", max_iterations));
                     }
                     _ => {
                         // Default: complete with partial result
@@ -2258,8 +2282,12 @@ impl SequenceExecutor {
 
                     // Update the iter_context so subsequent nodes in same iteration can see it
                     if let serde_json::Value::Object(ref mut ctx_map) = iter_context {
-                        if let Some(serde_json::Value::Object(ref mut loop_obj)) = ctx_map.get_mut("loop") {
-                            if let Some(serde_json::Value::Object(ref mut nodes_obj)) = loop_obj.get_mut("nodes") {
+                        if let Some(serde_json::Value::Object(ref mut loop_obj)) =
+                            ctx_map.get_mut("loop")
+                        {
+                            if let Some(serde_json::Value::Object(ref mut nodes_obj)) =
+                                loop_obj.get_mut("nodes")
+                            {
                                 nodes_obj.insert(inner_node.id.clone(), out.clone());
                             }
                         }
@@ -2271,7 +2299,11 @@ impl SequenceExecutor {
                         break;
                     }
                     // Check for _continue signal
-                    if out.get("_continue").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    if out
+                        .get("_continue")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
                         should_continue = true;
                         break;
                     }
@@ -2391,7 +2423,9 @@ impl SequenceExecutor {
                     for i in 0..handles.len() {
                         if handles[i].1.is_finished() {
                             let (name, handle) = handles.remove(i);
-                            let result = handle.await.map_err(|e| format!("Task join error: {}", e))?;
+                            let result = handle
+                                .await
+                                .map_err(|e| format!("Task join error: {}", e))?;
                             found = Some((name, result));
                             break;
                         }
@@ -2403,16 +2437,11 @@ impl SequenceExecutor {
                 let (first_name, first_result) = found.unwrap();
                 match first_result {
                     Ok(output) => {
-                        branches_output.insert(
-                            first_name,
-                            output.unwrap_or(serde_json::Value::Null),
-                        );
+                        branches_output
+                            .insert(first_name, output.unwrap_or(serde_json::Value::Null));
                     }
                     Err(e) => {
-                        branches_output.insert(
-                            first_name,
-                            serde_json::json!({ "error": e }),
-                        );
+                        branches_output.insert(first_name, serde_json::json!({ "error": e }));
                     }
                 }
                 Ok(Some(serde_json::json!({
@@ -2431,22 +2460,20 @@ impl SequenceExecutor {
                     for i in 0..remaining.len() {
                         if remaining[i].1.is_finished() {
                             let (name, handle) = remaining.remove(i);
-                            let result =
-                                handle.await.map_err(|e| format!("Task join error: {}", e))?;
+                            let result = handle
+                                .await
+                                .map_err(|e| format!("Task join error: {}", e))?;
                             match result {
                                 Ok(output) => {
-                                    branches_output.insert(
-                                        name,
-                                        output.unwrap_or(serde_json::Value::Null),
-                                    );
+                                    branches_output
+                                        .insert(name, output.unwrap_or(serde_json::Value::Null));
                                     return Ok(Some(serde_json::json!({
                                         "branches": branches_output,
                                         "strategy": "any",
                                     })));
                                 }
                                 Err(e) => {
-                                    branches_output
-                                        .insert(name, serde_json::json!({ "error": e }));
+                                    branches_output.insert(name, serde_json::json!({ "error": e }));
                                 }
                             }
                             break; // restart loop since we modified the vec
@@ -2469,29 +2496,26 @@ impl SequenceExecutor {
                     for i in 0..remaining.len() {
                         if remaining[i].1.is_finished() {
                             let (name, handle) = remaining.remove(i);
-                            let result =
-                                handle.await.map_err(|e| format!("Task join error: {}", e))?;
+                            let result = handle
+                                .await
+                                .map_err(|e| format!("Task join error: {}", e))?;
                             match result {
                                 Ok(output) => {
-                                    branches_output.insert(
-                                        name,
-                                        output.unwrap_or(serde_json::Value::Null),
-                                    );
+                                    branches_output
+                                        .insert(name, output.unwrap_or(serde_json::Value::Null));
                                     completed += 1;
                                 }
-                                Err(e) => {
-                                    match parallel.on_branch_error.as_deref() {
-                                        Some("ignore") | Some("skip") => {
-                                            branches_output
-                                                .insert(name, serde_json::json!({ "error": e }));
-                                        }
-                                        Some("cancel_others") => {
-                                            cancel_flag.store(true, Ordering::Relaxed);
-                                            return Err(e);
-                                        }
-                                        _ => return Err(e),
+                                Err(e) => match parallel.on_branch_error.as_deref() {
+                                    Some("ignore") | Some("skip") => {
+                                        branches_output
+                                            .insert(name, serde_json::json!({ "error": e }));
                                     }
-                                }
+                                    Some("cancel_others") => {
+                                        cancel_flag.store(true, Ordering::Relaxed);
+                                        return Err(e);
+                                    }
+                                    _ => return Err(e),
+                                },
                             }
                             break;
                         }
@@ -2511,14 +2535,13 @@ impl SequenceExecutor {
                 let mut branches_output = serde_json::Map::new();
                 let mut had_error = false;
                 for (branch_name, handle) in handles {
-                    let result =
-                        handle.await.map_err(|e| format!("Task join error: {}", e))?;
+                    let result = handle
+                        .await
+                        .map_err(|e| format!("Task join error: {}", e))?;
                     match result {
                         Ok(output) => {
-                            branches_output.insert(
-                                branch_name,
-                                output.unwrap_or(serde_json::Value::Null),
-                            );
+                            branches_output
+                                .insert(branch_name, output.unwrap_or(serde_json::Value::Null));
                         }
                         Err(e) => {
                             had_error = true;
@@ -2528,10 +2551,8 @@ impl SequenceExecutor {
                                     return Err(format!("Branch '{}' failed: {}", branch_name, e));
                                 }
                                 _ => {
-                                    branches_output.insert(
-                                        branch_name,
-                                        serde_json::json!({ "error": e }),
-                                    );
+                                    branches_output
+                                        .insert(branch_name, serde_json::json!({ "error": e }));
                                 }
                             }
                         }
@@ -2624,7 +2645,9 @@ impl SequenceExecutor {
             }
 
             for handle in handles {
-                let result = handle.await.map_err(|e| format!("Task join error: {}", e))?;
+                let result = handle
+                    .await
+                    .map_err(|e| format!("Task join error: {}", e))?;
                 match result {
                     Ok(output) => {
                         results.push(output.unwrap_or(serde_json::Value::Null));
@@ -2666,12 +2689,7 @@ impl SequenceExecutor {
                 let mut last_output: Option<serde_json::Value> = None;
                 for inner_node in &foreach.nodes {
                     match self
-                        .execute_node(
-                            inner_node,
-                            &iter_context,
-                            execution_id,
-                            cancel_flag.clone(),
-                        )
+                        .execute_node(inner_node, &iter_context, execution_id, cancel_flag.clone())
                         .await
                     {
                         Ok(output) => {
@@ -2680,8 +2698,7 @@ impl SequenceExecutor {
                         Err(e) => match foreach.on_item_error.as_deref() {
                             Some("skip") | Some("ignore") | Some("continue") => {
                                 items_failed += 1;
-                                last_output =
-                                    Some(serde_json::json!({ "error": e }));
+                                last_output = Some(serde_json::json!({ "error": e }));
                                 break; // break inner node loop, continue to next item
                             }
                             _ => return Err(e),
@@ -2717,9 +2734,7 @@ impl SequenceExecutor {
         let sub_def = definitions
             .into_iter()
             .find(|d| d.id == rendered_seq_id)
-            .ok_or_else(|| {
-                format!("SubSequence '{}' not found", rendered_seq_id)
-            })?;
+            .ok_or_else(|| format!("SubSequence '{}' not found", rendered_seq_id))?;
 
         // Merge inputs: start with current context inputs, overlay sub-sequence inputs
         let mut sub_inputs: HashMap<String, serde_json::Value> = HashMap::new();
@@ -2750,7 +2765,15 @@ impl SequenceExecutor {
         let sub_exec_id = uuid::Uuid::new_v4().to_string();
 
         let exec_id = sub_executor
-            .execute(sub_exec_id, sub_def, sub_inputs, false, cancel_flag, pause_signal, None)
+            .execute(
+                sub_exec_id,
+                sub_def,
+                sub_inputs,
+                false,
+                cancel_flag,
+                pause_signal,
+                None,
+            )
             .await?;
 
         // Load the completed execution to extract outputs
@@ -2780,19 +2803,14 @@ impl SequenceExecutor {
 
     /// Store captured token usage for a node (from sdk-usage events).
     fn store_ai_usage(&self, node_id: &str, tokens: TokenUsage, cost: f64) {
-        self.ai_usage.lock().insert(
-            node_id.to_string(),
-            AiNodeUsage { tokens, cost },
-        );
+        self.ai_usage
+            .lock()
+            .insert(node_id.to_string(), AiNodeUsage { tokens, cost });
     }
 
     /// Drain accumulated AI logs, add them to the execution state, and emit
     /// as `sequence-log-{exec_id}` events to the frontend.
-    fn drain_ai_logs(
-        &self,
-        exec_id: &str,
-        execution: &Arc<Mutex<SequenceExecution>>,
-    ) {
+    fn drain_ai_logs(&self, exec_id: &str, execution: &Arc<Mutex<SequenceExecution>>) {
         let logs: Vec<AiNodeLog> = self.ai_logs.lock().drain(..).collect();
         for log in logs {
             let entry = LogEntry {
@@ -2839,7 +2857,12 @@ impl SequenceExecutor {
     }
 
     fn emit_node_start(&self, exec_id: &str, node: &NodeDefinition) {
-        log::info!("[sequence][{}] emit node-start: {} ({:?})", &exec_id[..8], node.id, node.name);
+        log::info!(
+            "[sequence][{}] emit node-start: {} ({:?})",
+            &exec_id[..8],
+            node.id,
+            node.name
+        );
         let _ = self.app.emit(
             &format!("sequence-node-start-{}", exec_id),
             serde_json::json!({
@@ -2857,7 +2880,11 @@ impl SequenceExecutor {
         duration_ms: u64,
         cost: Option<f64>,
     ) {
-        log::info!("[sequence][{}] emit node-complete: {}", &exec_id[..8], node_id);
+        log::info!(
+            "[sequence][{}] emit node-complete: {}",
+            &exec_id[..8],
+            node_id
+        );
         let _ = self.app.emit(
             &format!("sequence-node-complete-{}", exec_id),
             serde_json::json!({
@@ -2869,7 +2896,12 @@ impl SequenceExecutor {
     }
 
     fn emit_node_error(&self, exec_id: &str, node_id: &str, error: &str) {
-        log::info!("[sequence][{}] emit node-error: {} — {}", &exec_id[..8], node_id, error);
+        log::info!(
+            "[sequence][{}] emit node-error: {} — {}",
+            &exec_id[..8],
+            node_id,
+            error
+        );
         let _ = self.app.emit(
             &format!("sequence-node-error-{}", exec_id),
             serde_json::json!({
@@ -2937,8 +2969,8 @@ fn resolve_cwd(context: &serde_json::Value) -> String {
 ///
 /// Reuses the same pattern as `sequence_cmds::create_llm_client()`.
 fn create_llm_client_from_app(app: &AppHandle) -> Result<LlmClient, String> {
-    use tauri_plugin_keyring::KeyringExt;
     use crate::config::LlmProvider;
+    use tauri_plugin_keyring::KeyringExt;
 
     const KEYRING_SERVICE: &str = "claude-whisperer";
     const KEYRING_LLM_KEY: &str = "llm-api-key";
@@ -2958,7 +2990,9 @@ fn create_llm_client_from_app(app: &AppHandle) -> Result<LlmClient, String> {
     } else {
         match app.keyring().get_password(KEYRING_SERVICE, KEYRING_LLM_KEY) {
             Ok(Some(key)) => key,
-            Ok(None) => return Err("LLM API key not set. Configure it in Settings → LLM.".to_string()),
+            Ok(None) => {
+                return Err("LLM API key not set. Configure it in Settings → LLM.".to_string())
+            }
             Err(e) => return Err(format!("Failed to get LLM API key: {}", e)),
         }
     };

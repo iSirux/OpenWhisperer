@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use chrono::{DateTime, Utc};
 
 // ─── Execution Status ────────────────────────────────────────────────────────
 
@@ -156,7 +156,8 @@ impl ExecutionContext {
 
     /// Set an input value at `inputs.{key}`
     pub fn set_input(&mut self, key: &str, value: serde_json::Value) {
-        let inputs = self.data
+        let inputs = self
+            .data
             .entry("inputs".to_string())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
@@ -167,7 +168,8 @@ impl ExecutionContext {
 
     /// Set a node output value at `nodes.{node_id}.{key}`
     pub fn set_node_output(&mut self, node_id: &str, key: &str, value: serde_json::Value) {
-        let nodes = self.data
+        let nodes = self
+            .data
             .entry("nodes".to_string())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
@@ -185,7 +187,8 @@ impl ExecutionContext {
     /// Set a repo metadata value at `repo.{key}`
     #[allow(dead_code)]
     pub fn set_repo(&mut self, key: &str, value: serde_json::Value) {
-        let repo = self.data
+        let repo = self
+            .data
             .entry("repo".to_string())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
@@ -196,7 +199,8 @@ impl ExecutionContext {
 
     /// Set an execution metadata value at `execution.{key}`
     pub fn set_execution(&mut self, key: &str, value: serde_json::Value) {
-        let execution = self.data
+        let execution = self
+            .data
             .entry("execution".to_string())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
@@ -278,29 +282,17 @@ impl ExecutionContext {
 
         // Store error if present
         if let Some(error) = &result.error {
-            self.set_node_output(
-                node_id,
-                "error",
-                serde_json::Value::String(error.clone()),
-            );
+            self.set_node_output(node_id, "error", serde_json::Value::String(error.clone()));
         }
 
         // Store duration if present
         if let Some(duration_ms) = result.duration_ms {
-            self.set_node_output(
-                node_id,
-                "duration_ms",
-                serde_json::json!(duration_ms),
-            );
+            self.set_node_output(node_id, "duration_ms", serde_json::json!(duration_ms));
         }
 
         // Store cost if present
         if let Some(cost) = result.cost {
-            self.set_node_output(
-                node_id,
-                "cost",
-                serde_json::json!(cost),
-            );
+            self.set_node_output(node_id, "cost", serde_json::json!(cost));
         }
     }
 }

@@ -39,7 +39,8 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["name", "category"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema)).await
+        self.generate_structured_with_usage(&prompt, Some(schema))
+            .await
     }
 
     /// Generate session outcome with usage tracking
@@ -95,7 +96,8 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["outcome"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema)).await
+        self.generate_structured_with_usage(&prompt, Some(schema))
+            .await
     }
 
     /// Analyze interaction needed with usage tracking
@@ -157,7 +159,8 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["needs_interaction", "urgency"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema)).await
+        self.generate_structured_with_usage(&prompt, Some(schema))
+            .await
     }
 
     /// Clean transcription with usage tracking
@@ -216,8 +219,7 @@ Keep the original meaning and intent. Only fix clear errors, don't rewrite the c
 
 Respond with ONLY a JSON object in this exact format:
 {{"cleaned_text": "the corrected text", "corrections_made": ["correction 1", "correction 2"]}}"#,
-            context_section,
-            transcription_section
+            context_section, transcription_section
         );
 
         let schema = serde_json::json!({
@@ -236,11 +238,16 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["cleaned_text", "corrections_made"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema)).await
+        self.generate_structured_with_usage(&prompt, Some(schema))
+            .await
     }
 
     /// Recommend model with usage tracking
-    pub async fn recommend_model_with_usage(&self, prompt: &str, enabled_models: &[String]) -> Result<GenerationResult<ModelRecommendation>, String> {
+    pub async fn recommend_model_with_usage(
+        &self,
+        prompt: &str,
+        enabled_models: &[String],
+    ) -> Result<GenerationResult<ModelRecommendation>, String> {
         // Map model IDs to simple names for filtering
         let model_id_to_name = |id: &str| -> Option<&str> {
             if id.starts_with("claude-haiku") {
@@ -257,7 +264,10 @@ Respond with ONLY a JSON object in this exact format:
         // Determine which models are enabled
         let mut available_models = Vec::new();
         for model in ["haiku", "sonnet", "opus"] {
-            if enabled_models.iter().any(|id| model_id_to_name(id) == Some(model)) {
+            if enabled_models
+                .iter()
+                .any(|id| model_id_to_name(id) == Some(model))
+            {
                 available_models.push(model);
             }
         }
@@ -293,7 +303,11 @@ Choose the most cost-effective model that can handle this task well. Prefer chea
 
 Respond with ONLY a JSON object in this exact format:
 {{"recommended_model": "{}", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_effort": "null|low|medium|high"}}"#,
-            available_models.iter().map(|m| format!("**{}**", m)).collect::<Vec<_>>().join(", "),
+            available_models
+                .iter()
+                .map(|m| format!("**{}**", m))
+                .collect::<Vec<_>>()
+                .join(", "),
             truncate_text(prompt, 1500),
             model_list
         );
@@ -324,14 +338,21 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["recommended_model", "reasoning", "confidence", "suggested_effort"]
         });
 
-        self.generate_structured_with_usage(&prompt_text, Some(schema)).await
+        self.generate_structured_with_usage(&prompt_text, Some(schema))
+            .await
     }
 
     /// Recommend repo with usage tracking
     pub async fn recommend_repo_with_usage(
         &self,
         prompt: &str,
-        repos: &[(String, String, Option<String>, Option<Vec<String>>, Option<Vec<String>>)],
+        repos: &[(
+            String,
+            String,
+            Option<String>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+        )],
         is_transcribed: bool,
     ) -> Result<GenerationResult<RepoRecommendation>, String> {
         if repos.is_empty() {
@@ -428,7 +449,8 @@ Or if no clear match:
             "required": ["recommended_index", "recommended_name", "confidence", "reasoning"]
         });
 
-        self.generate_structured_with_usage(&prompt_text, Some(schema)).await
+        self.generate_structured_with_usage(&prompt_text, Some(schema))
+            .await
     }
 
     /// Generate quick actions with usage tracking
@@ -492,7 +514,8 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["actions"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema)).await
+        self.generate_structured_with_usage(&prompt, Some(schema))
+            .await
     }
 
     /// Generate a descriptive git branch name from a user prompt
@@ -546,6 +569,7 @@ Respond with ONLY a JSON object:
             "required": ["branch_name"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema)).await
+        self.generate_structured_with_usage(&prompt, Some(schema))
+            .await
     }
 }

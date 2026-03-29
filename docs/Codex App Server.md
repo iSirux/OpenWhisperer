@@ -238,10 +238,10 @@ Call `model/list` to discover available models and their capabilities before ren
 { "method": "model/list", "id": 6, "params": { "limit": 20, "includeHidden": false } }
 { "id": 6, "result": {
   "data": [{
-    "id": "gpt-5.2-codex",
-    "model": "gpt-5.2-codex",
-    "upgrade": "gpt-5.3-codex",
-    "displayName": "GPT-5.2 Codex",
+    "id": "gpt-5.4",
+    "model": "gpt-5.4",
+    "upgrade": "gpt-5.4-mini",
+    "displayName": "GPT-5.4",
     "hidden": false,
     "defaultReasoningEffort": "medium",
     "reasoningEffort": [{
@@ -251,6 +251,19 @@ Call `model/list` to discover available models and their capabilities before ren
     "inputModalities": ["text", "image"],
     "supportsPersonality": true,
     "isDefault": true
+  }, {
+    "id": "gpt-5.4-mini",
+    "model": "gpt-5.4-mini",
+    "displayName": "GPT-5.4 Mini",
+    "hidden": false,
+    "defaultReasoningEffort": "medium",
+    "reasoningEffort": [{
+      "effort": "low",
+      "description": "Lower latency"
+    }],
+    "inputModalities": ["text", "image"],
+    "supportsPersonality": true,
+    "isDefault": false
   }],
   "nextCursor": null
 } }
@@ -269,6 +282,8 @@ Each model entry can include:
 By default, `model/list` returns picker-visible models only. Set `includeHidden: true` if you need the full list and want to filter on the client side using `hidden`.
 
 When `inputModalities` is missing (older model catalogs), treat it as `["text", "image"]` for backward compatibility.
+
+Model availability is version-dependent. Current Codex examples and subagent docs use `gpt-5.4` and `gpt-5.4-mini`; always prefer `model/list` over hardcoding a catalog.
 
 ### List experimental features (`experimentalFeature/list`)
 
@@ -764,7 +779,7 @@ The fuzzy file search session API emits per-query notifications:
 - `commandExecution` - `{id, command, cwd, status, commandActions, aggregatedOutput?, exitCode?, durationMs?}`.
 - `fileChange` - `{id, changes, status}` describing proposed edits; `changes` list `{path, kind, diff}`.
 - `mcpToolCall` - `{id, server, tool, status, arguments, result?, error?}`.
-- `collabToolCall` - `{id, tool, status, senderThreadId, receiverThreadId?, newThreadId?, prompt?, agentStatus?}`.
+- `collabToolCall` - `{id, tool, status, senderThreadId, receiverThreadId?, newThreadId?, prompt?, agentStatus?}`. This is the main collaboration/subagent item. In current Codex multi-agent flows, items like `spawn_agent`, `send_input`, and `wait_agent` are surfaced through collaboration events and related thread/item activity.
 - `webSearch` - `{id, query, action?}` for web search requests issued by the agent.
 - `imageView` - `{id, path}` emitted when the agent invokes the image viewer tool.
 - `enteredReviewMode` - `{id, review}` sent when the reviewer starts.
@@ -779,6 +794,24 @@ All items emit two shared lifecycle events:
 
 - `item/started` - emits the full `item` when a new unit of work begins; the `item.id` matches the `itemId` used by deltas.
 - `item/completed` - sends the final `item` once work finishes; treat this as the authoritative state.
+
+### Collaboration and subagents
+
+Codex subagents are represented through collaboration items rather than a separate dedicated `subagent/*` event family.
+
+- `collabToolCall` is the key item to watch for delegated work.
+- `tool` identifies the collaboration action or mode.
+- `prompt` contains the delegated task text when available.
+- `receiverThreadId` or `newThreadId` identifies the spawned or targeted collaborator thread.
+- `agentStatus` is the best concise completion summary when the delegated task finishes.
+
+For rich clients, the practical pattern is:
+
+1. Treat `item/started` for `collabToolCall` as the start of a delegated task/subagent block.
+2. Scope subsequent child messages and tool calls using the item's thread/task relationship metadata when available.
+3. Treat `item/completed` for the same `collabToolCall` as task completion, using `status` and `agentStatus` for the final state.
+
+ClaudeWhisperer follows this pattern and maps `collabToolCall` into the same task/subagent UI used for Claude task delegation so Codex child work renders as grouped task blocks instead of a flat tool stream.
 
 ### Item deltas
 

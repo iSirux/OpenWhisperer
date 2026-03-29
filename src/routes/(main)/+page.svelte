@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
+  import { isRecording } from '$lib/stores/recording';
   import Terminal from '$lib/components/Terminal.svelte';
   import SdkView from '$lib/components/SdkView.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
@@ -12,6 +13,8 @@
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
   import SessionSidebarHeader from '$lib/components/SessionSidebarHeader.svelte';
   import SessionSetupView from '$lib/components/SessionSetupView.svelte';
+  import RepositoryRail from '$lib/components/RepositoryRail.svelte';
+  import RepositoryView from '$lib/components/RepositoryView.svelte';
 
   // Composables (page-specific only)
   import { useSidebarResize } from '$lib/composables/useSidebarResize.svelte';
@@ -39,15 +42,25 @@
     handleRepoSelectionForSession,
     handleSetupSessionStart,
   } from '$lib/stores/transcriptProcessor';
+  import { isEditableElement } from '$lib/utils/hotkeys';
 
   // Initialize composables (page-specific)
   const sidebar = useSidebarResize();
 
   // Current view from navigation store
   let currentView = $derived($navigation.mainView);
+  let currentRepoId = $derived($navigation.selectedRepoId);
+  let repositoryAddMode = $derived($navigation.repositoryAddMode);
 
   // Reference to SdkView for focusing prompt input
-  let sdkViewRef: { focusPromptInput: () => void } | undefined;
+  let sdkViewRef:
+    | {
+        focusPromptInput: () => void;
+        startInlineRecording: () => Promise<void>;
+        stopInlineRecording: () => Promise<void>;
+      }
+    | undefined;
+  let isHoldingSpaceForInlineRecording = $state(false);
 
   // Computed values for the active SDK session header
   let activeSdkRepoName = $derived.by(() => {
@@ -73,19 +86,83 @@
   let lastRefreshedBranchSessionKey = '';
   $effect(() => {
     const session = $activeSdkSession;
-    const key = session ? `${session.id}:${session.cwd}` : '';
-    if (key && key !== lastRefreshedBranchSessionKey) {
+    if (!session) {
+      lastRefreshedBranchSessionKey = '';
+      return;
+    }
+
+    const key = `${session.id}:${session.cwd}`;
+    if (key !== lastRefreshedBranchSessionKey) {
       lastRefreshedBranchSessionKey = key;
       void sdkSessions.refreshSessionBranch(session.id);
-    }
-    if (!key) {
-      lastRefreshedBranchSessionKey = '';
     }
   });
 
   // Listen for focus-sdk-prompt events from the layout
   function onFocusSdkPrompt() {
     tick().then(() => sdkViewRef?.focusPromptInput());
+  }
+
+  function isInteractiveTarget(target: EventTarget | null): boolean {
+    if (isEditableElement(target)) return true;
+    const element = target as HTMLElement | null;
+    if (!element) return false;
+    return Boolean(
+      element.closest(
+        'button, a, summary, [role="button"], [role="link"], [data-disable-space-inline-recording]'
+      )
+    );
+  }
+
+  function canUseHoldSpaceInlineRecording(event: KeyboardEvent): boolean {
+    if (!$settings.audio.hold_space_to_record_inline) return false;
+    if (event.code !== 'Space') return false;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+    if (isInteractiveTarget(event.target)) return false;
+    if (!$activeSdkSession) return false;
+    if (currentView !== 'sessions') return false;
+    if ($activeSdkSession.status === 'pending_repo' || $activeSdkSession.status === 'initializing' || $activeSdkSession.status === 'setup') {
+      return false;
+    }
+    return !!sdkViewRef;
+  }
+
+  async function handleInlineRecordingSpaceDown(event: KeyboardEvent) {
+    if (event.repeat || isHoldingSpaceForInlineRecording) return;
+    if (!canUseHoldSpaceInlineRecording(event)) return;
+    if ($isRecording) return;
+
+    event.preventDefault();
+    isHoldingSpaceForInlineRecording = true;
+
+    try {
+      await sdkViewRef?.startInlineRecording();
+      if (!isHoldingSpaceForInlineRecording && $isRecording) {
+        await sdkViewRef?.stopInlineRecording();
+      }
+    } catch (error) {
+      isHoldingSpaceForInlineRecording = false;
+      console.error('[sessions-page] Failed to start inline hold-to-record:', error);
+    }
+  }
+
+  async function stopInlineRecordingFromSpaceHold() {
+    if (!isHoldingSpaceForInlineRecording) return;
+    isHoldingSpaceForInlineRecording = false;
+
+    try {
+      await sdkViewRef?.stopInlineRecording();
+    } catch (error) {
+      console.error('[sessions-page] Failed to stop inline hold-to-record:', error);
+    }
+  }
+
+  async function handleInlineRecordingSpaceUp(event: KeyboardEvent) {
+    if (!isHoldingSpaceForInlineRecording) return;
+    if (event.code !== 'Space') return;
+
+    event.preventDefault();
+    await stopInlineRecordingFromSpaceHold();
   }
 
   onMount(() => {
@@ -132,20 +209,32 @@
   }
 </script>
 
+<svelte:window
+  onkeydown={handleInlineRecordingSpaceDown}
+  onkeyup={handleInlineRecordingSpaceUp}
+  onblur={stopInlineRecordingFromSpaceHold}
+/>
+
 <div class="main-content flex-1 flex overflow-hidden">
   <aside
-    class="sidebar border-r border-border bg-surface flex flex-col relative"
+    class="sidebar border-r border-border bg-surface flex relative overflow-hidden"
     style="width: {sidebar.width}px; min-width: {sidebar.minWidth}px; max-width: {sidebar.maxWidth}px;"
   >
-    <SessionSidebarHeader
-      sessions={$sessions}
-      sdkSessions={$sdkSessions}
-      {currentView}
-      markSessionsUnread={$settings.mark_sessions_unread}
-      onShowSessions={showSessionsView}
+    <RepositoryRail
+      currentRepoId={currentView === 'repository' ? currentRepoId : null}
+      showAddMode={currentView === 'repository' && repositoryAddMode}
     />
-    <div class="flex-1 overflow-hidden">
-      <SessionList {currentView} />
+    <div class="sidebar-main flex-1 min-w-0 flex flex-col overflow-hidden">
+      <SessionSidebarHeader
+        sessions={$sessions}
+        sdkSessions={$sdkSessions}
+        {currentView}
+        markSessionsUnread={$settings.mark_sessions_unread}
+        onShowSessions={showSessionsView}
+      />
+      <div class="flex-1 overflow-hidden">
+        <SessionList {currentView} />
+      </div>
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -165,6 +254,8 @@
         execution={$activeExecution}
         nodes={$sequences.find(s => s.id === $activeExecution.sequence_id)?.nodes ?? []}
       />
+    {:else if currentView === 'repository'}
+      <RepositoryView repoId={currentRepoId} showAddForm={repositoryAddMode} />
     {:else if $activeSdkSession}
       {@const activeSession = $activeSdkSession}
       {@const sessionId = activeSession.id}

@@ -1,23 +1,26 @@
 mod archive;
 mod commands;
 mod config;
+mod git;
 mod launch;
 mod llm;
-mod git;
+mod realtime;
 mod sequences;
 mod session_persistence;
 mod sidecar;
 mod terminal;
-mod realtime;
 mod whisper;
 
-use commands::{archive_cmds, audio_cmds, git_cmds, launch_cmds, llm_cmds, input_cmds, log_cmds, mcp_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, realtime_cmds};
-use sequences::SequenceManager;
+use commands::{
+    archive_cmds, audio_cmds, git_cmds, input_cmds, launch_cmds, llm_cmds, log_cmds, mcp_cmds,
+    realtime_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds,
+};
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
+use realtime::RealtimeSessionManager;
+use sequences::SequenceManager;
 use sidecar::SidecarManager;
 use std::sync::Arc;
-use realtime::RealtimeSessionManager;
 
 /// Tracks whether config was successfully loaded from disk.
 /// When false, saves are blocked to prevent overwriting valid config with defaults.
@@ -171,12 +174,8 @@ pub fn run() {
             }
 
             // Build tray menu
-            let show_item = MenuItemBuilder::new("Show")
-                .id("show")
-                .build(app)?;
-            let quit_item = MenuItemBuilder::new("Quit")
-                .id("quit")
-                .build(app)?;
+            let show_item = MenuItemBuilder::new("Show").id("show").build(app)?;
+            let quit_item = MenuItemBuilder::new("Quit").id("quit").build(app)?;
 
             let menu = MenuBuilder::new(app)
                 .item(&show_item)
@@ -245,7 +244,10 @@ pub fn run() {
             let (max_prompts, provider_rpm) = {
                 let cfg: tauri::State<parking_lot::Mutex<AppConfig>> = app.state();
                 let c = cfg.lock();
-                (c.sequences.max_concurrent_prompts, c.sequences.default_provider_rpm)
+                (
+                    c.sequences.max_concurrent_prompts,
+                    c.sequences.default_provider_rpm,
+                )
             };
             let sequence_manager = Arc::new(SequenceManager::new(
                 app.handle().clone(),

@@ -89,6 +89,22 @@
       <div class="flex items-center justify-between">
         <div>
           <label class="text-sm font-medium text-text-secondary"
+            >Hold Space for Inline Recording</label
+          >
+          <p class="text-xs text-text-muted mt-0.5">
+            While an SDK session is open and ClaudeWhisperer is focused, hold Space to record into the prompt and transcribe on release
+          </p>
+        </div>
+        <input
+          type="checkbox"
+          class="toggle"
+          bind:checked={$settings.audio.hold_space_to_record_inline}
+        />
+      </div>
+
+      <div class="flex items-center justify-between">
+        <div>
+          <label class="text-sm font-medium text-text-secondary"
             >Require Transcription Approval</label
           >
           <p class="text-xs text-text-muted mt-0.5">

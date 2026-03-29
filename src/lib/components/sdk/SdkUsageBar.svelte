@@ -5,12 +5,37 @@
   let { usage, isQuerying = false }: { usage: SdkSessionUsage; isQuerying?: boolean } = $props();
 
   let contextPercent = $derived(usage.contextUsagePercent ?? 0);
+  const LEGACY_CONTEXT_LIMIT = 200000;
+
+  let markerTokens = $derived.by(() => {
+    const contextWindow = usage.contextWindow ?? LEGACY_CONTEXT_LIMIT;
+    const markerStep = contextWindow > LEGACY_CONTEXT_LIMIT ? LEGACY_CONTEXT_LIMIT : 0;
+    if (markerStep === 0) return [];
+
+    const markers: Array<{ tokens: number; leftPercent: number; isLegacy: boolean }> = [];
+    for (let tokens = markerStep; tokens < contextWindow; tokens += markerStep) {
+      markers.push({
+        tokens,
+        leftPercent: (tokens / contextWindow) * 100,
+        isLegacy: tokens === LEGACY_CONTEXT_LIMIT
+      });
+    }
+    return markers;
+  });
 </script>
 
 <div class="session-header">
   <div class="usage-bar" class:querying={isQuerying}>
     <div class="context-bar-container" title="Context usage: {contextPercent.toFixed(1)}% of {formatTokens(usage.contextWindow ?? 0)}">
       <div class="context-bar-bg">
+        {#each markerTokens as marker (marker.tokens)}
+          <div
+            class="context-bar-marker"
+            class:legacy={marker.isLegacy}
+            style="left: {marker.leftPercent}%"
+            title={marker.isLegacy ? `Legacy limit: ${formatTokens(marker.tokens)}` : formatTokens(marker.tokens)}
+          ></div>
+        {/each}
         <div
           class="context-bar-fill"
           class:warning={contextPercent > 70}
@@ -50,6 +75,7 @@
   }
 
   .context-bar-bg {
+    position: relative;
     flex: 1;
     height: 6px;
     background: var(--color-surface-elevated);
@@ -57,7 +83,24 @@
     overflow: hidden;
   }
 
+  .context-bar-marker {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: color-mix(in srgb, var(--color-text-muted) 50%, transparent);
+    transform: translateX(-0.5px);
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .context-bar-marker.legacy {
+    background: color-mix(in srgb, var(--color-warning) 75%, white 10%);
+  }
+
   .context-bar-fill {
+    position: relative;
+    z-index: 0;
     height: 100%;
     background: var(--color-accent);
     border-radius: 3px;

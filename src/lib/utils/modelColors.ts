@@ -24,10 +24,10 @@ export function getShortModelName(model: string): string {
   if (model.startsWith('codex-mini')) return 'Codex Mini';
   if (model.startsWith('codex')) return 'Codex';
   if (model === 'gpt-5.4' || model === 'gpt-5.4-codex') return '5.4';
+  if (model === 'gpt-5-mini' || model === 'gpt-5.4-mini') return '5.4 Mini';
   if (model === 'gpt-5.3-codex-spark') return '5.3 Spark';
   if (model === 'gpt-5.3-codex') return '5.3 Codex';
   if (model === 'gpt-5.2-codex') return '5.2 Codex';
-  if (model === 'gpt-5.1-codex-mini') return '5.1 Mini';
   if (model === 'gpt-5-codex') return '5 Codex';
   if (model.startsWith('gpt-')) return model;
   const parts = model.split('-');

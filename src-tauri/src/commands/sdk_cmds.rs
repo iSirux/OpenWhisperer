@@ -4,10 +4,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
-pub fn start_sidecar(
-    app: AppHandle,
-    sidecar: State<Arc<SidecarManager>>,
-) -> Result<(), String> {
+pub fn start_sidecar(app: AppHandle, sidecar: State<Arc<SidecarManager>>) -> Result<(), String> {
     sidecar.start(app)
 }
 
@@ -16,13 +13,13 @@ pub fn create_sdk_session(
     sidecar: State<Arc<SidecarManager>>,
     id: String,
     cwd: String,
-    model: String, // Per-session model (required)
-    provider: Option<String>, // Optional provider override (e.g., "openai-codex")
-    codex_mode: Option<String>, // Optional OpenAI codex mode ("Sdk" | "AppServer")
+    model: String,                             // Per-session model (required)
+    provider: Option<String>,                  // Optional provider override (e.g., "openai-codex")
+    codex_mode: Option<String>,                // Optional OpenAI codex mode ("Sdk" | "AppServer")
     system_prompt: Option<String>, // Optional system prompt (e.g., for voice transcription context)
     messages: Option<Vec<HistoryMessage>>, // Optional conversation history for restored sessions (DEPRECATED - use sdk_session_id)
     sdk_session_id: Option<String>, // SDK session ID for proper resume (preferred over messages)
-    plan_mode: Option<bool>, // Whether this is a plan mode session (enables planning tools)
+    plan_mode: Option<bool>,        // Whether this is a plan mode session (enables planning tools)
     note_mode: Option<bool>, // Whether this is a note-taking mode session (read-only + note MCP tools)
     read_only_mode: Option<bool>, // Whether this is a read-only mode session (read tools + web search)
     mcp_servers: Option<Vec<McpServerConfig>>, // Optional MCP servers to register
@@ -32,7 +29,22 @@ pub fn create_sdk_session(
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
     }
-    sidecar.send(OutboundMessage::Create { id, cwd, provider, codex_mode, model: Some(model), system_prompt, messages, sdk_session_id, plan_mode, note_mode, read_only_mode, mcp_servers, fork_from_sdk_session_id, fork_at_message_uuid })
+    sidecar.send(OutboundMessage::Create {
+        id,
+        cwd,
+        provider,
+        codex_mode,
+        model: Some(model),
+        system_prompt,
+        messages,
+        sdk_session_id,
+        plan_mode,
+        note_mode,
+        read_only_mode,
+        mcp_servers,
+        fork_from_sdk_session_id,
+        fork_at_message_uuid,
+    })
 }
 
 #[tauri::command]
@@ -49,10 +61,7 @@ pub fn send_sdk_prompt(
 }
 
 #[tauri::command]
-pub fn stop_sdk_query(
-    sidecar: State<Arc<SidecarManager>>,
-    id: String,
-) -> Result<(), String> {
+pub fn stop_sdk_query(sidecar: State<Arc<SidecarManager>>, id: String) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started".to_string());
     }
@@ -84,10 +93,7 @@ pub fn update_sdk_effort(
 }
 
 #[tauri::command]
-pub fn close_sdk_session(
-    sidecar: State<Arc<SidecarManager>>,
-    id: String,
-) -> Result<(), String> {
+pub fn close_sdk_session(sidecar: State<Arc<SidecarManager>>, id: String) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started".to_string());
     }
@@ -120,7 +126,11 @@ pub fn answer_plan_approval(
     if !sidecar.is_started() {
         return Err("Sidecar not started".to_string());
     }
-    sidecar.send(OutboundMessage::AnswerPlanApproval { id, action, feedback })
+    sidecar.send(OutboundMessage::AnswerPlanApproval {
+        id,
+        action,
+        feedback,
+    })
 }
 
 /// Generate repository description using Claude SDK (Haiku model)
@@ -266,7 +276,10 @@ pub fn save_openai_api_key(app: tauri::AppHandle, api_key: String) -> Result<(),
 #[tauri::command]
 pub fn has_openai_api_key(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_keyring::KeyringExt;
-    match app.keyring().get_password("claude-whisperer", "openai-api-key") {
+    match app
+        .keyring()
+        .get_password("claude-whisperer", "openai-api-key")
+    {
         Ok(Some(_)) => Ok(true),
         _ => Ok(false),
     }
@@ -296,7 +309,8 @@ pub fn check_claude_auth(app: tauri::AppHandle) -> Result<serde_json::Value, Str
     let has_keyring_key = {
         use tauri_plugin_keyring::KeyringExt;
         matches!(
-            app.keyring().get_password("claude-whisperer", "anthropic-api-key"),
+            app.keyring()
+                .get_password("claude-whisperer", "anthropic-api-key"),
             Ok(Some(_))
         )
     };
@@ -322,7 +336,10 @@ pub fn save_claude_api_key(app: tauri::AppHandle, api_key: String) -> Result<(),
 #[tauri::command]
 pub fn has_claude_api_key(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_keyring::KeyringExt;
-    match app.keyring().get_password("claude-whisperer", "anthropic-api-key") {
+    match app
+        .keyring()
+        .get_password("claude-whisperer", "anthropic-api-key")
+    {
         Ok(Some(_)) => Ok(true),
         _ => Ok(false),
     }
@@ -427,27 +444,21 @@ pub async fn fetch_claude_rate_limits() -> Result<ClaudeRateLimits, String> {
 
     Ok(ClaudeRateLimits {
         five_hour: RateLimitWindow {
-            utilization: data["five_hour"]["utilization"]
-                .as_f64()
-                .unwrap_or(0.0),
+            utilization: data["five_hour"]["utilization"].as_f64().unwrap_or(0.0),
             resets_at: data["five_hour"]["resets_at"]
                 .as_str()
                 .unwrap_or("")
                 .to_string(),
         },
         seven_day: RateLimitWindow {
-            utilization: data["seven_day"]["utilization"]
-                .as_f64()
-                .unwrap_or(0.0),
+            utilization: data["seven_day"]["utilization"].as_f64().unwrap_or(0.0),
             resets_at: data["seven_day"]["resets_at"]
                 .as_str()
                 .unwrap_or("")
                 .to_string(),
         },
         extra_usage: ExtraUsage {
-            is_enabled: data["extra_usage"]["is_enabled"]
-                .as_bool()
-                .unwrap_or(false),
+            is_enabled: data["extra_usage"]["is_enabled"].as_bool().unwrap_or(false),
             monthly_limit: data["extra_usage"]["monthly_limit"].as_u64(),
             used_credits: data["extra_usage"]["used_credits"].as_u64(),
             utilization: data["extra_usage"]["utilization"].as_f64(),
@@ -475,9 +486,7 @@ pub async fn fetch_codex_rate_limits() -> Result<ClaudeRateLimits, String> {
     let auth_path = home.join(".codex").join("auth.json");
 
     if !auth_path.exists() {
-        return Err(
-            "Codex OAuth credentials not found. Please run `codex login`.".to_string(),
-        );
+        return Err("Codex OAuth credentials not found. Please run `codex login`.".to_string());
     }
 
     let auth_content = std::fs::read_to_string(&auth_path)

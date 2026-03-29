@@ -10,6 +10,8 @@
     model_info: string | null;
   }
 
+  const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-120b';
+
   let geminiApiKey = $state("");
   let geminiApiKeySet = $state(false);
   let testingGemini = $state(false);
@@ -120,7 +122,7 @@
           $settings.llm.model = "gpt-4o-mini";
           $settings.llm.endpoint = null;
         } else if (provider === "Groq") {
-          $settings.llm.model = "meta-llama/llama-4-maverick-17b-128e-instruct";
+          $settings.llm.model = GROQ_DEFAULT_MODEL;
           $settings.llm.endpoint = null;
         } else if (provider === "Local") {
           $settings.llm.model = "local-model";
@@ -397,13 +399,10 @@
                 bind:value={$settings.llm.model}
                 onchange={() => invoke("save_config", { newConfig: $settings })}
               >
-                <option value="meta-llama/llama-4-maverick-17b-128e-instruct"
-                  >Llama 4 Maverick 17B (Recommended)</option
-                >
                 <option value="moonshotai/kimi-k2-instruct-0905"
                   >Kimi K2 (262K context, agentic)</option
                 >
-                <option value="openai/gpt-oss-120b">GPT-OSS 120B</option>
+                <option value={GROQ_DEFAULT_MODEL}>GPT-OSS 120B (Recommended)</option>
                 <option value="llama-3.3-70b-versatile">Llama 3.3 70B</option>
                 <option value="qwen/qwen3-32b">Qwen3 32B</option>
                 <option value="meta-llama/llama-4-scout-17b-16e-instruct"
@@ -1173,11 +1172,8 @@
         Free Tier Limits
       </h3>
       <div class="text-xs text-text-muted space-y-1">
-        <p>
-          <strong>Llama 4 Maverick 17B:</strong> 1K RPD - Best quality, multimodal
-        </p>
         <p><strong>Kimi K2:</strong> 1K RPD - 262K context, agentic/tool use</p>
-        <p><strong>GPT-OSS 120B:</strong> 1K RPD - Solid tool calling</p>
+        <p><strong>GPT-OSS 120B:</strong> 1K RPD - Recommended replacement</p>
         <p><strong>Llama 3.3 70B:</strong> 1K RPD - Proven reliable</p>
         <p><strong>Qwen3 32B:</strong> 1K RPD - Strong reasoning</p>
         <p><strong>Llama 3.1 8B:</strong> 14.4K RPD - Fast, simple tasks</p>

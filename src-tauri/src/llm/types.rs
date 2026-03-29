@@ -17,7 +17,7 @@ pub struct SessionOutcomeResult {
 pub struct InteractionAnalysis {
     pub needs_interaction: bool,
     pub reason: Option<String>,
-    pub urgency: String, // low, medium, high
+    pub urgency: String,             // low, medium, high
     pub waiting_for: Option<String>, // approval, clarification, input, review, decision
 }
 

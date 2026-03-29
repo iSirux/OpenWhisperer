@@ -1,10 +1,10 @@
 use crate::config::{AppConfig, RepoConfig};
-use crate::ConfigLoadStatus;
 use crate::git::GitManager;
-use tauri::State;
+use crate::ConfigLoadStatus;
 use parking_lot::Mutex;
 use std::fs;
 use std::process::Command;
+use tauri::State;
 
 pub type ConfigState = Mutex<AppConfig>;
 
@@ -81,8 +81,7 @@ pub fn open_config_file() -> Result<(), String> {
 
         let content = serde_json::to_string_pretty(&AppConfig::default())
             .map_err(|e| format!("Failed to serialize default config: {}", e))?;
-        fs::write(&path, content)
-            .map_err(|e| format!("Failed to create config file: {}", e))?;
+        fs::write(&path, content).map_err(|e| format!("Failed to create config file: {}", e))?;
     }
 
     #[cfg(target_os = "windows")]
@@ -137,8 +136,30 @@ pub fn save_config(
 pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Result<(), String> {
     log::info!("[add_repo] Called with path: {}, name: {}", path, name);
     let mut cfg = config.lock();
-    cfg.repos.push(RepoConfig { id: Some(uuid::Uuid::new_v4().to_string()), path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None, icon: None, color: None, mcp_servers: None, note_mcp_servers: None, tags: Vec::new(), active: true, worktree_copy_files: Vec::new(), worktree_post_create_commands: Vec::new(), worktree_base_branch: None, worktree_mode: "main".to_string(), launch_commands: Vec::new(), launch_profiles: Vec::new() });
-    log::info!("[add_repo] Repo added to config, total repos: {}", cfg.repos.len());
+    cfg.repos.push(RepoConfig {
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        path: path.clone(),
+        name: name.clone(),
+        description: None,
+        keywords: None,
+        vocabulary: None,
+        icon: None,
+        color: None,
+        mcp_servers: None,
+        note_mcp_servers: None,
+        tags: Vec::new(),
+        active: true,
+        worktree_copy_files: Vec::new(),
+        worktree_post_create_commands: Vec::new(),
+        worktree_base_branch: None,
+        worktree_mode: "main".to_string(),
+        launch_commands: Vec::new(),
+        launch_profiles: Vec::new(),
+    });
+    log::info!(
+        "[add_repo] Repo added to config, total repos: {}",
+        cfg.repos.len()
+    );
     let result = cfg.save();
     match &result {
         Ok(()) => log::info!("[add_repo] Config saved successfully"),
@@ -183,7 +204,11 @@ pub fn set_auto_repo_mode(config: State<ConfigState>, enabled: bool) -> Result<(
 }
 
 #[tauri::command]
-pub fn set_repo_active(config: State<ConfigState>, index: usize, active: bool) -> Result<(), String> {
+pub fn set_repo_active(
+    config: State<ConfigState>,
+    index: usize,
+    active: bool,
+) -> Result<(), String> {
     let mut cfg = config.lock();
     if index >= cfg.repos.len() {
         return Err("Invalid repo index".to_string());
@@ -193,7 +218,10 @@ pub fn set_repo_active(config: State<ConfigState>, index: usize, active: bool) -
 
     // If deactivating the currently active repo, switch to next active repo or auto mode
     if !active && cfg.active_repo_index == index {
-        let next_active = cfg.repos.iter().enumerate()
+        let next_active = cfg
+            .repos
+            .iter()
+            .enumerate()
             .find(|(i, r)| *i != index && r.active)
             .map(|(i, _)| i);
 
@@ -253,19 +281,27 @@ pub fn run_in_terminal(command: String) -> Result<(), String> {
     {
         // Linux: Try common terminal emulators in order of preference
         let terminals = [
-            ("gnome-terminal", vec!["--", "bash", "-c", &format!("{}; exec bash", command)]),
-            ("konsole", vec!["-e", "bash", "-c", &format!("{}; exec bash", command)]),
-            ("xfce4-terminal", vec!["-e", &format!("bash -c '{}; exec bash'", command)]),
-            ("xterm", vec!["-e", &format!("bash -c '{}; exec bash'", command)]),
+            (
+                "gnome-terminal",
+                vec!["--", "bash", "-c", &format!("{}; exec bash", command)],
+            ),
+            (
+                "konsole",
+                vec!["-e", "bash", "-c", &format!("{}; exec bash", command)],
+            ),
+            (
+                "xfce4-terminal",
+                vec!["-e", &format!("bash -c '{}; exec bash'", command)],
+            ),
+            (
+                "xterm",
+                vec!["-e", &format!("bash -c '{}; exec bash'", command)],
+            ),
         ];
 
         let mut launched = false;
         for (term, args) in terminals {
-            if Command::new(term)
-                .args(&args)
-                .spawn()
-                .is_ok()
-            {
+            if Command::new(term).args(&args).spawn().is_ok() {
                 launched = true;
                 break;
             }

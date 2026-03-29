@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::JoinHandle;
 
-use super::SequenceManager;
 use super::persistence;
+use super::SequenceManager;
 
 /// Persisted state tracking when each schedule last ran
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -99,11 +99,22 @@ impl SequenceScheduler {
 
                 for def in &definitions {
                     for trigger in &def.triggers {
-                        if let crate::sequences::types::SequenceTrigger::Schedule { cron, timezone: _, inputs, entry_node_id } = trigger {
+                        if let crate::sequences::types::SequenceTrigger::Schedule {
+                            cron,
+                            timezone: _,
+                            inputs,
+                            entry_node_id,
+                        } = trigger
+                        {
                             let schedule_key = format!("{}:{}", def.id, cron);
 
                             // Check enabled state
-                            let enabled = state.lock().enabled.get(&schedule_key).copied().unwrap_or(true);
+                            let enabled = state
+                                .lock()
+                                .enabled
+                                .get(&schedule_key)
+                                .copied()
+                                .unwrap_or(true);
                             if !enabled {
                                 continue;
                             }
@@ -112,13 +123,22 @@ impl SequenceScheduler {
                             let schedule = match parse_cron_schedule(cron) {
                                 Ok(s) => s,
                                 Err(e) => {
-                                    log::error!("[scheduler] Invalid cron '{}' for sequence '{}': {}", cron, def.id, e);
+                                    log::error!(
+                                        "[scheduler] Invalid cron '{}' for sequence '{}': {}",
+                                        cron,
+                                        def.id,
+                                        e
+                                    );
                                     continue;
                                 }
                             };
 
                             // Check if any scheduled time fell between last_run and now
-                            let last_run = state.lock().last_runs.get(&schedule_key).copied()
+                            let last_run = state
+                                .lock()
+                                .last_runs
+                                .get(&schedule_key)
+                                .copied()
                                 .unwrap_or_else(|| now - chrono::Duration::seconds(31)); // First run: check last 31s
 
                             let mut should_fire = false;
@@ -132,14 +152,31 @@ impl SequenceScheduler {
                             }
 
                             if should_fire {
-                                log::info!("[scheduler] Firing sequence '{}' (cron: {})", def.name, cron);
+                                log::info!(
+                                    "[scheduler] Firing sequence '{}' (cron: {})",
+                                    def.name,
+                                    cron
+                                );
                                 let exec_inputs = inputs.clone().unwrap_or_default();
-                                match manager.start_execution_at(&def.id, exec_inputs, false, entry_node_id.clone()) {
+                                match manager.start_execution_at(
+                                    &def.id,
+                                    exec_inputs,
+                                    false,
+                                    entry_node_id.clone(),
+                                ) {
                                     Ok(exec_id) => {
-                                        log::info!("[scheduler] Started execution {} for '{}'", exec_id, def.name);
+                                        log::info!(
+                                            "[scheduler] Started execution {} for '{}'",
+                                            exec_id,
+                                            def.name
+                                        );
                                     }
                                     Err(e) => {
-                                        log::error!("[scheduler] Failed to start '{}': {}", def.name, e);
+                                        log::error!(
+                                            "[scheduler] Failed to start '{}': {}",
+                                            def.name,
+                                            e
+                                        );
                                     }
                                 }
                                 let mut state_guard = state.lock();
@@ -174,7 +211,10 @@ impl SequenceScheduler {
 
         for def in &definitions {
             for trigger in &def.triggers {
-                if let crate::sequences::types::SequenceTrigger::Schedule { cron, timezone, .. } = trigger {
+                if let crate::sequences::types::SequenceTrigger::Schedule {
+                    cron, timezone, ..
+                } = trigger
+                {
                     let schedule_key = format!("{}:{}", def.id, cron);
                     let enabled = state.enabled.get(&schedule_key).copied().unwrap_or(true);
                     let last_run = state.last_runs.get(&schedule_key).map(|dt| dt.to_rfc3339());
@@ -210,7 +250,12 @@ impl SequenceScheduler {
     }
 
     /// Toggle a schedule on/off
-    pub fn toggle_schedule(&self, sequence_id: &str, cron: &str, enabled: bool) -> Result<(), String> {
+    pub fn toggle_schedule(
+        &self,
+        sequence_id: &str,
+        cron: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
         let schedule_key = format!("{}:{}", sequence_id, cron);
         let mut state = self.state.lock();
         state.enabled.insert(schedule_key, enabled);
@@ -220,8 +265,7 @@ impl SequenceScheduler {
 
 fn parse_cron_schedule(cron_expr: &str) -> Result<cron::Schedule, String> {
     let normalized = normalize_cron_expr(cron_expr);
-    cron::Schedule::from_str(&normalized)
-        .map_err(|e| e.to_string())
+    cron::Schedule::from_str(&normalized).map_err(|e| e.to_string())
 }
 
 fn normalize_cron_expr(cron_expr: &str) -> String {

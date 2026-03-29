@@ -1,7 +1,7 @@
 use crate::config::{AppConfig, RealtimeProvider};
 use crate::realtime::{
-    RealtimeConnectionTestResult, RealtimeResponse, RealtimeSessionManager,
     test_sherpa_connection, test_speaches_connection, test_vosk_connection, test_vsai_connection,
+    RealtimeConnectionTestResult, RealtimeResponse, RealtimeSessionManager,
 };
 use parking_lot::Mutex as ParkingLotMutex;
 use std::sync::Arc;
@@ -32,9 +32,7 @@ pub async fn test_realtime_connection(
         RealtimeProvider::SherpaOnnx => {
             Ok(test_sherpa_connection(&cfg.vosk.sherpa_onnx.endpoint).await)
         }
-        RealtimeProvider::Speaches => {
-            Ok(test_speaches_connection(&cfg.vosk.speaches).await)
-        }
+        RealtimeProvider::Speaches => Ok(test_speaches_connection(&cfg.vosk.speaches).await),
     }
 }
 
