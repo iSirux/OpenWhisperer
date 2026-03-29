@@ -11,6 +11,13 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            rust-target: x86_64-pc-windows-msvc
+          - arch: arm64
+            rust-target: aarch64-pc-windows-msvc
     permissions:
       contents: write
     steps:
@@ -29,11 +36,14 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.arch }}
 
       - name: Install frontend dependencies
         run: pnpm install
@@ -52,3 +62,4 @@ jobs:
           releaseBody: 'See the assets below to download and install.'
           releaseDraft: false
           prerelease: false
+          args: --target ${{ matrix.rust-target }}
