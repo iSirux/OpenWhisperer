@@ -327,7 +327,7 @@ export interface SessionsViewConfig {
 }
 
 // Effort level for reasoning depth control
-export type EffortLevel = "off" | "low" | "medium" | "high" | "max";
+export type EffortLevel = "off" | "low" | "medium" | "high" | "xhigh" | "max";
 /** @deprecated Use EffortLevel instead */
 export type ThinkingLevel = EffortLevel;
 
@@ -350,10 +350,10 @@ export type RepoAutoSelectConfidence = "high" | "medium" | "low";
 
 // Controls how effort level is determined when using smart model selection
 // off: Always disable effort
-// low/medium/high/max: Always use that effort level
+// low/medium/high/xhigh/max: Always use that effort level
 // dynamic: Let the LLM decide based on prompt complexity
-export type AutoModelEffort = "off" | "low" | "medium" | "high" | "max" | "dynamic";
-export type SelectableAutoModelEffort = "low" | "medium" | "high" | "max" | "dynamic";
+export type AutoModelEffort = "off" | "low" | "medium" | "high" | "xhigh" | "max" | "dynamic";
+export type SelectableAutoModelEffort = "low" | "medium" | "high" | "xhigh" | "max" | "dynamic";
 /** @deprecated Use AutoModelEffort instead */
 export type AutoModelThinking = AutoModelEffort;
 
@@ -611,10 +611,10 @@ const defaultConfig: AppConfig = {
   repos: [],
   active_repo_index: 0,
   auto_repo_mode: false,
-  default_model: "claude-opus-4-6",
+  default_model: "claude-opus-4-7",
   default_effort_level: "high",
   enabled_models: [
-    "claude-opus-4-6",
+    "claude-opus-4-7",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
   ],

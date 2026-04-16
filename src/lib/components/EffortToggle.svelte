@@ -37,7 +37,7 @@
     return getMaxEffort(modelId);
   });
 
-  const dotCount = $derived(maxLevel === 'max' ? 4 : 3);
+  const dotCount = $derived(maxLevel === 'max' ? 5 : maxLevel === 'xhigh' ? 4 : 3);
 
   // Map effort level to a numeric value for dot filling
   const LEVEL_VALUES: Record<string, number> = {
@@ -45,7 +45,8 @@
     low: 1,
     medium: 2,
     high: 3,
-    max: 4,
+    xhigh: 4,
+    max: 5,
     dynamic: -1,
   };
 
@@ -70,6 +71,7 @@
       return ['low', 'medium', 'high', 'dynamic'];
     }
     const levels = ['low', 'medium', 'high'];
+    if (maxLevel === 'xhigh' || maxLevel === 'max') levels.push('xhigh');
     if (maxLevel === 'max') levels.push('max');
     return levels;
   });
@@ -94,6 +96,7 @@
       low: "Effort: Low",
       medium: "Effort: Medium",
       high: "Effort: High",
+      xhigh: "Effort: Extra High",
       max: "Effort: Max",
     };
     return `${labels[displayMode] || 'Effort: Low'} - click to cycle`;
@@ -105,6 +108,7 @@
       low: "Low",
       medium: "Med",
       high: "High",
+      xhigh: "XHigh",
       max: "Max",
     };
     return labels[displayMode] || "Low";

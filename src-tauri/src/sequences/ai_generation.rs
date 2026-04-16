@@ -51,7 +51,7 @@ triggers:
 ```
 
 Available node types:
-- prompt: AI prompt (fields: prompt, model [opus/sonnet/haiku], effort [low/medium/high], system_prompt)
+- prompt: AI prompt (fields: prompt, model [opus/sonnet/haiku], effort [low/medium/high/xhigh/max], system_prompt)
 - route: Conditional branching (fields: eval OR prompt, branches: {{key: {{next: target_id}}}}, default)
 - script: Shell command (fields: command, cwd, env, timeout)
 - notify: Notification (fields: system_notification [bool, default true], play_sound [bool], sound [1-10], channel [external channel id], message, title)

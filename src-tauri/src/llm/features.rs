@@ -292,6 +292,7 @@ Effort level (controls reasoning depth, tool use, and verbosity):
 - **low**: Minimal reasoning for simple tasks
 - **medium**: Balanced reasoning for typical tasks
 - **high**: Thorough reasoning for complex tasks
+- **xhigh**: Extra-high reasoning for very complex tasks (Sonnet and Opus)
 - **max**: Deepest reasoning for the most complex tasks (Opus only)
 
 Available models (only recommend from these): {}
@@ -302,7 +303,7 @@ Prompt to analyze:
 Choose the most cost-effective model that can handle this task well. Prefer cheaper models when the task is simple.
 
 Respond with ONLY a JSON object in this exact format:
-{{"recommended_model": "{}", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_effort": "null|low|medium|high"}}"#,
+{{"recommended_model": "{}", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_effort": "null|low|medium|high|xhigh|max"}}"#,
             available_models
                 .iter()
                 .map(|m| format!("**{}**", m))
@@ -331,8 +332,8 @@ Respond with ONLY a JSON object in this exact format:
                 },
                 "suggested_effort": {
                     "type": "string",
-                    "enum": ["null", "low", "medium", "high"],
-                    "description": "Suggested effort level: null (off), low, medium, or high"
+                    "enum": ["null", "low", "medium", "high", "xhigh", "max"],
+                    "description": "Suggested effort level: null (off), low, medium, high, xhigh, or max"
                 }
             },
             "required": ["recommended_model", "reasoning", "confidence", "suggested_effort"]

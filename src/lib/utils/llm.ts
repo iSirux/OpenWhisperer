@@ -29,7 +29,7 @@ export interface ModelRecommendation {
   recommended_model: 'haiku' | 'sonnet' | 'opus';
   reasoning: string;
   confidence: 'low' | 'medium' | 'high';
-  suggested_effort: 'null' | 'low' | 'medium' | 'high' | 'max' | null;
+  suggested_effort: 'null' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
   /** @deprecated Use suggested_effort */
   suggested_thinking?: 'null' | 'on' | null;
 }
@@ -337,7 +337,7 @@ export async function cleanTranscription(
 const MODEL_ID_MAP: Record<string, string> = {
   haiku: 'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-6',
+  opus: 'claude-opus-4-7',
 };
 
 /**
@@ -349,11 +349,12 @@ const EFFORT_LEVEL_MAP: Record<string, string | null> = {
   low: 'low',
   medium: 'medium',
   high: 'high',
+  xhigh: 'xhigh',
   max: 'max',
   // Legacy mappings from old thinking system
   on: 'high',
   think: 'high',
-  megathink: 'high',
+  megathink: 'xhigh',
   ultrathink: 'max',
 };
 

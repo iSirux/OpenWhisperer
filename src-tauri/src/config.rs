@@ -1358,12 +1358,13 @@ pub enum EffortLevel {
     Low,
     Medium,
     High,
+    Xhigh,
     Max,
 }
 
 /// Resilient deserializer for EffortLevel that maps legacy/unknown values
 /// instead of failing the entire config parse.
-/// Legacy mappings: "on"/"think" → High, "megathink"/"ultrathink" → Max
+/// Legacy mappings: "on"/"think" → High, "megathink" → Xhigh, "ultrathink" → Max
 impl<'de> Deserialize<'de> for EffortLevel {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1375,6 +1376,7 @@ impl<'de> Deserialize<'de> for EffortLevel {
             "low" => EffortLevel::Low,
             "medium" => EffortLevel::Medium,
             "high" => EffortLevel::High,
+            "xhigh" => EffortLevel::Xhigh,
             "max" => EffortLevel::Max,
             // Legacy thinking level values
             "on" | "think" => {
@@ -1382,8 +1384,8 @@ impl<'de> Deserialize<'de> for EffortLevel {
                 EffortLevel::High
             }
             "megathink" => {
-                log::error!("[config] Migrating legacy effort value 'megathink' → Max");
-                EffortLevel::Max
+                log::error!("[config] Migrating legacy effort value 'megathink' → Xhigh");
+                EffortLevel::Xhigh
             }
             "ultrathink" => {
                 log::error!("[config] Migrating legacy effort value 'ultrathink' → Max");
@@ -1756,6 +1758,7 @@ pub enum AutoModelEffort {
     Low,
     Medium,
     High,
+    Xhigh,
     Max,
     /// Let the LLM decide based on prompt complexity (default)
     #[default]
@@ -1774,6 +1777,7 @@ impl<'de> Deserialize<'de> for AutoModelEffort {
             "low" => AutoModelEffort::Low,
             "medium" => AutoModelEffort::Medium,
             "high" => AutoModelEffort::High,
+            "xhigh" => AutoModelEffort::Xhigh,
             "max" => AutoModelEffort::Max,
             "dynamic" => AutoModelEffort::Dynamic,
             // Legacy thinking level values
@@ -1782,8 +1786,8 @@ impl<'de> Deserialize<'de> for AutoModelEffort {
                 AutoModelEffort::High
             }
             "megathink" => {
-                log::error!("[config] Migrating legacy auto_model_effort 'megathink' → Max");
-                AutoModelEffort::Max
+                log::error!("[config] Migrating legacy auto_model_effort 'megathink' → Xhigh");
+                AutoModelEffort::Xhigh
             }
             "ultrathink" => {
                 log::error!("[config] Migrating legacy auto_model_effort 'ultrathink' → Max");
@@ -1899,7 +1903,7 @@ fn default_effort_level() -> EffortLevel {
 
 fn default_enabled_models() -> Vec<String> {
     vec![
-        "claude-opus-4-6".to_string(),
+        "claude-opus-4-7".to_string(),
         "claude-sonnet-4-6".to_string(),
         "claude-haiku-4-5-20251001".to_string(),
     ]
@@ -1932,7 +1936,7 @@ impl Default for AppConfig {
             repos: vec![],
             active_repo_index: 0,
             auto_repo_mode: false,
-            default_model: "claude-opus-4-6".to_string(),
+            default_model: "claude-opus-4-7".to_string(),
             default_effort_level: default_effort_level(),
             enabled_models: default_enabled_models(),
             terminal_mode: ClaudeTerminalMode::Sdk,
@@ -1996,6 +2000,8 @@ impl AppConfig {
 
     /// Migrate deprecated or removed model IDs in persisted config.
     fn migrate_deprecated_llm_models(&mut self) -> bool {
+        let mut migrated = false;
+
         if self.llm.provider == LlmProvider::Groq
             && self.llm.model == "meta-llama/llama-4-maverick-17b-128e-instruct"
         {
@@ -2003,10 +2009,28 @@ impl AppConfig {
                 "[config.load] Migrating deprecated Groq model 'meta-llama/llama-4-maverick-17b-128e-instruct' -> 'openai/gpt-oss-120b'"
             );
             self.llm.model = "openai/gpt-oss-120b".to_string();
-            return true;
+            migrated = true;
         }
 
-        false
+        // Migrate Claude Opus 4.6 -> 4.7
+        if self.default_model == "claude-opus-4-6" {
+            log::error!(
+                "[config.load] Migrating default_model 'claude-opus-4-6' -> 'claude-opus-4-7'"
+            );
+            self.default_model = "claude-opus-4-7".to_string();
+            migrated = true;
+        }
+        for model in self.enabled_models.iter_mut() {
+            if model == "claude-opus-4-6" {
+                log::error!(
+                    "[config.load] Migrating enabled_models 'claude-opus-4-6' -> 'claude-opus-4-7'"
+                );
+                *model = "claude-opus-4-7".to_string();
+                migrated = true;
+            }
+        }
+
+        migrated
     }
 
     /// Load config with graceful recovery.

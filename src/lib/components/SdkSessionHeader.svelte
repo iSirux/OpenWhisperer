@@ -63,7 +63,7 @@
   );
 
   const effortLabel = $derived.by(() => {
-    const labels: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', max: 'Max' };
+    const labels: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHigh', max: 'Max' };
     return effortLevel ? labels[effortLevel] ?? null : null;
   });
 

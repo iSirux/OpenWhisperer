@@ -7,7 +7,7 @@ import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
-import { getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
+import { clampEffortForModel, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import type { McpServerConfig } from '$lib/types/mcp';
 
 // =============================================================================
@@ -214,9 +214,9 @@ export interface NoteModeState {
   noteCreated: boolean;
 }
 
-export type EffortLevel = null | 'low' | 'medium' | 'high' | 'max';
-export type SelectableEffortLevel = 'low' | 'medium' | 'high' | 'max';
-export type SettingsEffortLevel = 'off' | 'low' | 'medium' | 'high' | 'max';
+export type EffortLevel = null | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type SelectableEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type SettingsEffortLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** @deprecated Use EffortLevel instead */
 export type ThinkingLevel = EffortLevel;
@@ -1265,7 +1265,9 @@ function createSdkSessionsStore() {
     });
 
     if (effortLevel && modelSupportsEffort(model)) {
-      await invoke('update_sdk_effort', { id, effortLevel });
+      // Clamp to a value the target provider actually supports (OpenAI/Codex caps at 'high')
+      const clamped = clampEffortForModel(effortLevel, resolvedModel);
+      await invoke('update_sdk_effort', { id, effortLevel: clamped });
     }
 
     liveSessions.add(id);
@@ -1735,7 +1737,10 @@ function createSdkSessionsStore() {
 
       // Get the session's model to check effort support
       const session = get({ subscribe }).find(s => s.id === id);
-      const effectiveEffort = session && modelSupportsEffort(session.model) ? normalizedEffort : null;
+      // Clamp to a value the target provider actually supports (OpenAI/Codex caps at 'high')
+      const effectiveEffort = session && modelSupportsEffort(session.model)
+        ? clampEffortForModel(normalizedEffort, session.model)
+        : null;
 
       try {
         await invoke('update_sdk_effort', { id, effortLevel: effectiveEffort });

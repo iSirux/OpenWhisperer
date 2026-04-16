@@ -37,6 +37,7 @@ function inferOpenAiContextWindow(model: string | undefined): number {
 function inferClaudeContextWindow(model: string | undefined): number {
   const normalized = model?.toLowerCase() ?? "";
   if (
+    normalized.startsWith("claude-opus-4-7") ||
     normalized.startsWith("claude-opus-4-6") ||
     normalized.startsWith("claude-sonnet-4-6")
   ) {
@@ -415,7 +416,32 @@ interface UpdateModelMessage {
 interface UpdateEffortMessage {
   type: "update_effort";
   id: string;
-  effortLevel: string | null; // null, 'low', 'medium', 'high', 'max'
+  // UI-level effort: null, 'low', 'medium', 'high', 'xhigh', 'max'.
+  // 'xhigh' is a UI-only tier that maps to SDK 'high' at the API boundary.
+  effortLevel: string | null;
+}
+
+/**
+ * Map a UI-level effort value to what the underlying SDK actually accepts.
+ *
+ * - Claude Agent SDK supports: 'low' | 'medium' | 'high' | 'max'. Our UI-only
+ *   'xhigh' tier is collapsed down to 'high' for the SDK call.
+ * - Codex / OpenAI only support: 'low' | 'medium' | 'high'. Both 'xhigh' and
+ *   'max' are clamped down to 'high'.
+ * - `null` / `undefined` are passed through unchanged (effort off).
+ */
+function mapEffortForProvider(
+  effort: string | null | undefined,
+  provider: "claude" | "openai"
+): string | undefined {
+  if (!effort) return undefined;
+  if (provider === "openai") {
+    if (effort === "xhigh" || effort === "max") return "high";
+    return effort;
+  }
+  // Claude provider: 'xhigh' is UI-only, map down to 'high' for the SDK.
+  if (effort === "xhigh") return "high";
+  return effort;
 }
 
 // Generate repository description using Claude SDK
@@ -528,7 +554,7 @@ interface Session {
   sdkSessionId?: string; // Track the SDK's internal session ID for resume
   passedSdkSessionId?: string; // SDK session ID passed from frontend for restored sessions
   conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED)
-  effortLevel?: string; // Effort level: null/undefined = off, 'low', 'medium', 'high', 'max'
+  effortLevel?: string; // UI effort level: null/undefined = off, 'low', 'medium', 'high', 'xhigh', 'max'
   currentQueryId?: string; // Unique ID for the current query (to detect stale done events)
   planMode?: boolean; // Whether this is a plan mode session
   noteMode?: boolean; // Whether this is a note-taking mode session
@@ -4658,12 +4684,15 @@ async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
     return;
   }
 
-  // Update the effort level in the session
+  // Update the effort level in the session (store UI-level value).
   session.effortLevel = msg.effortLevel ?? undefined;
 
-  // For Claude provider: set native effort option (SDK 0.2.49+ passes --effort to CLI)
+  // For Claude provider: set native effort option (SDK 0.2.49+ passes --effort to CLI).
+  // 'xhigh' is a UI-only tier and gets mapped to the SDK's 'high' here; the Codex/OpenAI
+  // path doesn't plumb an effort option through ThreadOptions, so no clamping is needed there.
   if (session.provider === "claude") {
-    session.options.effort = (msg.effortLevel as Options["effort"]) ?? undefined;
+    const mapped = mapEffortForProvider(msg.effortLevel, "claude");
+    session.options.effort = (mapped as Options["effort"]) ?? undefined;
   }
 
   send({

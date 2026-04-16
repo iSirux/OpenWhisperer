@@ -657,13 +657,19 @@
             <div class="option-cell">
               <label class="option-label">Effort</label>
               <div class="effort-options">
-                {#each (['low', 'medium', 'high', ...(getMaxEffort(model) === 'max' ? ['max'] : [])] as const) as level}
+                {#each (() => {
+                  const max = getMaxEffort(model);
+                  const levels: string[] = ['low', 'medium', 'high'];
+                  if (max === 'xhigh' || max === 'max') levels.push('xhigh');
+                  if (max === 'max') levels.push('max');
+                  return levels;
+                })() as level}
                   <button
                     class="effort-option-btn"
                     class:active={effortLevel === level}
                     onclick={() => effortLevel = level as EffortLevel}
                   >
-                    {level.charAt(0).toUpperCase() + level.slice(1)}
+                    {level === 'xhigh' ? 'XHigh' : level.charAt(0).toUpperCase() + level.slice(1)}
                   </button>
                 {/each}
               </div>

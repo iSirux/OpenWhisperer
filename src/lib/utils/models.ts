@@ -10,8 +10,13 @@ export interface ModelInfo {
   maxContextTokens?: number;
   /** Whether this model supports the effort parameter */
   supportsEffort?: boolean;
-  /** Maximum effort level supported: 'high' for most models, 'max' for Opus 4.6 */
-  maxEffort?: 'high' | 'max';
+  /**
+   * Maximum effort level supported by the model.
+   * - 'high': Most models (OpenAI/Codex cap out here; Codex API only accepts low/medium/high)
+   * - 'xhigh': UI-only intermediate tier between 'high' and 'max' (maps to SDK 'high' at the API boundary)
+   * - 'max': Full "max" reasoning (Anthropic SDK native value)
+   */
+  maxEffort?: 'high' | 'xhigh' | 'max';
 }
 
 // Special "Auto" model that uses LLM integration to recommend the best model
@@ -25,12 +30,12 @@ export const AUTO_MODEL: ModelInfo = {
 
 export const ALL_MODELS: ModelInfo[] = [
   {
-    id: "claude-opus-4-6",
+    id: "claude-opus-4-7",
     label: "Opus",
-    title: "Opus 4.6 - Most capable model",
+    title: "Opus - Most capable model",
     maxContextTokens: 1000000,
     supportsEffort: true,
-    maxEffort: "high", // 'max' is API-key only, not available for Claude.ai subscribers
+    maxEffort: "max",
   },
   {
     id: "claude-sonnet-4-6",
@@ -38,7 +43,7 @@ export const ALL_MODELS: ModelInfo[] = [
     title: "Sonnet 4.6 - Balanced performance",
     maxContextTokens: 1000000,
     supportsEffort: true,
-    maxEffort: "high",
+    maxEffort: "xhigh",
   },
   {
     id: "claude-haiku-4-5-20251001",
@@ -185,10 +190,33 @@ export function modelSupportsEffort(modelId: string): boolean {
 }
 
 /**
- * Get the maximum effort level supported by a model
- * Returns 'high' for most models, 'max' for Opus 4.6
+ * Get the maximum effort level supported by a model.
+ * - 'high' for OpenAI/Codex and older Claude tiers
+ * - 'xhigh' for Sonnet (UI-only tier between high and max)
+ * - 'max' for Opus
  */
-export function getMaxEffort(modelId: string): 'high' | 'max' {
+export function getMaxEffort(modelId: string): 'high' | 'xhigh' | 'max' {
   const model = getModelById(modelId);
   return model?.maxEffort ?? 'high';
+}
+
+/**
+ * Clamp an effort level down to a value the given model/provider actually supports.
+ *
+ * - OpenAI/Codex models only accept low/medium/high, so 'xhigh' and 'max' are clamped to 'high'.
+ * - For Claude models, the value is returned unchanged (the SDK boundary is responsible
+ *   for mapping the UI-only 'xhigh' tier onto the native SDK value when invoking the API).
+ * - `null` / `undefined` (effort off) passes through unchanged.
+ * - Haiku (and any model without effort support) is left untouched; callers decide whether
+ *   to strip effort entirely for no-effort models.
+ */
+export function clampEffortForModel<T extends string | null | undefined>(
+  effort: T,
+  modelId: string,
+): T {
+  if (effort == null) return effort;
+  if (isOpenAiModel(modelId) && (effort === 'xhigh' || effort === 'max')) {
+    return 'high' as T;
+  }
+  return effort;
 }
