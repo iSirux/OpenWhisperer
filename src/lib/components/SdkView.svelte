@@ -473,7 +473,7 @@
   }
 
   function scrollToTop() {
-    messagesEl?.scrollTo({ top: 0, behavior: "smooth" });
+    if (messagesEl) messagesEl.scrollTop = 0;
   }
 
   // Mark session as read when user interacts with the view

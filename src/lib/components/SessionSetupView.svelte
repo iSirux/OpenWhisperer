@@ -15,6 +15,7 @@
     DEFAULT_OPENAI_MODEL_ID,
     modelSupportsEffort,
     getMaxEffort,
+    modelSupportsXhigh,
     type SdkProvider,
   } from '$lib/utils/models';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
@@ -660,7 +661,7 @@
                 {#each (() => {
                   const max = getMaxEffort(model);
                   const levels: string[] = ['low', 'medium', 'high'];
-                  if (max === 'xhigh' || max === 'max') levels.push('xhigh');
+                  if (modelSupportsXhigh(model)) levels.push('xhigh');
                   if (max === 'max') levels.push('max');
                   return levels;
                 })() as level}

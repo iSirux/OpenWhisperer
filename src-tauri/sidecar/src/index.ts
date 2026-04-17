@@ -4486,20 +4486,29 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       // System messages - init is handled above in the message loop
       // Handle task lifecycle messages from the SDK
       const sysMsg = message as { subtype?: string; task_id?: string; tool_use_id?: string; description?: string; task_type?: string; status?: string; summary?: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } };
+      // The SDK emits task_started/task_notification for background-bash tasks
+      // (task_type === "local_bash") in addition to the normal Bash tool_use
+      // block. Forwarding those duplicates the tool call in the UI, so skip
+      // them — the tool_use/tool_result pair already renders the bash run.
+      const isLocalBash = sysMsg.task_type === "local_bash";
       if (sysMsg.subtype === "task_started") {
         send({
           type: "debug",
           id,
-          message: `Task started: ${sysMsg.task_id} (toolUseId: ${sysMsg.tool_use_id}, desc: ${sysMsg.description?.slice(0, 80)})`,
+          message: `Task started: ${sysMsg.task_id} (toolUseId: ${sysMsg.tool_use_id}, taskType: ${sysMsg.task_type}, desc: ${sysMsg.description?.slice(0, 80)})${isLocalBash ? " [skipped: duplicates Bash tool_use]" : ""}`,
         });
-        sendTaskStarted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.description || "", sysMsg.task_type);
+        if (!isLocalBash) {
+          sendTaskStarted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.description || "", sysMsg.task_type);
+        }
       } else if (sysMsg.subtype === "task_notification") {
         send({
           type: "debug",
           id,
-          message: `Task completed: ${sysMsg.task_id} (status: ${sysMsg.status}, summary: ${sysMsg.summary?.slice(0, 80)})`,
+          message: `Task completed: ${sysMsg.task_id} (taskType: ${sysMsg.task_type}, status: ${sysMsg.status}, summary: ${sysMsg.summary?.slice(0, 80)})${isLocalBash ? " [skipped: duplicates Bash tool_use]" : ""}`,
         });
-        sendTaskCompleted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.status || "completed", sysMsg.summary || "", sysMsg.usage);
+        if (!isLocalBash) {
+          sendTaskCompleted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.status || "completed", sysMsg.summary || "", sysMsg.usage);
+        }
       }
       break;
     }

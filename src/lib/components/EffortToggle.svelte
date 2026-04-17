@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { EffortLevel } from "$lib/stores/sdkSessions";
   import { normalizeAutoModelEffort, type AutoModelEffort } from "$lib/stores/settings";
-  import { modelSupportsEffort, getMaxEffort } from "$lib/utils/models";
+  import { modelSupportsEffort, getMaxEffort, modelSupportsXhigh } from "$lib/utils/models";
   import { normalizeEffortLevel } from "$lib/stores/sdkSessions";
 
   interface Props {
@@ -37,7 +37,8 @@
     return getMaxEffort(modelId);
   });
 
-  const dotCount = $derived(maxLevel === 'max' ? 5 : maxLevel === 'xhigh' ? 4 : 3);
+  const hasXhigh = $derived(!isAutoModel && !!modelId && modelSupportsXhigh(modelId));
+  const dotCount = $derived(maxLevel === 'max' ? (hasXhigh ? 5 : 4) : maxLevel === 'xhigh' ? 4 : 3);
 
   // Map effort level to a numeric value for dot filling
   const LEVEL_VALUES: Record<string, number> = {
@@ -71,7 +72,7 @@
       return ['low', 'medium', 'high', 'dynamic'];
     }
     const levels = ['low', 'medium', 'high'];
-    if (maxLevel === 'xhigh' || maxLevel === 'max') levels.push('xhigh');
+    if (hasXhigh) levels.push('xhigh');
     if (maxLevel === 'max') levels.push('max');
     return levels;
   });

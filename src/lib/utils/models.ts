@@ -17,6 +17,12 @@ export interface ModelInfo {
    * - 'max': Full "max" reasoning (Anthropic SDK native value)
    */
   maxEffort?: 'high' | 'xhigh' | 'max';
+  /**
+   * Whether the model supports the 'xhigh' effort tier.
+   * Defaults to true when maxEffort is 'xhigh' or 'max'. Set to false for models
+   * that jump from 'high' directly to 'max' (e.g., Opus 4.6).
+   */
+  supportsXhigh?: boolean;
 }
 
 // Special "Auto" model that uses LLM integration to recommend the best model
@@ -31,11 +37,20 @@ export const AUTO_MODEL: ModelInfo = {
 export const ALL_MODELS: ModelInfo[] = [
   {
     id: "claude-opus-4-7",
-    label: "Opus",
-    title: "Opus - Most capable model",
+    label: "Opus 4.7",
+    title: "Opus 4.7 - Most capable model",
     maxContextTokens: 1000000,
     supportsEffort: true,
     maxEffort: "max",
+  },
+  {
+    id: "claude-opus-4-6",
+    label: "Opus 4.6",
+    title: "Opus 4.6 - Previous flagship (1M context)",
+    maxContextTokens: 1000000,
+    supportsEffort: true,
+    maxEffort: "max",
+    supportsXhigh: false,
   },
   {
     id: "claude-sonnet-4-6",
@@ -198,6 +213,18 @@ export function modelSupportsEffort(modelId: string): boolean {
 export function getMaxEffort(modelId: string): 'high' | 'xhigh' | 'max' {
   const model = getModelById(modelId);
   return model?.maxEffort ?? 'high';
+}
+
+/**
+ * Whether the model exposes the 'xhigh' effort tier in the UI.
+ * True when maxEffort >= xhigh AND the model doesn't explicitly opt out.
+ */
+export function modelSupportsXhigh(modelId: string): boolean {
+  const model = getModelById(modelId);
+  if (!model) return false;
+  const max = model.maxEffort ?? 'high';
+  if (max === 'high') return false;
+  return model.supportsXhigh ?? true;
 }
 
 /**

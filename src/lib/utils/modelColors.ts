@@ -15,7 +15,11 @@ export function getModelType(modelId: string): ModelType {
 
 export function getShortModelName(model: string): string {
   if (model === 'auto') return 'Auto';
-  if (model.includes('opus')) return 'Opus';
+  if (model.includes('opus')) {
+    if (model.includes('opus-4-7')) return 'Opus 4.7';
+    if (model.includes('opus-4-6')) return 'Opus 4.6';
+    return 'Opus';
+  }
   if (model.includes('sonnet')) {
     return 'Sonnet';
   }

@@ -2012,24 +2012,6 @@ impl AppConfig {
             migrated = true;
         }
 
-        // Migrate Claude Opus 4.6 -> 4.7
-        if self.default_model == "claude-opus-4-6" {
-            log::error!(
-                "[config.load] Migrating default_model 'claude-opus-4-6' -> 'claude-opus-4-7'"
-            );
-            self.default_model = "claude-opus-4-7".to_string();
-            migrated = true;
-        }
-        for model in self.enabled_models.iter_mut() {
-            if model == "claude-opus-4-6" {
-                log::error!(
-                    "[config.load] Migrating enabled_models 'claude-opus-4-6' -> 'claude-opus-4-7'"
-                );
-                *model = "claude-opus-4-7".to_string();
-                migrated = true;
-            }
-        }
-
         migrated
     }
 
