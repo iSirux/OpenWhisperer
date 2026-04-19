@@ -4,7 +4,8 @@
   import { findRepoByPath } from '$lib/utils/repoIcons';
   import { repos, findRepoById } from '$lib/stores/repos';
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
-  import type { EffortLevel } from '$lib/stores/sdkSessions';
+  import { sdkSessions, type EffortLevel } from '$lib/stores/sdkSessions';
+  import type { SdkProvider } from '$lib/utils/models';
 
   interface Message {
     type: string;
@@ -15,6 +16,12 @@
   }
 
   interface Props {
+    /** Session ID — required to wire SDK-only actions like /compact */
+    sessionId?: string;
+    /** SDK session ID — gates SDK-only actions until the session has been initialized */
+    sdkSessionId?: string;
+    /** True while a query is in flight; disables /compact to avoid overlapping sends */
+    isQuerying?: boolean;
     createdAt?: number;
     messages?: Message[];
     isPending?: boolean;
@@ -24,6 +31,12 @@
     repoPath?: string;
     model?: string | null;
     effortLevel?: EffortLevel;
+    provider?: SdkProvider;
+    /** Claude auto-compaction toggle. Off -> DISABLE_AUTO_COMPACT=1.
+     *  On -> no override; Claude's built-in default (~83.5% trigger, 33K-token reserved buffer) applies.
+     *  That default IS the optimum — the PCT_OVERRIDE env var is clamped to it, so we can't go higher, and
+     *  going lower just wastes context without preventing single-turn tool-result overflows. */
+    autocompactEnabled?: boolean;
     createdBranch?: string | null;
     currentBranch?: string | null;
     firstPrompt?: string | null;
@@ -32,6 +45,9 @@
   }
 
   let {
+    sessionId,
+    sdkSessionId,
+    isQuerying = false,
     createdAt,
     messages = [],
     isPending = false,
@@ -40,12 +56,29 @@
     repoPath = '',
     model = null,
     effortLevel = null,
+    provider = 'claude',
+    autocompactEnabled = true,
     createdBranch = null,
     currentBranch = null,
     firstPrompt = null,
     onClose,
     onCancel,
   }: Props = $props();
+
+  let isCompacting = $state(false);
+  const canCompact = $derived(!!sessionId && !!sdkSessionId && !isPending && !isQuerying);
+
+  async function compactConversation() {
+    if (!sessionId || isCompacting || !canCompact) return;
+    isCompacting = true;
+    try {
+      await sdkSessions.sendPrompt(sessionId, '/compact');
+    } catch (err) {
+      console.error('[SdkSessionHeader] /compact failed:', err);
+    } finally {
+      isCompacting = false;
+    }
+  }
 
   // Resolve repo config: prefer stable repoId, fall back to path match
   const repoConfig = $derived(
@@ -66,6 +99,15 @@
     const labels: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHigh', max: 'Max' };
     return effortLevel ? labels[effortLevel] ?? null : null;
   });
+
+  const showAutocompactToggle = $derived(provider !== 'openai' && !isPending && !!sessionId);
+
+  function toggleAutocompact() {
+    if (!sessionId) return;
+    sdkSessions.updateSessionAutocompactEnabled(sessionId, !autocompactEnabled).catch(err => {
+      console.error('[SdkSessionHeader] autocompact update failed:', err);
+    });
+  }
 
   let isChatCopied = $state(false);
 
@@ -204,6 +246,48 @@
           </svg>
         </button>
       {/if}
+      {#if showAutocompactToggle}
+        <button
+          type="button"
+          class="action-icon-btn autocompact-toggle"
+          class:autocompact-on={autocompactEnabled}
+          class:autocompact-off={!autocompactEnabled}
+          onclick={toggleAutocompact}
+          title={`Auto-compaction: ${autocompactEnabled ? "on (Claude's default ~83.5% trigger; 33K-token reserved buffer)" : 'off (DISABLE_AUTO_COMPACT=1 — may hit "prompt is too long")'}. Applies on next Claude process spawn.`}
+          aria-label="Toggle auto-compaction"
+          aria-pressed={autocompactEnabled}
+        >
+          <span class="autocompact-label">AC</span>
+          <span class="autocompact-indicator" aria-hidden="true">
+            {#if autocompactEnabled}
+              <svg class="w-3 h-3" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+              </svg>
+            {:else}
+              <svg class="w-3 h-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <line x1="4" y1="16" x2="16" y2="4" />
+              </svg>
+            {/if}
+          </span>
+        </button>
+      {/if}
+      {#if !isPending && sessionId && sdkSessionId}
+        <button
+          class="action-icon-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
+          onclick={compactConversation}
+          disabled={!canCompact || isCompacting}
+          title="Compact conversation history"
+          aria-label="Compact conversation history"
+        >
+          <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <!-- Two arrows pointing inward: signals "compact" -->
+            <polyline points="4 14 10 14 10 20" />
+            <polyline points="20 10 14 10 14 4" />
+            <line x1="14" y1="10" x2="21" y2="3" />
+            <line x1="3" y1="21" x2="10" y2="14" />
+          </svg>
+        </button>
+      {/if}
       {#if !isPending}
         <button
           class="copy-all-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
@@ -312,5 +396,41 @@
   .copy-all-btn.copied {
     background: color-mix(in srgb, var(--color-success) 20%, transparent);
     color: var(--color-success);
+  }
+
+  .autocompact-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    font-size: 10px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: background-color 0.15s, color 0.15s;
+  }
+
+  .autocompact-toggle:hover {
+    background: var(--color-border);
+  }
+
+  .autocompact-label {
+    font-weight: 600;
+    letter-spacing: 0.05em;
+  }
+
+  .autocompact-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .autocompact-on {
+    color: var(--color-accent, rgb(96, 165, 250));
+  }
+
+  .autocompact-off {
+    color: var(--color-text-muted);
+    opacity: 0.75;
   }
 </style>

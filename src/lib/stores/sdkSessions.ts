@@ -349,6 +349,13 @@ export interface SdkSession {
   forkedMessageCount?: number;
   /** Friendly label for the parent session, used in fork UI surfaces */
   forkedFromSessionLabel?: string;
+  /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
+  contextOverflow?: boolean;
+  /** Claude-only: whether auto-compaction is enabled for this session.
+   *  When false, sidecar sets DISABLE_AUTO_COMPACT=1 (the only real disable — PCT_OVERRIDE gets clamped).
+   *  When true, no override is set; Claude's built-in default applies (~83.5% trigger with a
+   *  33K-token reserved summarization buffer — that IS the optimum, and PCT_OVERRIDE is clamped to it). */
+  autocompactEnabled?: boolean;
 }
 
 function normalizeDraftPrompt(value: unknown): string | undefined {
@@ -866,6 +873,8 @@ function createSdkSessionsStore() {
       await listen<string>(`sdk-error-${id}`, (e) => {
         const currentSettings = get(settings);
         const now = Date.now();
+        const payload = e.payload ?? '';
+        const isContextOverflow = /prompt is too long/i.test(payload);
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
@@ -876,8 +885,9 @@ function createSdkSessionsStore() {
               status: 'error' as const,
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
-              messages: [...closedThinkingMessages, { type: 'error' as const, content: e.payload, timestamp: now }],
+              messages: [...closedThinkingMessages, { type: 'error' as const, content: payload, timestamp: now }],
               unread: currentSettings.mark_sessions_unread && get(activeSdkSessionId) !== id ? true : s.unread,
+              contextOverflow: isContextOverflow ? true : s.contextOverflow,
             };
           })
         );
@@ -1155,7 +1165,8 @@ function createSdkSessionsStore() {
     provider?: string,
     forkFromSdkSessionId?: string | null, // SDK session ID to fork from
     forkAtMessageUuid?: string | null, // Message UUID to fork at (resumeSessionAt)
-    readOnlyMode?: boolean
+    readOnlyMode?: boolean,
+    autocompactEnabled?: boolean | null
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1262,6 +1273,14 @@ function createSdkSessionsStore() {
       provider: resolvedProvider,
       forkFromSdkSessionId: forkFromSdkSessionId ?? null,
       forkAtMessageUuid: forkAtMessageUuid ?? null,
+      // Translate boolean to pct at the IPC boundary.
+      //   false -> 0    : sidecar sets DISABLE_AUTO_COMPACT=1 (PCT_OVERRIDE cannot disable — clamped).
+      //   true  -> null : no override; let Claude's built-in default (~83.5%) apply. That IS the optimal —
+      //                   it's derived from a hardcoded 33K-token buffer, and the override is clamped so we
+      //                   can't go higher. Any lower value just wastes context without preventing single-turn
+      //                   tool-result overflows (those require the full 33K buffer regardless).
+      autocompactPct:
+        resolvedProvider === 'claude' && autocompactEnabled === false ? 0 : null,
     });
 
     if (effortLevel && modelSupportsEffort(model)) {
@@ -1327,6 +1346,9 @@ function createSdkSessionsStore() {
 
       const effectiveEffort = modelSupportsEffort(model) ? normalizeEffortLevel(effortLevel) : null;
 
+      const initialSettings = get(settings);
+      const autocompactEnabled = resolvedProvider === 'claude' ? initialSettings.default_autocompact_enabled : undefined;
+
       const session: SdkSession = {
         id,
         cwd,
@@ -1340,6 +1362,7 @@ function createSdkSessionsStore() {
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
+        autocompactEnabled,
       };
 
       update(sessions => [...sessions, session]);
@@ -1410,7 +1433,7 @@ function createSdkSessionsStore() {
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
-      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, planMode, undefined, resolvedProvider);
+      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, planMode, undefined, resolvedProvider, undefined, undefined, undefined, autocompactEnabled ?? null);
       await syncSessionBranchMetadata(id, cwd);
 
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1439,8 +1462,16 @@ function createSdkSessionsStore() {
         id, session.cwd, session.model, session.effortLevel,
         null, historyMessages, session.sdkSessionId,
         undefined, undefined, session.provider,
-        session.forkFromSdkSessionId, session.forkAtMessageUuid, session.readOnlyMode
+        session.forkFromSdkSessionId, session.forkAtMessageUuid, session.readOnlyMode,
+        session.autocompactEnabled ?? null
       );
+    },
+
+    dismissContextOverflow(id: string): void {
+      update(sessions =>
+        sessions.map(s => (s.id === id ? { ...s, contextOverflow: false } : s))
+      );
+      debouncedSave();
     },
 
     /**
@@ -1754,6 +1785,25 @@ function createSdkSessionsStore() {
       return this.updateSessionEffort(id, effortLevel);
     },
 
+    async updateSessionAutocompactEnabled(id: string, enabled: boolean): Promise<void> {
+      update(sessions => sessions.map(s => s.id === id ? { ...s, autocompactEnabled: enabled } : s));
+
+      if (!liveSessions.has(id)) return;
+
+      const session = get({ subscribe }).find(s => s.id === id);
+      if (!session || session.provider === 'openai') return;
+
+      try {
+        // Translate boolean to pct at the IPC boundary:
+        //   enabled=true  -> null (clear override; use Claude's built-in default ~83.5%, the optimal value).
+        //   enabled=false -> 0    (sidecar sets DISABLE_AUTO_COMPACT=1 — PCT_OVERRIDE cannot disable).
+        // Takes effect on the next Claude Code process spawn, not mid-query.
+        await invoke('update_sdk_autocompact_pct', { id, pct: enabled ? null : 0 });
+      } catch (error) {
+        console.error('Failed to update SDK autocompact enabled:', error);
+      }
+    },
+
     async updateSessionCwd(id: string, cwd: string): Promise<void> {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
@@ -1766,7 +1816,7 @@ function createSdkSessionsStore() {
       if (liveSessions.has(id)) {
         try {
           await invoke('close_sdk_session', { id });
-          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, undefined, undefined, session.provider, undefined, undefined, session.readOnlyMode);
+          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, undefined, undefined, session.provider, undefined, undefined, session.readOnlyMode, session.autocompactEnabled ?? null);
         } catch (error) {
           console.error('[sdkSessions] Failed to reinitialize backend session:', error);
         }

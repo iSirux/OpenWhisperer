@@ -25,6 +25,7 @@ pub fn create_sdk_session(
     mcp_servers: Option<Vec<McpServerConfig>>, // Optional MCP servers to register
     fork_from_sdk_session_id: Option<String>, // SDK session ID to fork from (creates a new branch)
     fork_at_message_uuid: Option<String>, // Message UUID to fork at (resumeSessionAt)
+    autocompact_pct: Option<u32>, // Claude-only: 0=DISABLE_AUTO_COMPACT, 1..=99=PCT_OVERRIDE, None/100=default
 ) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
@@ -44,6 +45,7 @@ pub fn create_sdk_session(
         mcp_servers,
         fork_from_sdk_session_id,
         fork_at_message_uuid,
+        autocompact_pct,
     })
 }
 
@@ -90,6 +92,18 @@ pub fn update_sdk_effort(
         return Err("Sidecar not started".to_string());
     }
     sidecar.send(OutboundMessage::UpdateEffort { id, effort_level })
+}
+
+#[tauri::command]
+pub fn update_sdk_autocompact_pct(
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    pct: Option<u32>,
+) -> Result<(), String> {
+    if !sidecar.is_started() {
+        return Err("Sidecar not started".to_string());
+    }
+    sidecar.send(OutboundMessage::UpdateAutocompactPct { id, pct })
 }
 
 #[tauri::command]

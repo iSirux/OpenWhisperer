@@ -676,6 +676,7 @@ impl SequenceExecutor {
                 mcp_servers: None,
                 fork_from_sdk_session_id: None,
                 fork_at_message_uuid: None,
+                autocompact_pct: None,
             })
             .map_err(|e| format!("Sidecar send error: {}", e))?;
 

@@ -465,6 +465,11 @@ export interface AppConfig {
   /** Claude authentication method (OAuth via Claude CLI or API key) */
   claude_auth_method: ClaudeAuthMethod;
   skip_permissions: boolean;
+  /** Claude-only: default auto-compaction toggle for new sessions.
+   *  When false, sidecar sets DISABLE_AUTO_COMPACT=1 (PCT_OVERRIDE cannot disable — it's clamped to ~83%).
+   *  When true, no override is set; Claude's built-in default (~83.5%, 33K-token buffer) applies, which IS
+   *  the optimum — PCT_OVERRIDE is clamped to this value so we can't raise it higher. */
+  default_autocompact_enabled: boolean;
   theme: Theme;
   system: SystemConfig;
   show_branch_in_sessions: boolean;
@@ -632,6 +637,7 @@ const defaultConfig: AppConfig = {
   openai_auth_method: "OAuth",
   claude_auth_method: "OAuth",
   skip_permissions: false,
+  default_autocompact_enabled: true,
   theme: "Midnight",
   system: {
     minimize_to_tray: false,

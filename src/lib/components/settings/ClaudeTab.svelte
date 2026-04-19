@@ -79,6 +79,7 @@
   function isModelEnabled(modelId: string): boolean {
     return ($settings.enabled_models || []).includes(modelId);
   }
+
 </script>
 
 <div class="space-y-4">
@@ -171,6 +172,33 @@
           </div>
         {/if}
       </div>
+    </div>
+  </div>
+
+  <div class="pt-1 pb-4 mb-4 border-b border-border">
+    <h3 class="text-sm font-medium text-text-primary mb-2">
+      Auto-compaction
+    </h3>
+    <p class="text-xs text-text-muted mb-3">
+      When on, Claude Code's built-in default applies — compaction fires at ~83.5%, with a
+      33K-token buffer reserved for the summarization pass. That is the optimum: the
+      <code class="px-1 py-0.5 bg-background rounded text-text-secondary">CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code>
+      env var is silently clamped to this default, so we cannot raise it higher; lowering it only
+      wastes context without preventing single-turn tool-result overflows.
+      When off, sessions set
+      <code class="px-1 py-0.5 bg-background rounded text-text-secondary">DISABLE_AUTO_COMPACT=1</code>
+      (the only reliable way to disable). Applies to new Claude sessions.
+    </p>
+    <div class="flex items-center justify-between p-3 bg-surface rounded border border-border">
+      <label for="default-autocompact-enabled" class="text-sm text-text-secondary">
+        Enable auto-compaction for new sessions
+      </label>
+      <input
+        id="default-autocompact-enabled"
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.default_autocompact_enabled}
+      />
     </div>
   </div>
 

@@ -235,19 +235,6 @@
           {getShortModelName(session.model)}
         </span>
       {/if}
-      {#if session.forkInfo}
-        <span
-          class="fork-badge"
-          title={session.forkInfo.parentLabel
-            ? `Forked from ${session.forkInfo.parentLabel}`
-            : "Forked session"}
-        >
-          <svg class="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
-            <path fill-rule="evenodd" d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM5 5.372a2.25 2.25 0 1 0-1.5 0v.878A2.25 2.25 0 0 0 5.75 8.5h1.5v2.128a2.251 2.251 0 1 0 1.5 0V8.5h1.5a2.25 2.25 0 0 0 2.25-2.25v-.878a2.25 2.25 0 1 0-1.5 0v.878a.75.75 0 0 1-.75.75h-4.5A.75.75 0 0 1 5 6.25v-.878ZM8.75 12.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM12.25 4a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" />
-          </svg>
-          Fork
-        </span>
-      {/if}
       {#if !session.aiMetadata?.needsInteraction}
         <div class="relative">
           <div
@@ -448,18 +435,6 @@
   .session-item {
     border-left: 3px solid transparent;
     position: relative;
-  }
-
-  .fork-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.2rem;
-    padding: 0.125rem 0.35rem;
-    border-radius: 999px;
-    font-size: 10px;
-    font-weight: 600;
-    color: rgb(251, 191, 36);
-    background: rgba(251, 191, 36, 0.14);
   }
 
   .fork-lineage {

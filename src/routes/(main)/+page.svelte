@@ -293,6 +293,9 @@
         />
       {:else}
         <SdkSessionHeader
+          sessionId={sessionId}
+          sdkSessionId={activeSession.sdkSessionId}
+          isQuerying={activeSession.status === 'querying' || activeSession.status === 'initializing'}
           createdAt={activeSession.createdAt}
           messages={activeSession.messages}
           isPending={isPendingState}
@@ -301,6 +304,8 @@
           repoPath={activeSession.cwd}
           model={activeSession.model}
           effortLevel={activeSession.effortLevel}
+          provider={activeSession.provider}
+          autocompactEnabled={activeSession.autocompactEnabled ?? true}
           createdBranch={activeSession.createdBranch}
           currentBranch={activeSession.currentBranch}
           firstPrompt={activeSdkFirstPrompt()}

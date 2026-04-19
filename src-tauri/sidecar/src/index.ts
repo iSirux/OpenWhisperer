@@ -381,6 +381,7 @@ interface CreateMessage {
   mcp_servers?: McpServerConfig[]; // External MCP servers to register
   fork_from_sdk_session_id?: string; // SDK session ID to fork from
   fork_at_message_uuid?: string; // Message UUID to fork at (resumeSessionAt)
+  autocompact_pct?: number; // Claude-only: 0 = DISABLE_AUTO_COMPACT=1; 1-99 = CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; null/undefined/100 = Claude default
 }
 
 interface ImageData {
@@ -419,6 +420,13 @@ interface UpdateEffortMessage {
   // UI-level effort: null, 'low', 'medium', 'high', 'xhigh', 'max'.
   // 'xhigh' is a UI-only tier that maps to SDK 'high' at the API boundary.
   effortLevel: string | null;
+}
+
+interface UpdateAutocompactPctMessage {
+  type: "update_autocompact_pct";
+  id: string;
+  /** Threshold percent (1-100). null disables the override. */
+  pct: number | null;
 }
 
 /**
@@ -498,6 +506,7 @@ type InboundMessage =
   | StopMessage
   | UpdateModelMessage
   | UpdateEffortMessage
+  | UpdateAutocompactPctMessage
   | GenerateRepoDescriptionMessage
   | GenerateRepoDescriptionWithCodexMessage
   | AnswerAskUserQuestionMessage
@@ -568,6 +577,10 @@ interface Session {
   pendingParallelNotification?: string; // Queued notification to inject via PreToolUse hook when parallel session detected
   claudeQueue: QueuedPrompt[]; // Pending Claude prompts (FIFO)
   claudeProcessing: boolean; // Claude queue worker active flag
+  // True between the start and end of handleStop. Ensures handleQuery running
+  // concurrently with stop takes the queue path instead of stream-injecting
+  // into an iterator that is being torn down (which can silently drop the msg).
+  claudeStopping?: boolean;
   lastAssistantTurnUuid?: string; // Last assistant message UUID for fork support
   forkFromSdkSessionId?: string; // SDK session ID to fork from (consumed on first query)
   forkAtMessageUuid?: string; // Message UUID to fork at (consumed on first query)
@@ -3180,6 +3193,27 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     },
   };
 
+  // Apply auto-compaction policy. Claude Code reads these env vars at process spawn.
+  //   0            -> DISABLE_AUTO_COMPACT=1 (the PCT_OVERRIDE cannot disable — values >83 are clamped to default).
+  //   1-99         -> CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (lower fires compaction earlier).
+  //   null/100     -> leave unset (Claude's built-in default, ~83%).
+  // We must spread process.env because setting options.env replaces the inherited env entirely.
+  if (typeof msg.autocompact_pct === "number") {
+    const pct = Math.round(msg.autocompact_pct);
+    const nextEnv: Record<string, string | undefined> = {
+      ...process.env,
+      ...options.env,
+    };
+    if (pct <= 0) {
+      nextEnv.DISABLE_AUTO_COMPACT = "1";
+      delete nextEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
+    } else if (pct < 100) {
+      nextEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(Math.max(1, pct));
+      delete nextEnv.DISABLE_AUTO_COMPACT;
+    }
+    options.env = nextEnv;
+  }
+
   // Preserve Claude Code's built-in prompt and tool setup so repo/global Skills
   // can load, while still appending session-specific instructions from the app.
   options.systemPrompt = buildClaudeSystemPrompt(
@@ -4148,7 +4182,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
   // waiting for the current query to finish.  This is the preferred path; the
   // FIFO queue is kept as a fallback for edge-cases (e.g. race before queryIterator
   // is assigned, or if streamInput throws).
-  if (session.claudeProcessing && session.queryIterator) {
+  if (session.claudeProcessing && session.queryIterator && !session.claudeStopping) {
     const injectSessionId = session.sdkSessionId || msg.id;
     // For injected follow-up messages, create a new done promise.
     // The previous endStreamResolve (if any) is replaced so only
@@ -4382,7 +4416,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         const contextWindow =
           modelUsageValues.length > 0
             ? modelUsageValues[0].contextWindow
-            : inferClaudeContextWindow(session.options.model);
+            : inferClaudeContextWindow(resultSession?.options.model);
 
         sendUsage(id, {
           inputTokens: message.usage?.input_tokens || 0,
@@ -4406,7 +4440,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           const contextWindow =
             modelUsageValues.length > 0
               ? modelUsageValues[0].contextWindow
-              : inferClaudeContextWindow(session.options.model);
+              : inferClaudeContextWindow(resultSession?.options.model);
 
           sendUsage(id, {
             inputTokens: message.usage?.input_tokens || 0,
@@ -4592,6 +4626,11 @@ async function handleStop(msg: StopMessage): Promise<void> {
     return;
   }
 
+  // Mark that a stop is in progress. handleQuery checks this flag and skips
+  // the streamInject path while we tear down, so a new prompt arriving during
+  // the stop is queued instead of being swallowed by an interrupted iterator.
+  session.claudeStopping = true;
+
   // Reject any pending blocking Promises so runClaudeQueryItem / canUseTool
   // can unblock.  Without this, the queue worker stays permanently stuck if
   // stop is called while awaiting plan approval or user answers.
@@ -4610,9 +4649,6 @@ async function handleStop(msg: StopMessage): Promise<void> {
     session.endStreamResolve = undefined;
   }
 
-  // Use interrupt() on the query iterator - this is the proper way to stop
-  // the query and all subagents. The abort controller alone doesn't properly
-  // stop subagents that are already running.
   const pendingCount = session.claudeQueue.length;
   if (pendingCount > 0) {
     session.claudeQueue.length = 0;
@@ -4623,14 +4659,24 @@ async function handleStop(msg: StopMessage): Promise<void> {
     });
   }
 
-  if (session.queryIterator) {
+  // Snapshot and clear the iterator/abortController synchronously BEFORE
+  // awaiting interrupt(). This avoids a race where handleQuery runs during
+  // the interrupt await, sees queryIterator still set, and stream-injects
+  // into the dying iterator. After this point any concurrent handleQuery
+  // sees queryIterator=undefined and takes the queue path.
+  const iterator = session.queryIterator;
+  const abortController = session.abortController;
+  session.queryIterator = undefined;
+  session.abortController = undefined;
+
+  if (iterator) {
     send({
       type: "debug",
       id: msg.id,
       message: "Interrupting query via iterator.interrupt()...",
     });
     try {
-      await session.queryIterator.interrupt();
+      await iterator.interrupt();
       send({
         type: "debug",
         id: msg.id,
@@ -4643,20 +4689,17 @@ async function handleStop(msg: StopMessage): Promise<void> {
         message: `Error interrupting query: ${err}`,
       });
       // Fall back to abort controller if interrupt fails
-      if (session.abortController) {
-        session.abortController.abort();
+      if (abortController) {
+        abortController.abort();
       }
     }
-    session.queryIterator = undefined;
-    session.abortController = undefined;
-  } else if (session.abortController) {
+  } else if (abortController) {
     send({
       type: "debug",
       id: msg.id,
       message: "No query iterator, falling back to abortController.abort()...",
     });
-    session.abortController.abort();
-    session.abortController = undefined;
+    abortController.abort();
   } else {
     send({ type: "debug", id: msg.id, message: "No active query to stop" });
   }
@@ -4665,6 +4708,20 @@ async function handleStop(msg: StopMessage): Promise<void> {
   // The stuck processClaudeQueue will eventually exit via catch/finally,
   // but this ensures startClaudeQueueWorker won't bail out early.
   session.claudeProcessing = false;
+  session.claudeStopping = false;
+
+  // Recovery: if a prompt arrived during the stop window and got queued,
+  // handleQuery's startClaudeQueueWorker may have been a no-op because
+  // claudeProcessing was still stale-true at that moment. Kick the worker
+  // now so the queued prompt actually runs.
+  if (session.claudeQueue.length > 0) {
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `[claude queue] restarting worker for ${session.claudeQueue.length} prompt(s) queued during stop`,
+    });
+    startClaudeQueueWorker(msg.id);
+  }
 }
 
 async function handleUpdateModel(msg: UpdateModelMessage): Promise<void> {
@@ -4708,6 +4765,47 @@ async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
     type: "effort_updated",
     id: msg.id,
     effortLevel: msg.effortLevel,
+  });
+}
+
+async function handleUpdateAutocompactPct(
+  msg: UpdateAutocompactPctMessage
+): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, "Session not found");
+    return;
+  }
+
+  // Only Claude respects these vars; skip silently for other providers.
+  if (session.provider !== "claude") return;
+
+  // Seed from process.env so we don't wipe the spawn environment when the session
+  // had no prior options.env set.
+  const nextEnv: Record<string, string | undefined> = {
+    ...process.env,
+    ...(session.options.env ?? {}),
+  };
+  delete nextEnv.DISABLE_AUTO_COMPACT;
+  delete nextEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
+
+  if (msg.pct !== null && msg.pct !== undefined) {
+    const pct = Math.round(msg.pct);
+    if (pct <= 0) {
+      nextEnv.DISABLE_AUTO_COMPACT = "1";
+    } else if (pct < 100) {
+      nextEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(Math.max(1, pct));
+    }
+    // pct >= 100 falls through -> both vars cleared (Claude default).
+  }
+  session.options.env = nextEnv;
+
+  send({
+    type: "debug",
+    id: msg.id,
+    message: `autocompact updated to ${
+      msg.pct ?? "(cleared)"
+    } — applies on next Claude Code process spawn`,
   });
 }
 
@@ -4771,6 +4869,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "update_effort":
       await handleUpdateEffort(msg);
+      break;
+    case "update_autocompact_pct":
+      await handleUpdateAutocompactPct(msg);
       break;
     case "close":
       await handleClose(msg);

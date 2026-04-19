@@ -1632,6 +1632,12 @@ pub struct AppConfig {
     pub claude_auth_method: ClaudeAuthMethod,
     #[serde(default)]
     pub skip_permissions: bool,
+    /// Claude-only: default auto-compaction toggle for new sessions.
+    /// When false, sidecar sets DISABLE_AUTO_COMPACT=1 (PCT_OVERRIDE cannot disable — it's clamped to ~83%).
+    /// When true, no override is set; Claude's built-in default (~83.5%, 33K-token buffer) applies —
+    /// that IS the optimum, since PCT_OVERRIDE is silently clamped to this default.
+    #[serde(default = "default_autocompact_enabled")]
+    pub default_autocompact_enabled: bool,
     #[serde(default)]
     pub theme: Theme,
     #[serde(default)]
@@ -1901,6 +1907,10 @@ fn default_effort_level() -> EffortLevel {
     EffortLevel::High
 }
 
+fn default_autocompact_enabled() -> bool {
+    true
+}
+
 fn default_enabled_models() -> Vec<String> {
     vec![
         "claude-opus-4-7".to_string(),
@@ -1947,6 +1957,7 @@ impl Default for AppConfig {
             openai_auth_method: OpenAiAuthMethod::default(),
             claude_auth_method: ClaudeAuthMethod::default(),
             skip_permissions: false,
+            default_autocompact_enabled: default_autocompact_enabled(),
             theme: Theme::default(),
             system: SystemConfig::default(),
             show_branch_in_sessions: false,

@@ -76,6 +76,12 @@ pub enum OutboundMessage {
         /// Message UUID to fork at (resumeSessionAt - include messages up to this point)
         #[serde(skip_serializing_if = "Option::is_none")]
         fork_at_message_uuid: Option<String>,
+        /// Claude-only auto-compact policy:
+        ///   0        -> sidecar sets DISABLE_AUTO_COMPACT=1
+        ///   1..=99   -> sidecar sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE to this value
+        ///   None/100 -> neither var set; Claude's built-in default (~83%) applies
+        #[serde(skip_serializing_if = "Option::is_none")]
+        autocompact_pct: Option<u32>,
     },
     Query {
         id: String,
@@ -94,6 +100,11 @@ pub enum OutboundMessage {
         id: String,
         #[serde(rename = "effortLevel")]
         effort_level: Option<String>,
+    },
+    UpdateAutocompactPct {
+        id: String,
+        /// 1-100 percent threshold, or null to clear the override.
+        pct: Option<u32>,
     },
     Close {
         id: String,

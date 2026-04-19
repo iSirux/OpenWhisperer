@@ -27,6 +27,7 @@
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
+  import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import LaunchBar from "./sdk/LaunchBar.svelte";
   import { launchStore, getLaunchRuntime, queuedLaunch } from "$lib/stores/launchProfiles";
@@ -427,6 +428,10 @@
         const planApprovalChanged =
           JSON.stringify(found?.pendingPlanApproval) !==
             JSON.stringify(session?.pendingPlanApproval);
+        const autocompactChanged =
+          found?.autocompactEnabled !== session?.autocompactEnabled;
+        const contextOverflowChanged =
+          !!found?.contextOverflow !== !!session?.contextOverflow;
 
         if (
           !session ||
@@ -440,7 +445,9 @@
           planModeChanged ||
           askUserQuestionChanged ||
           draftChanged ||
-          planApprovalChanged
+          planApprovalChanged ||
+          autocompactChanged ||
+          contextOverflowChanged
         ) {
           if (planApprovalChanged) {
             console.log(`[SdkView] pendingPlanApproval changed (session: ${sessionId}, was: ${!!session?.pendingPlanApproval}, now: ${!!found?.pendingPlanApproval})`);
@@ -1156,12 +1163,20 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="sdk-view" onclick={markAsReadOnInteraction}>
+  {#if session?.contextOverflow}
+    <ContextOverflowBanner session={session} />
+  {/if}
+
   {#if isPlanMode && planMode}
     <PlanModeBanner {planMode} />
   {/if}
 
   {#if hasUsageData && usage}
-    <SdkUsageBar {usage} {isQuerying} />
+    <SdkUsageBar
+      {usage}
+      {isQuerying}
+      autocompactBufferTokens={session?.provider === 'claude' && session?.autocompactEnabled !== false ? 33000 : null}
+    />
   {/if}
 
   <div class="messages-wrapper">
