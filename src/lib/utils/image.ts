@@ -16,8 +16,9 @@ export interface ImageData {
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 // Target size for compression (leave some headroom)
 const TARGET_SIZE = 4 * 1024 * 1024;
-// Max dimensions (Claude supports up to 8000x8000, but we'll be conservative)
-const MAX_DIMENSION = 4096;
+// Claude Agent SDK enforces a 2000x2000px limit and uses sharp for resizing,
+// which isn't available in bundled builds — resize on the frontend instead.
+const MAX_DIMENSION = 2000;
 
 /**
  * Extract images from clipboard event
