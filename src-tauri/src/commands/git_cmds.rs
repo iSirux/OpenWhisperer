@@ -246,3 +246,44 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
 
     Ok(())
 }
+
+/// Open a file explorer at a specific path
+#[tauri::command]
+pub fn open_in_explorer(path: String) -> Result<(), String> {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        Command::new("explorer")
+            .arg(&path)
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| format!("Failed to open explorer: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open Finder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let openers = ["xdg-open", "nautilus", "dolphin", "thunar", "nemo"];
+        let mut launched = false;
+        for opener in openers {
+            if Command::new(opener).arg(&path).spawn().is_ok() {
+                launched = true;
+                break;
+            }
+        }
+        if !launched {
+            return Err("No supported file manager found".to_string());
+        }
+    }
+
+    Ok(())
+}

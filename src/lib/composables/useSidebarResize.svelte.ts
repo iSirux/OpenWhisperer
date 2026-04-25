@@ -3,7 +3,7 @@
  * Handles drag-to-resize, width constraints, and persistence to settings
  */
 
-import { settings } from '$lib/stores/settings';
+import { settings, settingsLoaded } from '$lib/stores/settings';
 import { get } from 'svelte/store';
 
 export const MIN_SIDEBAR_WIDTH = 200;
@@ -14,21 +14,18 @@ export function useSidebarResize() {
   let width = $state(DEFAULT_SIDEBAR_WIDTH);
   let isResizing = $state(false);
   let initialized = false;
+  let unsubscribe: (() => void) | null = null;
 
-  /**
-   * Initialize width from settings (call this after settings are loaded)
-   */
-  function initFromSettings() {
-    if (initialized) return;
-
-    const currentSettings = get(settings);
-    const savedWidth = currentSettings.sidebar_width;
-
+  unsubscribe = settingsLoaded.subscribe((loaded) => {
+    if (!loaded || initialized) return;
+    const savedWidth = get(settings).sidebar_width;
     if (savedWidth && savedWidth >= MIN_SIDEBAR_WIDTH && savedWidth <= MAX_SIDEBAR_WIDTH) {
       width = savedWidth;
     }
     initialized = true;
-  }
+    unsubscribe?.();
+    unsubscribe = null;
+  });
 
   /**
    * Start resize operation
@@ -75,6 +72,8 @@ export function useSidebarResize() {
   function cleanup() {
     document.removeEventListener('mousemove', handleResize);
     document.removeEventListener('mouseup', stopResize);
+    unsubscribe?.();
+    unsubscribe = null;
   }
 
   return {
@@ -82,7 +81,6 @@ export function useSidebarResize() {
     get isResizing() { return isResizing; },
     get minWidth() { return MIN_SIDEBAR_WIDTH; },
     get maxWidth() { return MAX_SIDEBAR_WIDTH; },
-    initFromSettings,
     startResize,
     cleanup,
   };

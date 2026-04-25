@@ -4,6 +4,7 @@ mod config;
 mod git;
 mod launch;
 mod llm;
+mod notion;
 mod realtime;
 mod sequences;
 mod session_persistence;
@@ -13,7 +14,8 @@ mod whisper;
 
 use commands::{
     archive_cmds, audio_cmds, git_cmds, input_cmds, launch_cmds, llm_cmds, log_cmds, mcp_cmds,
-    realtime_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds,
+    notion_cmds, realtime_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds,
+    terminal_cmds, usage_cmds,
 };
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -322,6 +324,7 @@ pub fn run() {
             git_cmds::generate_worktree_branch_name,
             git_cmds::open_in_vscode,
             git_cmds::open_in_terminal,
+            git_cmds::open_in_explorer,
             terminal_cmds::create_terminal_session,
             terminal_cmds::create_interactive_session,
             terminal_cmds::write_to_terminal,
@@ -402,6 +405,7 @@ pub fn run() {
             launch_cmds::launch_commands,
             launch_cmds::stop_launch_profile,
             launch_cmds::get_launch_status,
+            notion_cmds::fetch_notion_cards,
             mcp_cmds::test_mcp_server,
             mcp_cmds::save_mcp_bearer_token,
             mcp_cmds::get_mcp_bearer_token,

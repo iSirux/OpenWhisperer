@@ -349,6 +349,8 @@ export interface SdkSession {
   forkedMessageCount?: number;
   /** Friendly label for the parent session, used in fork UI surfaces */
   forkedFromSessionLabel?: string;
+  /** Notion card linked to this session (set when created from kanban board) */
+  notionCard?: { id: string; title: string };
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
   contextOverflow?: boolean;
   /** Claude-only: whether auto-compaction is enabled for this session.

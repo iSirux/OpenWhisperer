@@ -326,6 +326,7 @@ export function transformToDisplaySessions(
               inheritedMessageCount: s.forkedMessageCount ?? 0,
             }
           : undefined,
+        notionCard: s.notionCard,
       };
     }),
     ...sequenceExecutions.map((exec) => {

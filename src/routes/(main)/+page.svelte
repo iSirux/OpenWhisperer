@@ -8,6 +8,7 @@
   import Start from '$lib/components/Start.svelte';
   import SessionPendingView from '$lib/components/SessionPendingView.svelte';
   import ArchiveView from '$lib/components/ArchiveView.svelte';
+  import NotionKanban from '$lib/components/NotionKanban.svelte';
 
   // Refactored components
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
@@ -166,8 +167,6 @@
   }
 
   onMount(() => {
-    sidebar.initFromSettings();
-
     // Listen for focus prompt events dispatched by the layout
     window.addEventListener('app:focus-sdk-prompt', onFocusSdkPrompt);
   });
@@ -216,47 +215,59 @@
 />
 
 <div class="main-content flex-1 flex overflow-hidden">
-  <aside
-    class="sidebar border-r border-border bg-surface flex relative overflow-hidden"
-    style="width: {sidebar.width}px; min-width: {sidebar.minWidth}px; max-width: {sidebar.maxWidth}px;"
-  >
-    <RepositoryRail
-      currentRepoId={currentView === 'repository' ? currentRepoId : null}
-      showAddMode={currentView === 'repository' && repositoryAddMode}
-    />
-    <div class="sidebar-main flex-1 min-w-0 flex flex-col overflow-hidden">
-      <SessionSidebarHeader
-        sessions={$sessions}
-        sdkSessions={$sdkSessions}
+  {#if currentView === 'notion'}
+    <div class="border-r border-border bg-surface flex shrink-0 overflow-hidden">
+      <RepositoryRail
+        currentRepoId={null}
         {currentView}
-        markSessionsUnread={$settings.mark_sessions_unread}
-        onShowSessions={showSessionsView}
       />
-      <div class="flex-1 overflow-hidden">
-        <SessionList {currentView} />
-      </div>
     </div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="resize-handle absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-accent/50 transition-colors"
-      class:bg-accent={sidebar.isResizing}
-      onmousedown={sidebar.startResize}
-    ></div>
-  </aside>
-
-  <main class="flex-1 flex flex-col overflow-hidden">
-    {#if currentView === 'archive'}
-      <ArchiveView onBack={() => navigation.showSessions()} />
-    {:else if currentView === 'start'}
-      <Start />
-    {:else if currentView === 'sequences' && $activeExecution}
-      <SequenceSessionView
-        execution={$activeExecution}
-        nodes={$sequences.find(s => s.id === $activeExecution.sequence_id)?.nodes ?? []}
+    <main class="flex-1 flex flex-col overflow-hidden">
+      <NotionKanban />
+    </main>
+  {:else}
+    <aside
+      class="sidebar border-r border-border bg-surface flex relative overflow-hidden"
+      style="width: {sidebar.width}px; min-width: {sidebar.minWidth}px; max-width: {sidebar.maxWidth}px;"
+    >
+      <RepositoryRail
+        currentRepoId={currentView === 'repository' ? currentRepoId : null}
+        showAddMode={currentView === 'repository' && repositoryAddMode}
+        {currentView}
       />
-    {:else if currentView === 'repository'}
-      <RepositoryView repoId={currentRepoId} showAddForm={repositoryAddMode} />
-    {:else if $activeSdkSession}
+      <div class="sidebar-main flex-1 min-w-0 flex flex-col overflow-hidden">
+        <SessionSidebarHeader
+          sessions={$sessions}
+          sdkSessions={$sdkSessions}
+          {currentView}
+          markSessionsUnread={$settings.mark_sessions_unread}
+          onShowSessions={showSessionsView}
+        />
+        <div class="flex-1 overflow-hidden">
+          <SessionList {currentView} />
+        </div>
+      </div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="resize-handle absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-accent/50 transition-colors"
+        class:bg-accent={sidebar.isResizing}
+        onmousedown={sidebar.startResize}
+      ></div>
+    </aside>
+
+    <main class="flex-1 flex flex-col overflow-hidden">
+      {#if currentView === 'archive'}
+        <ArchiveView onBack={() => navigation.showSessions()} />
+      {:else if currentView === 'start'}
+        <Start />
+      {:else if currentView === 'sequences' && $activeExecution}
+        <SequenceSessionView
+          execution={$activeExecution}
+          nodes={$sequences.find(s => s.id === $activeExecution.sequence_id)?.nodes ?? []}
+        />
+      {:else if currentView === 'repository'}
+        <RepositoryView repoId={currentRepoId} showAddForm={repositoryAddMode} />
+      {:else if $activeSdkSession}
       {@const activeSession = $activeSdkSession}
       {@const sessionId = activeSession.id}
       {@const isPendingState =
@@ -339,8 +350,9 @@
           <Terminal sessionId={$activeSession.id} />
         {/key}
       </div>
-    {/if}
-  </main>
+      {/if}
+    </main>
+  {/if}
 </div>
 
 <style>

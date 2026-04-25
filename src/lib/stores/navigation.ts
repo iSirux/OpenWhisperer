@@ -8,7 +8,7 @@ import { writable } from 'svelte/store';
  * (/settings, /sequences, /usage, /sessions-view) rather than internal navigation.
  */
 
-export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository';
+export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository' | 'notion';
 
 interface NavigationState {
   mainView: MainView;
@@ -63,6 +63,10 @@ function createNavigationStore() {
      */
     showArchive() {
       update((state) => ({ ...state, mainView: 'archive', repositoryAddMode: false }));
+    },
+
+    showNotion() {
+      update((state) => ({ ...state, mainView: 'notion', repositoryAddMode: false }));
     },
 
     showRepository(repoId: string | null | undefined) {

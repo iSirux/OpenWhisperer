@@ -6,9 +6,10 @@
   interface Props {
     currentRepoId?: string | null;
     showAddMode?: boolean;
+    currentView?: string;
   }
 
-  let { currentRepoId = null, showAddMode = false }: Props = $props();
+  let { currentRepoId = null, showAddMode = false, currentView = '' }: Props = $props();
 
   function openRepo(repoId: string | null) {
     navigation.showRepository(repoId);
@@ -17,10 +18,31 @@
   function openAddRepo() {
     navigation.showRepositoryAdd();
   }
+
+  function toggleNotion() {
+    if (currentView === 'notion') {
+      navigation.showSessions();
+    } else {
+      navigation.showNotion();
+    }
+  }
 </script>
 
 <div class="repo-rail">
   <div class="repo-rail-scroll">
+    <button
+      class="rail-btn"
+      class:is-active={currentView === 'notion'}
+      onclick={toggleNotion}
+      title="Notion Board"
+    >
+      <span class="icon-wrap">
+        <svg class="notion-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z" />
+        </svg>
+      </span>
+    </button>
+    <div class="rail-divider"></div>
     {#each $repos.list as repo (repo.id ?? repo.path)}
       <button
         class="rail-btn"
@@ -116,5 +138,16 @@
   .rail-btn-add svg {
     width: 1.35rem;
     height: 1.35rem;
+  }
+
+  .notion-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  .rail-divider {
+    height: 1px;
+    margin: 0.15rem 0.6rem;
+    background: var(--color-border);
   }
 </style>

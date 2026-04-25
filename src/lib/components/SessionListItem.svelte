@@ -410,6 +410,15 @@
     </div>
   {/if}
 
+  {#if session.notionCard}
+    <div class="notion-card-link" title="Notion card: {session.notionCard.title}">
+      <svg class="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor" opacity="0.7">
+        <path d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z" />
+      </svg>
+      <span class="truncate">{session.notionCard.title}</span>
+    </div>
+  {/if}
+
   <!-- Repo name and branch (skip for pending_repo; setup sessions show repo when one is selected) -->
   {#if session.status !== "pending_repo" && session.repoPath && session.repoPath !== "."}
     <div class="flex items-center gap-1.5 text-text-muted min-w-0 overflow-hidden" class:mt-1.5={!hasTextContent}>
@@ -444,6 +453,16 @@
     margin-bottom: 0.35rem;
     font-size: 0.72rem;
     color: rgb(251, 191, 36);
+    min-width: 0;
+  }
+
+  .notion-card-link {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-bottom: 0.35rem;
+    font-size: 0.72rem;
+    color: rgb(148, 163, 184);
     min-width: 0;
   }
 

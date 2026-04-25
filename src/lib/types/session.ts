@@ -70,4 +70,7 @@ export interface DisplaySession {
     parentLabel?: string;
     inheritedMessageCount: number;
   };
+
+  // Notion card linked to this session
+  notionCard?: { id: string; title: string };
 }
