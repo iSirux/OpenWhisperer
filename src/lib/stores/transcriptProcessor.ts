@@ -994,6 +994,7 @@ export async function handleSetupSessionStart(
     provider?: import('$lib/utils/models').SdkProvider;
     worktreeRepoPath?: string;
     worktreeBranch?: string;
+    worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
   }
 ) {
   const currentSettings = get(settings);
@@ -1057,5 +1058,6 @@ export async function handleSetupSessionStart(
     readOnlyMode: config.readOnlyMode,
     provider: config.provider,
     createdBranch: config.worktreeBranch,
+    worktreePostSetup: config.worktreePostSetup,
   });
 }

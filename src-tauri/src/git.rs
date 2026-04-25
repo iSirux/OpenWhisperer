@@ -24,6 +24,14 @@ pub struct WorktreeCreationResult {
     pub branch: String,
 }
 
+/// Result of a single worktree post-setup step
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeSetupStepResult {
+    pub description: String,
+    pub success: bool,
+    pub output: Option<String>,
+}
+
 #[allow(dead_code)]
 pub struct GitManager;
 
@@ -350,6 +358,75 @@ impl GitManager {
         }
 
         Ok(worktrees)
+    }
+
+    /// Create a worktree without running post-setup (copy files / commands).
+    pub fn create_worktree_only(
+        repo_path: &str,
+        branch_name: &str,
+        worktree_path: Option<&str>,
+        base_branch: Option<&str>,
+    ) -> Result<WorktreeCreationResult, String> {
+        let effective_path = match worktree_path {
+            Some(p) => p.to_string(),
+            None => Self::get_worktree_path(repo_path, branch_name),
+        };
+        let start_point = match base_branch.filter(|b| !b.is_empty()) {
+            Some(b) => Some(b.to_string()),
+            None => Self::get_default_remote_branch(repo_path).ok(),
+        };
+        if let Some(ref sp) = start_point {
+            let _ = Self::fetch_remote(repo_path, sp);
+        }
+        Self::create_worktree(repo_path, branch_name, &effective_path, start_point.as_deref())?;
+        Ok(WorktreeCreationResult { worktree_path: effective_path, branch: branch_name.to_string() })
+    }
+
+    /// Run post-setup on an existing worktree: copy files and run commands.
+    pub fn run_worktree_post_setup(
+        repo_path: &str,
+        worktree_path: &str,
+        copy_files: &[String],
+        post_create_commands: &[String],
+    ) -> Vec<WorktreeSetupStepResult> {
+        let mut results = Vec::new();
+        for file in copy_files {
+            let src = Path::new(repo_path).join(file);
+            let dst = Path::new(worktree_path).join(file);
+            if src.exists() {
+                if let Some(parent) = dst.parent() {
+                    if !parent.exists() { let _ = std::fs::create_dir_all(parent); }
+                }
+                match std::fs::copy(&src, &dst) {
+                    Ok(_) => results.push(WorktreeSetupStepResult { description: format!("Copy {}", file), success: true, output: None }),
+                    Err(e) => results.push(WorktreeSetupStepResult { description: format!("Copy {}", file), success: false, output: Some(e.to_string()) }),
+                }
+            }
+        }
+        for cmd_str in post_create_commands {
+            let mut cmd;
+            #[cfg(windows)]
+            { cmd = Command::new("cmd"); cmd.args(["/c", cmd_str]); }
+            #[cfg(not(windows))]
+            { cmd = Command::new("sh"); cmd.args(["-c", cmd_str]); }
+            cmd.current_dir(worktree_path);
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            match cmd.output() {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let combined = if stderr.is_empty() { stdout } else { format!("{}\n{}", stdout, stderr) };
+                    results.push(WorktreeSetupStepResult {
+                        description: cmd_str.clone(),
+                        success: output.status.success(),
+                        output: if combined.trim().is_empty() { None } else { Some(combined.trim().to_string()) },
+                    });
+                }
+                Err(e) => results.push(WorktreeSetupStepResult { description: cmd_str.clone(), success: false, output: Some(e.to_string()) }),
+            }
+        }
+        results
     }
 
     /// Create a worktree with full setup: copy files and run post-create commands

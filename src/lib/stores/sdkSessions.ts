@@ -1919,7 +1919,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] } }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -1995,6 +1995,28 @@ function createSdkSessionsStore() {
         usageStats.trackSession('sdk', resolvedModel, config.cwd);
 
         update(sessions => sessions.map(s => s.id === id ? { ...s, status: 'idle' as const } : s));
+
+        if (config.worktreePostSetup) {
+          const { repoPath, copyFiles, postCreateCommands } = config.worktreePostSetup;
+          const totalSteps = copyFiles.length + postCreateCommands.length;
+          if (totalSteps > 0) {
+            let tsCounter = Date.now();
+            const appendMsg = (msg: SdkMessage) => update(sessions => sessions.map(s => s.id === id ? { ...s, messages: [...s.messages, msg] } : s));
+            appendMsg({ type: 'notification', content: `Setting up worktree (${totalSteps} step${totalSteps > 1 ? 's' : ''})...`, timestamp: tsCounter++ });
+            try {
+              const results = await invoke<{ description: string; success: boolean; output: string | null }[]>('run_worktree_post_setup', {
+                repoPath, worktreePath: config.cwd, copyFiles, postCreateCommands,
+              });
+              for (const r of results) {
+                const icon = r.success ? '✓' : '✗';
+                const msg = r.output ? `${icon} ${r.description}: ${r.output}` : `${icon} ${r.description}`;
+                appendMsg({ type: 'notification', content: msg, timestamp: tsCounter++ });
+              }
+            } catch (err) {
+              appendMsg({ type: 'error', content: `Worktree post-setup failed: ${err}`, timestamp: tsCounter++ });
+            }
+          }
+        }
 
         if (config.prompt.trim() || (config.images && config.images.length > 0)) {
           await this.sendPrompt(id, config.prompt, config.images);

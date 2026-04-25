@@ -1,6 +1,6 @@
 use crate::commands::usage_cmds::UsageStatsState;
 use crate::config::{AppConfig, LlmProvider};
-use crate::git::{GitManager, WorktreeCreationResult, WorktreeInfo};
+use crate::git::{GitManager, WorktreeCreationResult, WorktreeInfo, WorktreeSetupStepResult};
 use crate::llm::LlmClient;
 use parking_lot::Mutex;
 use tauri::{AppHandle, State};
@@ -41,6 +41,36 @@ pub async fn create_git_worktree_with_setup(
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Create a new worktree without post-setup (copy files / commands)
+#[tauri::command]
+pub async fn create_git_worktree_only(
+    repo_path: String,
+    branch_name: String,
+    worktree_path: Option<String>,
+    base_branch: Option<String>,
+) -> Result<WorktreeCreationResult, String> {
+    tokio::task::spawn_blocking(move || {
+        GitManager::create_worktree_only(&repo_path, &branch_name, worktree_path.as_deref(), base_branch.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Run post-setup on an existing worktree (copy files, run commands)
+#[tauri::command]
+pub async fn run_worktree_post_setup(
+    repo_path: String,
+    worktree_path: String,
+    copy_files: Vec<String>,
+    post_create_commands: Vec<String>,
+) -> Result<Vec<WorktreeSetupStepResult>, String> {
+    Ok(tokio::task::spawn_blocking(move || {
+        GitManager::run_worktree_post_setup(&repo_path, &worktree_path, &copy_files, &post_create_commands)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?)
 }
 
 /// Generate a branch name for a new worktree using LLM (with fallback)

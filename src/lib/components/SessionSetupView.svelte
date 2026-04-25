@@ -65,6 +65,7 @@
       worktreeMode?: 'main' | 'new' | 'existing';
       worktreeBranch?: string;
       worktreeRepoPath?: string;
+      worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
     }) => void;
     onDraftChange?: (
       sessionId: string,
@@ -291,8 +292,9 @@
       let worktreeBranch: string | undefined;
       let worktreeRepoPath: string | undefined;
 
+      let worktreePostSetup: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] } | undefined;
+
       if (worktreeMode === 'new' && cwd && cwd !== '.') {
-        // Create a new worktree
         isCreatingWorktree = true;
         try {
           const branchName = await invoke<string>('generate_worktree_branch_name', {
@@ -301,18 +303,22 @@
           });
 
           const repo = currentRepo;
-          const result = await invoke<WorktreeCreationResult>('create_git_worktree_with_setup', {
+          const result = await invoke<WorktreeCreationResult>('create_git_worktree_only', {
             repoPath: cwd,
             branchName,
             worktreePath: null,
-            copyFiles: repo?.worktree_copy_files || [],
-            postCreateCommands: repo?.worktree_post_create_commands || [],
             baseBranch: repo?.worktree_base_branch || null,
           });
 
           worktreeRepoPath = cwd;
           effectiveCwd = result.worktree_path;
           worktreeBranch = result.branch;
+
+          const copyFiles = repo?.worktree_copy_files || [];
+          const postCreateCommands = repo?.worktree_post_create_commands || [];
+          if (copyFiles.length > 0 || postCreateCommands.length > 0) {
+            worktreePostSetup = { repoPath: cwd, copyFiles, postCreateCommands };
+          }
         } catch (err) {
           console.error('[SessionSetupView] Failed to create worktree:', err);
           isCreatingWorktree = false;
@@ -341,6 +347,7 @@
         worktreeMode: worktreeMode !== 'main' ? worktreeMode : undefined,
         worktreeBranch,
         worktreeRepoPath,
+        worktreePostSetup,
       });
     } finally {
       isStarting = false;

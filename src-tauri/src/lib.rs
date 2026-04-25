@@ -317,6 +317,8 @@ pub fn run() {
             settings_cmds::run_in_terminal,
             git_cmds::list_git_worktrees,
             git_cmds::create_git_worktree_with_setup,
+            git_cmds::create_git_worktree_only,
+            git_cmds::run_worktree_post_setup,
             git_cmds::generate_worktree_branch_name,
             git_cmds::open_in_vscode,
             git_cmds::open_in_terminal,
