@@ -351,6 +351,8 @@ export interface SdkSession {
   forkedFromSessionLabel?: string;
   /** Notion card linked to this session (set when created from kanban board) */
   notionCard?: { id: string; title: string };
+  /** Skip project/local hooks (lint, build, etc.) for non-implementation sessions */
+  disableHooks?: boolean;
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
   contextOverflow?: boolean;
   /** Claude-only: whether auto-compaction is enabled for this session.
@@ -1168,7 +1170,8 @@ function createSdkSessionsStore() {
     forkFromSdkSessionId?: string | null, // SDK session ID to fork from
     forkAtMessageUuid?: string | null, // Message UUID to fork at (resumeSessionAt)
     readOnlyMode?: boolean,
-    autocompactEnabled?: boolean | null
+    autocompactEnabled?: boolean | null,
+    disableHooks?: boolean
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1283,6 +1286,7 @@ function createSdkSessionsStore() {
       //                   tool-result overflows (those require the full 33K buffer regardless).
       autocompactPct:
         resolvedProvider === 'claude' && autocompactEnabled === false ? 0 : null,
+      disableHooks: disableHooks || null,
     });
 
     if (effortLevel && modelSupportsEffort(model)) {
@@ -1921,7 +1925,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] } }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -1988,7 +1992,9 @@ function createSdkSessionsStore() {
           finalProvider,
           session.forkFromSdkSessionId,
           session.forkAtMessageUuid,
-          config.noteMode ? false : (config.readOnlyMode ?? false)
+          config.noteMode ? false : (config.readOnlyMode ?? false),
+          undefined,
+          config.disableHooks
         );
         await syncSessionBranchMetadata(id, config.cwd);
 

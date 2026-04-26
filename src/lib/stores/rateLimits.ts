@@ -174,11 +174,12 @@ function createProviderRateLimitStore(
 				currentState = s;
 			});
 			unsub();
+			const snapshot = currentState as RateLimitState | null;
 			if (
-				currentState &&
-				!currentState.loading &&
-				(!currentState.lastFetched ||
-					Date.now() - currentState.lastFetched > currentRefreshIntervalMs)
+				snapshot &&
+				!snapshot.loading &&
+				(!snapshot.lastFetched ||
+					Date.now() - snapshot.lastFetched > currentRefreshIntervalMs)
 			) {
 				await store.fetch();
 			}

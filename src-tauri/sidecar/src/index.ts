@@ -382,6 +382,7 @@ interface CreateMessage {
   fork_from_sdk_session_id?: string; // SDK session ID to fork from
   fork_at_message_uuid?: string; // Message UUID to fork at (resumeSessionAt)
   autocompact_pct?: number; // Claude-only: 0 = DISABLE_AUTO_COMPACT=1; 1-99 = CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; null/undefined/100 = Claude default
+  disable_hooks?: boolean; // Set DISABLE_HOOKS=1 env var so hook scripts can early-exit
 }
 
 interface ImageData {
@@ -3212,6 +3213,14 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       delete nextEnv.DISABLE_AUTO_COMPACT;
     }
     options.env = nextEnv;
+  }
+
+  if (msg.disable_hooks) {
+    options.env = {
+      ...process.env,
+      ...(options.env ?? {}),
+      DISABLE_HOOKS: "1",
+    };
   }
 
   // Preserve Claude Code's built-in prompt and tool setup so repo/global Skills

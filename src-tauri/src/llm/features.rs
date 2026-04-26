@@ -15,6 +15,10 @@ impl LlmClient {
         let prompt = format!(
             r#"Generate a concise name for this coding session based on the user's request.
 
+IMPORTANT: The prompt may contain operational/tool instructions like "read card", "scan codebase", "set the card status", "using the notion skill". Strip these away and focus on the ACTUAL task:
+- If the prompt wraps a specific card/task title (e.g. "read card: Fix login bug. set status... then implement"), name it after the task: "Fix Login Bug"
+- If the prompt is a batch operation (e.g. "classify all unclassified cards..." or "triage cards in New status..."), name it after the operation: "Classify Backlog Cards" or "Triage New Cards"
+
 User's request:
 {}
 
@@ -53,6 +57,7 @@ Respond with ONLY a JSON object in this exact format:
             r#"Analyze this completed coding session and extract the KEY RESULT.
 
 IMPORTANT: Include the actual answer/value, not a description of what was provided.
+IMPORTANT: Ignore operational/tool instructions in the prompt — things like "read card", "scan codebase", "set the card status", "using the notion skill". Focus on the actual task or feature.
 
 Examples of BAD outcomes (too vague, clickbait-style):
 - "Provided the movement speed values" ❌
@@ -538,6 +543,8 @@ Respond with ONLY a JSON object in this exact format:
 
         let prompt = format!(
             r#"Generate a concise git branch name for this coding task.
+
+IMPORTANT: The prompt may contain operational/tool instructions like "read card", "scan codebase", "set the card status", "using the notion skill". Strip these away and name the branch after the ACTUAL task being implemented.
 
 User's request:
 {}

@@ -28,7 +28,7 @@
   let allRepos = $derived($repos.list);
   let selectedRepo = $derived(
     selectedRepoPath
-      ? allRepos.find((repo) => normalizePath(repo.path) === normalizePath(selectedRepoPath)) ?? null
+      ? allRepos.find((repo) => normalizePath(repo.path) === normalizePath(selectedRepoPath!)) ?? null
       : null,
   );
 

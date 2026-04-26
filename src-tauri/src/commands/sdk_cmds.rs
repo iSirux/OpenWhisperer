@@ -26,6 +26,7 @@ pub fn create_sdk_session(
     fork_from_sdk_session_id: Option<String>, // SDK session ID to fork from (creates a new branch)
     fork_at_message_uuid: Option<String>, // Message UUID to fork at (resumeSessionAt)
     autocompact_pct: Option<u32>, // Claude-only: 0=DISABLE_AUTO_COMPACT, 1..=99=PCT_OVERRIDE, None/100=default
+    disable_hooks: Option<bool>,  // Skip project/local settings to disable filesystem hooks
 ) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
@@ -46,6 +47,7 @@ pub fn create_sdk_session(
         fork_from_sdk_session_id,
         fork_at_message_uuid,
         autocompact_pct,
+        disable_hooks,
     })
 }
 

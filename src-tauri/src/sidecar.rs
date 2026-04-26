@@ -82,6 +82,9 @@ pub enum OutboundMessage {
         ///   None/100 -> neither var set; Claude's built-in default (~83%) applies
         #[serde(skip_serializing_if = "Option::is_none")]
         autocompact_pct: Option<u32>,
+        /// Skip project/local settings to disable filesystem hooks (lint, build, etc.)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        disable_hooks: Option<bool>,
     },
     Query {
         id: String,

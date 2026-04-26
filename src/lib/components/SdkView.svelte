@@ -65,14 +65,13 @@
 
   // Persist across SdkView component remounts (session switches can recreate component instances).
   type SessionScrollState = { scrollTop: number; stickToBottom: boolean };
-  const globalScrollStateKey =
-    "__claudeWhispererSdkViewScrollStates__" as const;
+  const SCROLL_STATE_KEY = "__claudeWhispererSdkViewScrollStates__";
   type GlobalWithSdkScrollStates = typeof globalThis & {
-    [globalScrollStateKey]?: Map<string, SessionScrollState>;
+    __claudeWhispererSdkViewScrollStates__?: Map<string, SessionScrollState>;
   };
   const scrollStates =
-    (globalThis as GlobalWithSdkScrollStates)[globalScrollStateKey] ??
-    (((globalThis as GlobalWithSdkScrollStates)[globalScrollStateKey] =
+    (globalThis as GlobalWithSdkScrollStates)[SCROLL_STATE_KEY] ??
+    (((globalThis as GlobalWithSdkScrollStates)[SCROLL_STATE_KEY] =
       new Map<string, SessionScrollState>()));
 
   let messages = $derived(session?.messages ?? []);
