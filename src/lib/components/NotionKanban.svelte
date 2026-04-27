@@ -47,6 +47,38 @@
   let showDone = $state(false);
   let queueSize = $state(0);
   let queueProcessing = $state(false);
+  let useWorktree = $state(true);
+  let skipHooks = $state(false);
+  let pendingAction = $state<string | null>(null);
+
+  const ACTION_DEFAULTS: Record<string, { worktree: boolean; skipHooks: boolean }> = {
+    implement: { worktree: true, skipHooks: false },
+    talk: { worktree: false, skipHooks: true },
+    groom: { worktree: false, skipHooks: true },
+    classify: { worktree: false, skipHooks: true },
+    split: { worktree: false, skipHooks: true },
+    flesh_out: { worktree: false, skipHooks: true },
+    plan: { worktree: false, skipHooks: true },
+  };
+
+  function selectAction(action: string) {
+    pendingAction = action;
+    const defaults = ACTION_DEFAULTS[action];
+    if (defaults) {
+      useWorktree = defaults.worktree;
+      skipHooks = defaults.skipHooks;
+    }
+  }
+
+  function confirmAction() {
+    if (!pendingAction) return;
+    runAction(pendingAction);
+    pendingAction = null;
+  }
+
+  function cancelAction() {
+    pendingAction = null;
+  }
 
   interface QueueConfig {
     repo: RepoConfig;
@@ -341,52 +373,38 @@
   function getPromptForAction(
     action: string,
     card: NotionCard,
-  ): { prompt: string; useWorktree: boolean; disableHooks: boolean } {
+  ): { prompt: string } {
     switch (action) {
       case "implement":
         return {
           prompt: `read card: ${card.title}.\nset the card status to "In progress", then implement`,
-          useWorktree: true,
-          disableHooks: false,
         };
       case "talk":
         return {
           prompt: `read card: ${card.title}.\nlets talk about this card - scan the codebase to get an understanding, then discuss`,
-          useWorktree: false,
-          disableHooks: true,
         };
       case "groom":
         return {
           prompt: `groom ${card.title}`,
-          useWorktree: false,
-          disableHooks: true,
         };
       case "classify":
         return {
           prompt: `read card: ${card.title}.\nclassify this card - read the card content, then set all missing properties: Size (XS/S/M/L/XL), Category, and Feature Area.`,
-          useWorktree: false,
-          disableHooks: true,
         };
       case "split":
         return {
           prompt: `read card: ${card.title}.\nscan the codebase to get an understanding, then split this card into multiple smaller, logical cards. prefer individually deployable. update the original card to cover one part of the split, and create new cards for the rest. classify all cards (set Size, Category, Feature Area).`,
-          useWorktree: false,
-          disableHooks: true,
         };
       case "flesh_out":
         return {
           prompt: `read card: ${card.title}.\nflesh out this card - read the card content, scan the codebase for relevant context, then rewrite the card body into a proper spec with: overview, acceptance criteria, technical notes, and synergies with other features. Keep any existing valuable content.`,
-          useWorktree: false,
-          disableHooks: true,
         };
       case "plan":
         return {
           prompt: `read card: ${card.title}.\ncreate an implementation plan - read the card, scan the codebase, research the web if applicable. produce a plan covering: approach, files to touch, risks, rough sequence. Use the notion skill to read the card and write the plan to it.`,
-          useWorktree: false,
-          disableHooks: false,
         };
       default:
-        return { prompt: "", useWorktree: false, disableHooks: false };
+        return { prompt: "" };
     }
   }
 
@@ -411,16 +429,13 @@
 
     const items: QueueItem[] = [];
     for (let i = 0; i < cardsSnapshot.length; i++) {
-      const { prompt, useWorktree, disableHooks } = getPromptForAction(
-        action,
-        cardsSnapshot[i],
-      );
+      const { prompt } = getPromptForAction(action, cardsSnapshot[i]);
       items.push({
         type: "card",
         card: cardsSnapshot[i],
         prompt,
         useWorktree,
-        disableHooks,
+        disableHooks: skipHooks,
         config,
       });
       if (i < cardsSnapshot.length - 1) {
@@ -522,10 +537,10 @@
     });
   }
 
-  function boardAction(prompt: string, disableHooks: boolean = true) {
+  function boardAction(prompt: string) {
     const config = snapshotConfig();
     if (!config) return;
-    enqueue({ type: "board", prompt, disableHooks, config });
+    enqueue({ type: "board", prompt, disableHooks: skipHooks, config });
   }
 
   function classifyAll() {
@@ -890,63 +905,50 @@
       <span class="text-[11px] text-text-secondary mr-2">
         {selectedCount} card{selectedCount > 1 ? "s" : ""}:
       </span>
-      <button
-        class="h-8 px-4 rounded text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50"
-        onclick={() => runAction("implement")}
-        disabled={!$activeRepo}
-        title="Create worktree + session per card with implement prompt"
-      >
-        Implement
-      </button>
-      <button
-        class="h-8 px-4 rounded text-xs font-medium bg-amber-600 hover:bg-amber-500 text-white transition-colors disabled:opacity-50"
-        onclick={() => runAction("groom")}
-        disabled={!$activeRepo}
-        title="Create session per card with groom prompt"
-      >
-        Groom
-      </button>
-      <button
-        class="h-8 px-4 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
-        onclick={() => runAction("talk")}
-        disabled={!$activeRepo}
-        title="Create session per card to discuss (no worktree)"
-      >
-        Talk About
-      </button>
-      <button
-        class="h-8 px-4 rounded text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white transition-colors disabled:opacity-50"
-        onclick={() => runAction("classify")}
-        disabled={!$activeRepo}
-        title="Set missing properties: Size, Category, Feature Area"
-      >
-        Classify
-      </button>
-      <button
-        class="h-8 px-4 rounded text-xs font-medium bg-pink-600 hover:bg-pink-500 text-white transition-colors disabled:opacity-50"
-        onclick={() => runAction("split")}
-        disabled={!$activeRepo}
-        title="Split card into multiple smaller cards, classify all"
-      >
-        Split
-      </button>
-      <button
-        class="h-8 px-4 rounded text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white transition-colors disabled:opacity-50"
-        onclick={() => runAction("flesh_out")}
-        disabled={!$activeRepo}
-        title="Expand card into a proper spec with acceptance criteria and technical notes"
-      >
-        Flesh Out
-      </button>
-      <button
-        class="h-8 px-4 rounded text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
-        onclick={() => runAction("plan")}
-        disabled={!$activeRepo}
-        title="Create implementation plan with codebase scan and web research"
-      >
-        Plan
-      </button>
-      {#if !$activeRepo}
+      {#each [
+        { id: "implement", label: "Implement", color: "emerald" },
+        { id: "groom", label: "Groom", color: "amber" },
+        { id: "talk", label: "Talk About", color: "blue" },
+        { id: "classify", label: "Classify", color: "purple" },
+        { id: "split", label: "Split", color: "pink" },
+        { id: "flesh_out", label: "Flesh Out", color: "cyan" },
+        { id: "plan", label: "Plan", color: "indigo" },
+      ] as btn}
+        <button
+          class="h-8 px-4 rounded text-xs font-medium transition-colors disabled:opacity-50 {pendingAction === btn.id
+            ? `bg-${btn.color}-600 text-white ring-2 ring-${btn.color}-400 ring-offset-1 ring-offset-surface`
+            : `bg-${btn.color}-600/40 hover:bg-${btn.color}-600 text-white`}"
+          onclick={() => selectAction(btn.id)}
+          disabled={!$activeRepo}
+        >
+          {btn.label}
+        </button>
+      {/each}
+
+      {#if pendingAction}
+        <div class="ml-auto flex items-center gap-3">
+          <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
+            <input type="checkbox" bind:checked={useWorktree} class="accent-accent" />
+            Worktree
+          </label>
+          <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
+            <input type="checkbox" bind:checked={skipHooks} class="accent-accent" />
+            Skip Hooks
+          </label>
+          <button
+            class="h-8 px-5 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+            onclick={confirmAction}
+          >
+            Go
+          </button>
+          <button
+            class="h-8 px-3 rounded text-xs font-medium bg-surface-elevated hover:bg-surface text-text-secondary transition-colors"
+            onclick={cancelAction}
+          >
+            Cancel
+          </button>
+        </div>
+      {:else if !$activeRepo}
         <span class="text-[10px] text-red-400 ml-2">Select a repo first</span>
       {/if}
     </div>

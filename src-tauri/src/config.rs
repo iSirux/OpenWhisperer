@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::session_persistence::atomic_write;
+
 /// Provider type for Whisper-compatible APIs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum WhisperProvider {
@@ -694,7 +696,8 @@ impl UsageStats {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize usage stats: {}", e))?;
 
-        fs::write(&path, &content).map_err(|e| format!("Failed to write usage stats: {}", e))?;
+        atomic_write(&path, content.as_bytes())
+            .map_err(|e| format!("Failed to write usage stats: {}", e))?;
         Ok(())
     }
 
@@ -2356,7 +2359,8 @@ impl AppConfig {
             content.len(),
             self.repos.len()
         );
-        fs::write(&path, &content).map_err(|e| format!("Failed to write config: {}", e))?;
+        atomic_write(&path, content.as_bytes())
+            .map_err(|e| format!("Failed to write config: {}", e))?;
         log::info!("[config.save] Write successful");
         Ok(())
     }

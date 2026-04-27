@@ -12,7 +12,7 @@ pub struct SaveSessionsResult {
 
 #[tauri::command]
 pub fn get_persisted_sessions() -> PersistedSessions {
-    let index = SessionIndex::load();
+    let mut index = SessionIndex::load();
     index.load_all_sessions()
 }
 

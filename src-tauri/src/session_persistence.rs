@@ -2,9 +2,36 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::config::AppConfig;
+
+/// Write data to a file atomically: write to a `.tmp` sibling, fsync, then rename.
+/// Prevents data loss from crashes mid-write (the old file remains intact if the
+/// rename never completes).
+pub fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
+    let tmp_path = path.with_extension("json.tmp");
+
+    let result = (|| -> Result<(), String> {
+        let mut file = fs::File::create(&tmp_path)
+            .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        file.write_all(content)
+            .map_err(|e| format!("Failed to write temp file: {}", e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync temp file: {}", e))?;
+        drop(file);
+        fs::rename(&tmp_path, path)
+            .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    result
+}
 
 /// Represents a persisted image content block
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,7 +370,10 @@ impl SessionIndex {
 
     /// Load the session index from disk.
     /// If no index exists, attempts migration from legacy sessions.json.
+    /// Also cleans up leftover .tmp files from interrupted atomic writes.
     pub fn load() -> Self {
+        Self::cleanup_tmp_files();
+
         let path = Self::index_path();
         if path.exists() {
             match fs::read_to_string(&path) {
@@ -363,7 +393,22 @@ impl SessionIndex {
         Self::default()
     }
 
-    /// Save the session index to disk
+    /// Remove leftover .tmp files from interrupted atomic writes
+    fn cleanup_tmp_files() {
+        for dir in [Self::sessions_dir(), Self::data_dir()] {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("tmp") {
+                        log::info!("[session_persistence] Removing stale tmp file: {:?}", path);
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Save the session index to disk (atomic write)
     pub fn save(&self) -> Result<(), String> {
         let dir = Self::sessions_dir();
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {}", e))?;
@@ -372,11 +417,12 @@ impl SessionIndex {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize session index: {}", e))?;
 
-        fs::write(&path, &content).map_err(|e| format!("Failed to write session index: {}", e))?;
+        atomic_write(&path, content.as_bytes())
+            .map_err(|e| format!("Failed to write session index: {}", e))?;
         Ok(())
     }
 
-    /// Save full session data to an individual file
+    /// Save full session data to an individual file (atomic write)
     fn save_session_data(&self, id: &str, data: &impl Serialize) -> Result<(), String> {
         let dir = Self::data_dir();
         fs::create_dir_all(&dir)
@@ -386,7 +432,8 @@ impl SessionIndex {
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("Failed to serialize session data: {}", e))?;
 
-        fs::write(&path, &content).map_err(|e| format!("Failed to write session data: {}", e))?;
+        atomic_write(&path, content.as_bytes())
+            .map_err(|e| format!("Failed to write session data for {}: {}", id, e))?;
         Ok(())
     }
 
@@ -414,30 +461,61 @@ impl SessionIndex {
     }
 
     /// Load all session data files and reconstruct a PersistedSessions transport object.
-    /// Gracefully skips entries whose data files are missing or corrupted.
-    pub fn load_all_sessions(&self) -> PersistedSessions {
+    /// Gracefully skips entries whose data files are missing or corrupted, and
+    /// removes corrupted data files + prunes them from the index.
+    pub fn load_all_sessions(&mut self) -> PersistedSessions {
         let mut sdk_sessions = Vec::new();
         let mut terminal_sessions = Vec::new();
+        let mut corrupted_ids: Vec<String> = Vec::new();
 
         for entry in &self.entries {
             match entry.session_type.as_str() {
                 "sdk" => match self.load_session_data::<PersistedSdkSession>(&entry.id) {
                     Ok(session) => sdk_sessions.push(session),
-                    Err(e) => log::error!(
-                        "[session_persistence] Skipping SDK session {}: {}",
-                        entry.id,
-                        e
-                    ),
+                    Err(e) => {
+                        log::error!(
+                            "[session_persistence] Skipping corrupted SDK session {}: {}",
+                            entry.id,
+                            e
+                        );
+                        corrupted_ids.push(entry.id.clone());
+                    }
                 },
                 "pty" => match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
                     Ok(session) => terminal_sessions.push(session),
-                    Err(e) => log::error!(
-                        "[session_persistence] Skipping PTY session {}: {}",
-                        entry.id,
-                        e
-                    ),
+                    Err(e) => {
+                        log::error!(
+                            "[session_persistence] Skipping corrupted PTY session {}: {}",
+                            entry.id,
+                            e
+                        );
+                        corrupted_ids.push(entry.id.clone());
+                    }
                 },
                 _ => {}
+            }
+        }
+
+        if !corrupted_ids.is_empty() {
+            log::error!(
+                "[session_persistence] Pruning {} corrupted session(s) from index",
+                corrupted_ids.len()
+            );
+            let corrupted_set: HashSet<&str> =
+                corrupted_ids.iter().map(|s| s.as_str()).collect();
+            self.entries.retain(|e| !corrupted_set.contains(e.id.as_str()));
+
+            for id in &corrupted_ids {
+                if let Err(e) = Self::delete_session_data(id) {
+                    log::error!(
+                        "[session_persistence] Failed to delete corrupted data file {}: {}",
+                        id, e
+                    );
+                }
+            }
+
+            if let Err(e) = self.save() {
+                log::error!("[session_persistence] Failed to save pruned index: {}", e);
             }
         }
 

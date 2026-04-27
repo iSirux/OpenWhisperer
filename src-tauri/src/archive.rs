@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::config::AppConfig;
-use crate::session_persistence::{PersistedSdkSession, PersistedTerminalSession};
+use crate::session_persistence::{atomic_write, PersistedSdkSession, PersistedTerminalSession};
 
 /// Lightweight metadata for an archived session, stored in the index
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +90,7 @@ impl ArchiveIndex {
         Self::default()
     }
 
-    /// Save the archive index to disk
+    /// Save the archive index to disk (atomic write)
     pub fn save(&self) -> Result<(), String> {
         let dir = Self::archive_dir();
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create archive dir: {}", e))?;
@@ -99,11 +99,12 @@ impl ArchiveIndex {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize archive index: {}", e))?;
 
-        fs::write(&path, &content).map_err(|e| format!("Failed to write archive index: {}", e))?;
+        atomic_write(&path, content.as_bytes())
+            .map_err(|e| format!("Failed to write archive index: {}", e))?;
         Ok(())
     }
 
-    /// Save full session data to an individual file
+    /// Save full session data to an individual file (atomic write)
     fn save_session_data(&self, id: &str, data: &impl Serialize) -> Result<(), String> {
         let dir = Self::sessions_dir();
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {}", e))?;
@@ -112,7 +113,8 @@ impl ArchiveIndex {
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("Failed to serialize session data: {}", e))?;
 
-        fs::write(&path, &content).map_err(|e| format!("Failed to write session data: {}", e))?;
+        atomic_write(&path, content.as_bytes())
+            .map_err(|e| format!("Failed to write archive session data for {}: {}", id, e))?;
         Ok(())
     }
 
