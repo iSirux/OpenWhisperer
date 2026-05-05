@@ -49,16 +49,17 @@
   let queueProcessing = $state(false);
   let useWorktree = $state(true);
   let skipHooks = $state(false);
+  let playwrightQa = $state(false);
   let pendingAction = $state<string | null>(null);
 
-  const ACTION_DEFAULTS: Record<string, { worktree: boolean; skipHooks: boolean }> = {
-    implement: { worktree: true, skipHooks: false },
-    talk: { worktree: false, skipHooks: true },
-    groom: { worktree: false, skipHooks: true },
-    classify: { worktree: false, skipHooks: true },
-    split: { worktree: false, skipHooks: true },
-    flesh_out: { worktree: false, skipHooks: true },
-    plan: { worktree: false, skipHooks: true },
+  const ACTION_DEFAULTS: Record<string, { worktree: boolean; skipHooks: boolean; playwrightQa: boolean }> = {
+    implement: { worktree: true, skipHooks: false, playwrightQa: true },
+    talk: { worktree: false, skipHooks: true, playwrightQa: true },
+    groom: { worktree: false, skipHooks: true, playwrightQa: false },
+    classify: { worktree: false, skipHooks: true, playwrightQa: false },
+    split: { worktree: false, skipHooks: true, playwrightQa: false },
+    flesh_out: { worktree: false, skipHooks: true, playwrightQa: false },
+    plan: { worktree: false, skipHooks: true, playwrightQa: false },
   };
 
   function selectAction(action: string) {
@@ -67,6 +68,7 @@
     if (defaults) {
       useWorktree = defaults.worktree;
       skipHooks = defaults.skipHooks;
+      playwrightQa = defaults.playwrightQa;
     }
   }
 
@@ -94,6 +96,7 @@
         prompt: string;
         useWorktree: boolean;
         disableHooks: boolean;
+        playwrightQa: boolean;
         config: QueueConfig;
       }
     | {
@@ -121,6 +124,7 @@
             item.prompt,
             item.useWorktree,
             item.disableHooks,
+            item.playwrightQa,
             item.config,
           );
         } else if (item.type === "board") {
@@ -285,6 +289,7 @@
     prompt: string,
     useWorktree: boolean,
     disableHooks: boolean,
+    playwrightQa: boolean,
     config: QueueConfig,
   ) {
     const { repo, model, effortLevel, provider } = config;
@@ -360,6 +365,7 @@
       createdBranch,
       worktreePostSetup,
       disableHooks,
+      playwrightQa,
     });
 
     return sessionId;
@@ -436,6 +442,7 @@
         prompt,
         useWorktree,
         disableHooks: skipHooks,
+        playwrightQa,
         config,
       });
       if (i < cardsSnapshot.length - 1) {
@@ -930,6 +937,10 @@
           <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
             <input type="checkbox" bind:checked={useWorktree} class="accent-accent" />
             Worktree
+          </label>
+          <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
+            <input type="checkbox" bind:checked={playwrightQa} class="accent-purple-500" />
+            Playwright
           </label>
           <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
             <input type="checkbox" bind:checked={skipHooks} class="accent-accent" />

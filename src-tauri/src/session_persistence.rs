@@ -258,6 +258,9 @@ pub struct PersistedSdkSession {
     /// Note mode state (opaque JSON)
     #[serde(default)]
     pub note_mode: Option<serde_json::Value>,
+    /// Playwright MCP enabled for this session
+    #[serde(default, rename = "playwrightQa")]
+    pub playwright_qa: Option<bool>,
     /// SDK session ID for proper resume after app restart
     #[serde(default)]
     pub sdk_session_id: Option<String>,

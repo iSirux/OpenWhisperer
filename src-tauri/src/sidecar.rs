@@ -186,6 +186,8 @@ pub enum InboundMessage {
         parent_tool_use_id: Option<String>,
         #[serde(rename = "turnUuid", default)]
         turn_uuid: Option<String>,
+        #[serde(default)]
+        images: Option<Vec<serde_json::Value>>,
     },
     ThinkingStart {
         id: String,
@@ -622,10 +624,11 @@ impl SidecarManager {
                 tool_use_id,
                 parent_tool_use_id,
                 ref turn_uuid,
+                images,
             } => {
                 let _ = app.emit(
                     &format!("sdk-tool-result-{}", id),
-                    serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
+                    serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid, "images": images }),
                 );
             }
             InboundMessage::ThinkingStart {

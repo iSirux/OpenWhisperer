@@ -286,6 +286,7 @@
           initialWorktreePath={activeSession.setupWorktreePath || ''}
           initialPlanMode={activeSession.planMode?.isActive || false}
           initialReadOnlyMode={activeSession.readOnlyMode || false}
+          initialPlaywrightQa={activeSession.playwrightQa || false}
           initialDraftPrompt={activeSession.draftPrompt || ''}
           initialDraftImages={activeSession.draftImages || []}
           providerLocked={!!activeSession.forkedFromSessionId}
@@ -317,6 +318,7 @@
           effortLevel={activeSession.effortLevel}
           provider={activeSession.provider}
           autocompactEnabled={activeSession.autocompactEnabled ?? true}
+          playwrightQa={activeSession.playwrightQa ?? false}
           createdBranch={activeSession.createdBranch}
           currentBranch={activeSession.currentBranch}
           firstPrompt={activeSdkFirstPrompt()}

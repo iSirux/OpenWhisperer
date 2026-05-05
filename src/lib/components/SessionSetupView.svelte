@@ -47,6 +47,7 @@
     initialPlanMode?: boolean;
     initialNoteMode?: boolean;
     initialReadOnlyMode?: boolean;
+    initialPlaywrightQa?: boolean;
     initialDraftPrompt?: string;
     initialDraftImages?: SdkImageContent[];
     providerLocked?: boolean;
@@ -66,6 +67,7 @@
       worktreeBranch?: string;
       worktreeRepoPath?: string;
       worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
+      playwrightQa?: boolean;
     }) => void;
     onDraftChange?: (
       sessionId: string,
@@ -88,6 +90,7 @@
     initialPlanMode = false,
     initialNoteMode = false,
     initialReadOnlyMode = false,
+    initialPlaywrightQa = false,
     initialDraftPrompt = '',
     initialDraftImages = [],
     providerLocked = false,
@@ -125,6 +128,9 @@
   let isLoadingWorktrees = $state(false);
   let isCreatingWorktree = $state(false);
   let showWorktreeDropdown = $state(false);
+
+  // Playwright QA state
+  let playwrightQa = $state(initialPlaywrightQa !== undefined ? initialPlaywrightQa : true);
 
   // Derived state
   const activeRepos = $derived(($repos.list || []).filter((r) => r.active !== false));
@@ -348,6 +354,7 @@
         worktreeBranch,
         worktreeRepoPath,
         worktreePostSetup,
+        playwrightQa: playwrightQa || undefined,
       });
     } finally {
       isStarting = false;
@@ -807,6 +814,27 @@
                   onclick={() => handleWorktreeModeChange('existing')}
                 >
                   Existing
+                </button>
+              </div>
+            </div>
+
+            <div class="worktree-cell">
+              <label class="option-label">Browser</label>
+              <div class="mode-toggle">
+                <button
+                  class="mode-btn"
+                  class:active={!playwrightQa}
+                  onclick={() => { playwrightQa = false; }}
+                >
+                  Off
+                </button>
+                <button
+                  class="mode-btn playwright"
+                  class:active={playwrightQa}
+                  onclick={() => { playwrightQa = true; }}
+                  title="Enable Playwright MCP — gives Claude browser control for QA testing"
+                >
+                  Playwright
                 </button>
               </div>
             </div>
@@ -1644,6 +1672,10 @@
   /* Worktree toggle */
   .mode-btn.worktree.active {
     background: #059669;
+  }
+
+  .mode-btn.playwright.active {
+    background: #7c3aed;
   }
 
   /* Worktree selector */

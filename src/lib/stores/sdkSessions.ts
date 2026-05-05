@@ -353,6 +353,8 @@ export interface SdkSession {
   notionCard?: { id: string; title: string };
   /** Skip project/local hooks (lint, build, etc.) for non-implementation sessions */
   disableHooks?: boolean;
+  /** Playwright MCP enabled for this session (browser QA) */
+  playwrightQa?: boolean;
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
   contextOverflow?: boolean;
   /** Claude-only: whether auto-compaction is enabled for this session.
@@ -738,12 +740,16 @@ function createSdkSessionsStore() {
 
     // Tool result events
     unlisteners.push(
-      await listen<{ tool: string; output: string; toolUseId: string; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-tool-result-${id}`, (e) => {
+      await listen<{ tool: string; output: string; toolUseId: string; parentToolUseId?: string | null; turnUuid?: string | null; images?: { mediaType: string; base64Data: string }[] | null }>(`sdk-tool-result-${id}`, (e) => {
         const toolName = e.payload.tool;
         const isPlanApprovalResult = toolName === 'ExitPlanMode' || toolName === 'complete_planning' || toolName === 'mcp__planning-tools__complete_planning';
         if (isPlanApprovalResult) {
           console.log(`[sdkSessions] Plan approval tool_result received: ${toolName} (session: ${id}, output: ${e.payload.output.slice(0, 100)})`);
         }
+        const images: SdkImageContent[] | undefined = e.payload.images?.map(img => ({
+          mediaType: img.mediaType as SdkImageContent['mediaType'],
+          base64Data: img.base64Data,
+        }));
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -758,6 +764,7 @@ function createSdkSessionsStore() {
                       output: e.payload.output,
                       parentToolUseId: e.payload.parentToolUseId || undefined,
                       turnUuid: e.payload.turnUuid || undefined,
+                      images: images && images.length > 0 ? images : undefined,
                       timestamp: Date.now(),
                     },
                   ],
@@ -1171,7 +1178,8 @@ function createSdkSessionsStore() {
     forkAtMessageUuid?: string | null, // Message UUID to fork at (resumeSessionAt)
     readOnlyMode?: boolean,
     autocompactEnabled?: boolean | null,
-    disableHooks?: boolean
+    disableHooks?: boolean,
+    playwrightQa?: boolean
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1180,7 +1188,7 @@ function createSdkSessionsStore() {
     // Determine which MCP servers to use
     // For note mode: use note_mcp_servers from repo config
     // For regular mode: use mcp_servers from repo config or all enabled global servers
-    let mcpServers = null;
+    let mcpServers: McpServerConfig[] | null = null;
     console.log('[MCP Debug] Total MCP servers in settings:', currentSettings.mcp?.servers?.length ?? 0);
     if (currentSettings.mcp?.servers?.length > 0) {
       const repo = get(repos).list.find((r) => r.path === cwd);
@@ -1249,6 +1257,23 @@ function createSdkSessionsStore() {
           return server;
         })
       );
+    }
+
+    // Inject Playwright MCP server when QA mode is enabled for this session
+    // Uses --extension to connect to existing Chrome tabs (requires Playwright MCP Bridge extension)
+    if (playwrightQa) {
+      const playwrightServer: McpServerConfig = {
+        id: 'playwright-qa-session',
+        name: 'Playwright QA',
+        server_type: 'stdio',
+        command: 'npx',
+        args: ['-y', '@playwright/mcp@latest', '--extension'],
+        env: {},
+        enabled: true,
+        auth_type: 'none',
+      };
+      if (!mcpServers) mcpServers = [];
+      mcpServers.push(playwrightServer);
     }
 
     console.log('[MCP Debug] Final mcpServers to send:', mcpServers?.length ?? 0, mcpServers);
@@ -1925,7 +1950,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; playwrightQa?: boolean }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -1951,6 +1976,7 @@ function createSdkSessionsStore() {
                 setupWorktreePath: undefined,
                 planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
                 noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
+                playwrightQa: config.playwrightQa || undefined,
                 // Pre-populate createdBranch from worktree creation so the header shows the correct
                 // branch immediately, without waiting for (or being overwritten by) the git query.
                 ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),
@@ -1994,7 +2020,8 @@ function createSdkSessionsStore() {
           session.forkAtMessageUuid,
           config.noteMode ? false : (config.readOnlyMode ?? false),
           undefined,
-          config.disableHooks
+          config.disableHooks,
+          config.playwrightQa
         );
         await syncSessionBranchMetadata(id, config.cwd);
 

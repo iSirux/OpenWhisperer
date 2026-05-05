@@ -653,9 +653,10 @@ function sendToolResult(
   output: string,
   toolUseId: string,
   parentToolUseId?: string | null,
-  turnUuid?: string | null
+  turnUuid?: string | null,
+  images?: { mediaType: string; base64Data: string }[]
 ): void {
-  send({ type: "tool_result", id, tool, output, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}) });
+  send({ type: "tool_result", id, tool, output, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}), ...(images && images.length > 0 ? { images } : {}) });
 }
 
 function sendThinkingStart(id: string, content: string, parentToolUseId?: string | null, turnUuid?: string | null): void {
@@ -1137,6 +1138,32 @@ function toTodoWriteInput(item: Record<string, unknown>): { todos: Array<{ conte
   };
 }
 
+function extractImagesFromFileRefs(
+  sessionId: string,
+  output: string
+): { mediaType: string; base64Data: string }[] {
+  const imgs: { mediaType: string; base64Data: string }[] = [];
+  const session = sessions.get(sessionId);
+  if (!session) return imgs;
+
+  // Match markdown image/link refs to local image files (png, jpg, jpeg, webp, gif)
+  const fileRefPattern = /\]\(([^)]+\.(?:png|jpg|jpeg|webp|gif))\)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fileRefPattern.exec(output)) !== null) {
+    const relPath = match[1].replace(/\\\\/g, "/").replace(/\\/g, "/");
+    const absPath = path.resolve(session.cwd, relPath);
+    try {
+      if (fs.existsSync(absPath)) {
+        const data = fs.readFileSync(absPath);
+        const ext = path.extname(absPath).slice(1).toLowerCase();
+        const mime = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+        imgs.push({ mediaType: mime, base64Data: data.toString("base64") });
+      }
+    } catch {}
+  }
+  return imgs;
+}
+
 function handleAppServerItemEvent(
   id: string,
   item: Record<string, unknown>,
@@ -1199,12 +1226,39 @@ function handleAppServerItemEvent(
     } else {
       const err = item.error as Record<string, unknown> | undefined;
       const result = item.result;
-      const output = err
-        ? `Error: ${String(err.message || "Unknown MCP error")}`
-        : typeof result === "string"
-          ? result
-          : JSON.stringify(result ?? "");
-      sendToolResult(id, toolName, output, itemId, parentToolUseId, turnUuid);
+      let output = "";
+      let resultImages: { mediaType: string; base64Data: string }[] | undefined;
+
+      if (err) {
+        output = `Error: ${String(err.message || "Unknown MCP error")}`;
+      } else if (typeof result === "string") {
+        output = result;
+      } else if (Array.isArray(result)) {
+        const textParts: string[] = [];
+        const imgs: { mediaType: string; base64Data: string }[] = [];
+        for (const block of result) {
+          if (block && block.type === "text" && block.text) {
+            textParts.push(block.text);
+          } else if (block && block.type === "image" && block.source?.data) {
+            imgs.push({
+              mediaType: block.source.media_type || "image/png",
+              base64Data: block.source.data,
+            });
+          }
+        }
+        output = textParts.join("\n");
+        if (imgs.length > 0) resultImages = imgs;
+      } else {
+        output = JSON.stringify(result ?? "");
+      }
+      // If no inline images but output references local image files (e.g. Playwright screenshots),
+      // read them from disk and include as base64
+      if (!resultImages && output) {
+        const fileImgs = extractImagesFromFileRefs(id, output);
+        if (fileImgs.length > 0) resultImages = fileImgs;
+      }
+
+      sendToolResult(id, toolName, output, itemId, parentToolUseId, turnUuid, resultImages);
     }
     return;
   }
@@ -4495,14 +4549,24 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
               : "unknown";
 
             let output = "";
+            let historyImages: { mediaType: string; base64Data: string }[] | undefined;
             if (typeof toolResultBlock.content === "string") {
               output = toolResultBlock.content;
             } else if (Array.isArray(toolResultBlock.content)) {
-              // Content can be array of text/image blocks
-              output = toolResultBlock.content
-                .filter((c) => c.type === "text")
-                .map((c) => c.text || "")
-                .join("\n");
+              const textParts: string[] = [];
+              const imgs: { mediaType: string; base64Data: string }[] = [];
+              for (const c of toolResultBlock.content) {
+                if (c.type === "text" && c.text) {
+                  textParts.push(c.text);
+                } else if (c.type === "image" && (c as any).source?.data) {
+                  imgs.push({
+                    mediaType: (c as any).source.media_type || "image/png",
+                    base64Data: (c as any).source.data,
+                  });
+                }
+              }
+              output = textParts.join("\n");
+              if (imgs.length > 0) historyImages = imgs;
             }
 
             send({
@@ -4513,7 +4577,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
                 100
               )}...`,
             });
-            sendToolResult(id, toolName, output, toolUseId, userParentToolUseId, userTurnUuid);
+            sendToolResult(id, toolName, output, toolUseId, userParentToolUseId, userTurnUuid, historyImages);
 
             // Clean up the mapping after use
             if (toolResultBlock.tool_use_id) {

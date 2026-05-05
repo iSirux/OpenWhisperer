@@ -37,6 +37,7 @@
      *  That default IS the optimum — the PCT_OVERRIDE env var is clamped to it, so we can't go higher, and
      *  going lower just wastes context without preventing single-turn tool-result overflows. */
     autocompactEnabled?: boolean;
+    playwrightQa?: boolean;
     createdBranch?: string | null;
     currentBranch?: string | null;
     firstPrompt?: string | null;
@@ -58,6 +59,7 @@
     effortLevel = null,
     provider = 'claude',
     autocompactEnabled = true,
+    playwrightQa = false,
     createdBranch = null,
     currentBranch = null,
     firstPrompt = null,
@@ -230,6 +232,11 @@
       {#if effortLabel}
         <span class="px-1.5 py-0.5 text-[10px] font-medium bg-cyan-600/20 text-cyan-400 rounded flex-shrink-0">
           {effortLabel}
+        </span>
+      {/if}
+      {#if playwrightQa}
+        <span class="px-1.5 py-0.5 text-[10px] font-medium bg-purple-600/20 text-purple-400 rounded flex-shrink-0">
+          Playwright
         </span>
       {/if}
     </div>

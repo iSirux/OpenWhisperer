@@ -995,6 +995,7 @@ export async function handleSetupSessionStart(
     worktreeRepoPath?: string;
     worktreeBranch?: string;
     worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
+    playwrightQa?: boolean;
   }
 ) {
   const currentSettings = get(settings);
@@ -1059,5 +1060,6 @@ export async function handleSetupSessionStart(
     provider: config.provider,
     createdBranch: config.worktreeBranch,
     worktreePostSetup: config.worktreePostSetup,
+    playwrightQa: config.playwrightQa,
   });
 }

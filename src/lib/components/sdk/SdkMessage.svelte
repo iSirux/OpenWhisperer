@@ -104,6 +104,7 @@
             currentCwd={sessionCwd}
             currentModel={sessionModel}
             currentEffortLevel={sessionEffortLevel}
+            playwrightQa={session?.playwrightQa}
           />
         {/if}
         <button
@@ -231,6 +232,17 @@
         <pre class="tool-output-content">{message.output}</pre>
       {/if}
     </details>
+    {#if message.images && message.images.length > 0}
+      <div class="tool-result-images">
+        {#each message.images as img}
+          <img
+            src={createImagePreviewUrl(img)}
+            alt="Tool result"
+            class="tool-result-image"
+          />
+        {/each}
+      </div>
+    {/if}
   {:else if message.type === "error"}
     <div class="error-message">
       <div class="error-icon-wrapper">
@@ -946,5 +958,20 @@
 
   .message-image:hover {
     transform: scale(1.02);
+  }
+
+  /* Tool result images */
+  .tool-result-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.75rem;
+  }
+
+  .tool-result-image {
+    max-width: 100%;
+    max-height: 400px;
+    border-radius: 4px;
+    border: 1px solid var(--color-border);
   }
 </style>

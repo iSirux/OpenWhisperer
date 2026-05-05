@@ -272,8 +272,17 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
     } else if (isGridMode) {
       const isToolMessage =
         msg.type === 'tool_start' || msg.type === 'tool_result' || msg.type === 'thinking';
-      if (isToolMessage) {
+      const hasImages = msg.images && msg.images.length > 0;
+      if (isToolMessage && !hasImages) {
         currentToolGroup.push(msg);
+      } else if (hasImages) {
+        // Tool results with images render as standalone messages (not in the grid)
+        // so SdkMessage can display the images inline
+        if (currentToolGroup.length > 0) {
+          items.push({ type: 'tool_group', tools: [...currentToolGroup] });
+          currentToolGroup = [];
+        }
+        items.push({ type: 'message', message: msg });
       } else {
         if (currentToolGroup.length > 0) {
           items.push({ type: 'tool_group', tools: [...currentToolGroup] });
