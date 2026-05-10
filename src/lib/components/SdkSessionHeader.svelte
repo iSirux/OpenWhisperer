@@ -37,6 +37,7 @@
      *  That default IS the optimum — the PCT_OVERRIDE env var is clamped to it, so we can't go higher, and
      *  going lower just wastes context without preventing single-turn tool-result overflows. */
     autocompactEnabled?: boolean;
+    disableHooks?: boolean;
     playwrightQa?: boolean;
     createdBranch?: string | null;
     currentBranch?: string | null;
@@ -59,6 +60,7 @@
     effortLevel = null,
     provider = 'claude',
     autocompactEnabled = true,
+    disableHooks = false,
     playwrightQa = false,
     createdBranch = null,
     currentBranch = null,
@@ -103,11 +105,19 @@
   });
 
   const showAutocompactToggle = $derived(provider !== 'openai' && !isPending && !!sessionId);
+  const showHooksToggle = $derived(!isPending && !!sessionId);
 
   function toggleAutocompact() {
     if (!sessionId) return;
     sdkSessions.updateSessionAutocompactEnabled(sessionId, !autocompactEnabled).catch(err => {
       console.error('[SdkSessionHeader] autocompact update failed:', err);
+    });
+  }
+
+  function toggleHooks() {
+    if (!sessionId) return;
+    sdkSessions.updateSessionDisableHooks(sessionId, !disableHooks).catch(err => {
+      console.error('[SdkSessionHeader] hooks update failed:', err);
     });
   }
 
@@ -297,6 +307,31 @@
           </span>
         </button>
       {/if}
+      {#if showHooksToggle}
+        <button
+          type="button"
+          class="action-icon-btn autocompact-toggle"
+          class:hooks-on={!disableHooks}
+          class:hooks-off={disableHooks}
+          onclick={toggleHooks}
+          title={`Hooks: ${disableHooks ? 'disabled (DISABLE_HOOKS=1 — skips lint, build, etc.)' : 'enabled (project hooks will run)'}. Applies on next Claude process spawn.`}
+          aria-label="Toggle hooks"
+          aria-pressed={!disableHooks}
+        >
+          <span class="autocompact-label">HK</span>
+          <span class="autocompact-indicator" aria-hidden="true">
+            {#if !disableHooks}
+              <svg class="w-3 h-3" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+              </svg>
+            {:else}
+              <svg class="w-3 h-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <line x1="4" y1="16" x2="16" y2="4" />
+              </svg>
+            {/if}
+          </span>
+        </button>
+      {/if}
       {#if !isPending && sessionId && sdkSessionId}
         <button
           class="action-icon-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
@@ -456,6 +491,15 @@
   }
 
   .autocompact-off {
+    color: var(--color-text-muted);
+    opacity: 0.75;
+  }
+
+  .hooks-on {
+    color: var(--color-accent, rgb(96, 165, 250));
+  }
+
+  .hooks-off {
     color: var(--color-text-muted);
     opacity: 0.75;
   }

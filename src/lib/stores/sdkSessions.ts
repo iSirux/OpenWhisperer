@@ -1816,6 +1816,18 @@ function createSdkSessionsStore() {
       return this.updateSessionEffort(id, effortLevel);
     },
 
+    async updateSessionDisableHooks(id: string, disable: boolean): Promise<void> {
+      update(sessions => sessions.map(s => s.id === id ? { ...s, disableHooks: disable } : s));
+
+      if (!liveSessions.has(id)) return;
+
+      try {
+        await invoke('update_sdk_disable_hooks', { id, disable });
+      } catch (error) {
+        console.error('Failed to update SDK disable hooks:', error);
+      }
+    },
+
     async updateSessionAutocompactEnabled(id: string, enabled: boolean): Promise<void> {
       update(sessions => sessions.map(s => s.id === id ? { ...s, autocompactEnabled: enabled } : s));
 
@@ -1977,6 +1989,7 @@ function createSdkSessionsStore() {
                 planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
                 noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
                 playwrightQa: config.playwrightQa || undefined,
+                disableHooks: config.disableHooks || undefined,
                 // Pre-populate createdBranch from worktree creation so the header shows the correct
                 // branch immediately, without waiting for (or being overwritten by) the git query.
                 ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),

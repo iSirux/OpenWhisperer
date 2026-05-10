@@ -109,6 +109,10 @@ pub enum OutboundMessage {
         /// 1-100 percent threshold, or null to clear the override.
         pct: Option<u32>,
     },
+    UpdateDisableHooks {
+        id: String,
+        disable: bool,
+    },
     Close {
         id: String,
     },

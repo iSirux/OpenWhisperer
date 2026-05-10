@@ -430,6 +430,12 @@ interface UpdateAutocompactPctMessage {
   pct: number | null;
 }
 
+interface UpdateDisableHooksMessage {
+  type: "update_disable_hooks";
+  id: string;
+  disable: boolean;
+}
+
 /**
  * Map a UI-level effort value to what the underlying SDK actually accepts.
  *
@@ -508,6 +514,7 @@ type InboundMessage =
   | UpdateModelMessage
   | UpdateEffortMessage
   | UpdateAutocompactPctMessage
+  | UpdateDisableHooksMessage
   | GenerateRepoDescriptionMessage
   | GenerateRepoDescriptionWithCodexMessage
   | AnswerAskUserQuestionMessage
@@ -4882,6 +4889,34 @@ async function handleUpdateAutocompactPct(
   });
 }
 
+async function handleUpdateDisableHooks(
+  msg: UpdateDisableHooksMessage
+): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, "Session not found");
+    return;
+  }
+
+  const nextEnv: Record<string, string | undefined> = {
+    ...process.env,
+    ...(session.options.env ?? {}),
+  };
+
+  if (msg.disable) {
+    nextEnv.DISABLE_HOOKS = "1";
+  } else {
+    delete nextEnv.DISABLE_HOOKS;
+  }
+  session.options.env = nextEnv;
+
+  send({
+    type: "debug",
+    id: msg.id,
+    message: `hooks ${msg.disable ? "disabled" : "enabled"} — applies on next Claude Code process spawn`,
+  });
+}
+
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (session) {
@@ -4945,6 +4980,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "update_autocompact_pct":
       await handleUpdateAutocompactPct(msg);
+      break;
+    case "update_disable_hooks":
+      await handleUpdateDisableHooks(msg);
       break;
     case "close":
       await handleClose(msg);

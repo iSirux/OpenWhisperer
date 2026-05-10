@@ -341,6 +341,7 @@ pub fn run() {
             sdk_cmds::update_sdk_model,
             sdk_cmds::update_sdk_effort,
             sdk_cmds::update_sdk_autocompact_pct,
+            sdk_cmds::update_sdk_disable_hooks,
             sdk_cmds::close_sdk_session,
             sdk_cmds::answer_ask_user_question,
             sdk_cmds::answer_plan_approval,

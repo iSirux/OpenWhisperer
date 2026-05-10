@@ -318,6 +318,7 @@
           effortLevel={activeSession.effortLevel}
           provider={activeSession.provider}
           autocompactEnabled={activeSession.autocompactEnabled ?? true}
+          disableHooks={activeSession.disableHooks ?? false}
           playwrightQa={activeSession.playwrightQa ?? false}
           createdBranch={activeSession.createdBranch}
           currentBranch={activeSession.currentBranch}

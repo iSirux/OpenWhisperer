@@ -109,6 +109,18 @@ pub fn update_sdk_autocompact_pct(
 }
 
 #[tauri::command]
+pub fn update_sdk_disable_hooks(
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    disable: bool,
+) -> Result<(), String> {
+    if !sidecar.is_started() {
+        return Err("Sidecar not started".to_string());
+    }
+    sidecar.send(OutboundMessage::UpdateDisableHooks { id, disable })
+}
+
+#[tauri::command]
 pub fn close_sdk_session(sidecar: State<Arc<SidecarManager>>, id: String) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started".to_string());
