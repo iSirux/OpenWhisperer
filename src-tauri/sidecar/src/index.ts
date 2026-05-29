@@ -37,6 +37,7 @@ function inferOpenAiContextWindow(model: string | undefined): number {
 function inferClaudeContextWindow(model: string | undefined): number {
   const normalized = model?.toLowerCase() ?? "";
   if (
+    normalized.startsWith("claude-opus-4-8") ||
     normalized.startsWith("claude-opus-4-7") ||
     normalized.startsWith("claude-opus-4-6") ||
     normalized.startsWith("claude-sonnet-4-6")
@@ -517,6 +518,8 @@ type InboundMessage =
   | UpdateDisableHooksMessage
   | GenerateRepoDescriptionMessage
   | GenerateRepoDescriptionWithCodexMessage
+  | GenerateLaunchProfileMessage
+  | GenerateLaunchProfileWithCodexMessage
   | AnswerAskUserQuestionMessage
   | AnswerPlanApprovalMessage;
 
@@ -605,10 +608,9 @@ interface Session {
   // Note: ExitPlanMode approval is handled by canUseTool which blocks the SDK
   // server-side. The pendingPlanApproval field above is shared by both canUseTool
   // intercepts (ExitPlanMode + complete_planning).
-  // Resolver to signal the user-message generator to complete.
-  // Called when a "result" message is received so the SDK's streamInput()
-  // can call endInput() and allow the CLI process to exit cleanly.
-  endStreamResolve?: () => void;
+  // Persistent message queue for streaming input mode. Follow-up messages
+  // are enqueued here instead of calling streamInput() multiple times.
+  inputQueue?: MessageQueue;
 }
 
 interface QueuedPrompt {
@@ -2215,7 +2217,7 @@ function handleCodexEvent(id: string, event: ThreadEvent): void {
 
 function handleCodexItemEvent(
   id: string,
-  item: ThreadEvent extends { item: infer I } ? I : never,
+  item: unknown,
   phase: "started" | "updated" | "completed"
 ): void {
   const typedItem = item as {
@@ -2696,6 +2698,10 @@ The vocabulary helps speech-to-text correctly transcribe project-specific terms.
     ],
     // Don't load user/project settings for this one-shot operation
     settingSources: [],
+    env: {
+      ...process.env,
+      CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "120000",
+    },
   };
 
   let result: {
@@ -2966,6 +2972,10 @@ Path: ${msg.repo_path}
       "Grep",
     ],
     settingSources: [],
+    env: {
+      ...process.env,
+      CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "120000",
+    },
   };
 
   let result: {
@@ -3151,7 +3161,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     ...msg.options,
     // Allow all MCP tools to execute without permission prompts
     // This callback fires when Claude would show a permission prompt
-    canUseTool: async (toolName: string, input: unknown) => {
+    canUseTool: async (toolName: string, input: Record<string, unknown>) => {
       // Intercept AskUserQuestion: emit to frontend, wait for user answers
       if (toolName === "AskUserQuestion") {
         const askInput = input as { questions?: PlanningQuestion[] };
@@ -3253,6 +3263,16 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       // For non-MCP tools, allow by default (acceptEdits handles file operations)
       return { behavior: "allow" as const, updatedInput: input };
     },
+  };
+
+  // Extend the SDK's stream-close inactivity timeout. MCP server tool responses
+  // don't reset lastActivityTime (SDK issue #114), so the default timeout fires
+  // prematurely during MCP tool calls, causing "Stream closed" errors on
+  // subsequent tool permission requests.
+  options.env = {
+    ...process.env,
+    ...(options.env ?? {}),
+    CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "120000",
   };
 
   // Apply auto-compaction policy. Claude Code reads these env vars at process spawn.
@@ -3549,20 +3569,20 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   }
 
   if (provider === "claude") {
+    const sp = options.systemPrompt;
     const systemPromptMode =
-      typeof options.systemPrompt === "string"
+      typeof sp === "string"
         ? "custom-string"
-        : options.systemPrompt?.type === "preset" &&
-            options.systemPrompt.preset === "claude_code"
-          ? options.systemPrompt.append?.trim()
+        : sp && typeof sp === "object" && !Array.isArray(sp) && sp.type === "preset" && sp.preset === "claude_code"
+          ? sp.append?.trim()
             ? "claude_code+append"
             : "claude_code"
           : "unset";
+    const t = options.tools;
     const toolsMode =
-      Array.isArray(options.tools)
-        ? `custom-list(${options.tools.length})`
-        : options.tools?.type === "preset" &&
-            options.tools.preset === "claude_code"
+      Array.isArray(t)
+        ? `custom-list(${t.length})`
+        : t && typeof t === "object" && !Array.isArray(t) && t.type === "preset" && t.preset === "claude_code"
           ? "claude_code"
           : "unset";
     const allowedTools = options.allowedTools;
@@ -3637,6 +3657,55 @@ interface SDKUserMessageForInput {
   session_id: string;
 }
 
+// Persistent async message queue for streaming input mode.
+// Unlike the single-shot generator, this queue keeps the SDK's streamInput()
+// alive across multiple follow-up messages. The SDK's for-await loop blocks on
+// next() when the queue is empty, and resumes when enqueue() pushes a new item.
+// Calling done() signals completion, letting streamInput() call endInput() to
+// cleanly close stdin.
+class MessageQueue implements AsyncIterable<SDKUserMessageForInput> {
+  private queue: SDKUserMessageForInput[] = [];
+  private readResolve?: (result: IteratorResult<SDKUserMessageForInput>) => void;
+  private isDone = false;
+  private started = false;
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessageForInput> {
+    if (this.started) throw new Error("MessageQueue can only be iterated once");
+    this.started = true;
+    return { next: () => this.next() };
+  }
+
+  private next(): Promise<IteratorResult<SDKUserMessageForInput>> {
+    if (this.queue.length > 0) {
+      return Promise.resolve({ done: false, value: this.queue.shift()! });
+    }
+    if (this.isDone) {
+      return Promise.resolve({ done: true, value: undefined as never });
+    }
+    return new Promise((resolve) => { this.readResolve = resolve; });
+  }
+
+  enqueue(msg: SDKUserMessageForInput): void {
+    if (this.isDone) return;
+    if (this.readResolve) {
+      const resolve = this.readResolve;
+      this.readResolve = undefined;
+      resolve({ done: false, value: msg });
+    } else {
+      this.queue.push(msg);
+    }
+  }
+
+  done(): void {
+    this.isDone = true;
+    if (this.readResolve) {
+      const resolve = this.readResolve;
+      this.readResolve = undefined;
+      resolve({ done: true, value: undefined as never });
+    }
+  }
+}
+
 function appendAllowedTool(
   allowedTools: string[] | undefined,
   toolName: string
@@ -3658,6 +3727,7 @@ function buildClaudeSystemPrompt(
   } else if (
     optionSystemPrompt &&
     typeof optionSystemPrompt === "object" &&
+    !Array.isArray(optionSystemPrompt) &&
     optionSystemPrompt.type === "preset" &&
     optionSystemPrompt.preset === "claude_code" &&
     optionSystemPrompt.append?.trim()
@@ -3948,37 +4018,28 @@ async function runClaudeQueryItem(
       });
     }
 
-    // Always use AsyncIterable<SDKUserMessage> to enable streaming input mode.
-    // This is required for streamInput() to work (injecting follow-up messages into
-    // a running query without waiting for it to finish). Single-string mode does not
-    // support streamInput(). See: https://platform.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
-    //
-    // The donePromise keeps the generator alive until the query result is received,
-    // preventing the SDK from closing CLI stdin while tool permissions are pending.
-    let endStreamResolve: (() => void) | undefined;
-    const endStreamPromise = new Promise<void>((resolve) => { endStreamResolve = resolve; });
-    session.endStreamResolve = endStreamResolve;
-
+    // Use a persistent MessageQueue as the AsyncIterable prompt. The SDK calls
+    // streamInput() once with this queue. Follow-up messages are enqueued into
+    // the same queue, avoiding multiple streamInput() calls which would each
+    // close stdin via endInput() when their generator completes.
     const streamSessionId = session.sdkSessionId || msg.id;
-    const promptInput = createUserMessageStream(
-      promptToSend,
-      msg.images ?? [],
-      streamSessionId,
-      endStreamPromise
-    );
-    if (hasImages) {
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `Built multimodal prompt stream with ${msg.images!.length} image(s)`,
-      });
-    } else {
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `Built streaming prompt (streaming input mode enabled for streamInput() support)`,
-      });
-    }
+    const inputQueue = new MessageQueue();
+    session.inputQueue = inputQueue;
+
+    const contentBlocks = buildContentBlocks(promptToSend, msg.images ?? []);
+    inputQueue.enqueue({
+      type: "user",
+      message: { role: "user", content: contentBlocks },
+      parent_tool_use_id: null,
+      session_id: streamSessionId,
+    });
+
+    const promptInput = inputQueue;
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Built persistent input queue${hasImages ? ` with ${msg.images!.length} image(s)` : ""} (streaming input mode)`,
+    });
 
     // Common options for both text and multimodal queries
     const queryOptions: Options & { abortController: AbortController } = {
@@ -4000,7 +4061,7 @@ async function runClaudeQueryItem(
         PreToolUse: [
           {
             hooks: [
-              (async (_input: PreToolUseHookInput) => {
+              (async (_input) => {
                 const s = sessions.get(msg.id);
                 if (s?.pendingParallelNotification) {
                   const notification = s.pendingParallelNotification;
@@ -4020,16 +4081,15 @@ async function runClaudeQueryItem(
         SubagentStart: [
           {
             hooks: [
-              async (input: SubagentStartHookInput) => {
-                sendSubagentStart(msg.id, input.agent_id, input.agent_type);
-                // If a parallel session was detected, inject context into new subagents
-                // so they're aware of concurrent work (subagents don't inherit parent hooks)
+              (async (input) => {
+                const hookInput = input as SubagentStartHookInput;
+                sendSubagentStart(msg.id, hookInput.agent_id, hookInput.agent_type);
                 const s = sessions.get(msg.id);
                 if (s?.pendingParallelNotification) {
                   send({
                     type: "debug",
                     id: msg.id,
-                    message: `Injecting parallel agent notification into subagent ${input.agent_id} via additionalContext`,
+                    message: `Injecting parallel agent notification into subagent ${hookInput.agent_id} via additionalContext`,
                   });
                   return {
                     continue: true,
@@ -4040,21 +4100,22 @@ async function runClaudeQueryItem(
                   };
                 }
                 return { continue: true };
-              },
+              }) as HookCallback,
             ],
           },
         ],
         SubagentStop: [
           {
             hooks: [
-              async (input: SubagentStopHookInput) => {
+              (async (input) => {
+                const hookInput = input as SubagentStopHookInput;
                 sendSubagentStop(
                   msg.id,
-                  input.agent_id,
-                  input.agent_transcript_path
+                  hookInput.agent_id,
+                  hookInput.agent_transcript_path
                 );
                 return { continue: true };
-              },
+              }) as HookCallback,
             ],
           },
         ],
@@ -4192,6 +4253,10 @@ async function runClaudeQueryItem(
     if (session.currentQueryId === queryId) {
       session.abortController = undefined;
       session.queryIterator = undefined;
+      if (session.inputQueue) {
+        session.inputQueue.done();
+        session.inputQueue = undefined;
+      }
     }
   }
 }
@@ -4247,45 +4312,28 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
   }
 
   // === Claude provider path ===
-  // If there is an active query running in streaming input mode, inject the new
-  // message directly via streamInput() so the agent sees it immediately without
-  // waiting for the current query to finish.  This is the preferred path; the
-  // FIFO queue is kept as a fallback for edge-cases (e.g. race before queryIterator
-  // is assigned, or if streamInput throws).
-  if (session.claudeProcessing && session.queryIterator && !session.claudeStopping) {
+  // If there is an active query with a persistent input queue, enqueue the
+  // follow-up message directly. The SDK's streamInput() (running in background)
+  // picks it up and writes it to stdin immediately. No additional streamInput()
+  // call needed — the single persistent queue avoids the endInput() bug where
+  // multiple streamInput() calls would each close stdin when their generator
+  // completed. The FIFO queue is kept as fallback for edge-cases (e.g. race
+  // before inputQueue is assigned).
+  if (session.claudeProcessing && session.inputQueue && !session.claudeStopping) {
     const injectSessionId = session.sdkSessionId || msg.id;
-    // For injected follow-up messages, create a new done promise.
-    // The previous endStreamResolve (if any) is replaced so only
-    // the latest result triggers stream completion.
-    let injectEndResolve: (() => void) | undefined;
-    const injectEndPromise = new Promise<void>((resolve) => { injectEndResolve = resolve; });
-    session.endStreamResolve = injectEndResolve;
-
-    const injectStream = createUserMessageStream(
-      msg.prompt,
-      msg.images ?? [],
-      injectSessionId,
-      injectEndPromise
-    );
-    try {
-      // streamInput() is only available in streaming input mode (AsyncIterable prompt).
-      // Since we now always start queries in streaming input mode this will succeed.
-      await (session.queryIterator as Query).streamInput(
-        injectStream as unknown as AsyncIterable<Parameters<Query["streamInput"]>[0] extends AsyncIterable<infer T> ? T : never>
-      );
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `[claude stream-inject] injected prompt directly into running query (no queue wait)`,
-      });
-      return;
-    } catch (e) {
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `[claude stream-inject] streamInput() failed, falling back to queue: ${e}`,
-      });
-    }
+    const contentBlocks = buildContentBlocks(msg.prompt, msg.images ?? []);
+    session.inputQueue.enqueue({
+      type: "user",
+      message: { role: "user", content: contentBlocks },
+      parent_tool_use_id: null,
+      session_id: injectSessionId,
+    });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `[claude stream-inject] enqueued prompt into persistent input queue`,
+    });
+    return;
   }
 
   // Queue the prompt for sequential processing (agent idle, or streamInput() failed above).
@@ -4451,26 +4499,25 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       break;
     }
 
-    case "partial_assistant": {
-      // Streaming partial message
-      const partialParentToolUseId = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
-      if (message.delta?.text) {
-        sendText(id, message.delta.text, partialParentToolUseId);
+    case "stream_event": {
+      // Streaming partial message (renamed from partial_assistant in SDK 0.3.x)
+      const streamMsg = message as { event?: { type?: string; delta?: { type?: string; text?: string } }; parent_tool_use_id?: string | null };
+      const partialParentToolUseId = streamMsg.parent_tool_use_id || null;
+      if (streamMsg.event?.type === "content_block_delta" && streamMsg.event.delta?.text) {
+        sendText(id, streamMsg.event.delta.text, partialParentToolUseId);
       }
       break;
     }
 
     case "result": {
-      // Signal the user-message generator to complete so streamInput() can
-      // call endInput() and the CLI process exits cleanly.
-      const resultSession = sessions.get(id);
-      if (resultSession?.endStreamResolve) {
-        resultSession.endStreamResolve();
-        resultSession.endStreamResolve = undefined;
-      }
+      // With the persistent input queue, we do NOT close the queue on result.
+      // The queue stays alive so follow-up messages can be enqueued into the
+      // same query without requiring a new streamInput() call (which would
+      // close stdin via endInput()). The queue is only closed on stop/cleanup.
 
       // Final result message - send usage data and handle errors
       // Retrieve main-agent-only usage for accurate context bar (excludes subagent tokens)
+      const resultSession = sessions.get(id);
       const mainAgentUsage = lastMainAgentUsage.get(id);
       const mainAgentFields = mainAgentUsage ? {
         mainAgentInputTokens: mainAgentUsage.inputTokens,
@@ -4480,55 +4527,55 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       } : {};
       lastMainAgentUsage.delete(id);
 
+      // Both success and error results have usage/cost/duration in SDK 0.3.x
+      const resultMsg = message as unknown as {
+        subtype: string;
+        usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
+        modelUsage: Record<string, { contextWindow?: number }>;
+        total_cost_usd: number;
+        duration_ms: number;
+        duration_api_ms: number;
+        num_turns: number;
+        errors?: string[];
+      };
+      const modelUsageValues = Object.values(resultMsg.modelUsage || {});
+      const contextWindow =
+        modelUsageValues.length > 0
+          ? (modelUsageValues[0].contextWindow ?? inferClaudeContextWindow(resultSession?.options.model))
+          : inferClaudeContextWindow(resultSession?.options.model);
+
+      sendUsage(id, {
+        inputTokens: resultMsg.usage?.input_tokens || 0,
+        outputTokens: resultMsg.usage?.output_tokens || 0,
+        cacheReadTokens: resultMsg.usage?.cache_read_input_tokens || 0,
+        cacheCreationTokens: resultMsg.usage?.cache_creation_input_tokens || 0,
+        totalCostUsd: resultMsg.total_cost_usd || 0,
+        durationMs: resultMsg.duration_ms || 0,
+        durationApiMs: resultMsg.duration_api_ms || 0,
+        numTurns: resultMsg.num_turns || 0,
+        contextWindow,
+        ...mainAgentFields,
+      });
+
       if (message.subtype === "success") {
-        // Extract usage data from successful result
-        const modelUsageValues = Object.values(message.modelUsage || {});
-        const contextWindow =
-          modelUsageValues.length > 0
-            ? modelUsageValues[0].contextWindow
-            : inferClaudeContextWindow(resultSession?.options.model);
-
-        sendUsage(id, {
-          inputTokens: message.usage?.input_tokens || 0,
-          outputTokens: message.usage?.output_tokens || 0,
-          cacheReadTokens: message.usage?.cache_read_input_tokens || 0,
-          cacheCreationTokens: message.usage?.cache_creation_input_tokens || 0,
-          totalCostUsd: message.total_cost_usd || 0,
-          durationMs: message.duration_ms || 0,
-          durationApiMs: message.duration_api_ms || 0,
-          numTurns: message.num_turns || 0,
-          contextWindow,
-          ...mainAgentFields,
-        });
-      } else if (
-        message.subtype === "error" ||
-        message.subtype === "error_tool_use"
-      ) {
-        // Still send usage data even for errors (if available)
-        if (message.usage) {
-          const modelUsageValues = Object.values(message.modelUsage || {});
-          const contextWindow =
-            modelUsageValues.length > 0
-              ? modelUsageValues[0].contextWindow
-              : inferClaudeContextWindow(resultSession?.options.model);
-
-          sendUsage(id, {
-            inputTokens: message.usage?.input_tokens || 0,
-            outputTokens: message.usage?.output_tokens || 0,
-            cacheReadTokens: message.usage?.cache_read_input_tokens || 0,
-            cacheCreationTokens:
-              message.usage?.cache_creation_input_tokens || 0,
-            totalCostUsd: message.total_cost_usd || 0,
-            durationMs: message.duration_ms || 0,
-            durationApiMs: message.duration_api_ms || 0,
-            numTurns: message.num_turns || 0,
-            contextWindow,
-            ...mainAgentFields,
-          });
+        sendDone(id);
+      } else {
+        // Error subtypes: error_during_execution, error_max_turns, error_max_budget_usd, error_max_structured_output_retries
+        let errorText = resultMsg.errors?.join("; ") || `Error: ${message.subtype}`;
+        // A context overflow that happens mid-turn is usually thrown (handled in the query catch with the
+        // raw "prompt is too long" text). But if it instead surfaces here as a generic error result with no
+        // descriptive message, the raw text is lost. Detect it from the near-limit usage and tag it so the
+        // frontend's overflow recovery (compact + retry) still kicks in.
+        const usedContext =
+          (resultMsg.usage?.input_tokens || 0) +
+          (resultMsg.usage?.cache_read_input_tokens || 0) +
+          (resultMsg.usage?.cache_creation_input_tokens || 0);
+        const nearContextLimit = contextWindow > 0 && usedContext >= contextWindow * 0.9;
+        if (nearContextLimit && !/prompt is too long/i.test(errorText)) {
+          errorText = `Prompt is too long: ${usedContext} tokens, context window ${contextWindow}. ${errorText}`;
         }
-        sendError(id, message.error || "Unknown error");
+        sendError(id, errorText);
       }
-      // Don't send result.result as text - it duplicates the assistant message content
       break;
     }
 
@@ -4724,9 +4771,9 @@ async function handleStop(msg: StopMessage): Promise<void> {
     session.pendingAskUserAnswer.reject(new Error("Query stopped by user"));
     session.pendingAskUserAnswer = undefined;
   }
-  if (session.endStreamResolve) {
-    session.endStreamResolve();
-    session.endStreamResolve = undefined;
+  if (session.inputQueue) {
+    session.inputQueue.done();
+    session.inputQueue = undefined;
   }
 
   const pendingCount = session.claudeQueue.length;

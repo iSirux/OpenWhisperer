@@ -1916,6 +1916,7 @@ fn default_autocompact_enabled() -> bool {
 
 fn default_enabled_models() -> Vec<String> {
     vec![
+        "claude-opus-4-8".to_string(),
         "claude-opus-4-7".to_string(),
         "claude-sonnet-4-6".to_string(),
         "claude-haiku-4-5-20251001".to_string(),
@@ -1949,7 +1950,7 @@ impl Default for AppConfig {
             repos: vec![],
             active_repo_index: 0,
             auto_repo_mode: false,
-            default_model: "claude-opus-4-7".to_string(),
+            default_model: "claude-opus-4-8".to_string(),
             default_effort_level: default_effort_level(),
             enabled_models: default_enabled_models(),
             terminal_mode: ClaudeTerminalMode::Sdk,

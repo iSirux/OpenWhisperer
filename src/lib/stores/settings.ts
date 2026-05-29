@@ -616,9 +616,10 @@ const defaultConfig: AppConfig = {
   repos: [],
   active_repo_index: 0,
   auto_repo_mode: false,
-  default_model: "claude-opus-4-7",
+  default_model: "claude-opus-4-8",
   default_effort_level: "high",
   enabled_models: [
+    "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",

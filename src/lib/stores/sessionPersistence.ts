@@ -29,6 +29,7 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
   SdkSession: new Set([
     'currentWorkStartedAt', // Runtime-only timer, accumulated time is persisted instead
     'pendingSystemNotifications', // Transient parallel agent notifications - cleared after first query
+    'overflowRecovery', // Transient compact-and-retry state for context overflow recovery
   ]),
   // PendingTranscriptionInfo fields that shouldn't be persisted
   PendingTranscriptionInfo: new Set([

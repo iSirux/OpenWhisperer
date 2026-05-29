@@ -48,18 +48,17 @@
   let queueSize = $state(0);
   let queueProcessing = $state(false);
   let useWorktree = $state(true);
-  let skipHooks = $state(false);
   let playwrightQa = $state(false);
   let pendingAction = $state<string | null>(null);
 
-  const ACTION_DEFAULTS: Record<string, { worktree: boolean; skipHooks: boolean; playwrightQa: boolean }> = {
-    implement: { worktree: true, skipHooks: false, playwrightQa: true },
-    talk: { worktree: false, skipHooks: true, playwrightQa: true },
-    groom: { worktree: false, skipHooks: true, playwrightQa: false },
-    classify: { worktree: false, skipHooks: true, playwrightQa: false },
-    split: { worktree: false, skipHooks: true, playwrightQa: false },
-    flesh_out: { worktree: false, skipHooks: true, playwrightQa: false },
-    plan: { worktree: false, skipHooks: true, playwrightQa: false },
+  const ACTION_DEFAULTS: Record<string, { worktree: boolean; playwrightQa: boolean }> = {
+    implement: { worktree: true, playwrightQa: false },
+    talk: { worktree: false, playwrightQa: false },
+    groom: { worktree: false, playwrightQa: false },
+    classify: { worktree: false, playwrightQa: false },
+    split: { worktree: false, playwrightQa: false },
+    flesh_out: { worktree: false, playwrightQa: false },
+    plan: { worktree: false, playwrightQa: false },
   };
 
   function selectAction(action: string) {
@@ -67,7 +66,6 @@
     const defaults = ACTION_DEFAULTS[action];
     if (defaults) {
       useWorktree = defaults.worktree;
-      skipHooks = defaults.skipHooks;
       playwrightQa = defaults.playwrightQa;
     }
   }
@@ -95,14 +93,12 @@
         card: NotionCard;
         prompt: string;
         useWorktree: boolean;
-        disableHooks: boolean;
         playwrightQa: boolean;
         config: QueueConfig;
       }
     | {
         type: "board";
         prompt: string;
-        disableHooks: boolean;
         config: QueueConfig;
       }
     | { type: "delay" };
@@ -123,12 +119,11 @@
             item.card,
             item.prompt,
             item.useWorktree,
-            item.disableHooks,
             item.playwrightQa,
             item.config,
           );
         } else if (item.type === "board") {
-          await launchBoardSession(item.prompt, item.disableHooks, item.config);
+          await launchBoardSession(item.prompt, item.config);
         } else if (item.type === "delay") {
           await randomDelay();
         }
@@ -288,7 +283,6 @@
     card: NotionCard,
     prompt: string,
     useWorktree: boolean,
-    disableHooks: boolean,
     playwrightQa: boolean,
     config: QueueConfig,
   ) {
@@ -364,7 +358,6 @@
       provider,
       createdBranch,
       worktreePostSetup,
-      disableHooks,
       playwrightQa,
     });
 
@@ -441,7 +434,6 @@
         card: cardsSnapshot[i],
         prompt,
         useWorktree,
-        disableHooks: skipHooks,
         playwrightQa,
         config,
       });
@@ -521,7 +513,6 @@
 
   async function launchBoardSession(
     prompt: string,
-    disableHooks: boolean,
     config: QueueConfig,
   ) {
     const { repo, model, effortLevel, provider } = config;
@@ -540,14 +531,13 @@
       effortLevel,
       planMode: false,
       provider,
-      disableHooks,
     });
   }
 
   function boardAction(prompt: string) {
     const config = snapshotConfig();
     if (!config) return;
-    enqueue({ type: "board", prompt, disableHooks: skipHooks, config });
+    enqueue({ type: "board", prompt, config });
   }
 
   function classifyAll() {
@@ -941,10 +931,6 @@
           <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
             <input type="checkbox" bind:checked={playwrightQa} class="accent-purple-500" />
             Playwright
-          </label>
-          <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
-            <input type="checkbox" bind:checked={skipHooks} class="accent-accent" />
-            Skip Hooks
           </label>
           <button
             class="h-8 px-5 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"

@@ -36,9 +36,17 @@ export const AUTO_MODEL: ModelInfo = {
 
 export const ALL_MODELS: ModelInfo[] = [
   {
+    id: "claude-opus-4-8",
+    label: "Opus 4.8",
+    title: "Opus 4.8 - Most capable model",
+    maxContextTokens: 1000000,
+    supportsEffort: true,
+    maxEffort: "max",
+  },
+  {
     id: "claude-opus-4-7",
     label: "Opus 4.7",
-    title: "Opus 4.7 - Most capable model",
+    title: "Opus 4.7 - Previous flagship (1M context)",
     maxContextTokens: 1000000,
     supportsEffort: true,
     maxEffort: "max",

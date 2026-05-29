@@ -357,11 +357,37 @@ export interface SdkSession {
   playwrightQa?: boolean;
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
   contextOverflow?: boolean;
+  /** Active auto-recovery from a "prompt is too long" overflow: fire /compact, then re-send the prompt that overflowed.
+   *  Transient (not persisted). Cleared once the retry completes or recovery is abandoned. */
+  overflowRecovery?: OverflowRecovery | null;
   /** Claude-only: whether auto-compaction is enabled for this session.
    *  When false, sidecar sets DISABLE_AUTO_COMPACT=1 (the only real disable — PCT_OVERRIDE gets clamped).
    *  When true, no override is set; Claude's built-in default applies (~83.5% trigger with a
    *  33K-token reserved summarization buffer — that IS the optimum, and PCT_OVERRIDE is clamped to it). */
   autocompactEnabled?: boolean;
+}
+
+export type OverflowRecovery = {
+  pendingPrompt: string;
+  pendingImages?: SdkImageContent[];
+  phase: 'compacting' | 'resending';
+  attempts: number;
+};
+
+/** Max compact-and-retry cycles per "prompt is too long" overflow before falling back to the terminal banner. */
+const MAX_OVERFLOW_RECOVERY_ATTEMPTS = 1;
+
+/** Matches the context-overflow errors Claude surfaces, whether the overflow happens on the user's
+ *  prompt or mid-turn while Claude is working (both arrive via sdk-error with the raw API text). */
+function isContextOverflowError(text: string): boolean {
+  return /prompt is too long|exceed.*context limit|context (?:window|length).*exceed|too many tokens/i.test(text);
+}
+
+function findLastIndex<T>(arr: T[], predicate: (value: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (predicate(arr[i])) return i;
+  }
+  return -1;
 }
 
 function normalizeDraftPrompt(value: unknown): string | undefined {
@@ -826,6 +852,7 @@ function createSdkSessionsStore() {
         let sessionMessages: SdkMessage[] = [];
         let needsAiAnalysis = false;
         let wasStoppedByUser = false;
+        const captured: { recovery: OverflowRecovery | null } = { recovery: null };
         const now = Date.now();
 
         update(sessions =>
@@ -835,6 +862,7 @@ function createSdkSessionsStore() {
             const workPeriod = calculateWorkPeriod(s);
             const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
             wasStoppedByUser = !!s.stopRequestedAt;
+            captured.recovery = s.overflowRecovery ?? null;
             const terminalType = wasStoppedByUser ? 'stopped' as const : 'done' as const;
             const updatedMessages = [...closedThinkingMessages, { type: terminalType, timestamp: now }];
             sessionMessages = updatedMessages;
@@ -860,6 +888,34 @@ function createSdkSessionsStore() {
         );
         debouncedSave();
 
+        // Overflow auto-recovery state machine. The /compact turn just finished; resend the
+        // prompt that overflowed. When that resend finishes, recovery is complete.
+        const recovery = captured.recovery;
+        if (recovery && wasStoppedByUser) {
+          // User interrupted mid-recovery — abandon it.
+          update(sessions => sessions.map(s => (s.id === id ? { ...s, overflowRecovery: null } : s)));
+          debouncedSave();
+        } else if (recovery?.phase === 'compacting') {
+          update(sessions =>
+            sessions.map(s => (s.id === id && s.overflowRecovery ? { ...s, overflowRecovery: { ...s.overflowRecovery, phase: 'resending' } } : s))
+          );
+          try {
+            await storeApi.sendPrompt(id, recovery.pendingPrompt, recovery.pendingImages);
+          } catch (err) {
+            console.error('[sdkSessions] overflow auto-retry failed:', err);
+            update(sessions =>
+              sessions.map(s => (s.id === id ? { ...s, status: 'error' as const, contextOverflow: true, overflowRecovery: null } : s))
+            );
+            debouncedSave();
+          }
+          // The /compact turn isn't a real completion — skip sound and AI analysis.
+          return;
+        } else if (recovery?.phase === 'resending') {
+          // The retried prompt completed successfully — recovery is done.
+          update(sessions => sessions.map(s => (s.id === id ? { ...s, overflowRecovery: null } : s)));
+          debouncedSave();
+        }
+
         if (!wasStoppedByUser && currentSettings.audio.play_sound_on_completion) {
           playCompletionSound();
         }
@@ -881,16 +937,57 @@ function createSdkSessionsStore() {
 
     // Error events
     unlisteners.push(
-      await listen<string>(`sdk-error-${id}`, (e) => {
+      await listen<string>(`sdk-error-${id}`, async (e) => {
         const currentSettings = get(settings);
         const now = Date.now();
         const payload = e.payload ?? '';
-        const isContextOverflow = /prompt is too long/i.test(payload);
+        const isContextOverflow = isContextOverflowError(payload);
+        let startRecovery = false;
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
             const workPeriod = calculateWorkPeriod(s);
             const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
+
+            // Auto-recover from context overflow — covers BOTH overflowing on the user's prompt and
+            // running out of context mid-turn while Claude is working. Compact, then re-run the turn's
+            // originating prompt. Gated to Claude sessions with auto-compaction on, one cycle per overflow.
+            const canAutoRecover =
+              isContextOverflow &&
+              s.provider !== 'openai' &&
+              s.autocompactEnabled !== false &&
+              (s.overflowRecovery?.attempts ?? 0) < MAX_OVERFLOW_RECOVERY_ATTEMPTS;
+            const lastUserIdx = canAutoRecover
+              ? findLastIndex(closedThinkingMessages, m => m.type === 'user')
+              : -1;
+            if (canAutoRecover && lastUserIdx !== -1) {
+              const failed = closedThinkingMessages[lastUserIdx];
+              // If the prompt overflowed before any work happened (it's the trailing message), strip it so
+              // the resend isn't a duplicate. If Claude was mid-turn (work follows it), keep the transcript.
+              const overflowedOnSend = lastUserIdx === closedThinkingMessages.length - 1;
+              const baseMessages = overflowedOnSend
+                ? closedThinkingMessages.filter((_, i) => i !== lastUserIdx)
+                : closedThinkingMessages;
+              startRecovery = true;
+              return {
+                ...s,
+                // Stay busy: the /compact query is queued immediately after this update.
+                status: 'querying' as const,
+                ...workPeriod,
+                usage: clearProgressiveUsage(s.usage),
+                messages: [
+                  ...baseMessages,
+                  { type: 'notification' as const, content: 'Context limit reached — auto-compacting and retrying…', timestamp: now },
+                ],
+                overflowRecovery: {
+                  pendingPrompt: failed.content ?? '',
+                  pendingImages: failed.images,
+                  phase: 'compacting' as const,
+                  attempts: (s.overflowRecovery?.attempts ?? 0) + 1,
+                },
+              };
+            }
+
             return {
               ...s,
               status: 'error' as const,
@@ -899,10 +996,25 @@ function createSdkSessionsStore() {
               messages: [...closedThinkingMessages, { type: 'error' as const, content: payload, timestamp: now }],
               unread: currentSettings.mark_sessions_unread && get(activeSdkSessionId) !== id ? true : s.unread,
               contextOverflow: isContextOverflow ? true : s.contextOverflow,
+              overflowRecovery: null,
             };
           })
         );
         debouncedSave();
+
+        if (startRecovery) {
+          try {
+            await storeApi.sendPrompt(id, '/compact');
+          } catch (err) {
+            console.error('[sdkSessions] auto-compact after overflow failed:', err);
+            update(sessions =>
+              sessions.map(s =>
+                s.id === id ? { ...s, status: 'error' as const, contextOverflow: true, overflowRecovery: null } : s
+              )
+            );
+            debouncedSave();
+          }
+        }
       })
     );
 
@@ -1358,7 +1470,7 @@ function createSdkSessionsStore() {
   // Store Methods
   // ---------------------------------------------------------------------------
 
-  return {
+  const storeApi = {
     subscribe,
     set,
 
@@ -2841,6 +2953,8 @@ Focus on quality and maintainability. Ask questions if any requirements are uncl
       activeSdkSessionId.set(null);
     },
   };
+
+  return storeApi;
 }
 
 export const activeSdkSessionId = writable<string | null>(null);
