@@ -36,6 +36,13 @@ export const AUTO_MODEL: ModelInfo = {
 
 export const ALL_MODELS: ModelInfo[] = [
   {
+    id: "claude-fable-5",
+    label: "Fable 5",
+    title: "Fable 5 - Most capable widely released model (1M context, adaptive thinking)",
+    maxContextTokens: 1000000,
+    supportsEffort: false,
+  },
+  {
     id: "claude-opus-4-8",
     label: "Opus 4.8",
     title: "Opus 4.8 - Most capable model",

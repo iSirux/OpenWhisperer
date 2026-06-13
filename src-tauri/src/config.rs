@@ -1916,6 +1916,7 @@ fn default_autocompact_enabled() -> bool {
 
 fn default_enabled_models() -> Vec<String> {
     vec![
+        "claude-fable-5".to_string(),
         "claude-opus-4-8".to_string(),
         "claude-opus-4-7".to_string(),
         "claude-sonnet-4-6".to_string(),

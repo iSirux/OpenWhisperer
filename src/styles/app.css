@@ -17,6 +17,7 @@
   --color-recording: #ef4444;
 
   /* Model colors - distinct colors that follow the theme */
+  --color-model-fable: #f43f5e;
   --color-model-opus: #6366f1;
   --color-model-sonnet: #eab308;
   --color-model-haiku: #22c55e;
@@ -35,6 +36,7 @@
   --color-text-muted: #666666;
   --color-accent: #6366f1;
   --color-accent-hover: #818cf8;
+  --color-model-fable: #fb7185;
   --color-model-opus: #a78bfa;
   --color-model-sonnet: #fbbf24;
   --color-model-haiku: #4ade80;
@@ -51,6 +53,7 @@
   --color-text-muted: #94a3b8;
   --color-accent: #3b82f6;
   --color-accent-hover: #60a5fa;
+  --color-model-fable: #fb7185;
   --color-model-opus: #818cf8;
   --color-model-sonnet: #fcd34d;
   --color-model-haiku: #6ee7b7;
@@ -67,6 +70,7 @@
   --color-text-muted: #6c5d8a;
   --color-accent: #9d4edd;
   --color-accent-hover: #c77dff;
+  --color-model-fable: #fb7185;
   --color-model-opus: #c77dff;
   --color-model-sonnet: #fbbf24;
   --color-model-haiku: #34d399;
@@ -83,6 +87,7 @@
   --color-text-muted: #8b6c5a;
   --color-accent: #e85d04;
   --color-accent-hover: #f48c06;
+  --color-model-fable: #fb7185;
   --color-model-opus: #c084fc;
   --color-model-sonnet: #f48c06;
   --color-model-haiku: #34d399;
@@ -99,6 +104,7 @@
   --color-text-muted: #7ba393;
   --color-accent: #10b981;
   --color-accent-hover: #34d399;
+  --color-model-fable: #fb7185;
   --color-model-opus: #a78bfa;
   --color-model-sonnet: #fcd34d;
   --color-model-haiku: #6ee7b7;
@@ -115,6 +121,7 @@
   --color-text-muted: #7aa3b0;
   --color-accent: #06b6d4;
   --color-accent-hover: #22d3ee;
+  --color-model-fable: #fb7185;
   --color-model-opus: #a78bfa;
   --color-model-sonnet: #fcd34d;
   --color-model-haiku: #6ee7b7;
@@ -131,6 +138,7 @@
   --color-text-muted: #ad7a98;
   --color-accent: #ec4899;
   --color-accent-hover: #f472b6;
+  --color-model-fable: #fb7185;
   --color-model-opus: #c084fc;
   --color-model-sonnet: #fcd34d;
   --color-model-haiku: #4ade80;
@@ -147,6 +155,7 @@
   --color-text-muted: #7e83ad;
   --color-accent: #6366f1;
   --color-accent-hover: #818cf8;
+  --color-model-fable: #fb7185;
   --color-model-opus: #a78bfa;
   --color-model-sonnet: #fcd34d;
   --color-model-haiku: #4ade80;
@@ -163,6 +172,7 @@
   --color-text-muted: #7aadaa;
   --color-accent: #2dd4bf;
   --color-accent-hover: #5eead4;
+  --color-model-fable: #fb7185;
   --color-model-opus: #c084fc;
   --color-model-sonnet: #fcd34d;
   --color-model-haiku: #86efac;
@@ -179,6 +189,7 @@
   --color-text-muted: #8390a3;
   --color-accent: #3b5fc1;
   --color-accent-hover: #2d4fa3;
+  --color-model-fable: #be123c;
   --color-model-opus: #6d28d9;
   --color-model-sonnet: #b45309;
   --color-model-haiku: #047857;
@@ -195,6 +206,7 @@
   --color-text-muted: #9a8a78;
   --color-accent: #a0522d;
   --color-accent-hover: #8b4513;
+  --color-model-fable: #be123c;
   --color-model-opus: #7e22ce;
   --color-model-sonnet: #a16207;
   --color-model-haiku: #15803d;

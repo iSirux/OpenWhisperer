@@ -619,6 +619,7 @@ const defaultConfig: AppConfig = {
   default_model: "claude-opus-4-8",
   default_effort_level: "high",
   enabled_models: [
+    "claude-fable-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
