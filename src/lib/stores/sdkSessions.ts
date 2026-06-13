@@ -7,7 +7,7 @@ import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
-import { clampEffortForModel, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
+import { clampEffortForModel, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import type { McpServerConfig } from '$lib/types/mcp';
 
 // =============================================================================
@@ -501,10 +501,43 @@ function calculateWorkPeriod(session: SdkSession): { accumulatedDurationMs: numb
   };
 }
 
+/** Fraction of the current window at which we proactively expand to the model's full window.
+ *  Expanding at 90% means a 200k window grows to 1M while ~20k of headroom remains,
+ *  so the bar never slams to 100% right before crossing 200k. */
+const CONTEXT_EXPAND_THRESHOLD = 0.9;
+
+/**
+ * Resolve the context window to display, expanding past a stale/base window when the
+ * model is known to support more (e.g. the 1M-context Claude models that the SDK still
+ * reports as a 200k window). The window only ever grows within a session — never shrinks —
+ * so the bar stays stable once expanded.
+ *
+ * @param reportedWindow Window reported for this query (from the sidecar/SDK)
+ * @param currentContextTokens Tokens currently occupying the context window
+ * @param model The session's model id (used to look up the true maximum)
+ * @param prevWindow The window already shown for this session
+ */
+function resolveContextWindow(
+  reportedWindow: number,
+  currentContextTokens: number,
+  model: string | undefined,
+  prevWindow: number,
+): number {
+  // Never shrink below what we've already shown or what this query reports.
+  let window = Math.max(reportedWindow || 0, prevWindow || 0) || 200000;
+  const modelMax = model ? getMaxContextTokens(model) : 0;
+  // Expand to the model's full window once usage approaches the current (smaller) window.
+  // Detecting at the threshold means we switch to 1M *before* shooting past 200k.
+  if (modelMax > window && currentContextTokens >= window * CONTEXT_EXPAND_THRESHOLD) {
+    window = modelMax;
+  }
+  return window;
+}
+
 /** Process final usage from a query and return updated session usage */
-function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: SdkUsage): SdkSessionUsage {
+function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: SdkUsage, model?: string): SdkSessionUsage {
   const prev = prevUsage || createDefaultUsage(queryUsage.contextWindow);
-  const contextWindow = queryUsage.contextWindow || prev.contextWindow || 200000;
+  const reportedWindow = queryUsage.contextWindow || prev.contextWindow || 200000;
   // For context bar: use main-agent-only tokens if available (excludes subagent usage)
   // Falls back to total tokens for backward compatibility (no subagents or old sidecar)
   const contextInputTokens = queryUsage.mainAgentInputTokens ?? queryUsage.inputTokens;
@@ -517,6 +550,7 @@ function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: S
     ? contextInputTokens
     : contextInputTokens + contextCacheReadTokens + contextCacheCreationTokens;
   const currentContextTokens = totalContextInputTokens + contextOutputTokens;
+  const contextWindow = resolveContextWindow(reportedWindow, currentContextTokens, model, prev.contextWindow);
   const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
   return {
@@ -539,7 +573,7 @@ function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: S
 }
 
 /** Process progressive usage and return updated session usage */
-function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progressiveUsage: SdkProgressiveUsage): SdkSessionUsage {
+function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progressiveUsage: SdkProgressiveUsage, model?: string): SdkSessionUsage {
   const prev = prevUsage || createDefaultUsage();
   // Progressive usage values from the SDK are cumulative for the current request, not deltas
   // So we use the latest values directly instead of accumulating
@@ -553,10 +587,12 @@ function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progres
     ? progressiveInputTokens
     : progressiveInputTokens + progressiveCacheReadTokens + progressiveCacheCreationTokens;
   const liveCurrentTokens = liveContextInputTokens + progressiveOutputTokens;
-  const contextUsagePercent = Math.min(100, (liveCurrentTokens / prev.contextWindow) * 100);
+  const contextWindow = resolveContextWindow(prev.contextWindow, liveCurrentTokens, model, prev.contextWindow);
+  const contextUsagePercent = Math.min(100, (liveCurrentTokens / contextWindow) * 100);
 
   return {
     ...prev,
+    contextWindow,
     contextUsagePercent,
     progressiveInputTokens,
     progressiveOutputTokens,
@@ -863,6 +899,21 @@ function createSdkSessionsStore() {
             const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
             wasStoppedByUser = !!s.stopRequestedAt;
             captured.recovery = s.overflowRecovery ?? null;
+
+            // Mid-recovery: the intermediate /compact turn just finished. This isn't a real
+            // turn completion — don't append a 'done' marker or flip to idle (which would render
+            // the session as "Done"). Keep it "in progress" and advance to the resend phase,
+            // which is fired immediately after this update.
+            if (s.overflowRecovery?.phase === 'compacting' && !wasStoppedByUser) {
+              return {
+                ...s,
+                status: 'querying' as const,
+                ...workPeriod,
+                usage: clearProgressiveUsage(s.usage),
+                overflowRecovery: { ...s.overflowRecovery, phase: 'resending' as const },
+              };
+            }
+
             const terminalType = wasStoppedByUser ? 'stopped' as const : 'done' as const;
             const updatedMessages = [...closedThinkingMessages, { type: terminalType, timestamp: now }];
             sessionMessages = updatedMessages;
@@ -896,9 +947,8 @@ function createSdkSessionsStore() {
           update(sessions => sessions.map(s => (s.id === id ? { ...s, overflowRecovery: null } : s)));
           debouncedSave();
         } else if (recovery?.phase === 'compacting') {
-          update(sessions =>
-            sessions.map(s => (s.id === id && s.overflowRecovery ? { ...s, overflowRecovery: { ...s.overflowRecovery, phase: 'resending' } } : s))
-          );
+          // The main update above already kept the session in 'querying' and advanced the
+          // recovery phase to 'resending'. Fire the resend of the prompt that overflowed.
           try {
             await storeApi.sendPrompt(id, recovery.pendingPrompt, recovery.pendingImages);
           } catch (err) {
@@ -1031,7 +1081,7 @@ function createSdkSessionsStore() {
         );
 
         update(sessions =>
-          sessions.map(s => s.id === id ? { ...s, usage: processQueryUsage(s.usage, queryUsage) } : s)
+          sessions.map(s => s.id === id ? { ...s, usage: processQueryUsage(s.usage, queryUsage, s.model) } : s)
         );
       })
     );
@@ -1040,7 +1090,7 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<SdkProgressiveUsage>(`sdk-progressive-usage-${id}`, (e) => {
         update(sessions =>
-          sessions.map(s => s.id === id ? { ...s, usage: processProgressiveUsage(s.usage, e.payload) } : s)
+          sessions.map(s => s.id === id ? { ...s, usage: processProgressiveUsage(s.usage, e.payload, s.model) } : s)
         );
       })
     );
