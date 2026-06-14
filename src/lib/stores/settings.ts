@@ -745,8 +745,28 @@ function createSettingsStore() {
 
     async save(config: AppConfig) {
       try {
-        await invoke("save_config", { newConfig: config });
-        set(config);
+        // Repo state (repos list, active index, auto mode) is owned by the
+        // separate `repos` store, which mutates it directly via dedicated
+        // backend commands (add/remove/set-active). The settings store's copy
+        // of these fields can be stale (e.g. a repo deleted via the repos
+        // store is still present in $settings.repos). Persisting that stale
+        // copy here would clobber those changes — e.g. resurrecting a deleted
+        // repo. Re-read the authoritative repo fields from the backend right
+        // before saving so we never overwrite them with stale data.
+        let merged = config;
+        try {
+          const current = await invoke<AppConfig>("get_config");
+          merged = {
+            ...config,
+            repos: current.repos,
+            active_repo_index: current.active_repo_index,
+            auto_repo_mode: current.auto_repo_mode,
+          };
+        } catch (e) {
+          console.error("[settings] Failed to re-read repo state before save:", e);
+        }
+        await invoke("save_config", { newConfig: merged });
+        set(merged);
         // Notify other windows (e.g., overlay) that settings changed
         emit("settings-changed");
       } catch (error) {
