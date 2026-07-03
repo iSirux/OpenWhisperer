@@ -46,6 +46,8 @@ export interface EventHandlerCallbacks {
   onUnregisterRecordingHotkeys: () => Promise<void>;
   /** Launch a prepared session */
   onLaunchPrepared?: (sessionId: string, editedPrompt?: string) => Promise<void>;
+  /** Cycle the recording stop mode (send → prepare → pile), e.g. from the overlay */
+  onCycleStopMode?: () => Promise<void>;
 }
 
 export function useSessionEventHandlers() {
@@ -54,6 +56,7 @@ export function useSessionEventHandlers() {
   let unlistenSendRecording: UnlistenFn | null = null;
   let unlistenOpenMicTriggered: UnlistenFn | null = null;
   let unlistenVoiceCommandTriggered: UnlistenFn | null = null;
+  let unlistenCycleStopMode: UnlistenFn | null = null;
 
   // Window event handlers
   function handleShowSessions() {
@@ -157,6 +160,11 @@ export function useSessionEventHandlers() {
       await callbacks?.onSendRecording();
     });
 
+    // Listen for cycle-stop-mode events from overlay (stop-mode chip click)
+    unlistenCycleStopMode = await listen('cycle-stop-mode', async () => {
+      await callbacks?.onCycleStopMode?.();
+    });
+
     // Listen for open-mic-triggered events
     unlistenOpenMicTriggered = await listen<{ command: string }>(
       'open-mic-triggered',
@@ -231,6 +239,11 @@ export function useSessionEventHandlers() {
     if (unlistenVoiceCommandTriggered) {
       unlistenVoiceCommandTriggered();
       unlistenVoiceCommandTriggered = null;
+    }
+
+    if (unlistenCycleStopMode) {
+      unlistenCycleStopMode();
+      unlistenCycleStopMode = null;
     }
   }
 

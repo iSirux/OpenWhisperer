@@ -230,6 +230,8 @@ export interface PersistedPendingTranscriptionInfo {
     reasoning: string;
     confidence: string;
   };
+  /** Recording screenshot (base64 — already JSON-safe) */
+  screenshot?: { mediaType: string; base64Data: string; width?: number; height?: number; source?: 'screenshot' };
 }
 
 /**

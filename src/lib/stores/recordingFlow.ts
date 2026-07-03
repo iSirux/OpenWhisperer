@@ -22,9 +22,15 @@ import { activeRepo } from '$lib/stores/repos';
 import { overlay } from '$lib/stores/overlay';
 import { openMic } from '$lib/stores/openMic';
 import { DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
+import { captureRecordingScreenshot } from '$lib/utils/screenshot';
 
 // Transcript processor (Phase 1)
-import { handlePrepareTranscriptReady, handleTranscriptReady } from '$lib/stores/transcriptProcessor';
+import {
+  handlePrepareTranscriptReady,
+  handleTranscriptReady,
+  handlePileTranscriptReady,
+} from '$lib/stores/transcriptProcessor';
+import type { RecordAndSendAction } from '$lib/stores/settings';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -143,7 +149,22 @@ function createRecordingFlowStore() {
   ): string {
     const sessionId = sdkSessions.createPendingTranscriptionSession(model, effortLevel, provider);
     pendingTranscriptionSessionId = sessionId;
+    maybeCaptureScreenshot(sessionId);
     return sessionId;
+  }
+
+  /**
+   * Capture a screenshot of what the user is looking at as the recording
+   * starts (fire-and-forget — grabs the screen before the overlay appears).
+   * Stored on the pending session; attached to the first prompt on send.
+   */
+  function maybeCaptureScreenshot(sessionId: string) {
+    if (!get(settings).audio.capture_screenshot_on_record) return;
+    captureRecordingScreenshot().then((screenshot) => {
+      if (screenshot) {
+        sdkSessions.updatePendingTranscription(sessionId, { screenshot });
+      }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -153,13 +174,16 @@ function createRecordingFlowStore() {
   function handleRecordingStop(
     sessionIdToProcess: string | null,
     capturedVoskTranscript: string | undefined,
-    isNoteMode: boolean = false
+    isNoteMode: boolean = false,
+    forceAction?: RecordAndSendAction
   ) {
     const currentSettings = get(settings);
-    const shouldPrepareOnStop =
-      !isNoteMode &&
-      getEffectiveTerminalMode(currentSettings) === 'Sdk' &&
-      currentSettings.audio.record_and_send_action === 'prepare';
+    const isSdk = getEffectiveTerminalMode(currentSettings) === 'Sdk';
+    const stopAction: RecordAndSendAction =
+      forceAction ??
+      (!isNoteMode && isSdk ? currentSettings.audio.record_and_send_action : 'send');
+    const shouldPileOnStop = stopAction === 'pile';
+    const shouldPrepareOnStop = !isNoteMode && isSdk && stopAction === 'prepare';
 
     recording
       .stopRecording(true)
@@ -171,7 +195,15 @@ function createRecordingFlowStore() {
           }
         }
 
-        if (transcript) {
+        if (shouldPileOnStop) {
+          // Pile mode keeps failed transcriptions too (audio is preserved)
+          await handlePileTranscriptReady(
+            transcript || '',
+            sessionIdToProcess,
+            capturedVoskTranscript,
+            transcript ? undefined : 'No transcription returned'
+          );
+        } else if (transcript) {
           if (shouldPrepareOnStop && sessionIdToProcess) {
             await handlePrepareTranscriptReady(
               transcript,
@@ -196,8 +228,15 @@ function createRecordingFlowStore() {
           pendingTranscriptionSessionId = null;
         }
       })
-      .catch((error) => {
-        if (sessionIdToProcess) {
+      .catch(async (error) => {
+        if (shouldPileOnStop) {
+          await handlePileTranscriptReady(
+            '',
+            sessionIdToProcess,
+            capturedVoskTranscript,
+            error?.message || 'Transcription failed'
+          );
+        } else if (sessionIdToProcess) {
           const audioData = get(recording).audioData;
           if (audioData) {
             sdkSessions.storeAudioData(sessionIdToProcess, audioData);
@@ -308,6 +347,31 @@ function createRecordingFlowStore() {
 
     const capturedVoskTranscript = get(recording).realtimeTranscript;
     handleRecordingStop(sessionIdToProcess, capturedVoskTranscript);
+  }
+
+  /** Stop the current recording and save it to the pile (hotkey / UI). */
+  async function stopRecordingToPile() {
+    if (!get(isRecording)) return;
+
+    await hotkeyCallbacks?.unregisterRecordingHotkeys();
+    await overlay.hide();
+    overlay.clearSessionInfo();
+    cleanupAudioVisualizationListener();
+
+    const sessionIdToProcess = pendingTranscriptionSessionId;
+    if (sessionIdToProcess) {
+      sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
+    }
+
+    const capturedVoskTranscript = get(recording).realtimeTranscript;
+
+    update((s) => ({
+      ...s,
+      isRecordingForNewSession: false,
+      isRecordingForNoteMode: false,
+    }));
+
+    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript, false, 'pile');
   }
 
   /** Start recording from open mic wake command. */
@@ -471,6 +535,7 @@ function createRecordingFlowStore() {
     stopRecordingNewSession,
     startRecordingFromHotkey,
     stopRecordingFromHotkey,
+    stopRecordingToPile,
     startRecordingFromOpenMic,
     cancelRecording,
     startRecordingForSetup,

@@ -1,14 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
+  import { sdkSessions } from "$lib/stores/sdkSessions";
+  import { activeRepo } from "$lib/stores/repos";
   import {
-    sdkSessions,
-    settingsToStoreEffort,
-    type EffortLevel,
-  } from "$lib/stores/sdkSessions";
-  import { settings } from "$lib/stores/settings";
-  import { activeRepo, type RepoConfig } from "$lib/stores/repos";
+    createSessionQueue,
+    launchSession,
+    snapshotLaunchConfig,
+  } from "$lib/utils/sessionLaunch";
 
   interface NotionCard {
     id: string;
@@ -20,11 +19,6 @@
     feature_area: string[];
     groomed: string | null;
     url: string;
-  }
-
-  interface WorktreeCreationResult {
-    worktree_path: string;
-    branch: string;
   }
 
   const KANBAN_COLUMNS: { label: string; status: string; color: string }[] = [
@@ -45,8 +39,9 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let showDone = $state(false);
-  let queueSize = $state(0);
-  let queueProcessing = $state(false);
+  const launchQueue = createSessionQueue();
+  const queueSizeStore = launchQueue.size;
+  const queueProcessingStore = launchQueue.processing;
   let useWorktree = $state(true);
   let playwrightQa = $state(false);
   let pendingAction = $state<string | null>(null);
@@ -80,67 +75,6 @@
     pendingAction = null;
   }
 
-  interface QueueConfig {
-    repo: RepoConfig;
-    model: string;
-    effortLevel: EffortLevel;
-    provider: "claude" | "openai";
-  }
-
-  type QueueItem =
-    | {
-        type: "card";
-        card: NotionCard;
-        prompt: string;
-        useWorktree: boolean;
-        playwrightQa: boolean;
-        config: QueueConfig;
-      }
-    | {
-        type: "board";
-        prompt: string;
-        config: QueueConfig;
-      }
-    | { type: "delay" };
-
-  const queue: QueueItem[] = [];
-
-  async function processQueue() {
-    if (queueProcessing) return;
-    queueProcessing = true;
-
-    while (queue.length > 0) {
-      const item = queue.shift()!;
-      queueSize = queue.length;
-
-      try {
-        if (item.type === "card") {
-          await createWorktreeSession(
-            item.card,
-            item.prompt,
-            item.useWorktree,
-            item.playwrightQa,
-            item.config,
-          );
-        } else if (item.type === "board") {
-          await launchBoardSession(item.prompt, item.config);
-        } else if (item.type === "delay") {
-          await randomDelay();
-        }
-      } catch (err) {
-        console.error("[notion] Queue item failed:", err);
-      }
-    }
-
-    queueSize = 0;
-    queueProcessing = false;
-  }
-
-  function enqueue(...items: QueueItem[]) {
-    queue.push(...items);
-    queueSize = queue.length;
-    processQueue();
-  }
   let showFilters = $state(false);
 
   let searchQuery = $state("");
@@ -279,96 +213,6 @@
     selectedIds = new Set();
   }
 
-  async function createWorktreeSession(
-    card: NotionCard,
-    prompt: string,
-    useWorktree: boolean,
-    playwrightQa: boolean,
-    config: QueueConfig,
-  ) {
-    const { repo, model, effortLevel, provider } = config;
-    const sessionId = sdkSessions.createSetupSession(
-      model,
-      effortLevel,
-      false,
-      provider,
-      repo.path,
-    );
-
-    sdkSessions.set(
-      get(sdkSessions).map((s) =>
-        s.id === sessionId
-          ? { ...s, notionCard: { id: card.id, title: card.title } }
-          : s,
-      ),
-    );
-
-    let cwd = repo.path;
-    let createdBranch: string | undefined;
-    let worktreePostSetup:
-      | { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }
-      | undefined;
-
-    if (useWorktree) {
-      try {
-        const branchName = await invoke<string>(
-          "generate_worktree_branch_name",
-          {
-            prompt: card.title,
-            repoPath: repo.path,
-          },
-        );
-
-        const result = await invoke<WorktreeCreationResult>(
-          "create_git_worktree_only",
-          {
-            repoPath: repo.path,
-            branchName,
-            worktreePath: null,
-            baseBranch: repo.worktree_base_branch || null,
-          },
-        );
-
-        cwd = result.worktree_path;
-        createdBranch = result.branch;
-
-        const copyFiles = repo.worktree_copy_files || [];
-        const postCreateCommands = repo.worktree_post_create_commands || [];
-        if (copyFiles.length > 0 || postCreateCommands.length > 0) {
-          worktreePostSetup = {
-            repoPath: repo.path,
-            copyFiles,
-            postCreateCommands,
-          };
-        }
-      } catch (err) {
-        console.error(
-          `[notion] Failed to create worktree for "${card.title}":`,
-          err,
-        );
-      }
-    }
-
-    await sdkSessions.startSetupSession(sessionId, {
-      prompt,
-      cwd,
-      model,
-      effortLevel,
-      planMode: false,
-      provider,
-      createdBranch,
-      worktreePostSetup,
-      playwrightQa,
-    });
-
-    return sessionId;
-  }
-
-  function randomDelay(): Promise<void> {
-    const ms = 1000 + Math.random() * 4000;
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
   function getPromptForAction(
     action: string,
     card: NotionCard,
@@ -407,42 +251,33 @@
     }
   }
 
-  function snapshotConfig(): QueueConfig | null {
-    const repo = $activeRepo;
-    if (!repo) return null;
-    const s = $settings;
-    const provider =
-      s.sdk_provider === "OpenAI" ? "openai" : ("claude" as const);
-    const model = provider === "openai" ? s.openai_model : s.default_model;
-    const effortLevel = settingsToStoreEffort(s.default_effort_level);
-    return { repo, model, effortLevel, provider };
-  }
-
   function runAction(action: string) {
     if (selectedCards.length === 0) return;
-    const config = snapshotConfig();
+    const config = snapshotLaunchConfig();
     if (!config) return;
 
     const cardsSnapshot = [...selectedCards];
+    const worktree = useWorktree;
+    const qa = playwrightQa;
     clearSelection();
 
-    const items: QueueItem[] = [];
-    for (let i = 0; i < cardsSnapshot.length; i++) {
-      const { prompt } = getPromptForAction(action, cardsSnapshot[i]);
-      items.push({
-        type: "card",
-        card: cardsSnapshot[i],
-        prompt,
-        useWorktree,
-        playwrightQa,
-        config,
-      });
-      if (i < cardsSnapshot.length - 1) {
-        items.push({ type: "delay" });
-      }
-    }
-
-    enqueue(...items);
+    launchQueue.enqueue(
+      cardsSnapshot.map((card) => () => {
+        const { prompt } = getPromptForAction(action, card);
+        return launchSession({
+          prompt,
+          repo: config.repo,
+          model: config.model,
+          effortLevel: config.effortLevel,
+          provider: config.provider,
+          useWorktree: worktree,
+          branchNameHint: card.title,
+          playwrightQa: qa,
+          tag: { notionCard: { id: card.id, title: card.title } },
+        }).then(() => {});
+      }),
+      { stagger: true },
+    );
   }
 
   function priorityBadge(p: string | null): string {
@@ -511,33 +346,19 @@
     }
   }
 
-  async function launchBoardSession(
-    prompt: string,
-    config: QueueConfig,
-  ) {
-    const { repo, model, effortLevel, provider } = config;
-    const sessionId = sdkSessions.createSetupSession(
-      model,
-      effortLevel,
-      false,
-      provider,
-      repo.path,
-    );
-
-    await sdkSessions.startSetupSession(sessionId, {
-      prompt,
-      cwd: repo.path,
-      model,
-      effortLevel,
-      planMode: false,
-      provider,
-    });
-  }
-
   function boardAction(prompt: string) {
-    const config = snapshotConfig();
+    const config = snapshotLaunchConfig();
     if (!config) return;
-    enqueue({ type: "board", prompt, config });
+    launchQueue.enqueue([
+      () =>
+        launchSession({
+          prompt,
+          repo: config.repo,
+          model: config.model,
+          effortLevel: config.effortLevel,
+          provider: config.provider,
+        }).then(() => {}),
+    ]);
   }
 
   function classifyAll() {
@@ -878,7 +699,7 @@
   </div>
 
   <!-- Queue indicator -->
-  {#if queueProcessing}
+  {#if $queueProcessingStore}
     <div
       class="flex items-center gap-2 px-4 py-1.5 border-t border-border bg-surface-elevated/50 shrink-0"
     >
@@ -889,7 +710,7 @@
         ></div>
       </div>
       <span class="text-[11px] text-text-muted"
-        >Processing{queueSize > 0 ? ` (${queueSize} queued)` : ""}...</span
+        >Processing{$queueSizeStore > 0 ? ` (${$queueSizeStore} queued)` : ""}...</span
       >
     </div>
   {/if}

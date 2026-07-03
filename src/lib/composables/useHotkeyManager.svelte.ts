@@ -20,6 +20,8 @@ export interface HotkeyCallbacks {
   onStopAndSend: () => Promise<void>;
   /** Called when recording should stop and paste to input */
   onStopAndPaste: () => Promise<void>;
+  /** Called when recording should stop and be saved to the pile */
+  onStopAndPile: () => Promise<void>;
   /** Called when recording should start in note mode */
   onStartNoteRecording: () => Promise<void>;
   /** Called when selected text should be copied and sent as a new prompt */
@@ -31,6 +33,8 @@ export interface HotkeyCallbacks {
 export function useHotkeyManager() {
   // Registration state
   let transcribeHotkeyRegistered = false;
+  let pileHotkeyRegistered = false;
+  let registeredPileHotkey: string | null = null;
   let cycleRepoHotkeyRegistered = false;
   let cycleModelHotkeyRegistered = false;
   let noteModeHotkeyRegistered = false;
@@ -264,6 +268,56 @@ export function useHotkeyManager() {
   }
 
   /**
+   * Register the pile-recording hotkey (only while recording).
+   * Stops the current recording and saves it to the pile.
+   */
+  async function registerPileHotkey() {
+    if (pileHotkeyRegistered) return;
+
+    const currentSettings = get(settings);
+    if (!currentSettings.hotkeys_enabled.pile_recording) {
+      console.log('[Hotkey] pile_recording is disabled, skipping registration');
+      return;
+    }
+    const hotkeyString = currentSettings.hotkeys.pile_recording;
+    if (!hotkeyString) return;
+    try {
+      await register(hotkeyString, async () => {
+        if (!get(isRecording)) return;
+        if (isTogglingRecording) return;
+        isTogglingRecording = true;
+
+        try {
+          await callbacks?.onStopAndPile();
+        } finally {
+          setTimeout(() => {
+            isTogglingRecording = false;
+          }, 200);
+        }
+      });
+      registeredPileHotkey = hotkeyString;
+      pileHotkeyRegistered = true;
+    } catch (error) {
+      console.error('Failed to register pile hotkey:', error);
+    }
+  }
+
+  /**
+   * Unregister the pile-recording hotkey
+   */
+  async function unregisterPileHotkey() {
+    if (!pileHotkeyRegistered || !registeredPileHotkey) return;
+
+    try {
+      await unregister(registeredPileHotkey);
+      pileHotkeyRegistered = false;
+      registeredPileHotkey = null;
+    } catch (error) {
+      console.error('Failed to unregister pile hotkey:', error);
+    }
+  }
+
+  /**
    * Unregister the transcribe-to-input hotkey
    */
   async function unregisterTranscribeHotkey() {
@@ -481,6 +535,7 @@ export function useHotkeyManager() {
    */
   async function registerRecordingHotkeys() {
     await registerTranscribeHotkey();
+    await registerPileHotkey();
     await registerCycleRepoHotkey();
     await registerCycleModelHotkey();
   }
@@ -490,6 +545,7 @@ export function useHotkeyManager() {
    */
   async function unregisterRecordingHotkeys() {
     await unregisterTranscribeHotkey();
+    await unregisterPileHotkey();
     await unregisterCycleRepoHotkey();
     await unregisterCycleModelHotkey();
   }
@@ -503,6 +559,8 @@ export function useHotkeyManager() {
     try {
       await unregisterAll();
       transcribeHotkeyRegistered = false;
+      pileHotkeyRegistered = false;
+      registeredPileHotkey = null;
       cycleRepoHotkeyRegistered = false;
       cycleModelHotkeyRegistered = false;
       noteModeHotkeyRegistered = false;

@@ -327,6 +327,7 @@ export function transformToDisplaySessions(
             }
           : undefined,
         notionCard: s.notionCard,
+        pileItem: s.pileItem,
       };
     }),
     ...sequenceExecutions.map((exec) => {

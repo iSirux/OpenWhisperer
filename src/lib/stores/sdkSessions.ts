@@ -8,6 +8,7 @@ import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
 import { clampEffortForModel, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
+import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
 
 // =============================================================================
@@ -68,6 +69,8 @@ export interface SdkImageContent {
   base64Data: string;
   width?: number;
   height?: number;
+  /** Set for auto-captured recording screenshots — triggers the "may be irrelevant" prompt notice. */
+  source?: 'screenshot';
 }
 
 export interface SdkMessage {
@@ -282,6 +285,8 @@ export interface PendingTranscriptionInfo {
     reasoning: string;
     confidence: string;
   };
+  /** Screenshot captured when the recording started; attached to the first prompt on send. */
+  screenshot?: SdkImageContent;
 }
 
 export interface SdkSession {
@@ -351,6 +356,8 @@ export interface SdkSession {
   forkedFromSessionLabel?: string;
   /** Notion card linked to this session (set when created from kanban board) */
   notionCard?: { id: string; title: string };
+  /** Pile item this session was launched from */
+  pileItem?: { id: string; title: string };
   /** Skip project/local hooks (lint, build, etc.) for non-implementation sessions */
   disableHooks?: boolean;
   /** Playwright MCP enabled for this session (browser QA) */
@@ -1772,11 +1779,19 @@ function createSdkSessionsStore() {
 
       let sessionCwd: string | undefined;
       let needsNameGeneration = false;
+      let recordingScreenshot: SdkImageContent | undefined;
       subscribe(sessions => {
         const session = sessions.find(s => s.id === id);
         sessionCwd = session?.cwd;
-        needsNameGeneration = !session?.aiMetadata?.name && session?.messages.filter(m => m.type === 'user').length === 0;
+        const isFirstUserMessage = session?.messages.filter(m => m.type === 'user').length === 0;
+        needsNameGeneration = !session?.aiMetadata?.name && isFirstUserMessage;
+        // A recording screenshot rides on the pending session until the first prompt goes out
+        if (isFirstUserMessage) recordingScreenshot = session?.pendingTranscription?.screenshot;
       })();
+
+      if (recordingScreenshot) {
+        images = [...(images ?? []), recordingScreenshot];
+      }
 
       usageStats.trackPrompt(sessionCwd);
 
@@ -1791,6 +1806,10 @@ function createSdkSessionsStore() {
                 aiMetadata: clearCompletionMetadata(s.aiMetadata),
                 draftPrompt: undefined,
                 draftImages: undefined,
+                // Screenshot now lives in the message — clear it so later prompts don't re-attach
+                pendingTranscription: s.pendingTranscription?.screenshot
+                  ? { ...s.pendingTranscription, screenshot: undefined }
+                  : s.pendingTranscription,
               }
             : s
         )
@@ -1820,6 +1839,11 @@ function createSdkSessionsStore() {
             s.id === id ? { ...s, pendingSystemNotifications: undefined } : s
           )
         );
+      }
+
+      // Label auto-captured screenshots as potentially irrelevant (send-time only, not shown in UI)
+      if (hasScreenshotImage(images)) {
+        finalPrompt = finalPrompt + '\n\n' + SCREENSHOT_PROMPT_NOTICE;
       }
 
       try {

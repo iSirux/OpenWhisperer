@@ -51,6 +51,7 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `usageStats.ts` - Persistent usage statistics tracking (sessions, tokens, costs, tools, repos, daily stats, streaks)
 - `openMic.ts` - Passive voice listening for wake command detection
 - `sessionPersistence.ts` - Session persistence layer for disk storage and restoration
+- `pile.ts` - Recording pile: inbox of transcribed recordings saved for later (own persistence file, saved audio, background LLM processing for cleanup/repo/model/title)
 
 **Components (`src/lib/components/`):**
 
@@ -58,6 +59,8 @@ Core UI:
 
 - `AppHeader.svelte` - Application header with global controls
 - `SessionList.svelte` - Unified list of PTY and SDK sessions with status indicators and unread markers
+- `PileList.svelte` - Pile tab in the sidebar: pile item cards with multi-select and batch launch actions
+- `PileDetailView.svelte` - Main-pane editor for a pile item (transcript, repo/model, audio playback, re-transcribe, launch)
 - `SessionCard.svelte` - Card component for sessions-view grid display
 - `SessionHeader.svelte` - Active session metadata display (PTY sessions)
 - `SdkSessionHeader.svelte` - Active session metadata display for SDK sessions
@@ -121,6 +124,8 @@ Core UI:
 - `models.ts` - Model definitions, thinking levels, and Auto model selection support
 - `llm.ts` - LLM integration utilities for session analysis, transcription cleanup, model/repo recommendations
 - `voiceCommands.ts` - Voice command detection and processing for sending prompts via voice
+- `sessionLaunch.ts` - Shared session launch machinery: `launchSession` (setup session + optional worktree + tagging) and `createSessionQueue` (staggered batch launches; used by NotionKanban and the pile)
+- `pileActions.ts` - Turning pile items into sessions (start / prepare / plan-first / discuss)
 
 ### Backend (Rust/Tauri)
 
@@ -321,6 +326,19 @@ The app supports voice-triggered actions for hands-free operation:
 - **Send Prompt** - Say a trigger phrase after recording to automatically send
 - **Transcribe to Input** - Say a transcribe phrase to paste the transcription into the current app
 - **Cancel Recording** - Say a cancel phrase to discard the current recording (e.g., "cancel that", "never mind", "scratch that", "abort abort")
+
+## Recording Pile
+
+An inbox for voice recordings captured now and handled later. Three ways to pile a recording: the `pile_recording` hotkey while recording, a pile voice command ("pile it"), or setting the recording stop mode (`audio.record_and_send_action`) to `pile` — cyclable via the mode chip on the overlay (send → prepare → pile). Prepared/approval sessions can also be demoted to the pile ("To Pile" button).
+
+- Items are persisted to `pile.json` in the config dir (opaque JSON, frontend owns the schema); audio is saved to `pile-audio/<id>.webm` so items can be replayed and re-transcribed (failed transcriptions still land in the pile as audio-only items)
+- Each item is LLM-processed in the background: transcription cleanup, repo recommendation (with confidence), model/effort recommendation, and auto-title (reuses session naming)
+- UI: Sessions | Pile tabs in the sidebar; pile items open in the main pane for editing (transcript, repo, model, effort, audio playback); multi-select in the list enables batch launch (Start / Prepare / Plan first / Discuss with worktree + Playwright toggles) through the shared session queue
+- Sessions launched from an item are tagged (`pileItem`) and shown as linked sessions with live indicators; items stay in the pile until deleted
+
+## Recording Screenshots
+
+Optional (`audio.capture_screenshot_on_record`, Settings → Audio → Recording): when a recording starts, the `capture_screenshot` Tauri command (xcap, monitor under the cursor) grabs the screen before the overlay appears. The screenshot is compressed via the shared image pipeline (`src/lib/utils/image.ts`) and rides on the pending session (`pendingTranscription.screenshot`) through prepare/approval/repo-selection; `sdkSessions.sendPrompt` attaches it to the first prompt as an image and appends `SCREENSHOT_PROMPT_NOTICE` (from `src/lib/utils/screenshot.ts`) at send time only — telling Claude the screenshot may be unrelated to the request, since the user may have been doing something off-topic while talking. Pile items store screenshots on disk (`pile-screenshots/<id>.img`) and attach them at launch. Thumbnails with remove buttons appear in the recording header (prepared/approval views) and the pile detail view; sent messages show the image with a "Screenshot" badge (`SdkImageContent.source === 'screenshot'`).
 
 ## Open Mic Mode
 

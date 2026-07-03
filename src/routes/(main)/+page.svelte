@@ -9,6 +9,8 @@
   import SessionPendingView from '$lib/components/SessionPendingView.svelte';
   import ArchiveView from '$lib/components/ArchiveView.svelte';
   import NotionKanban from '$lib/components/NotionKanban.svelte';
+  import PileList from '$lib/components/PileList.svelte';
+  import PileDetailView from '$lib/components/PileDetailView.svelte';
 
   // Refactored components
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
@@ -30,6 +32,7 @@
   import { settings } from '$lib/stores/settings';
   import { repos, activeRepo, findRepoById } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
+  import { sidebarTab, pileCount, selectedPileItem, selectedPileItemId } from '$lib/stores/pile';
   import {
     activeExecution,
     activeExecutionId,
@@ -50,6 +53,13 @@
 
   // Current view from navigation store
   let currentView = $derived($navigation.mainView);
+
+  // Selecting a session clears the pile selection (they share the main pane)
+  $effect(() => {
+    if ($activeSdkSessionId || $activeSessionId) {
+      selectedPileItemId.set(null);
+    }
+  });
   let currentRepoId = $derived($navigation.selectedRepoId);
   let repositoryAddMode = $derived($navigation.repositoryAddMode);
 
@@ -243,8 +253,30 @@
           markSessionsUnread={$settings.mark_sessions_unread}
           onShowSessions={showSessionsView}
         />
+        <div class="flex border-b border-border px-1.5 pt-1 gap-1 shrink-0">
+          <button
+            class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'sessions'
+              ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
+              : 'text-text-muted hover:text-text-secondary'}"
+            onclick={() => sidebarTab.set('sessions')}
+          >
+            Sessions
+          </button>
+          <button
+            class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'pile'
+              ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
+              : 'text-text-muted hover:text-text-secondary'}"
+            onclick={() => sidebarTab.set('pile')}
+          >
+            Pile{$pileCount > 0 ? ` (${$pileCount})` : ''}
+          </button>
+        </div>
         <div class="flex-1 overflow-hidden">
-          <SessionList {currentView} />
+          {#if $sidebarTab === 'pile'}
+            <PileList />
+          {:else}
+            <SessionList {currentView} />
+          {/if}
         </div>
       </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -267,6 +299,8 @@
         />
       {:else if currentView === 'repository'}
         <RepositoryView repoId={currentRepoId} showAddForm={repositoryAddMode} />
+      {:else if $selectedPileItem}
+        <PileDetailView item={$selectedPileItem} />
       {:else if $activeSdkSession}
       {@const activeSession = $activeSdkSession}
       {@const sessionId = activeSession.id}

@@ -54,6 +54,8 @@
     cleanupTranscript,
     buildSingleRepoContext,
   } from "$lib/composables/useTranscriptionProcessor.svelte";
+  import { pile, sidebarTab } from "$lib/stores/pile";
+  import { activeSdkSessionId } from "$lib/stores/sdkSessions";
   import { get } from "svelte/store";
 
   let { sessionId }: { sessionId: string } = $props();
@@ -1079,6 +1081,51 @@
     sdkSessions.updatePreparedRepo(sessionId, repoCwd);
   }
 
+  /**
+   * Demote a prepared / pending-approval prompt into the pile.
+   * Carries over the session's processing results (cleanup, repo/model recs,
+   * audio, waveform) so no LLM work is redone, then closes the session.
+   */
+  function handleDemoteToPile(prompt: string) {
+    if (!session || !prompt.trim()) return;
+
+    const pending = session.pendingTranscription;
+    const repoPath = cwd;
+    const repoFromRec =
+      pending?.repoRecommendation != null
+        ? $repos.list[pending.repoRecommendation.repoIndex]
+        : undefined;
+    const repoFromPath = repoPath && repoPath !== '.'
+      ? $repos.list.find((r) => r.path === repoPath)
+      : undefined;
+    const repo = repoFromPath ?? repoFromRec;
+
+    pile.addRecording({
+      transcript: prompt.trim(),
+      process: false,
+      rawTranscript: pending?.transcript,
+      voskTranscript: pending?.voskTranscript,
+      wasCleanedUp: pending?.wasCleanedUp,
+      cleanupCorrections: pending?.cleanupCorrections,
+      usedDualSource: pending?.usedDualSource,
+      audioData: pending?.audioData,
+      recordingDurationMs:
+        pending?.recordingDurationMs ??
+        (pending?.recordingStartedAt ? Date.now() - pending.recordingStartedAt : undefined),
+      audioVisualizationHistory: pending?.audioVisualizationHistory,
+      screenshot: pending?.screenshot,
+      repoId: repo?.id,
+      repoConfidence: pending?.repoRecommendation?.confidence,
+      repoReasoning: pending?.repoRecommendation?.reasoning,
+      model: session.model,
+      effortLevel: session.effortLevel,
+    });
+
+    sdkSessions.closeSession(sessionId);
+    activeSdkSessionId.set(null);
+    sidebarTab.set('pile');
+  }
+
   // Model and effort change handlers
   function handleModelChange(newModel: string) {
     sdkSessions.updateSessionModel(sessionId, newModel);
@@ -1215,6 +1262,7 @@
           {repoName}
           onApprove={handleApprove}
           onCancelApproval={handleCancelApproval}
+          onDemoteToPile={handleDemoteToPile}
           autoModelEffort={$settings.llm?.features?.auto_model_effort}
         />
       {/if}
@@ -1228,6 +1276,7 @@
           {preparedPrompt}
           onLaunch={handleLaunchPrepared}
           onCancelPrepared={handleCancelPrepared}
+          onDemoteToPile={handleDemoteToPile}
           repos={$repos.list.filter((r) => r.active !== false)}
           {preparedRepoRecommendation}
           selectedRepoCwd={cwd}

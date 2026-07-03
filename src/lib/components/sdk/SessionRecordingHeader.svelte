@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { PendingTranscriptionInfo } from "$lib/stores/sdkSessions";
+  import { sdkSessions, type PendingTranscriptionInfo } from "$lib/stores/sdkSessions";
   import type { AutoModelEffort } from "$lib/stores/settings";
   import { settings } from "$lib/stores/settings";
   import { repos as reposStore, type RepoConfig } from "$lib/stores/repos";
@@ -47,6 +47,8 @@
     selectedRepoCwd?: string;
     /** Callback when user selects a repo in prepared mode */
     onSelectRepo?: (repoCwd: string) => void;
+    /** Callback to demote this prompt to the pile instead of sending (approval + prepared modes) */
+    onDemoteToPile?: (prompt: string) => void;
   }
 
   let {
@@ -69,6 +71,7 @@
     preparedRepoRecommendation,
     selectedRepoCwd = "",
     onSelectRepo,
+    onDemoteToPile,
   }: Props = $props();
 
   // Resolve the recommended repo path using full repos array (recommendation index is into full array)
@@ -82,6 +85,13 @@
   let isEditingPrompt = $state(false);
   let editedPrompt = $state("");
   let textareaEl: HTMLTextAreaElement | null = $state(null);
+
+  // Recording screenshot preview
+  let screenshotExpanded = $state(false);
+
+  function removeScreenshot() {
+    sdkSessions.updatePendingTranscription(sessionId, { screenshot: undefined });
+  }
 
   // Initialize edited prompt when approval mode is shown
   $effect(() => {
@@ -139,6 +149,12 @@
   function handleCancelPrepared() {
     if (onCancelPrepared) {
       onCancelPrepared();
+    }
+  }
+
+  function handleDemoteToPile() {
+    if (onDemoteToPile) {
+      onDemoteToPile(editedPrompt || preparedPrompt || approvalPrompt || "");
     }
   }
 
@@ -373,6 +389,37 @@
     </div>
   {/if}
 
+  <!-- Recording screenshot (auto-captured at record start, attached to the prompt) -->
+  {#if pendingTranscription.screenshot}
+    <div class="screenshot-section">
+      <div class="screenshot-header">
+        <span class="screenshot-label">Screenshot</span>
+        <span class="screenshot-hint">captured at recording start — attached to the prompt</span>
+        {#if !completed}
+          <button
+            class="screenshot-remove-btn"
+            onclick={removeScreenshot}
+            title="Remove screenshot (won't be attached to the prompt)"
+          >
+            ✕
+          </button>
+        {/if}
+      </div>
+      <button
+        class="screenshot-thumb-wrap"
+        onclick={() => (screenshotExpanded = !screenshotExpanded)}
+        title={screenshotExpanded ? "Collapse" : "Expand"}
+      >
+        <img
+          src={`data:${pendingTranscription.screenshot.mediaType};base64,${pendingTranscription.screenshot.base64Data}`}
+          alt="Screen captured when recording started"
+          class="screenshot-thumb"
+          class:expanded={screenshotExpanded}
+        />
+      </button>
+    </div>
+  {/if}
+
   <!-- LLM Recommendations -->
   {#if pendingTranscription.modelRecommendation || pendingTranscription.repoRecommendation}
     <div class="recommendations-section">
@@ -533,6 +580,11 @@
         <button class="cancel-approval-btn" onclick={handleCancelPrepared}>
           Discard
         </button>
+        {#if onDemoteToPile}
+          <button class="pile-btn" onclick={handleDemoteToPile} title="Save to the pile to handle later">
+            To Pile
+          </button>
+        {/if}
         {#if isEditingPrompt}
           <button class="done-edit-btn" onclick={() => (isEditingPrompt = false)}>
             Done Editing
@@ -627,6 +679,11 @@
         <button class="cancel-approval-btn" onclick={handleCancelApproval}>
           Cancel
         </button>
+        {#if onDemoteToPile}
+          <button class="pile-btn" onclick={handleDemoteToPile} title="Save to the pile to handle later">
+            To Pile
+          </button>
+        {/if}
         {#if isEditingPrompt}
           <button
             class="done-edit-btn"
@@ -802,6 +859,70 @@
     padding: 0.75rem;
     background: var(--color-surface-elevated);
     border-radius: 6px;
+  }
+
+  .screenshot-section {
+    padding: 0.75rem;
+    background: var(--color-surface-elevated);
+    border-radius: 6px;
+    margin-top: 0.75rem;
+  }
+
+  .screenshot-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.375rem;
+  }
+
+  .screenshot-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+  }
+
+  .screenshot-hint {
+    font-size: 0.6875rem;
+    color: var(--color-text-muted);
+    opacity: 0.7;
+  }
+
+  .screenshot-remove-btn {
+    margin-left: auto;
+    font-size: 0.75rem;
+    padding: 0.125rem 0.375rem;
+    background: transparent;
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .screenshot-remove-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--color-error);
+    border-color: var(--color-error);
+  }
+
+  .screenshot-thumb-wrap {
+    display: block;
+    padding: 0;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+  }
+
+  .screenshot-thumb {
+    max-height: 90px;
+    max-width: 100%;
+    border-radius: 4px;
+    border: 1px solid var(--color-border);
+    transition: max-height 0.15s ease;
+  }
+
+  .screenshot-thumb.expanded {
+    max-height: 480px;
   }
 
   .status-row + .transcript-section,
@@ -1183,6 +1304,21 @@
     color: var(--color-error);
     border-color: var(--color-error);
     background: rgba(239, 68, 68, 0.1);
+  }
+
+  .pile-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    color: rgb(251, 191, 36);
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .pile-btn:hover {
+    background: rgba(245, 158, 11, 0.2);
   }
 
   .done-edit-btn {

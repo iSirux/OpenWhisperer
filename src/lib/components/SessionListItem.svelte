@@ -419,6 +419,15 @@
     </div>
   {/if}
 
+  {#if session.pileItem}
+    <div class="notion-card-link" title="From pile: {session.pileItem.title}">
+      <svg class="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.7">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4 17h16M4 12h16M7 7h10" />
+      </svg>
+      <span class="truncate">{session.pileItem.title}</span>
+    </div>
+  {/if}
+
   <!-- Repo name and branch (skip for pending_repo; setup sessions show repo when one is selected) -->
   {#if session.status !== "pending_repo" && session.repoPath && session.repoPath !== "."}
     <div class="flex items-center gap-1.5 text-text-muted min-w-0 overflow-hidden" class:mt-1.5={!hasTextContent}>

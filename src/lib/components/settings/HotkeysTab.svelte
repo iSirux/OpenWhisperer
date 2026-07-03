@@ -6,7 +6,9 @@
   const recordAndSendActionText = $derived(
     $settings.audio.record_and_send_action === "prepare"
       ? "transcribes and prepares a draft session"
-      : "transcribes and sends the prompt"
+      : $settings.audio.record_and_send_action === "pile"
+        ? "transcribes and saves to the pile for later"
+        : "transcribes and sends the prompt"
   );
 </script>
 
@@ -46,7 +48,11 @@
     >
       <option value="send">Send immediately</option>
       <option value="prepare">Prepare draft session</option>
+      <option value="pile">Save to pile for later</option>
     </select>
+    <p class="text-xs text-text-muted mt-1">
+      You can also click the mode chip on the recording overlay to cycle this on the fly.
+    </p>
   </div>
 
   <!-- Record & Send -->
@@ -85,6 +91,25 @@
     <HotkeyInput
       bind:value={$settings.hotkeys.transcribe_to_input}
       enabled={$settings.hotkeys_enabled.transcribe_to_input}
+    />
+  </div>
+
+  <!-- Save to Pile -->
+  <div>
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Save to Pile</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.pile_recording}
+      />
+    </div>
+    <p class="text-xs text-text-muted mb-2">
+      While recording, stops and saves the recording to the pile to handle later
+    </p>
+    <HotkeyInput
+      bind:value={$settings.hotkeys.pile_recording}
+      enabled={$settings.hotkeys_enabled.pile_recording}
     />
   </div>
 

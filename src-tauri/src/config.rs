@@ -367,6 +367,9 @@ pub struct HotkeyConfig {
     /// Hotkey to copy selected text and create a prepared session for review
     #[serde(default = "default_prepare_selection")]
     pub prepare_selection: String,
+    /// Hotkey to stop the current recording and save it to the pile (while recording)
+    #[serde(default = "default_pile_recording")]
+    pub pile_recording: String,
 }
 
 fn default_transcribe_to_input() -> String {
@@ -397,6 +400,10 @@ fn default_prepare_selection() -> String {
     "CommandOrControl+Shift+J".to_string()
 }
 
+fn default_pile_recording() -> String {
+    "CommandOrControl+Shift+P".to_string()
+}
+
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
@@ -408,6 +415,7 @@ impl Default for HotkeyConfig {
             note_mode: default_note_mode(),
             send_selection: default_send_selection(),
             prepare_selection: default_prepare_selection(),
+            pile_recording: default_pile_recording(),
         }
     }
 }
@@ -436,6 +444,8 @@ pub struct HotkeyEnabledConfig {
     pub send_selection: bool,
     #[serde(default = "default_hotkey_enabled")]
     pub prepare_selection: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    pub pile_recording: bool,
 }
 
 impl Default for HotkeyEnabledConfig {
@@ -449,6 +459,7 @@ impl Default for HotkeyEnabledConfig {
             note_mode: false,
             send_selection: true,
             prepare_selection: true,
+            pile_recording: true,
         }
     }
 }
@@ -982,6 +993,9 @@ pub struct VoiceCommandConfig {
     /// List of voice commands that will prepare a session without starting it
     #[serde(default = "default_prepare_commands")]
     pub prepare_commands: Vec<String>,
+    /// List of voice commands that will save the recording to the pile
+    #[serde(default = "default_pile_commands")]
+    pub pile_commands: Vec<String>,
 }
 
 fn default_voice_commands() -> Vec<String> {
@@ -1008,6 +1022,10 @@ fn default_prepare_commands() -> Vec<String> {
     vec!["go prepare".to_string(), "prep it".to_string()]
 }
 
+fn default_pile_commands() -> Vec<String> {
+    vec!["pile it".to_string(), "to the pile".to_string()]
+}
+
 impl Default for VoiceCommandConfig {
     fn default() -> Self {
         Self {
@@ -1020,6 +1038,7 @@ impl Default for VoiceCommandConfig {
             approve_commands: default_approve_commands(),
             reject_commands: default_reject_commands(),
             prepare_commands: default_prepare_commands(),
+            pile_commands: default_pile_commands(),
         }
     }
 }
@@ -1062,6 +1081,7 @@ pub enum RecordAndSendAction {
     #[default]
     Send,
     Prepare,
+    Pile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1088,6 +1108,9 @@ pub struct AudioConfig {
     pub require_transcription_approval: bool,
     #[serde(default)]
     pub record_and_send_action: RecordAndSendAction,
+    /// Capture a screenshot when a recording starts and attach it to the prompt
+    #[serde(default)]
+    pub capture_screenshot_on_record: bool,
     /// Voice command configuration for triggering prompt send
     #[serde(default)]
     pub voice_commands: VoiceCommandConfig,
@@ -1134,6 +1157,7 @@ impl Default for AudioConfig {
             include_transcription_notice: true,
             require_transcription_approval: false,
             record_and_send_action: RecordAndSendAction::Send,
+            capture_screenshot_on_record: false,
             voice_commands: VoiceCommandConfig::default(),
             open_mic: OpenMicConfig::default(),
         }

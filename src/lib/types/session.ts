@@ -73,4 +73,7 @@ export interface DisplaySession {
 
   // Notion card linked to this session
   notionCard?: { id: string; title: string };
+
+  // Pile item this session was launched from
+  pileItem?: { id: string; title: string };
 }

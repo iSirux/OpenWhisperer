@@ -81,11 +81,22 @@
         {#if message.images && message.images.length > 0}
           <div class="message-images">
             {#each message.images as img}
-              <img
-                src={createImagePreviewUrl(img)}
-                alt="Attached"
-                class="message-image"
-              />
+              {#if img.source === "screenshot"}
+                <span class="message-image-wrap" title="Auto-captured when the recording started">
+                  <img
+                    src={createImagePreviewUrl(img)}
+                    alt="Screen at recording start"
+                    class="message-image"
+                  />
+                  <span class="screenshot-badge">Screenshot</span>
+                </span>
+              {:else}
+                <img
+                  src={createImagePreviewUrl(img)}
+                  alt="Attached"
+                  class="message-image"
+                />
+              {/if}
             {/each}
           </div>
         {/if}
@@ -958,6 +969,24 @@
 
   .message-image:hover {
     transform: scale(1.02);
+  }
+
+  .message-image-wrap {
+    position: relative;
+    display: inline-block;
+  }
+
+  .screenshot-badge {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    padding: 1px 5px;
+    font-size: 0.625rem;
+    font-weight: 500;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.6);
+    color: rgba(255, 255, 255, 0.85);
+    pointer-events: none;
   }
 
   /* Tool result images */

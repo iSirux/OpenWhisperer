@@ -5,7 +5,8 @@
   import { goto } from '$app/navigation';
   import { get } from 'svelte/store';
   import AppHeader from '$lib/components/AppHeader.svelte';
-  import { settings, configLoadedOk } from '$lib/stores/settings';
+  import { settings, configLoadedOk, nextRecordStopMode } from '$lib/stores/settings';
+  import { pile } from '$lib/stores/pile';
   import { repos } from '$lib/stores/repos';
   import { sessions } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
@@ -77,6 +78,7 @@
         onStartRecording: () => recordingFlow.startRecordingFromHotkey(),
         onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
         onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
+        onStopAndPile: () => recordingFlow.stopRecordingToPile(),
         onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
         onSendSelection: handleSendSelection,
         onPrepareSelection: handlePrepareSelection,
@@ -147,6 +149,9 @@
       await loadSessionsFromDisk();
     }
 
+    // Load the recording pile
+    await pile.load();
+
     // Load sequences
     await initSequenceExecutionListeners();
     await loadSequences();
@@ -200,6 +205,14 @@
         ),
       onUnregisterRecordingHotkeys: () => hotkeyManager.unregisterRecordingHotkeys(),
       onLaunchPrepared: handleLaunchPrepared,
+      onCycleStopMode: async () => {
+        const current = get(settings);
+        const next = nextRecordStopMode(current.audio.record_and_send_action);
+        await settings.save({
+          ...current,
+          audio: { ...current.audio, record_and_send_action: next },
+        });
+      },
     });
 
     // Setup event listeners
@@ -210,6 +223,7 @@
       onStartRecording: () => recordingFlow.startRecordingFromHotkey(),
       onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
       onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
+      onStopAndPile: () => recordingFlow.stopRecordingToPile(),
       onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
       onSendSelection: handleSendSelection,
       onPrepareSelection: handlePrepareSelection,

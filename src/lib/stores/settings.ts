@@ -109,6 +109,8 @@ export interface HotkeyConfig {
   send_selection: string;
   /** Hotkey to copy selected text and create a prepared session for review */
   prepare_selection: string;
+  /** Hotkey to stop the current recording and save it to the pile (while recording) */
+  pile_recording: string;
 }
 
 /** Per-hotkey enabled/disabled state. Allows temporarily deactivating a hotkey without clearing its binding. */
@@ -121,6 +123,7 @@ export interface HotkeyEnabledConfig {
   note_mode: boolean;
   send_selection: boolean;
   prepare_selection: boolean;
+  pile_recording: boolean;
 }
 
 export interface OverlayConfig {
@@ -150,6 +153,8 @@ export interface VoiceCommandConfig {
   reject_commands: string[];
   /** List of voice commands that will prepare a session without starting it */
   prepare_commands: string[];
+  /** List of voice commands that will save the recording to the pile */
+  pile_commands: string[];
 }
 
 /** Default voice command presets for sending prompts */
@@ -222,6 +227,15 @@ export const PREPARE_COMMAND_PRESETS = [
   "save for later",
 ] as const;
 
+/** Default voice command presets for saving recordings to the pile */
+export const PILE_COMMAND_PRESETS = [
+  "pile it",
+  "to the pile",
+  "save it",
+  "handle later",
+  "park it",
+] as const;
+
 /** Open mic configuration for passive voice listening */
 export interface OpenMicConfig {
   /** Whether open mic mode is enabled */
@@ -242,7 +256,15 @@ export const OPEN_MIC_PRESETS = [
   "wake up",
 ] as const;
 
-export type RecordAndSendAction = "send" | "prepare";
+export type RecordAndSendAction = "send" | "prepare" | "pile";
+
+/** Cycle order for the recording stop-mode (what happens when the recording hotkey stops a recording) */
+export const RECORD_STOP_MODES: RecordAndSendAction[] = ["send", "prepare", "pile"];
+
+export function nextRecordStopMode(current: RecordAndSendAction): RecordAndSendAction {
+  const idx = RECORD_STOP_MODES.indexOf(current);
+  return RECORD_STOP_MODES[(idx + 1) % RECORD_STOP_MODES.length];
+}
 
 export interface AudioConfig {
   device_id: string | null;
@@ -260,6 +282,8 @@ export interface AudioConfig {
   require_transcription_approval: boolean;
   /** What "Record & Send" should do when recording stops */
   record_and_send_action: RecordAndSendAction;
+  /** Capture a screenshot when a recording starts and attach it to the prompt */
+  capture_screenshot_on_record: boolean;
   /** Voice command configuration for triggering prompt send */
   voice_commands: VoiceCommandConfig;
   /** Open mic configuration for passive voice listening */
@@ -567,6 +591,7 @@ const defaultConfig: AppConfig = {
     note_mode: "CommandOrControl+Shift+N",
     send_selection: "CommandOrControl+Shift+E",
     prepare_selection: "CommandOrControl+Shift+J",
+    pile_recording: "CommandOrControl+Shift+P",
   },
   hotkeys_enabled: {
     toggle_recording: true,
@@ -577,6 +602,7 @@ const defaultConfig: AppConfig = {
     note_mode: false,
     send_selection: true,
     prepare_selection: true,
+    pile_recording: true,
   },
   overlay: {
     show_when_focused: true,
@@ -596,6 +622,7 @@ const defaultConfig: AppConfig = {
     include_transcription_notice: true,
     require_transcription_approval: false,
     record_and_send_action: "send",
+    capture_screenshot_on_record: false,
     voice_commands: {
       enabled: false,
       active_commands: ["go go"],
@@ -606,6 +633,7 @@ const defaultConfig: AppConfig = {
       approve_commands: ["approve"],
       reject_commands: ["reject"],
       prepare_commands: ["go prepare", "prep it"],
+      pile_commands: ["pile it", "to the pile"],
     },
     open_mic: {
       enabled: false,

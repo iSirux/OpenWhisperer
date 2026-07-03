@@ -165,6 +165,32 @@
     // Emit event to send recording in main window
     emit("send-recording");
   }
+
+  function handleCycleStopMode(event: MouseEvent) {
+    event.stopPropagation();
+    // Handled by the main window (updates + saves settings, then re-emits settings-changed)
+    emit("cycle-stop-mode");
+  }
+
+  $: stopMode = $settings.audio.record_and_send_action;
+
+  const STOP_MODE_DISPLAY: Record<string, { label: string; cls: string; title: string }> = {
+    send: {
+      label: "Send",
+      cls: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+      title: "Stopping a recording sends it as a session. Click to cycle.",
+    },
+    prepare: {
+      label: "Prepare",
+      cls: "bg-sky-500/20 text-sky-400 border-sky-500/30",
+      title: "Stopping a recording prepares a session for review. Click to cycle.",
+    },
+    pile: {
+      label: "Pile",
+      cls: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+      title: "Stopping a recording saves it to the pile for later. Click to cycle.",
+    },
+  };
 </script>
 
 <div class="overlay-window px-3 pt-3 pb-2">
@@ -243,6 +269,14 @@
       {:else}
         <div class="w-3 h-3 bg-text-muted rounded-full"></div>
         <span class="text-sm text-text-secondary">Ready</span>
+        {@const modeDisplay = STOP_MODE_DISPLAY[stopMode] ?? STOP_MODE_DISPLAY.send}
+        <button
+          class="stop-mode-btn px-2 py-0.5 text-xs font-medium border rounded transition-colors {modeDisplay.cls}"
+          onclick={handleCycleStopMode}
+          title={modeDisplay.title}
+        >
+          {modeDisplay.label}
+        </button>
       {/if}
     </div>
 
@@ -282,6 +316,16 @@
     <!-- Right section: Action buttons (fixed width) -->
     {#if isRecordingActive}
       <div class="flex items-center gap-2 flex-shrink-0">
+        {#if $overlay.mode === "session"}
+          {@const modeDisplay = STOP_MODE_DISPLAY[stopMode] ?? STOP_MODE_DISPLAY.send}
+          <button
+            class="stop-mode-btn px-2 py-1 text-xs font-medium border rounded transition-colors {modeDisplay.cls}"
+            onclick={handleCycleStopMode}
+            title={modeDisplay.title}
+          >
+            {modeDisplay.label}
+          </button>
+        {/if}
         <button
           class="go-btn px-2 py-1 text-xs font-medium bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30 rounded transition-colors"
           onclick={handleGo}

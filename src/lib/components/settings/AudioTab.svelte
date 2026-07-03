@@ -4,6 +4,29 @@
 </script>
 
 <div class="space-y-4">
+  <!-- Recording Section -->
+  <div>
+    <h3 class="text-sm font-medium text-text-primary mb-3">Recording</h3>
+    <div class="space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <label class="text-sm font-medium text-text-secondary"
+            >Capture Screenshot on Record</label
+          >
+          <p class="text-xs text-text-muted mt-0.5">
+            Grab a screenshot of the screen under the cursor when recording starts and attach it
+            to the prompt as optional context (Claude is told it may be unrelated)
+          </p>
+        </div>
+        <input
+          type="checkbox"
+          class="toggle"
+          bind:checked={$settings.audio.capture_screenshot_on_record}
+        />
+      </div>
+    </div>
+  </div>
+
   <!-- Sound Notifications Section -->
   <div>
     <h3 class="text-sm font-medium text-text-primary mb-3">Sound Notifications</h3>

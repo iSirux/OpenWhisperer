@@ -14,8 +14,8 @@ mod whisper;
 
 use commands::{
     archive_cmds, audio_cmds, git_cmds, input_cmds, launch_cmds, llm_cmds, log_cmds, mcp_cmds,
-    notion_cmds, realtime_cmds, sdk_cmds, sequence_cmds, session_cmds, settings_cmds,
-    terminal_cmds, usage_cmds,
+    notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds, sequence_cmds, session_cmds,
+    settings_cmds, terminal_cmds, usage_cmds,
 };
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -363,6 +363,15 @@ pub fn run() {
             session_cmds::get_persisted_sessions,
             session_cmds::save_persisted_sessions,
             session_cmds::clear_persisted_sessions,
+            pile_cmds::get_pile_items,
+            pile_cmds::save_pile_items,
+            pile_cmds::save_pile_audio,
+            pile_cmds::read_pile_audio,
+            pile_cmds::delete_pile_audio,
+            pile_cmds::save_pile_screenshot,
+            pile_cmds::read_pile_screenshot,
+            pile_cmds::delete_pile_screenshot,
+            screenshot_cmds::capture_screenshot,
             archive_cmds::get_archive_entries,
             archive_cmds::get_archive_entry_data,
             archive_cmds::archive_sdk_session,

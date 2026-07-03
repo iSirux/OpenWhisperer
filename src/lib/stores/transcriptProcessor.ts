@@ -22,6 +22,7 @@ import { settings, getEffectiveTerminalMode, isNoteModeAvailable } from '$lib/st
 import { repos, activeRepo, isAutoRepoSelected, isRepoActive, type RepoConfig } from '$lib/stores/repos';
 import { recording } from '$lib/stores/recording';
 import { navigation } from '$lib/stores/navigation';
+import { pile } from '$lib/stores/pile';
 
 // Transcription processing utilities (already stateless)
 import {
@@ -468,6 +469,56 @@ export async function handlePrepareTranscriptReady(
 }
 
 // ---------------------------------------------------------------------------
+// Pile-mode transcript processing
+// ---------------------------------------------------------------------------
+
+/**
+ * Route a finished recording into the pile instead of a session.
+ * Extracts recording metadata (waveform, duration, audio) from the pending
+ * session before removing it; the pile store runs LLM processing async.
+ * Works even when transcription failed — the audio is kept so the item can be
+ * re-transcribed later.
+ */
+export async function handlePileTranscriptReady(
+  transcript: string,
+  pendingSessionId: string | null,
+  voskTranscript?: string,
+  transcriptionError?: string
+) {
+  const audioData = get(recording).audioData ?? undefined;
+
+  let audioVisualizationHistory: number[][] | undefined;
+  let recordingDurationMs: number | undefined;
+  let screenshot: import('$lib/stores/sdkSessions').SdkImageContent | undefined;
+
+  if (pendingSessionId) {
+    const session = get(sdkSessions).find((s) => s.id === pendingSessionId);
+    const pending = session?.pendingTranscription;
+    audioVisualizationHistory = pending?.audioVisualizationHistory;
+    screenshot = pending?.screenshot;
+    recordingDurationMs =
+      pending?.recordingDurationMs ??
+      (pending?.recordingStartedAt ? Date.now() - pending.recordingStartedAt : undefined);
+    sdkSessions.cancelPendingTranscription(pendingSessionId);
+  }
+
+  if (!transcript.trim() && !audioData) {
+    console.log('[pile] Nothing to save (no transcript, no audio), skipping');
+    return;
+  }
+
+  pile.addRecording({
+    transcript,
+    voskTranscript: voskTranscript || undefined,
+    audioData,
+    recordingDurationMs,
+    audioVisualizationHistory,
+    transcriptionError,
+    screenshot,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Selection handling
 // ---------------------------------------------------------------------------
 
@@ -741,6 +792,33 @@ export async function handleVoiceCommand(
         sdkSessions.updatePendingTranscription(noteSessionId, {
           transcriptionError: error?.message || 'Recording stop failed',
         });
+        clearPendingSessionId();
+      });
+    return;
+  }
+
+  if (commandType === 'pile') {
+    if (pendingSessionId) {
+      sdkSessions.updatePendingTranscription(pendingSessionId, { status: 'transcribing' });
+    }
+
+    recording
+      .stopRecording(true)
+      .then(async (whisperTranscript) => {
+        const finalTranscript = whisperTranscript
+          ? processVoiceCommand(whisperTranscript).cleanedTranscript
+          : cleanedTranscript;
+
+        await handlePileTranscriptReady(finalTranscript || '', pendingSessionId, cleanedTranscript);
+        clearPendingSessionId();
+      })
+      .catch(async (error) => {
+        await handlePileTranscriptReady(
+          '',
+          pendingSessionId,
+          cleanedTranscript,
+          error?.message || 'Transcription failed'
+        );
         clearPendingSessionId();
       });
     return;

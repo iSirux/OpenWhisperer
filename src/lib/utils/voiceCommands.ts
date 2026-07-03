@@ -1,8 +1,8 @@
 import { get } from "svelte/store";
-import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS, NOTE_COMMAND_PRESETS, SEQUENCE_COMMAND_PRESETS, APPROVE_COMMAND_PRESETS, REJECT_COMMAND_PRESETS, PREPARE_COMMAND_PRESETS, isNoteModeAvailable } from "$lib/stores/settings";
+import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS, NOTE_COMMAND_PRESETS, SEQUENCE_COMMAND_PRESETS, APPROVE_COMMAND_PRESETS, REJECT_COMMAND_PRESETS, PREPARE_COMMAND_PRESETS, PILE_COMMAND_PRESETS, isNoteModeAvailable } from "$lib/stores/settings";
 
 /** Type of voice command action */
-export type VoiceCommandType = 'send' | 'transcribe' | 'cancel' | 'note' | 'sequence' | 'approve' | 'reject' | 'prepare' | null;
+export type VoiceCommandType = 'send' | 'transcribe' | 'cancel' | 'note' | 'sequence' | 'approve' | 'reject' | 'prepare' | 'pile' | null;
 
 export interface VoiceCommandResult {
   /** The cleaned transcript with voice commands removed */
@@ -27,6 +27,8 @@ export interface VoiceCommandResult {
   shouldReject: boolean;
   /** Whether the command should prepare a session without starting it */
   shouldPrepare: boolean;
+  /** Whether the command should save the recording to the pile */
+  shouldPile: boolean;
   /** Sequence name extracted from the transcript (for sequence commands) */
   sequenceName?: string;
   /** The type of command detected */
@@ -109,6 +111,14 @@ export function getActivePrepareCommands(): string[] {
 }
 
 /**
+ * Get the list of active pile commands
+ */
+export function getActivePileCommands(): string[] {
+  const currentSettings = get(settings);
+  return currentSettings.audio.voice_commands.pile_commands ?? [];
+}
+
+/**
  * Normalize a string for voice command matching:
  * - Lowercase
  * - Remove trailing punctuation
@@ -145,6 +155,7 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
     shouldApprove: false,
     shouldReject: false,
     shouldPrepare: false,
+    shouldPile: false,
     commandType: null,
   };
 
@@ -161,6 +172,7 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
   const approveCommands = getActiveApproveCommands();
   const rejectCommands = getActiveRejectCommands();
   const prepareCommands = getActivePrepareCommands();
+  const pileCommands = getActivePileCommands();
 
   // Combine all commands with their types (cancel first for priority since it's destructive)
   const allCommands: { command: string; type: VoiceCommandType }[] = [
@@ -170,6 +182,7 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
     ...noteCommands.map(cmd => ({ command: cmd, type: 'note' as const })),
     ...sequenceCommands.map(cmd => ({ command: cmd, type: 'sequence' as const })),
     ...prepareCommands.map(cmd => ({ command: cmd, type: 'prepare' as const })),
+    ...pileCommands.map(cmd => ({ command: cmd, type: 'pile' as const })),
     ...sendCommands.map(cmd => ({ command: cmd, type: 'send' as const })),
     ...transcribeCommands.map(cmd => ({ command: cmd, type: 'transcribe' as const })),
   ];
@@ -231,6 +244,7 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
           result.shouldApprove = type === 'approve';
           result.shouldReject = type === 'reject';
           result.shouldPrepare = type === 'prepare';
+          result.shouldPile = type === 'pile';
           // For sequence commands, the remaining transcript is the sequence name
           if (type === 'sequence' && cleanedTranscript.trim()) {
             result.sequenceName = cleanedTranscript.trim();
@@ -282,6 +296,7 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
           result.shouldApprove = type === 'approve';
           result.shouldReject = type === 'reject';
           result.shouldPrepare = type === 'prepare';
+          result.shouldPile = type === 'pile';
           // For sequence commands, the remaining transcript is the sequence name
           if (type === 'sequence' && cleanedTranscript.trim()) {
             result.sequenceName = cleanedTranscript.trim();
@@ -444,6 +459,13 @@ export function getRejectCommandPresets(): readonly string[] {
  */
 export function getPrepareCommandPresets(): readonly string[] {
   return PREPARE_COMMAND_PRESETS;
+}
+
+/**
+ * Get all available pile command presets
+ */
+export function getPileCommandPresets(): readonly string[] {
+  return PILE_COMMAND_PRESETS;
 }
 
 /**
