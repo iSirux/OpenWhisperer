@@ -1919,7 +1919,7 @@ fn default_enabled_models() -> Vec<String> {
         "claude-fable-5".to_string(),
         "claude-opus-4-8".to_string(),
         "claude-opus-4-7".to_string(),
-        "claude-sonnet-4-6".to_string(),
+        "claude-sonnet-5".to_string(),
         "claude-haiku-4-5-20251001".to_string(),
     ]
 }

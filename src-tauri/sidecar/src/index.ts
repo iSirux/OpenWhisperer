@@ -41,7 +41,7 @@ function inferClaudeContextWindow(model: string | undefined): number {
     normalized.startsWith("claude-opus-4-8") ||
     normalized.startsWith("claude-opus-4-7") ||
     normalized.startsWith("claude-opus-4-6") ||
-    normalized.startsWith("claude-sonnet-4-6")
+    normalized.startsWith("claude-sonnet-5")
   ) {
     return 1000000;
   }
@@ -420,8 +420,8 @@ interface UpdateModelMessage {
 interface UpdateEffortMessage {
   type: "update_effort";
   id: string;
-  // UI-level effort: null, 'low', 'medium', 'high', 'xhigh', 'max'.
-  // 'xhigh' is a UI-only tier that maps to SDK 'high' at the API boundary.
+  // Effort level: null, 'low', 'medium', 'high', 'xhigh', 'max'.
+  // The Claude SDK accepts the full range natively; OpenAI clamps to 'high'.
   effortLevel: string | null;
 }
 
@@ -441,8 +441,9 @@ interface UpdateDisableHooksMessage {
 /**
  * Map a UI-level effort value to what the underlying SDK actually accepts.
  *
- * - Claude Agent SDK supports: 'low' | 'medium' | 'high' | 'max'. Our UI-only
- *   'xhigh' tier is collapsed down to 'high' for the SDK call.
+ * - Claude Agent SDK natively supports: 'low' | 'medium' | 'high' | 'xhigh' |
+ *   'max' (EffortLevel), and it handles its own fallback for models that don't
+ *   support a given level ('xhigh' -> 'high'). So every level passes through.
  * - Codex / OpenAI only support: 'low' | 'medium' | 'high'. Both 'xhigh' and
  *   'max' are clamped down to 'high'.
  * - `null` / `undefined` are passed through unchanged (effort off).
@@ -456,8 +457,7 @@ function mapEffortForProvider(
     if (effort === "xhigh" || effort === "max") return "high";
     return effort;
   }
-  // Claude provider: 'xhigh' is UI-only, map down to 'high' for the SDK.
-  if (effort === "xhigh") return "high";
+  // Claude provider: SDK accepts the full EffortLevel range natively.
   return effort;
 }
 
@@ -4878,12 +4878,13 @@ async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
     return;
   }
 
-  // Update the effort level in the session (store UI-level value).
+  // Update the effort level in the session.
   session.effortLevel = msg.effortLevel ?? undefined;
 
-  // For Claude provider: set native effort option (SDK 0.2.49+ passes --effort to CLI).
-  // 'xhigh' is a UI-only tier and gets mapped to the SDK's 'high' here; the Codex/OpenAI
-  // path doesn't plumb an effort option through ThreadOptions, so no clamping is needed there.
+  // For Claude provider: set native effort option. The SDK accepts the full
+  // EffortLevel range ('low'..'max' incl. 'xhigh') and falls back internally for
+  // models that don't support a given level. The Codex/OpenAI path doesn't plumb
+  // an effort option through ThreadOptions, so no clamping is needed there.
   if (session.provider === "claude") {
     const mapped = mapEffortForProvider(msg.effortLevel, "claude");
     session.options.effort = (mapped as Options["effort"]) ?? undefined;

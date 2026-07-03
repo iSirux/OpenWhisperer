@@ -190,7 +190,7 @@ export async function getModelRecommendation(
 
   if (!isModelRecommendationEnabled()) {
     // Auto selected but recommendation not enabled - fall back to first enabled model
-    model = enabledModels[0] || 'claude-sonnet-4-6';
+    model = enabledModels[0] || 'claude-sonnet-5';
     console.log('[llm] Auto model selected but recommendation disabled, falling back to:', model);
     return { model, effortLevel };
   }
@@ -204,7 +204,7 @@ export async function getModelRecommendation(
         model = recommendation.modelId;
         console.log('[llm] Auto selected model:', model, '-', recommendation.reasoning);
       } else {
-        model = enabledModels[0] || 'claude-sonnet-4-6';
+        model = enabledModels[0] || 'claude-sonnet-5';
         console.log('[llm] Recommended model not enabled, falling back to:', model);
       }
 
@@ -234,7 +234,7 @@ export async function getModelRecommendation(
   }
 
   // Fallback
-  model = enabledModels[0] || 'claude-sonnet-4-6';
+  model = enabledModels[0] || 'claude-sonnet-5';
   console.log('[llm] No recommendation, falling back to:', model);
   return { model, effortLevel };
 }

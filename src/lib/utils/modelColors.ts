@@ -24,6 +24,7 @@ export function getShortModelName(model: string): string {
     return 'Opus';
   }
   if (model.includes('sonnet')) {
+    if (model.includes('sonnet-5')) return 'Sonnet 5';
     return 'Sonnet';
   }
   if (model.includes('haiku')) return 'Haiku';

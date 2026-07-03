@@ -13,8 +13,8 @@ export interface ModelInfo {
   /**
    * Maximum effort level supported by the model.
    * - 'high': Most models (OpenAI/Codex cap out here; Codex API only accepts low/medium/high)
-   * - 'xhigh': UI-only intermediate tier between 'high' and 'max' (maps to SDK 'high' at the API boundary)
-   * - 'max': Full "max" reasoning (Anthropic SDK native value)
+   * - 'xhigh': Intermediate tier between 'high' and 'max' (native Anthropic SDK value)
+   * - 'max': Full "max" reasoning (native Anthropic SDK value)
    */
   maxEffort?: 'high' | 'xhigh' | 'max';
   /**
@@ -40,7 +40,8 @@ export const ALL_MODELS: ModelInfo[] = [
     label: "Fable 5",
     title: "Fable 5 - Most capable widely released model (1M context, adaptive thinking)",
     maxContextTokens: 1000000,
-    supportsEffort: false,
+    supportsEffort: true,
+    maxEffort: "max",
   },
   {
     id: "claude-opus-4-8",
@@ -68,12 +69,12 @@ export const ALL_MODELS: ModelInfo[] = [
     supportsXhigh: false,
   },
   {
-    id: "claude-sonnet-4-6",
-    label: "Sonnet",
-    title: "Sonnet 4.6 - Balanced performance",
+    id: "claude-sonnet-5",
+    label: "Sonnet 5",
+    title: "Sonnet 5 - Balanced performance (1M context, adaptive thinking)",
     maxContextTokens: 1000000,
     supportsEffort: true,
-    maxEffort: "xhigh",
+    maxEffort: "max",
   },
   {
     id: "claude-haiku-4-5-20251001",
@@ -173,7 +174,7 @@ export function getModelById(id: string): ModelInfo | undefined {
 }
 
 // Default model to use when no other model is available
-export const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
+export const DEFAULT_MODEL_ID = "claude-sonnet-5";
 
 // Check if a model ID belongs to OpenAI
 export function isOpenAiModel(modelId: string): boolean {
@@ -222,8 +223,8 @@ export function modelSupportsEffort(modelId: string): boolean {
 /**
  * Get the maximum effort level supported by a model.
  * - 'high' for OpenAI/Codex and older Claude tiers
- * - 'xhigh' for Sonnet (UI-only tier between high and max)
- * - 'max' for Opus
+ * - 'xhigh' for Sonnet (native tier between high and max)
+ * - 'max' for Opus and Fable 5
  */
 export function getMaxEffort(modelId: string): 'high' | 'xhigh' | 'max' {
   const model = getModelById(modelId);
@@ -246,8 +247,8 @@ export function modelSupportsXhigh(modelId: string): boolean {
  * Clamp an effort level down to a value the given model/provider actually supports.
  *
  * - OpenAI/Codex models only accept low/medium/high, so 'xhigh' and 'max' are clamped to 'high'.
- * - For Claude models, the value is returned unchanged (the SDK boundary is responsible
- *   for mapping the UI-only 'xhigh' tier onto the native SDK value when invoking the API).
+ * - For Claude models, the value is returned unchanged (the SDK accepts the full
+ *   effort range natively, including 'xhigh', and falls back internally when needed).
  * - `null` / `undefined` (effort off) passes through unchanged.
  * - Haiku (and any model without effort support) is left untouched; callers decide whether
  *   to strip effort entirely for no-effort models.
