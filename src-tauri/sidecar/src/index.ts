@@ -76,96 +76,6 @@ function isUnsupportedChatGptAccountModelError(errorMessage: string): boolean {
   );
 }
 
-// Planning question option schema
-const PlanningQuestionOptionSchema = z.object({
-  label: z.string().describe("Short label for the option"),
-  description: z.string().describe("Longer description explaining this option"),
-});
-
-// Planning question schema
-const PlanningQuestionSchema = z.object({
-  question: z
-    .string()
-    .describe("The full question text to display to the user"),
-  header: z
-    .string()
-    .max(12)
-    .describe(
-      'A short one-word header for the navigation chip (e.g., "Scope", "Auth", "Storage")'
-    ),
-  options: z
-    .array(PlanningQuestionOptionSchema)
-    .min(2)
-    .max(4)
-    .describe("Predefined options for the user to choose from (2-4 options)"),
-  multiSelect: z
-    .boolean()
-    .describe(
-      "Whether the user can select multiple options (true) or just one (false)"
-    ),
-});
-
-// Create the in-process planning MCP server
-const planningMcpServer = createSdkMcpServer({
-  name: "planning-tools",
-  version: "1.0.0",
-  tools: [
-    tool(
-      "ask_planning_questions",
-      "Present a set of planning questions to the user through a wizard-style interface. Use this to gather requirements and preferences for the feature being planned. The user will see these questions in an interactive UI and can select options or provide custom text input.",
-      {
-        questions: z
-          .array(PlanningQuestionSchema)
-          .min(1)
-          .max(5)
-          .describe(
-            "Array of questions to present to the user (1-5 questions)"
-          ),
-      },
-      async (args) => {
-        // The actual handling happens in handleSdkMessage when it sees this tool_use
-        // We just return a success message here
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Presented ${args.questions.length} question(s) to the user. Waiting for their responses...`,
-            },
-          ],
-        };
-      }
-    ),
-    tool(
-      "complete_planning",
-      "Signal that planning is complete. Call this after you have created the plan file and gathered all necessary information. This will show the user a completion screen with a summary and option to start implementation.",
-      {
-        plan_path: z
-          .string()
-          .describe(
-            'The relative path to the plan file that was created (e.g., "plans/auth-feature.md")'
-          ),
-        feature_name: z
-          .string()
-          .describe("Human-readable name of the feature being planned"),
-        summary: z
-          .string()
-          .describe("Brief summary of what was planned and key decisions made"),
-      },
-      async (args) => {
-        // The actual handling happens in handleSdkMessage when it sees this tool_use
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Planning complete for "${args.feature_name}". Plan saved to ${args.plan_path}.\n\nSummary: ${args.summary}`,
-            },
-          ],
-        };
-      }
-    ),
-  ],
-});
-
 // Repo description result schema
 const RepoDescriptionResultSchema = z.object({
   description: z
@@ -377,8 +287,6 @@ interface CreateMessage {
   messages?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED - use sdk_session_id instead)
   sdk_session_id?: string; // SDK session ID for proper resume (preferred over messages)
   options?: Partial<Options>;
-  plan_mode?: boolean; // Whether this is a plan mode session (enables planning tools)
-  note_mode?: boolean; // Whether this is a note-taking mode session (read-only + note MCP tools)
   read_only_mode?: boolean; // Whether this session should use read-only tools + web search
   mcp_servers?: McpServerConfig[]; // External MCP servers to register
   fork_from_sdk_session_id?: string; // SDK session ID to fork from
@@ -577,8 +485,6 @@ interface Session {
   conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED)
   effortLevel?: string; // UI effort level: null/undefined = off, 'low', 'medium', 'high', 'xhigh', 'max'
   currentQueryId?: string; // Unique ID for the current query (to detect stale done events)
-  planMode?: boolean; // Whether this is a plan mode session
-  noteMode?: boolean; // Whether this is a note-taking mode session
   readOnlyMode?: boolean; // Whether this session should run in read-only mode
   // OpenAI Codex-specific fields
   codexThread?: Thread; // Active Codex thread instance
@@ -607,8 +513,7 @@ interface Session {
     reject: (error: Error) => void;
   };
   // Note: ExitPlanMode approval is handled by canUseTool which blocks the SDK
-  // server-side. The pendingPlanApproval field above is shared by both canUseTool
-  // intercepts (ExitPlanMode + complete_planning).
+  // server-side.
   // Persistent message queue for streaming input mode. Follow-up messages
   // are enqueued here instead of calling streamInput() multiple times.
   inputQueue?: MessageQueue;
@@ -795,7 +700,7 @@ function sendSdkSessionId(id: string, sdkSessionId: string): void {
   send({ type: "sdk_session_id", id, sdkSessionId });
 }
 
-// Planning mode specific events
+// Interactive question shape (shared by AskUserQuestion)
 interface PlanningQuestionOption {
   label: string;
   description: string;
@@ -806,22 +711,6 @@ interface PlanningQuestion {
   header: string;
   options: PlanningQuestionOption[];
   multiSelect: boolean;
-}
-
-function sendPlanningQuestions(
-  id: string,
-  questions: PlanningQuestion[]
-): void {
-  send({ type: "planning_questions", id, questions });
-}
-
-function sendPlanningComplete(
-  id: string,
-  planPath: string,
-  featureName: string,
-  summary: string
-): void {
-  send({ type: "planning_complete", id, planPath, featureName, summary });
 }
 
 // AskUserQuestion events
@@ -3213,34 +3102,6 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
           return { behavior: "allow" as const, updatedInput: { questions: askInput.questions, answers } };
         }
       }
-      // Intercept complete_planning (custom plan mode): emit approval request to frontend, wait for user decision
-      // Must be checked before the generic mcp__ allow below
-      if (
-        toolName === "mcp__planning-tools__complete_planning" ||
-        toolName === "complete_planning"
-      ) {
-        send({ type: "debug", id: msg.id, message: `complete_planning intercepted, showing plan approval dialog` });
-        sendPlanApprovalRequest(msg.id, []);
-
-        const decision = await new Promise<{ action: string; feedback?: string }>((resolve, reject) => {
-          const s = sessions.get(msg.id);
-          if (s) { s.pendingPlanApproval = { resolve, reject }; }
-          else { reject(new Error("Session not found for complete_planning")); }
-        });
-
-        send({ type: "debug", id: msg.id, message: `complete_planning decision: ${decision.action}` });
-
-        if (decision.action === 'deny') {
-          return {
-            behavior: "deny" as const,
-            message: decision.feedback || "User requested changes to the plan. Please revise based on their feedback.",
-          };
-        }
-
-        // For 'approve' and 'approve_new_session', allow complete_planning to execute
-        // The frontend handles spawning a new session for 'approve_new_session'
-        return { behavior: "allow" as const, updatedInput: input };
-      }
       // Intercept ExitPlanMode (native SDK plan mode): block until user approves or denies.
       // canUseTool IS called for ExitPlanMode (confirmed by Anthropic engineers, issue #12288).
       // The SDK awaits this promise, so the agent genuinely pauses here.
@@ -3350,55 +3211,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     options.tools = { type: "preset", preset: "claude_code" };
   }
 
-  // Add in-process MCP server for plan mode at creation time
-  // Using createSdkMcpServer for reliable in-process tool registration
-  if (msg.plan_mode) {
-    send({
-      type: "debug",
-      id: msg.id,
-      message:
-        "Plan mode: configuring in-process MCP server with planning tools",
-    });
-
-    options.mcpServers = {
-      ...options.mcpServers,
-      "planning-tools": planningMcpServer,
-    };
-
-    options.allowedTools = [
-      ...(options.allowedTools || []),
-      "mcp__planning-tools__ask_planning_questions",
-      "mcp__planning-tools__complete_planning",
-    ];
-  }
-
-  // Configure note mode with read-only tools + MCP note tools
-  if (msg.note_mode) {
-    send({
-      type: "debug",
-      id: msg.id,
-      message: "Note mode: configuring read-only access with note MCP tools",
-    });
-
-    // Don't load user/project/local settings for note mode - this prevents Claude
-    // from seeing all the tool descriptions in its system prompt. We only want
-    // Claude to see the read-only tools and MCP tools that are actually allowed.
-    options.settingSources = [];
-    options.systemPrompt = msg.system_prompt?.trim()
-      ? msg.system_prompt.trim()
-      : undefined;
-    delete options.tools;
-
-    // Start with read-only codebase tools only
-    // MCP tool patterns will be added below when MCP servers are registered
-    options.allowedTools = [
-      "Read",
-      "Glob",
-      "Grep",
-    ];
-  }
-
-  if (msg.read_only_mode && !msg.note_mode) {
+  if (msg.read_only_mode) {
     send({
       type: "debug",
       id: msg.id,
@@ -3532,9 +3345,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     }
   }
 
-  if (!msg.note_mode) {
-    options.allowedTools = appendAllowedTool(options.allowedTools, "Skill");
-  }
+  options.allowedTools = appendAllowedTool(options.allowedTools, "Skill");
 
   const provider = inferProvider(msg.provider, msg.model);
   const openaiMode: OpenAiExecutionMode =
@@ -3547,8 +3358,6 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     options,
     passedSdkSessionId: msg.sdk_session_id, // SDK session ID for proper resume
     conversationHistory: msg.messages, // Store conversation history for restored sessions (DEPRECATED)
-    planMode: msg.plan_mode,
-    noteMode: msg.note_mode,
     readOnlyMode: msg.read_only_mode,
     codexModel: provider === "openai" ? msg.model : undefined,
     codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
@@ -3580,23 +3389,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     });
   }
 
-  if (msg.plan_mode) {
-    send({
-      type: "debug",
-      id: msg.id,
-      message: "Session created in PLAN MODE - planning tools enabled",
-    });
-  }
-
-  if (msg.note_mode) {
-    send({
-      type: "debug",
-      id: msg.id,
-      message: "Session created in NOTE MODE - read-only tools + note MCP enabled",
-    });
-  }
-
-  if (msg.read_only_mode && !msg.note_mode) {
+  if (msg.read_only_mode) {
     send({
       type: "debug",
       id: msg.id,
@@ -4158,18 +3951,6 @@ async function runClaudeQueryItem(
       },
     };
 
-    // Note: MCP servers for plan mode are configured in handleCreate() at session creation time
-    // The session.options already include mcpServers and allowedTools for planning tools
-    if (session.planMode) {
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `Plan mode query - MCP servers configured: ${Object.keys(
-          session.options.mcpServers || {}
-        ).join(", ")}`,
-      });
-    }
-
     // Use the query function from the SDK
     let queryIterator;
     try {
@@ -4478,46 +4259,6 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           }
           sendToolStart(id, block.name, block.input, toolUseId, parentToolUseId, turnUuid);
 
-          // Handle planning-specific tools (both direct names and MCP-prefixed names)
-          const toolName = block.name;
-          const isAskPlanningQuestions =
-            toolName === "ask_planning_questions" ||
-            toolName === "mcp__planning-tools__ask_planning_questions";
-          const isCompletePlanning =
-            toolName === "complete_planning" ||
-            toolName === "mcp__planning-tools__complete_planning";
-
-          if (isAskPlanningQuestions) {
-            const input = block.input as { questions?: PlanningQuestion[] };
-            if (input.questions && Array.isArray(input.questions)) {
-              send({
-                type: "debug",
-                id,
-                message: `Planning questions tool called with ${input.questions.length} questions`,
-              });
-              sendPlanningQuestions(id, input.questions);
-            }
-          } else if (isCompletePlanning) {
-            const input = block.input as {
-              plan_path?: string;
-              feature_name?: string;
-              summary?: string;
-            };
-            if (input.plan_path && input.feature_name && input.summary) {
-              send({
-                type: "debug",
-                id,
-                message: `Planning complete: ${input.feature_name}`,
-              });
-              sendPlanningComplete(
-                id,
-                input.plan_path,
-                input.feature_name,
-                input.summary
-              );
-            }
-          }
-
           // Note: ExitPlanMode and AskUserQuestion are handled via canUseTool callback.
           // The canUseTool callback intercepts it, emits questions, waits for answers,
           // and returns the proper updatedInput with the user's answers.
@@ -4579,10 +4320,13 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         errors?: string[];
       };
       const modelUsageValues = Object.values(resultMsg.modelUsage || {});
-      const contextWindow =
-        modelUsageValues.length > 0
-          ? (modelUsageValues[0].contextWindow ?? inferClaudeContextWindow(resultSession?.options.model))
-          : inferClaudeContextWindow(resultSession?.options.model);
+      // The SDK reports a stale 200k window for the 1M-context Claude models, so trust the
+      // larger of the reported window and our known maximum. This keeps the displayed window
+      // and the near-limit overflow detection below aligned with the model's true capacity.
+      const inferredContextWindow = inferClaudeContextWindow(resultSession?.options.model);
+      const reportedContextWindow =
+        modelUsageValues.length > 0 ? (modelUsageValues[0].contextWindow ?? 0) : 0;
+      const contextWindow = Math.max(reportedContextWindow, inferredContextWindow);
 
       sendUsage(id, {
         inputTokens: resultMsg.usage?.input_tokens || 0,

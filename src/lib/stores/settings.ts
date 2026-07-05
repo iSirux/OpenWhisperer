@@ -103,8 +103,6 @@ export interface HotkeyConfig {
   cycle_model: string;
   /** In-app hotkey to create a new session while the app is focused */
   new_session: string;
-  /** Hotkey to start recording in note-taking mode */
-  note_mode: string;
   /** Hotkey to copy selected text and immediately send as a new SDK session prompt */
   send_selection: string;
   /** Hotkey to copy selected text and create a prepared session for review */
@@ -120,7 +118,6 @@ export interface HotkeyEnabledConfig {
   cycle_repo: boolean;
   cycle_model: boolean;
   new_session: boolean;
-  note_mode: boolean;
   send_selection: boolean;
   prepare_selection: boolean;
   pile_recording: boolean;
@@ -143,8 +140,6 @@ export interface VoiceCommandConfig {
   transcribe_commands: string[];
   /** List of active voice commands that will cancel/discard the recording */
   cancel_commands: string[];
-  /** List of voice commands that will trigger note-taking mode */
-  note_commands: string[];
   /** List of voice commands that will trigger running a sequence */
   sequence_commands: string[];
   /** List of voice commands that will approve a pending approval node */
@@ -183,15 +178,6 @@ export const CANCEL_COMMAND_PRESETS = [
   "discard recording",
   "scratch that",
   "abort abort",
-] as const;
-
-/** Default voice command presets for note-taking mode */
-export const NOTE_COMMAND_PRESETS = [
-  "take a note",
-  "new note",
-  "note this",
-  "make a note",
-  "jot this down",
 ] as const;
 
 /** Default voice command presets for running sequences */
@@ -610,7 +596,6 @@ const defaultConfig: AppConfig = {
     cycle_repo: "CommandOrControl+Shift+R",
     cycle_model: "CommandOrControl+Shift+M",
     new_session: "CommandOrControl+N",
-    note_mode: "CommandOrControl+Shift+N",
     send_selection: "CommandOrControl+Shift+E",
     prepare_selection: "CommandOrControl+Shift+J",
     pile_recording: "CommandOrControl+Shift+P",
@@ -621,7 +606,6 @@ const defaultConfig: AppConfig = {
     cycle_repo: true,
     cycle_model: true,
     new_session: true,
-    note_mode: false,
     send_selection: true,
     prepare_selection: true,
     pile_recording: true,
@@ -650,7 +634,6 @@ const defaultConfig: AppConfig = {
       active_commands: ["go go"],
       transcribe_commands: [],
       cancel_commands: [],
-      note_commands: ["take a note", "new note"],
       sequence_commands: ["run sequence"],
       approve_commands: ["approve"],
       reject_commands: ["reject"],
@@ -843,10 +826,6 @@ function createSettingsStore() {
 }
 
 export const settings = createSettingsStore();
-
-export function isNoteModeAvailable(): boolean {
-  return dev;
-}
 
 export function isPlanNewSessionAvailable(): boolean {
   return dev;

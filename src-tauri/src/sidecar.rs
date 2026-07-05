@@ -63,10 +63,6 @@ pub enum OutboundMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         sdk_session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        plan_mode: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        note_mode: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         read_only_mode: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         mcp_servers: Option<Vec<McpServerConfig>>,
@@ -316,18 +312,6 @@ pub enum InboundMessage {
         status: String,
         summary: String,
         usage: Option<serde_json::Value>,
-    },
-    PlanningQuestions {
-        id: String,
-        questions: Vec<PlanningQuestion>,
-    },
-    PlanningComplete {
-        id: String,
-        #[serde(rename = "planPath")]
-        plan_path: String,
-        #[serde(rename = "featureName")]
-        feature_name: String,
-        summary: String,
     },
     /// AskUserQuestion tool - interactive questions for the user
     AskUserQuestions {
@@ -592,15 +576,6 @@ struct TaskCompletedPayload {
 }
 
 #[derive(Serialize, Clone)]
-struct PlanningCompletePayload {
-    #[serde(rename = "planPath")]
-    plan_path: String,
-    #[serde(rename = "featureName")]
-    feature_name: String,
-    summary: String,
-}
-
-#[derive(Serialize, Clone)]
 struct PlanApprovalRequestPayload {
     #[serde(rename = "allowedPrompts")]
     allowed_prompts: Vec<serde_json::Value>,
@@ -647,8 +622,6 @@ impl InboundMessage {
             InboundMessage::SubagentStop { .. } => "sdk-subagent-stop",
             InboundMessage::TaskStarted { .. } => "sdk-task-started",
             InboundMessage::TaskCompleted { .. } => "sdk-task-completed",
-            InboundMessage::PlanningQuestions { .. } => "sdk-planning-questions",
-            InboundMessage::PlanningComplete { .. } => "sdk-planning-complete",
             InboundMessage::AskUserQuestions { .. } => "sdk-ask-user-questions",
             InboundMessage::PlanApprovalRequest { .. } => "sdk-plan-approval-request",
             InboundMessage::RepoDescriptionResult { .. } => "repo-description-result",
@@ -1159,32 +1132,6 @@ impl SidecarManager {
             InboundMessage::EffortUpdated { id, effort_level } => {
                 log::info!("[sidecar] Effort updated for {}: {:?}", id, effort_level);
                 Self::emit(app, suffix, &id, effort_level);
-            }
-            InboundMessage::PlanningQuestions { id, questions } => {
-                log::info!(
-                    "[sidecar] Planning questions for session {}: {} questions",
-                    id,
-                    questions.len()
-                );
-                Self::emit(app, suffix, &id, questions);
-            }
-            InboundMessage::PlanningComplete {
-                id,
-                plan_path,
-                feature_name,
-                summary,
-            } => {
-                log::info!("[sidecar] Planning complete for session {}: {}", id, feature_name);
-                Self::emit(
-                    app,
-                    suffix,
-                    &id,
-                    PlanningCompletePayload {
-                        plan_path,
-                        feature_name,
-                        summary,
-                    },
-                );
             }
             InboundMessage::AskUserQuestions { id, questions } => {
                 log::info!(

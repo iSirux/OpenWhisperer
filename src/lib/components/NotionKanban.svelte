@@ -284,11 +284,10 @@
   }
 
   /**
-   * Draft (prepare) sessions from the selected cards without starting them.
-   * Each card becomes a pending/prepared session with the action's prompt
-   * pre-written, tagged with the card, ready for review before sending.
-   * Worktree/Playwright toggles don't apply here — those are chosen when the
-   * draft is actually launched from the session view.
+   * Draft sessions from the selected cards without starting them. Each card becomes a New Session
+   * (setup) draft with the action's prompt pre-written, tagged with the card, opening in the New
+   * Session view with the full controls (model/effort/repo/worktree/browser/schedule) so it can be
+   * reviewed, tweaked, and launched — or scheduled for later — when ready.
    */
   function draftAction(action: string) {
     if (selectedCards.length === 0) return;
@@ -301,10 +300,11 @@
     let firstId: string | null = null;
     for (const card of cardsSnapshot) {
       const { prompt } = getPromptForAction(action, card);
-      const sessionId = sdkSessions.createPendingTranscriptionSession(
+      const sessionId = sdkSessions.createSetupSession(
         config.model,
         config.effortLevel,
         config.provider,
+        config.repo.path,
       );
       sdkSessions.set(
         get(sdkSessions).map((s) =>
@@ -313,7 +313,7 @@
             : s,
         ),
       );
-      sdkSessions.setPrepared(sessionId, prompt, config.repo.path);
+      sdkSessions.updateDraft(sessionId, prompt);
       if (!firstId) firstId = sessionId;
     }
 

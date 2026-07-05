@@ -71,7 +71,7 @@ export interface LaunchSessionOptions {
 export async function launchSession(opts: LaunchSessionOptions): Promise<string> {
   const { repo, model, effortLevel, provider } = opts;
 
-  const sessionId = sdkSessions.createSetupSession(model, effortLevel, false, provider, repo.path);
+  const sessionId = sdkSessions.createSetupSession(model, effortLevel, provider, repo.path);
 
   if (opts.tag) {
     const tag = opts.tag;
@@ -120,7 +120,6 @@ export async function launchSession(opts: LaunchSessionOptions): Promise<string>
     repoId: repo.id ?? undefined,
     model,
     effortLevel,
-    planMode: false,
     provider,
     systemPrompt: opts.systemPrompt,
     createdBranch,

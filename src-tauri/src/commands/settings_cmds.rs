@@ -151,7 +151,6 @@ pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Resul
         icon: None,
         color: None,
         mcp_servers: None,
-        note_mcp_servers: None,
         tags: Vec::new(),
         active: true,
         worktree_copy_files: Vec::new(),

@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { settings } from './settings';
-import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo, type PlanModeState, type NoteModeState } from './sdkSessions';
+import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo } from './sdkSessions';
 import { getProviderForModel, type SdkProvider } from '$lib/utils/models';
 import { sessions, activeSessionId, type TerminalSession } from './sessions';
 import { repos } from './repos';
@@ -273,8 +273,6 @@ export interface PersistedSdkSession {
   pendingApprovalPrompt?: string;
   draftPrompt?: string;
   draftImages?: SdkImageContent[];
-  planMode?: PlanModeState;
-  noteMode?: NoteModeState;
   sdkSessionId?: string;
 }
 
@@ -393,6 +391,18 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
       || resolveRepoIdFromPath(session.setupRepoPath || '');
   }
 
+  // Migrate legacy `prepared` sessions (the old draft/prepared panel) into editable `setup`
+  // drafts — drafts now live entirely in the New Session view. Queued/scheduled sessions keep
+  // their `queued` status (they still dispatch via launchPrepared and are re-evaluated live).
+  if ((session.status as string) === 'prepared') {
+    session.status = 'setup';
+    session.draftPrompt = session.preparedPrompt ?? session.draftPrompt;
+    session.setupRepoPath = session.cwd || session.setupRepoPath;
+    session.preparedPrompt = undefined;
+    session.preparedSystemPrompt = undefined;
+    session.preparedRepoRecommendation = undefined;
+  }
+
   // Backward-compat for older persisted setup sessions that only had cwd.
   if (session.status === 'setup') {
     if (!session.setupRepoPath) {
@@ -459,6 +469,24 @@ export function hasLoadedSessionsFromDisk(): boolean {
 }
 
 /**
+ * Whether an SDK session carries meaningful state worth persisting.
+ * Excludes sessions still actively recording with no useful data yet;
+ * sessions with transcription data, LLM reasoning, etc. are kept so users can
+ * see the processing state and resume or restart. Shared by the full save and
+ * the partial (upsert) save so both apply identical rules.
+ */
+function isSdkSessionPersistable(s: SdkSession): boolean {
+  if (s.status !== 'pending_transcription') {
+    return true; // Not pending transcription, include it
+  }
+  const hasTranscript = s.pendingTranscription?.transcript;
+  const hasLlmReasoning = s.pendingTranscription?.modelRecommendation ||
+                         s.pendingTranscription?.repoRecommendation ||
+                         s.pendingTranscription?.cleanedTranscript;
+  return !!(hasTranscript || hasLlmReasoning);
+}
+
+/**
  * Save current sessions to disk.
  * All session fields are automatically persisted except those in NON_PERSISTABLE_FIELDS.
  */
@@ -474,21 +502,7 @@ export async function saveSessionsToDisk(): Promise<void> {
   const currentActiveSdkId = get(activeSdkSessionId);
   const currentActiveTerminalId = get(activeSessionId);
 
-  // Filter out sessions that are still actively recording with no useful data yet.
-  // Sessions with transcription data, LLM reasoning, etc. are persisted so
-  // users can see the processing state and resume or restart.
-  const persistableSdkSessions = currentSdkSessions.filter(s => {
-    if (s.status !== 'pending_transcription') {
-      return true; // Not pending transcription, include it
-    }
-    // For pending_transcription sessions, only exclude if still recording with no transcript
-    const hasTranscript = s.pendingTranscription?.transcript;
-    const hasLlmReasoning = s.pendingTranscription?.modelRecommendation ||
-                           s.pendingTranscription?.repoRecommendation ||
-                           s.pendingTranscription?.cleanedTranscript;
-    // Include if we have meaningful data to restore
-    return hasTranscript || hasLlmReasoning;
-  });
+  const persistableSdkSessions = currentSdkSessions.filter(isSdkSessionPersistable);
 
   const persistedData: PersistedSessions = {
     sdk_sessions: persistableSdkSessions.map(sdkSessionToPersisted),
@@ -501,11 +515,6 @@ export async function saveSessionsToDisk(): Promise<void> {
   };
 
   try {
-    // Debug: Log thinking levels being saved
-    persistedData.sdk_sessions.forEach(s => {
-      console.log(`[sessionPersistence] Saving session ${s.id.slice(0, 8)}: effortLevel =`, s.effortLevel);
-    });
-
     const result = await invoke<{
       overflowSdkSessions: PersistedSdkSession[];
       overflowTerminalSessions: PersistedTerminalSession[];
@@ -574,6 +583,46 @@ export async function saveSessionsToDisk(): Promise<void> {
     console.log('[sessionPersistence] Sessions saved to disk');
   } catch (error) {
     console.error('[sessionPersistence] Failed to save sessions:', error);
+  }
+}
+
+/**
+ * Partial autosave used by the debounced saver during a live query: persists
+ * only the given (dirty) SDK sessions via `upsert_persisted_sdk_sessions`, so a
+ * streaming session doesn't re-serialize and rewrite every other session on
+ * each tick. Terminal sessions, stale-file cleanup, and overflow are left to
+ * the full `saveSessionsToDisk` path (which still runs on structural changes,
+ * the periodic timer, and visibility/unload).
+ */
+export async function saveSdkSessionsPartial(dirtyIds: Set<string>): Promise<void> {
+  const currentSettings = get(settings);
+  if (!currentSettings.session_persistence.enabled) {
+    return;
+  }
+
+  const allSdkSessions = get(sdkSessions);
+  const activeId = get(activeSdkSessionId);
+
+  const toPersist: PersistedSdkSession[] = [];
+  for (const id of dirtyIds) {
+    const session = allSdkSessions.find(s => s.id === id);
+    // Missing → removed since being marked dirty; removal paths trigger a full
+    // save that reconciles the stale file, so it's safe to skip here.
+    if (!session || !isSdkSessionPersistable(session)) continue;
+    toPersist.push(sdkSessionToPersisted(session));
+  }
+
+  if (toPersist.length === 0) {
+    return;
+  }
+
+  try {
+    await invoke('upsert_persisted_sdk_sessions', {
+      sessions: toPersist,
+      activeSdkSessionId: activeId && allSdkSessions.some(s => s.id === activeId) ? activeId : null,
+    });
+  } catch (error) {
+    console.error('[sessionPersistence] Failed to partial-save sessions:', error);
   }
 }
 

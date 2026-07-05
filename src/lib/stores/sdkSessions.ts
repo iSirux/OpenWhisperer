@@ -5,7 +5,7 @@ import { settings } from './settings';
 import { repos } from './repos';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
-import { saveSessionsToDisk } from './sessionPersistence';
+import { saveSessionsToDisk, saveSdkSessionsPartial } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
 import { clampEffortForModel, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
@@ -17,7 +17,18 @@ import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetec
 // =============================================================================
 
 let saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-const SAVE_DEBOUNCE_MS = 2000;
+let saveMaxWaitTimer: ReturnType<typeof setTimeout> | null = null;
+const SAVE_DEBOUNCE_MS = 3000;
+// Max-wait cap: continuous mutations keep resetting the debounce, so bound how
+// long a pending save can be starved before it's forced to flush.
+const SAVE_MAX_WAIT_MS = 12000;
+
+// Dirty tracking for partial saves. `dirtySdkIds` collects the sessions whose
+// content changed via `debouncedSave(id)`; `needsFullSave` is set by structural
+// changes (add/remove/reorder) via `debouncedSave()` with no id, which force a
+// full `saveSessionsToDisk` (terminal sessions + stale cleanup + overflow).
+let dirtySdkIds = new Set<string>();
+let needsFullSave = false;
 
 function normalizeSdkProvider(provider: unknown, model: string): SdkProvider {
   const modelProvider = getProviderForModel(model);
@@ -40,14 +51,55 @@ function normalizeEpochMs(value: number | null | undefined): number | undefined 
   return value < 1e12 ? value * 1000 : value;
 }
 
-function debouncedSave(): void {
+/**
+ * Flush the pending save. Chooses the full save when a structural change is
+ * pending (or nothing was tagged dirty), otherwise a cheap partial upsert of
+ * just the dirty sessions.
+ */
+function flushSave(): void {
+  if (saveDebounceTimer) {
+    clearTimeout(saveDebounceTimer);
+    saveDebounceTimer = null;
+  }
+  if (saveMaxWaitTimer) {
+    clearTimeout(saveMaxWaitTimer);
+    saveMaxWaitTimer = null;
+  }
+
+  const full = needsFullSave;
+  const ids = dirtySdkIds;
+  needsFullSave = false;
+  dirtySdkIds = new Set();
+
+  if (full) {
+    saveSessionsToDisk();
+  } else if (ids.size > 0) {
+    saveSdkSessionsPartial(ids);
+  }
+}
+
+/**
+ * Schedule a debounced save. Pass a session `id` for a content-only change
+ * (persisted via a partial upsert); omit it for a structural change that must
+ * go through the full save path.
+ */
+function debouncedSave(sessionId?: string): void {
+  if (sessionId) {
+    dirtySdkIds.add(sessionId);
+  } else {
+    needsFullSave = true;
+  }
+
   if (saveDebounceTimer) {
     clearTimeout(saveDebounceTimer);
   }
-  saveDebounceTimer = setTimeout(() => {
-    saveDebounceTimer = null;
-    saveSessionsToDisk();
-  }, SAVE_DEBOUNCE_MS);
+  saveDebounceTimer = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
+
+  // Start (but never reset) the max-wait cap so a steady stream of mutations
+  // can't indefinitely postpone the flush.
+  if (!saveMaxWaitTimer) {
+    saveMaxWaitTimer = setTimeout(flushSave, SAVE_MAX_WAIT_MS);
+  }
 }
 
 /** Resolve a repo ID from a cwd path by looking up the repos list. */
@@ -200,17 +252,6 @@ export interface PlanningAnswer {
   textInput?: string;
 }
 
-export interface PlanModeState {
-  isActive: boolean;
-  questions: PlanningQuestion[];
-  answers: PlanningAnswer[];
-  currentQuestionIndex: number;
-  planFilePath?: string;
-  featureName?: string;
-  planSummary?: string;
-  isComplete: boolean;
-}
-
 export interface AskUserQuestionState {
   questions: PlanningQuestion[];
   answers: PlanningAnswer[];
@@ -220,12 +261,6 @@ export interface AskUserQuestionState {
 export interface PlanApprovalState {
   allowedPrompts: Array<{ tool: string; prompt: string }>;
   plan?: string;
-}
-
-export interface NoteModeState {
-  isActive: boolean;
-  /** Track if the initial note was created */
-  noteCreated: boolean;
 }
 
 export type EffortLevel = null | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -393,8 +428,6 @@ export interface SdkSession {
   pendingTranscription?: PendingTranscriptionInfo;
   /** A follow-up recording for this live session whose transcription failed; retriable in place. */
   failedRecording?: FailedRecording;
-  planMode?: PlanModeState;
-  noteMode?: NoteModeState;
   askUserQuestion?: AskUserQuestionState;
   pendingPlanApproval?: PlanApprovalState;
   draftPrompt?: string;
@@ -602,34 +635,27 @@ function calculateWorkPeriod(session: SdkSession): { accumulatedDurationMs: numb
   };
 }
 
-/** Fraction of the current window at which we proactively expand to the model's full window.
- *  Expanding at 90% means a 200k window grows to 1M while ~20k of headroom remains,
- *  so the bar never slams to 100% right before crossing 200k. */
-const CONTEXT_EXPAND_THRESHOLD = 0.9;
-
 /**
- * Resolve the context window to display, expanding past a stale/base window when the
- * model is known to support more (e.g. the 1M-context Claude models that the SDK still
- * reports as a 200k window). The window only ever grows within a session — never shrinks —
- * so the bar stays stable once expanded.
+ * Resolve the context window to display. The SDK reports a stale 200k window for the
+ * 1M-context Claude models, so we trust the model's declared maximum (from models.ts)
+ * whenever it exceeds the reported/base window — the bar reflects the true 1M limit
+ * immediately rather than only once usage nears 200k. The window never shrinks below
+ * what we've already shown or what this query reports.
  *
  * @param reportedWindow Window reported for this query (from the sidecar/SDK)
- * @param currentContextTokens Tokens currently occupying the context window
  * @param model The session's model id (used to look up the true maximum)
  * @param prevWindow The window already shown for this session
  */
 function resolveContextWindow(
   reportedWindow: number,
-  currentContextTokens: number,
   model: string | undefined,
   prevWindow: number,
 ): number {
   // Never shrink below what we've already shown or what this query reports.
   let window = Math.max(reportedWindow || 0, prevWindow || 0) || 200000;
+  // Trust the model's known maximum (e.g. 1M) over a stale, smaller SDK-reported window.
   const modelMax = model ? getMaxContextTokens(model) : 0;
-  // Expand to the model's full window once usage approaches the current (smaller) window.
-  // Detecting at the threshold means we switch to 1M *before* shooting past 200k.
-  if (modelMax > window && currentContextTokens >= window * CONTEXT_EXPAND_THRESHOLD) {
+  if (modelMax > window) {
     window = modelMax;
   }
   return window;
@@ -651,7 +677,7 @@ function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: S
     ? contextInputTokens
     : contextInputTokens + contextCacheReadTokens + contextCacheCreationTokens;
   const currentContextTokens = totalContextInputTokens + contextOutputTokens;
-  const contextWindow = resolveContextWindow(reportedWindow, currentContextTokens, model, prev.contextWindow);
+  const contextWindow = resolveContextWindow(reportedWindow, model, prev.contextWindow);
   const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
   return {
@@ -688,7 +714,7 @@ function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progres
     ? progressiveInputTokens
     : progressiveInputTokens + progressiveCacheReadTokens + progressiveCacheCreationTokens;
   const liveCurrentTokens = liveContextInputTokens + progressiveOutputTokens;
-  const contextWindow = resolveContextWindow(prev.contextWindow, liveCurrentTokens, model, prev.contextWindow);
+  const contextWindow = resolveContextWindow(prev.contextWindow, model, prev.contextWindow);
   const contextUsagePercent = Math.min(100, (liveCurrentTokens / contextWindow) * 100);
 
   return {
@@ -826,7 +852,7 @@ function createSdkSessionsStore() {
         const terminalType = wasStoppedByUser ? 'stopped' as const : 'done' as const;
         const updatedMessages = [...closedThinkingMessages, { type: terminalType, timestamp: now }];
         sessionMessages = updatedMessages;
-        needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+        needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
         const isActiveSession = get(activeSdkSessionId) === id;
         return {
@@ -843,7 +869,7 @@ function createSdkSessionsStore() {
         };
       })
     );
-    debouncedSave();
+    debouncedSave(id);
 
     if (!wasStoppedByUser && currentSettings.audio.play_sound_on_completion) {
       playCompletionSound();
@@ -856,7 +882,7 @@ function createSdkSessionsStore() {
             update(sessions =>
               sessions.map(s => s.id === id ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } } : s)
             );
-            debouncedSave();
+            debouncedSave(id);
           }
         })
         .catch(err => console.error('[sdkSessions] Failed to analyze session completion:', err));
@@ -912,7 +938,7 @@ function createSdkSessionsStore() {
             };
           })
         );
-        debouncedSave();
+        debouncedSave(id);
       })
     );
 
@@ -930,9 +956,7 @@ function createSdkSessionsStore() {
           // them here from the tool_start is more robust because this event is
           // proven to work — it already renders the tool card in the UI.
           const toolName = e.payload.tool;
-          const isExitPlanMode = toolName === 'ExitPlanMode';
-          const isCompletePlanning = toolName === 'complete_planning' || toolName === 'mcp__planning-tools__complete_planning';
-          const isPlanApprovalTool = isExitPlanMode || isCompletePlanning;
+          const isPlanApprovalTool = toolName === 'ExitPlanMode';
           const isAskUserQuestion = toolName === 'AskUserQuestion';
 
           if (isPlanApprovalTool) {
@@ -973,7 +997,7 @@ function createSdkSessionsStore() {
                     timestamp: now,
                   },
                 ],
-                // Set pendingPlanApproval when ExitPlanMode or complete_planning is detected
+                // Set pendingPlanApproval when ExitPlanMode is detected
                 ...(isPlanApprovalTool ? {
                   pendingPlanApproval: {
                     allowedPrompts: exitPlanAllowedPrompts!,
@@ -991,7 +1015,7 @@ function createSdkSessionsStore() {
               };
             })
           );
-          debouncedSave();
+          debouncedSave(id);
         }
       )
     );
@@ -1000,7 +1024,7 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<{ tool: string; output: string; toolUseId: string; parentToolUseId?: string | null; turnUuid?: string | null; images?: { mediaType: string; base64Data: string }[] | null }>(`sdk-tool-result-${id}`, (e) => {
         const toolName = e.payload.tool;
-        const isPlanApprovalResult = toolName === 'ExitPlanMode' || toolName === 'complete_planning' || toolName === 'mcp__planning-tools__complete_planning';
+        const isPlanApprovalResult = toolName === 'ExitPlanMode';
         if (isPlanApprovalResult) {
           console.log(`[sdkSessions] Plan approval tool_result received: ${toolName} (session: ${id}, output: ${e.payload.output.slice(0, 100)})`);
         }
@@ -1032,7 +1056,7 @@ function createSdkSessionsStore() {
             })()
           )
         );
-        debouncedSave();
+        debouncedSave(id);
       })
     );
 
@@ -1107,7 +1131,7 @@ function createSdkSessionsStore() {
               };
             })
           );
-          debouncedSave();
+          debouncedSave(id);
           try {
             await storeApi.sendPrompt(id, recovery.pendingPrompt, recovery.pendingImages);
           } catch (err) {
@@ -1115,7 +1139,7 @@ function createSdkSessionsStore() {
             update(sessions =>
               sessions.map(s => (s.id === id ? { ...s, status: 'error' as const, contextOverflow: true, overflowRecovery: null } : s))
             );
-            debouncedSave();
+            debouncedSave(id);
           }
           // The /compact turn isn't a real completion — skip sound and AI analysis.
           return;
@@ -1123,11 +1147,11 @@ function createSdkSessionsStore() {
         if (recovery && wasStoppedByUser) {
           // User interrupted mid-recovery — abandon it, then fall through to normal completion.
           update(sessions => sessions.map(s => (s.id === id ? { ...s, overflowRecovery: null } : s)));
-          debouncedSave();
+          debouncedSave(id);
         } else if (recovery?.phase === 'resending') {
           // The retried prompt completed successfully — recovery is done. Fall through to complete.
           update(sessions => sessions.map(s => (s.id === id ? { ...s, overflowRecovery: null } : s)));
-          debouncedSave();
+          debouncedSave(id);
         }
 
         // --- Semi-stop detection ---
@@ -1156,7 +1180,7 @@ function createSdkSessionsStore() {
               };
             })
           );
-          debouncedSave();
+          debouncedSave(id);
           console.log(`[sdkSessions] sdk-done deferred: ${liveSubagents.length} subagent(s) still running (session: ${id})`);
           return;
         }
@@ -1240,7 +1264,7 @@ function createSdkSessionsStore() {
             };
           })
         );
-        debouncedSave();
+        debouncedSave(id);
 
         if (startRecovery) {
           try {
@@ -1252,7 +1276,7 @@ function createSdkSessionsStore() {
                 s.id === id ? { ...s, status: 'error' as const, contextOverflow: true, overflowRecovery: null } : s
               )
             );
-            debouncedSave();
+            debouncedSave(id);
           }
         }
       })
@@ -1301,7 +1325,7 @@ function createSdkSessionsStore() {
             };
           })
         );
-        debouncedSave();
+        debouncedSave(id);
       })
     );
 
@@ -1350,7 +1374,7 @@ function createSdkSessionsStore() {
             };
           })
         );
-        debouncedSave();
+        debouncedSave(id);
       })
     );
 
@@ -1376,7 +1400,7 @@ function createSdkSessionsStore() {
             };
           })
         );
-        debouncedSave();
+        debouncedSave(id);
         if (shouldFinalize) {
           console.log(`[sdkSessions] last subagent stopped — running deferred completion (session: ${id})`);
           finalizeCompletion(id, false);
@@ -1411,7 +1435,7 @@ function createSdkSessionsStore() {
             };
           })
         );
-        debouncedSave();
+        debouncedSave(id);
       })
     );
 
@@ -1439,46 +1463,7 @@ function createSdkSessionsStore() {
             };
           })
         );
-        debouncedSave();
-      })
-    );
-
-    // Planning questions events
-    unlisteners.push(
-      await listen<PlanningQuestion[]>(`sdk-planning-questions-${id}`, (e) => {
-        update(sessions =>
-          sessions.map(s => {
-            if (s.id !== id || !s.planMode) return s;
-            return {
-              ...s,
-              planMode: {
-                ...s.planMode,
-                questions: [...s.planMode.questions, ...e.payload],
-                currentQuestionIndex: s.planMode.currentQuestionIndex >= s.planMode.questions.length
-                  ? s.planMode.questions.length
-                  : s.planMode.currentQuestionIndex,
-              },
-            };
-          })
-        );
-        debouncedSave();
-      })
-    );
-
-    // Planning complete events
-    unlisteners.push(
-      await listen<{ planPath: string; featureName: string; summary: string }>(`sdk-planning-complete-${id}`, (e) => {
-        update(sessions =>
-          sessions.map(s => {
-            if (s.id !== id || !s.planMode) return s;
-            return {
-              ...s,
-              planMode: { ...s.planMode, isComplete: true, planFilePath: e.payload.planPath, featureName: e.payload.featureName, planSummary: e.payload.summary },
-              aiMetadata: { ...s.aiMetadata, name: `Plan: ${e.payload.featureName}` },
-            };
-          })
-        );
-        debouncedSave();
+        debouncedSave(id);
       })
     );
 
@@ -1530,7 +1515,7 @@ function createSdkSessionsStore() {
         update(sessions =>
           sessions.map(s => s.id === id ? { ...s, sdkSessionId: e.payload } : s)
         );
-        debouncedSave();
+        debouncedSave(id);
       })
     );
 
@@ -1567,7 +1552,7 @@ function createSdkSessionsStore() {
             };
           })
         );
-        debouncedSave();
+        debouncedSave(id);
       })
     );
 
@@ -1586,8 +1571,6 @@ function createSdkSessionsStore() {
     systemPrompt?: string | null,
     historyMessages?: HistoryMessage[] | null,
     sdkSessionId?: string | null, // SDK session ID for proper resume (preferred over historyMessages)
-    planMode?: boolean,
-    noteMode?: boolean,
     provider?: string,
     forkFromSdkSessionId?: string | null, // SDK session ID to fork from
     forkAtMessageUuid?: string | null, // Message UUID to fork at (resumeSessionAt)
@@ -1601,29 +1584,16 @@ function createSdkSessionsStore() {
     const resolvedProvider = normalizeSdkProvider(provider, resolvedModel);
 
     // Determine which MCP servers to use
-    // For note mode: use note_mcp_servers from repo config
-    // For regular mode: use mcp_servers from repo config or all enabled global servers
+    // Use mcp_servers from repo config or all enabled global servers
     let mcpServers: McpServerConfig[] | null = null;
     console.log('[MCP Debug] Total MCP servers in settings:', currentSettings.mcp?.servers?.length ?? 0);
     if (currentSettings.mcp?.servers?.length > 0) {
       const repo = get(repos).list.find((r) => r.path === cwd);
       console.log('[MCP Debug] Session cwd:', cwd);
-      console.log('[MCP Debug] Found repo:', repo?.name, 'with mcp_servers:', repo?.mcp_servers, 'note_mcp_servers:', repo?.note_mcp_servers);
+      console.log('[MCP Debug] Found repo:', repo?.name, 'with mcp_servers:', repo?.mcp_servers);
       let servers: McpServerConfig[];
 
-      if (noteMode) {
-        // Note mode: only use note_mcp_servers from repo config
-        if (repo?.note_mcp_servers?.length) {
-          servers = currentSettings.mcp.servers.filter(
-            (s) => s.enabled && repo.note_mcp_servers!.includes(s.id)
-          );
-          console.log('[MCP Debug] Note mode: using repo note_mcp_servers:', servers.length);
-        } else {
-          // No note MCP servers configured - note mode won't have MCP tools
-          servers = [];
-          console.log('[MCP Debug] Note mode: no note_mcp_servers configured');
-        }
-      } else if (repo?.mcp_servers?.length) {
+      if (repo?.mcp_servers?.length) {
         // Use repo-specific servers
         servers = currentSettings.mcp.servers.filter(
           (s) => s.enabled && repo.mcp_servers!.includes(s.id)
@@ -1711,8 +1681,6 @@ function createSdkSessionsStore() {
       // Only send history messages if we don't have an SDK session ID (legacy fallback)
       messages: !usesSdkSessionId && historyMessages && historyMessages.length > 0 ? historyMessages : null,
       sdkSessionId: usesSdkSessionId ? sdkSessionId : null,
-      planMode: planMode ?? null,
-      noteMode: noteMode ?? null,
       readOnlyMode: readOnlyMode ?? null,
       mcpServers: mcpServers && mcpServers.length > 0 ? mcpServers : null,
       provider: resolvedProvider,
@@ -1783,7 +1751,7 @@ function createSdkSessionsStore() {
       sidecarStarted = true;
     },
 
-    async createSession(cwd: string, model: string, effortLevel: EffortLevel = 'low', systemPrompt?: string, planMode?: boolean, provider?: SdkProvider): Promise<string> {
+    async createSession(cwd: string, model: string, effortLevel: EffortLevel = 'low', systemPrompt?: string, provider?: SdkProvider): Promise<string> {
       await this.ensureSidecarStarted();
 
       const id = crypto.randomUUID();
@@ -1879,7 +1847,7 @@ function createSdkSessionsStore() {
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
-      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, planMode, undefined, resolvedProvider, undefined, undefined, undefined, autocompactEnabled ?? null);
+      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, resolvedProvider, undefined, undefined, undefined, autocompactEnabled ?? null);
       await syncSessionBranchMetadata(id, cwd);
 
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1907,7 +1875,7 @@ function createSdkSessionsStore() {
       await registerSessionWithBackend(
         id, session.cwd, session.model, session.effortLevel,
         null, historyMessages, session.sdkSessionId,
-        undefined, undefined, session.provider,
+        session.provider,
         session.forkFromSdkSessionId, session.forkAtMessageUuid, session.readOnlyMode,
         session.autocompactEnabled ?? null
       );
@@ -1951,7 +1919,6 @@ function createSdkSessionsStore() {
           const newId = this.createSetupSession(
             sourceSession.model,
             sourceSession.effortLevel,
-            false,
             sourceSession.provider,
             sourceSession.cwd,
             sourceSession.readOnlyMode ?? false
@@ -2347,7 +2314,7 @@ function createSdkSessionsStore() {
       if (liveSessions.has(id)) {
         try {
           await invoke('close_sdk_session', { id });
-          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, undefined, undefined, session.provider, undefined, undefined, session.readOnlyMode, session.autocompactEnabled ?? null);
+          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, session.provider, undefined, undefined, session.readOnlyMode, session.autocompactEnabled ?? null);
         } catch (error) {
           console.error('[sdkSessions] Failed to reinitialize backend session:', error);
         }
@@ -2373,8 +2340,6 @@ function createSdkSessionsStore() {
       repoId?: string;
       currentBranch?: string | null;
       provider?: SdkProvider;
-      planMode?: PlanModeState;
-      noteMode?: NoteModeState;
       readOnlyMode?: boolean;
     }): void {
       update(sessions => sessions.map(s => {
@@ -2395,8 +2360,6 @@ function createSdkSessionsStore() {
         if (config.setupWorktreePath !== undefined) updated.setupWorktreePath = config.setupWorktreePath;
         if (config.currentBranch !== undefined) updated.currentBranch = config.currentBranch;
         if (config.provider !== undefined) updated.provider = normalizeSdkProvider(config.provider, updated.model);
-        if (config.planMode !== undefined) updated.planMode = config.planMode;
-        if (config.noteMode !== undefined) updated.noteMode = config.noteMode;
         if (config.readOnlyMode !== undefined) updated.readOnlyMode = config.readOnlyMode;
         return updated;
       }));
@@ -2423,7 +2386,7 @@ function createSdkSessionsStore() {
       );
     },
 
-    createSetupSession(model: string, effortLevel: EffortLevel, planMode: boolean = false, provider?: SdkProvider, initialCwd: string = '', readOnlyMode: boolean = false): string {
+    createSetupSession(model: string, effortLevel: EffortLevel, provider?: SdkProvider, initialCwd: string = '', readOnlyMode: boolean = false): string {
       const id = crypto.randomUUID();
       const resolvedProvider = normalizeSdkProvider(provider, model);
 
@@ -2443,35 +2406,34 @@ function createSdkSessionsStore() {
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
-        planMode: planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
       };
 
       update(sessions => [...sessions, session]);
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; planMode: boolean; noteMode?: boolean; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; playwrightQa?: boolean }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; playwrightQa?: boolean; schedule?: QueueWindow }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
-      const gatedModel = config.noteMode ? 'claude-haiku-4-5-20251001' : config.model;
+      const gatedModel = config.model;
       const gatedProvider = normalizeSdkProvider(config.provider, gatedModel);
       const hasPrompt = config.prompt.trim().length > 0;
 
-      // Smart Queue (first-launch gate): if the provider's usage window is exhausted, park this
-      // session as `queued` (with its prompt on the prepared fields) instead of launching. The
-      // driver later dispatches it via launchPrepared once the window resets.
-      if (hasPrompt && shouldQueue(gatedProvider)) {
-        let finalSystemPrompt = config.systemPrompt;
-        if (config.noteMode) {
-          const { getNoteModeSystemPrompt } = await import('$lib/prompts/noteMode');
-          finalSystemPrompt = getNoteModeSystemPrompt();
-        } else if (config.planMode) {
-          const { getPlanModeSystemPrompt } = await import('$lib/prompts/planMode');
-          finalSystemPrompt = getPlanModeSystemPrompt();
-        }
-        const { window: rlWindow, resetsAt } = providerExhaustion(gatedProvider);
+      // Smart Queue (first-launch gate): park this session as `queued` instead of launching when
+      // either the user explicitly scheduled it for a later window (`config.schedule`, fire-and-forget
+      // from the New Session view) or the provider's usage window is currently exhausted. Its prompt
+      // is baked onto the prepared fields; the driver later dispatches it via launchPrepared.
+      if (hasPrompt && (config.schedule || shouldQueue(gatedProvider))) {
+        const finalSystemPrompt = config.systemPrompt;
+        const exhaustion = providerExhaustion(gatedProvider);
         const queuedAt = Date.now();
+        // Scheduled launches target the user-chosen window boundary; rate-limit queueing targets
+        // the current exhausted window's reset time.
+        const queueWindow = config.schedule ?? exhaustion.window;
+        const targetStartAt = config.schedule
+          ? nextWindowResetAt(gatedProvider, config.schedule)
+          : exhaustion.resetsAt;
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -2480,8 +2442,8 @@ function createSdkSessionsStore() {
                   cwd: config.cwd,
                   repoId: config.repoId ?? resolveRepoId(config.cwd),
                   model: gatedModel,
-                  effortLevel: config.noteMode ? null : config.effortLevel,
-                  readOnlyMode: config.noteMode ? false : (config.readOnlyMode ?? false),
+                  effortLevel: config.effortLevel,
+                  readOnlyMode: config.readOnlyMode ?? false,
                   provider: gatedProvider,
                   status: 'queued' as const,
                   preparedPrompt: config.prompt,
@@ -2491,12 +2453,10 @@ function createSdkSessionsStore() {
                   setupRepoPath: undefined,
                   setupWorktreeMode: undefined,
                   setupWorktreePath: undefined,
-                  planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
-                  noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
                   playwrightQa: config.playwrightQa || undefined,
                   disableHooks: config.disableHooks || undefined,
                   ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),
-                  queueInfo: { reason: 'rate_limit' as const, provider: gatedProvider, window: rlWindow, queuedAt, targetStartAt: resetsAt },
+                  queueInfo: { reason: config.schedule ? 'scheduled' as const : 'rate_limit' as const, provider: gatedProvider, window: queueWindow, queuedAt, targetStartAt },
                 }
               : s
           )
@@ -2513,9 +2473,9 @@ function createSdkSessionsStore() {
                 ...s,
                 cwd: config.cwd,
                 repoId: config.repoId ?? resolveRepoId(config.cwd),
-                model: config.noteMode ? 'claude-haiku-4-5-20251001' : config.model, // Note mode always uses Haiku
-                effortLevel: config.noteMode ? null : config.effortLevel, // Note mode doesn't use effort
-                readOnlyMode: config.noteMode ? false : (config.readOnlyMode ?? false),
+                model: config.model,
+                effortLevel: config.effortLevel,
+                readOnlyMode: config.readOnlyMode ?? false,
                 status: 'initializing' as const,
                 // Setup drafts should not carry into the live SDK composer.
                 // If they remain on the session while SdkView mounts, the prompt input
@@ -2526,8 +2486,6 @@ function createSdkSessionsStore() {
                 setupRepoPath: undefined,
                 setupWorktreeMode: undefined,
                 setupWorktreePath: undefined,
-                planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
-                noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
                 playwrightQa: config.playwrightQa || undefined,
                 disableHooks: config.disableHooks || undefined,
                 // Pre-populate createdBranch from worktree creation so the header shows the correct
@@ -2539,23 +2497,15 @@ function createSdkSessionsStore() {
       );
 
       try {
-        let finalSystemPrompt = config.systemPrompt;
-        if (config.noteMode) {
-          const { getNoteModeSystemPrompt } = await import('$lib/prompts/noteMode');
-          finalSystemPrompt = getNoteModeSystemPrompt();
-        } else if (config.planMode) {
-          const { getPlanModeSystemPrompt } = await import('$lib/prompts/planMode');
-          finalSystemPrompt = getPlanModeSystemPrompt();
-        }
+        const finalSystemPrompt = config.systemPrompt;
 
         await this.ensureSidecarStarted();
 
         const unlisteners = await setupEventListeners(id);
         listeners.set(id, unlisteners);
 
-        // Note mode uses Haiku and no effort
-        const finalModel = config.noteMode ? 'claude-haiku-4-5-20251001' : config.model;
-        const finalEffort = config.noteMode ? null : config.effortLevel;
+        const finalModel = config.model;
+        const finalEffort = config.effortLevel;
         const finalProvider = normalizeSdkProvider(config.provider, finalModel);
 
         await registerSessionWithBackend(
@@ -2566,12 +2516,10 @@ function createSdkSessionsStore() {
           finalSystemPrompt,
           null,
           null,
-          config.planMode,
-          config.noteMode,
           finalProvider,
           session.forkFromSdkSessionId,
           session.forkAtMessageUuid,
-          config.noteMode ? false : (config.readOnlyMode ?? false),
+          config.readOnlyMode ?? false,
           undefined,
           config.disableHooks,
           config.playwrightQa
@@ -2769,32 +2717,6 @@ function createSdkSessionsStore() {
       update(sessions => sessions.filter(s => s.id !== id));
     },
 
-    setPrepared(id: string, prompt: string, cwd: string, systemPrompt?: string, repoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string }, chips?: string[]): void {
-      update(sessions =>
-        sessions.map(s => s.id === id ? {
-          ...s,
-          status: 'prepared' as const,
-          cwd,
-          repoId: resolveRepoId(cwd),
-          preparedPrompt: prompt,
-          preparedChips: chips && chips.length > 0 ? chips : undefined,
-          preparedSystemPrompt: systemPrompt,
-          preparedRepoRecommendation: repoRecommendation,
-          pendingTranscription: s.pendingTranscription ? { ...s.pendingTranscription, status: 'processing' as PendingTranscriptionStatus } : s.pendingTranscription,
-        } : s)
-      );
-      void syncSessionBranchMetadata(id, cwd);
-      debouncedSave();
-    },
-
-    updatePreparedRepo(id: string, cwd: string): void {
-      update(sessions =>
-        sessions.map(s => s.id === id && s.status === 'prepared' ? { ...s, cwd, repoId: resolveRepoId(cwd) } : s)
-      );
-      void syncSessionBranchMetadata(id, cwd);
-      debouncedSave();
-    },
-
     async launchPrepared(id: string, editedPrompt?: string): Promise<void> {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
@@ -2833,8 +2755,35 @@ function createSdkSessionsStore() {
       }
     },
 
-    cancelPrepared(id: string): void {
-      update(sessions => sessions.filter(s => s.id !== id));
+    /**
+     * Turn an in-flight `pending_transcription` session into an editable `setup` draft: the
+     * transcript becomes the setup-view prompt draft and the session opens in the New Session
+     * view with full controls (model/effort/repo/worktree/schedule). Any recording screenshots
+     * are carried over as draft images. This is the "prepare"/draft entry point for voice and
+     * selection recordings (replacing the old prepared-session panel).
+     */
+    setupFromPending(id: string, config: { prompt: string; cwd: string; images?: SdkImageContent[] }): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id) return s;
+          const carriedImages = (config.images && config.images.length > 0)
+            ? config.images
+            : s.pendingTranscription?.screenshots;
+          return {
+            ...s,
+            status: 'setup' as const,
+            cwd: config.cwd,
+            setupRepoPath: config.cwd || undefined,
+            setupWorktreeMode: s.setupWorktreeMode ?? 'main',
+            repoId: config.cwd ? resolveRepoId(config.cwd) : s.repoId,
+            draftPrompt: config.prompt,
+            draftImages: carriedImages && carriedImages.length > 0 ? carriedImages : undefined,
+            pendingTranscription: undefined,
+          };
+        })
+      );
+      if (config.cwd) void syncSessionBranchMetadata(id, config.cwd);
+      debouncedSave();
     },
 
     async approveAndSend(id: string, editedPrompt?: string, systemPrompt?: string): Promise<void> {
@@ -2988,7 +2937,7 @@ function createSdkSessionsStore() {
         update(sessions => sessions.map(s => s.id === id ? { ...s, model: resolvedModel } : s));
       }
 
-      await registerSessionWithBackend(id, cwd, resolvedModel, effortLevel, systemPrompt, undefined, undefined, undefined, undefined, provider);
+      await registerSessionWithBackend(id, cwd, resolvedModel, effortLevel, systemPrompt, undefined, undefined, provider);
       await syncSessionBranchMetadata(id, cwd);
       usageStats.trackSession('sdk', resolvedModel, cwd);
 
@@ -3113,38 +3062,26 @@ function createSdkSessionsStore() {
     },
 
     /**
-     * Smart Queue (schedule): fire-and-forget a prepared session for the next 5h/7d window reset,
-     * even when not currently rate-limited. Keeps the prepared prompt/chips/systemPrompt so
-     * launchPrepared dispatches it; the driver fires it once `now > targetStartAt`.
-     */
-    scheduleForWindow(id: string, window: QueueWindow): void {
-      update(sessions =>
-        sessions.map(s => {
-          if (s.id !== id) return s;
-          const provider = s.provider ?? getProviderForModel(s.model);
-          const targetStartAt = nextWindowResetAt(provider, window);
-          return {
-            ...s,
-            status: 'queued' as const,
-            queueInfo: { reason: 'scheduled' as const, provider, window, queuedAt: Date.now(), targetStartAt },
-          };
-        })
-      );
-      debouncedSave();
-    },
-
-    /**
      * Smart Queue "Remove from queue": revert ANY `queued` session (scheduled OR rate-limit) back
-     * to `prepared`, clearing queueInfo. Prepared fields are left intact so the session still shows
-     * its Launch panel.
+     * to an editable `setup` draft, clearing queueInfo. The baked prompt is restored as the
+     * setup-view draft prompt so the user lands back in the New Session view to edit or re-launch.
      */
     unschedule(id: string): void {
       update(sessions =>
-        sessions.map(s =>
-          s.id === id && s.status === 'queued'
-            ? { ...s, status: 'prepared' as const, queueInfo: null }
-            : s
-        )
+        sessions.map(s => {
+          if (s.id !== id || s.status !== 'queued') return s;
+          return {
+            ...s,
+            status: 'setup' as const,
+            draftPrompt: s.preparedPrompt ?? s.draftPrompt,
+            setupRepoPath: s.cwd || s.setupRepoPath,
+            setupWorktreeMode: s.setupWorktreeMode ?? 'main',
+            preparedPrompt: undefined,
+            preparedSystemPrompt: undefined,
+            preparedRepoRecommendation: undefined,
+            queueInfo: null,
+          };
+        })
       );
       debouncedSave();
     },
@@ -3157,253 +3094,6 @@ function createSdkSessionsStore() {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session) return;
       await syncSessionBranchMetadata(id, session.cwd);
-    },
-
-    async createPlanModeSession(cwd: string, model: string, effortLevel: EffortLevel = null): Promise<string> {
-      const { getPlanModeSystemPrompt } = await import('$lib/prompts/planMode');
-      const systemPrompt = getPlanModeSystemPrompt();
-
-      const id = await this.createSession(cwd, model, effortLevel, systemPrompt, true);
-
-      update(sessions =>
-        sessions.map(s =>
-          s.id === id
-            ? {
-                ...s,
-                planMode: { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false },
-                aiMetadata: { ...s.aiMetadata, name: 'New Plan', category: 'planning' },
-              }
-            : s
-        )
-      );
-
-      return id;
-    },
-
-    /**
-     * Create a note-taking mode session.
-     * Note mode sessions:
-     * - Always use Haiku for speed and cost efficiency
-     * - Have read-only codebase access (Read, Glob, Grep)
-     * - Use note_mcp_servers from repo config for note-taking tools
-     * - No thinking level (null)
-     */
-    async createNoteModeSession(cwd: string): Promise<string> {
-      await this.ensureSidecarStarted();
-
-      const { getNoteModeSystemPrompt } = await import('$lib/prompts/noteMode');
-      const systemPrompt = getNoteModeSystemPrompt();
-
-      const id = crypto.randomUUID();
-      // Note mode always uses Haiku for speed and cost efficiency
-      const model = 'claude-haiku-4-5-20251001';
-
-      const session: SdkSession = {
-        id,
-        cwd,
-        model,
-        effortLevel: null,
-        messages: [],
-        status: 'idle',
-        createdAt: Date.now(),
-        lastActivityAt: Date.now(),
-        accumulatedDurationMs: 0,
-        noteMode: { isActive: true, noteCreated: false },
-      };
-
-      update(sessions => [...sessions, session]);
-
-      const unlisteners = await setupEventListeners(id);
-      listeners.set(id, unlisteners);
-
-      await registerSessionWithBackend(id, cwd, model, null, systemPrompt, null, null, false, true);
-      await syncSessionBranchMetadata(id, cwd);
-
-      usageStats.trackSession('sdk', model, cwd);
-
-      // Set initial metadata
-      update(sessions =>
-        sessions.map(s =>
-          s.id === id
-            ? { ...s, aiMetadata: { ...s.aiMetadata, name: 'New Note', category: 'note' } }
-            : s
-        )
-      );
-
-      return id;
-    },
-
-    /**
-     * Create a pending transcription session for note mode.
-     * Similar to createPendingTranscriptionSession but with noteMode flag.
-     */
-    createPendingNoteSession(): string {
-      const id = crypto.randomUUID();
-      // Note mode always uses Haiku
-      const model = 'claude-haiku-4-5-20251001';
-
-      const session: SdkSession = {
-        id,
-        cwd: '',
-        model,
-        effortLevel: null,
-        messages: [],
-        status: 'pending_transcription',
-        createdAt: Date.now(),
-        lastActivityAt: Date.now(),
-        accumulatedDurationMs: 0,
-        noteMode: { isActive: true, noteCreated: false },
-        pendingTranscription: { status: 'recording', audioVisualizationHistory: [], recordingStartedAt: Date.now() },
-      };
-
-      update(sessions => [...sessions, session]);
-      return id;
-    },
-
-    /**
-     * Complete a pending note session and send the transcribed note.
-     */
-    async completePendingNoteSession(id: string, cwd: string, transcript: string): Promise<void> {
-      let session: SdkSession | undefined;
-      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
-
-      if (!session || session.status !== 'pending_transcription' || !session.noteMode?.isActive) return;
-
-      const { getNoteModeSystemPrompt } = await import('$lib/prompts/noteMode');
-      const systemPrompt = getNoteModeSystemPrompt();
-
-      update(sessions =>
-        sessions.map(s => s.id === id ? { ...s, cwd, repoId: resolveRepoId(cwd), status: 'initializing' as const, pendingPrompt: transcript } : s)
-      );
-
-      try {
-        await this.ensureSidecarStarted();
-
-        const unlisteners = await setupEventListeners(id);
-        listeners.set(id, unlisteners);
-
-        await registerSessionWithBackend(id, cwd, session.model, null, systemPrompt, null, null, false, true);
-        await syncSessionBranchMetadata(id, cwd);
-
-        usageStats.trackSession('sdk', session.model, cwd);
-
-        // Send the transcript as the initial prompt
-        await this.sendPrompt(id, transcript);
-
-        // Update metadata
-        update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? { ...s, aiMetadata: { ...s.aiMetadata, name: 'New Note', category: 'note' } }
-              : s
-          )
-        );
-      } catch (error) {
-        update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? { ...s, status: 'error' as const, messages: [...s.messages, { type: 'error' as const, content: error instanceof Error ? error.message : 'Failed to initialize note session', timestamp: Date.now() }] }
-              : s
-          )
-        );
-        throw error;
-      }
-    },
-
-    /**
-     * Mark a note session as having created the note.
-     */
-    markNoteCreated(id: string): void {
-      update(sessions =>
-        sessions.map(s => {
-          if (s.id !== id || !s.noteMode) return s;
-          return { ...s, noteMode: { ...s.noteMode, noteCreated: true } };
-        })
-      );
-    },
-
-    updatePlanModeQuestions(id: string, questions: PlanningQuestion[]): void {
-      update(sessions =>
-        sessions.map(s => {
-          if (s.id !== id || !s.planMode) return s;
-          return {
-            ...s,
-            planMode: {
-              ...s.planMode,
-              questions: [...s.planMode.questions, ...questions],
-              currentQuestionIndex: s.planMode.currentQuestionIndex >= s.planMode.questions.length
-                ? s.planMode.questions.length
-                : s.planMode.currentQuestionIndex,
-            },
-          };
-        })
-      );
-      debouncedSave();
-    },
-
-    setCurrentQuestionIndex(id: string, index: number): void {
-      update(sessions =>
-        sessions.map(s => {
-          if (s.id !== id || !s.planMode) return s;
-          return {
-            ...s,
-            planMode: {
-              ...s.planMode,
-              currentQuestionIndex: Math.max(0, Math.min(index, s.planMode.questions.length - 1)),
-            },
-          };
-        })
-      );
-    },
-
-    updatePlanningAnswer(id: string, answer: PlanningAnswer): void {
-      update(sessions =>
-        sessions.map(s => {
-          if (s.id !== id || !s.planMode) return s;
-
-          const existingIndex = s.planMode.answers.findIndex(a => a.questionIndex === answer.questionIndex);
-          const newAnswers = [...s.planMode.answers];
-          if (existingIndex >= 0) {
-            newAnswers[existingIndex] = answer;
-          } else {
-            newAnswers.push(answer);
-          }
-
-          return { ...s, planMode: { ...s.planMode, answers: newAnswers } };
-        })
-      );
-    },
-
-    async submitPlanningAnswers(id: string): Promise<void> {
-      let session: SdkSession | undefined;
-      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
-
-      if (!session?.planMode) throw new Error('Session not in plan mode');
-
-      const formattedAnswers = session.planMode.answers.map(answer => {
-        const question = session!.planMode!.questions[answer.questionIndex];
-        const selectedLabels = answer.selectedOptions.map(i => question.options[i]?.label || `Option ${i}`);
-        return {
-          question: question.question,
-          header: question.header,
-          selectedOptions: selectedLabels,
-          customInput: answer.textInput || null,
-        };
-      });
-
-      const answerText = `Here are my answers to the planning questions:\n\n${JSON.stringify(formattedAnswers, null, 2)}`;
-
-      this.clearPlanningQuestions(id);
-      await this.sendPrompt(id, answerText);
-    },
-
-    clearPlanningQuestions(id: string): void {
-      update(sessions =>
-        sessions.map(s => {
-          if (s.id !== id || !s.planMode) return s;
-          return { ...s, planMode: { ...s.planMode, questions: [], answers: [], currentQuestionIndex: 0 } };
-        })
-      );
     },
 
     // AskUserQuestion methods
@@ -3500,15 +3190,8 @@ function createSdkSessionsStore() {
 
       if (!session) return;
 
-      // Try full implementation spawn (requires complete_planning MCP tool was used and
-      // emitted a planning_complete event that set planMode.isComplete + planFilePath).
-      const implId = await this.spawnImplementationSession(id);
-      if (implId) return; // success — new session already started
-
-      // Fallback: native ExitPlanMode without an MCP plan file.
       // Spawn a fresh session in the same workspace and ask Claude to implement
       // whatever plan it wrote during the planning conversation.
-      console.log('[sdkSessions] approvePlanNewSession fallback: no plan file, spawning generic impl session');
       const implementationId = await this.createSession(session.cwd, session.model, session.effortLevel);
       const fallbackPrompt = `The previous planning session just finished. Please review any plan files or notes created during planning (e.g. PLAN.md, TODO.md, or any file written during the last session), then implement the plan step by step.\n\nFocus on quality and maintainability. Ask if any requirements are unclear.`;
       await this.sendPrompt(implementationId, fallbackPrompt);
@@ -3526,51 +3209,6 @@ function createSdkSessionsStore() {
         if (s.id !== id) return s;
         return { ...s, pendingPlanApproval: undefined };
       }));
-    },
-
-    completePlanMode(id: string, planFilePath: string, featureName: string, planSummary: string): void {
-      update(sessions =>
-        sessions.map(s => {
-          if (s.id !== id || !s.planMode) return s;
-          return {
-            ...s,
-            planMode: { ...s.planMode, isComplete: true, planFilePath, featureName, planSummary },
-            aiMetadata: { ...s.aiMetadata, name: `Plan: ${featureName}` },
-          };
-        })
-      );
-      debouncedSave();
-    },
-
-    async spawnImplementationSession(planSessionId: string): Promise<string | null> {
-      let planSession: SdkSession | undefined;
-      subscribe(sessions => { planSession = sessions.find(s => s.id === planSessionId); })();
-
-      if (!planSession?.planMode?.isComplete || !planSession.planMode.planFilePath) {
-        console.error('[sdkSessions] Cannot spawn implementation: plan not complete');
-        return null;
-      }
-
-      const { planFilePath, featureName } = planSession.planMode;
-
-      const implementationId = await this.createSession(planSession.cwd, planSession.model, planSession.effortLevel);
-
-      update(sessions =>
-        sessions.map(s =>
-          s.id === implementationId
-            ? { ...s, aiMetadata: { ...s.aiMetadata, name: `Implementing: ${featureName}`, category: 'implementation' } }
-            : s
-        )
-      );
-
-      const implementationPrompt = `Please implement the plan defined in \`${planFilePath}\`.
-
-Read the plan file first to understand what needs to be done, then proceed with the implementation step by step. As you complete each task, update the plan file to mark completed items with [x].
-
-Focus on quality and maintainability. Ask questions if any requirements are unclear.`;
-
-      await this.sendPrompt(implementationId, implementationPrompt);
-      return implementationId;
     },
 
     selectSession(id: string): void {

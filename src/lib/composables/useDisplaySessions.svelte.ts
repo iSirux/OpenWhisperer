@@ -80,11 +80,6 @@ export function getSdkSmartStatus(session: SdkSession): {
     return { status: 'queued' };
   }
 
-  // Handle prepared status
-  if (session.status === 'prepared') {
-    return { status: 'prepared' };
-  }
-
   // Smart Queue: a live session with a pending turn waiting on a rate-limit
   // reset or a scheduled send surfaces as rate_limited (takes precedence over
   // the message-derived querying/idle status below).
@@ -365,8 +360,6 @@ export function transformToDisplaySessions(
         latestMessage: getLatestTextMessage(s.messages),
         aiMetadata: s.aiMetadata,
         pendingRepoSelection: s.pendingRepoSelection,
-        planMode: s.planMode,
-        noteMode: s.noteMode,
         pendingPlanApproval: !!s.pendingPlanApproval,
         askUserQuestion: !!(s.askUserQuestion?.questions?.length),
         provider: s.provider,

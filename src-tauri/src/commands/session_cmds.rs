@@ -43,6 +43,19 @@ pub fn save_persisted_sessions(
     })
 }
 
+/// Partial autosave: upsert only the given SDK sessions (the hot path during a
+/// live query). Rewrites only the data files whose content changed and the
+/// index; does not delete stale files or enforce overflow — that stays with the
+/// full `save_persisted_sessions` path.
+#[tauri::command]
+pub fn upsert_persisted_sdk_sessions(
+    sessions: Vec<PersistedSdkSession>,
+    active_sdk_session_id: Option<String>,
+) -> Result<(), String> {
+    let mut index = SessionIndex::load();
+    index.upsert_sdk_sessions(&sessions, active_sdk_session_id)
+}
+
 #[tauri::command]
 pub fn clear_persisted_sessions() -> Result<(), String> {
     let mut index = SessionIndex::load();

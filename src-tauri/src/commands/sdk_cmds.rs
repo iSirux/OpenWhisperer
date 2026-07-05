@@ -19,8 +19,6 @@ pub fn create_sdk_session(
     system_prompt: Option<String>, // Optional system prompt (e.g., for voice transcription context)
     messages: Option<Vec<HistoryMessage>>, // Optional conversation history for restored sessions (DEPRECATED - use sdk_session_id)
     sdk_session_id: Option<String>, // SDK session ID for proper resume (preferred over messages)
-    plan_mode: Option<bool>,        // Whether this is a plan mode session (enables planning tools)
-    note_mode: Option<bool>, // Whether this is a note-taking mode session (read-only + note MCP tools)
     read_only_mode: Option<bool>, // Whether this is a read-only mode session (read tools + web search)
     mcp_servers: Option<Vec<McpServerConfig>>, // Optional MCP servers to register
     fork_from_sdk_session_id: Option<String>, // SDK session ID to fork from (creates a new branch)
@@ -38,8 +36,6 @@ pub fn create_sdk_session(
         system_prompt,
         messages,
         sdk_session_id,
-        plan_mode,
-        note_mode,
         read_only_mode,
         mcp_servers,
         fork_from_sdk_session_id,

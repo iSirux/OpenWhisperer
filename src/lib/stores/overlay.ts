@@ -4,7 +4,7 @@ import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { primaryMonitor } from '@tauri-apps/api/window';
 import { emit } from '@tauri-apps/api/event';
 
-export type OverlayMode = 'session' | 'paste' | 'inline' | 'note';
+export type OverlayMode = 'session' | 'paste' | 'inline';
 
 export interface OverlayActivityInfo {
   activeSessions: number;

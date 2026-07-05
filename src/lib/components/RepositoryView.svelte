@@ -8,7 +8,7 @@
   import { launchStore, queuedLaunch } from '$lib/stores/launchProfiles';
   import { navigation } from '$lib/stores/navigation';
   import { repos, type RepoConfig } from '$lib/stores/repos';
-  import { settings, isNoteModeAvailable } from '$lib/stores/settings';
+  import { settings } from '$lib/stores/settings';
   import type { LaunchCommand, LaunchProfile } from '$lib/types/launch';
   import { REPO_ICON_NAMES, getDefaultRepoColor } from '$lib/utils/repoIcons';
 
@@ -53,7 +53,6 @@
   let newProfileCmdIds = $state<Set<string>>(new Set());
   let lastRepoModeSyncKey = $state('');
 
-  const noteModeAvailable = $derived(isNoteModeAvailable());
   const selectedRepo = $derived(repoId ? $repos.list.find((repo) => repo.id === repoId) ?? null : null);
   const selectedRepoIndex = $derived(selectedRepo ? $repos.list.findIndex((repo) => repo.id === selectedRepo.id) : -1);
   const generatingClaude = $derived(!!repoId && generatingClaudeRepos.has(repoId));
@@ -375,17 +374,10 @@
     input.value = '';
   }
 
-  function toggleMcpServer(serverId: string, noteMode: boolean) {
+  function toggleMcpServer(serverId: string) {
     if (!selectedRepo) return;
-    const current = noteMode ? selectedRepo.note_mcp_servers || [] : selectedRepo.mcp_servers || [];
+    const current = selectedRepo.mcp_servers || [];
     const enabled = current.includes(serverId);
-    if (noteMode) {
-      updateRepo({
-        note_mcp_servers: enabled ? current.filter((id) => id !== serverId) : [...current, serverId],
-      });
-      return;
-    }
-
     updateRepo({
       mcp_servers: enabled ? current.filter((id) => id !== serverId) : [...current, serverId],
     });
@@ -607,26 +599,12 @@
           <div class="chip-list">
             {#each enabledMcpServers as server}
               {@const enabled = selectedRepo.mcp_servers?.includes(server.id)}
-              <button class="chip-button" class:is-selected={enabled} onclick={() => toggleMcpServer(server.id, false)}>
+              <button class="chip-button" class:is-selected={enabled} onclick={() => toggleMcpServer(server.id)}>
                 {server.name}
               </button>
             {/each}
           </div>
         </div>
-
-        {#if noteModeAvailable}
-          <div class="field">
-            <div class="field-title">Note Mode MCP Servers</div>
-            <div class="chip-list">
-              {#each enabledMcpServers as server}
-                {@const enabled = selectedRepo.note_mcp_servers?.includes(server.id)}
-                <button class="chip-button" class:is-selected={enabled} onclick={() => toggleMcpServer(server.id, true)}>
-                  {server.name}
-                </button>
-              {/each}
-            </div>
-          </div>
-        {/if}
       {/if}
 
       <div class="field">

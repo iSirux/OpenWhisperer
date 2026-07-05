@@ -1,6 +1,6 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -260,12 +260,6 @@ pub struct PersistedSdkSession {
     /// Setup draft images
     #[serde(default)]
     pub draft_images: Option<Vec<PersistedSdkImageContent>>,
-    /// Plan mode state (opaque JSON - complex nested type)
-    #[serde(default)]
-    pub plan_mode: Option<serde_json::Value>,
-    /// Note mode state (opaque JSON)
-    #[serde(default)]
-    pub note_mode: Option<serde_json::Value>,
     /// Playwright MCP enabled for this session
     #[serde(default, rename = "playwrightQa")]
     pub playwright_qa: Option<bool>,
@@ -340,6 +334,11 @@ pub struct SessionEntry {
     pub last_activity_at: Option<u64>,
     /// Total cost in dollars (SDK only)
     pub total_cost: Option<f64>,
+    /// Hash of the session's serialized content, used to skip rewriting the
+    /// data file when nothing changed. `None` for legacy index files (forces a
+    /// write on the next save, then self-heals). See `compute_content_hash`.
+    #[serde(default)]
+    pub content_hash: Option<u64>,
 }
 
 /// The session index file containing entry metadata and active session tracking.
@@ -546,6 +545,14 @@ impl SessionIndex {
             .chain(sessions.terminal_sessions.iter().map(|s| s.id.clone()))
             .collect();
 
+        // Snapshot the previously-stored content hashes so we can skip rewriting
+        // (and fsyncing) session files whose content hasn't changed.
+        let old_hashes: HashMap<String, Option<u64>> = self
+            .entries
+            .iter()
+            .map(|e| (e.id.clone(), e.content_hash))
+            .collect();
+
         // Delete data files for sessions no longer present (closed/removed by frontend)
         let stale_ids: Vec<String> = self
             .entries
@@ -563,21 +570,25 @@ impl SessionIndex {
             }
         }
 
-        // Write each session to its own file
+        // Rebuild index entries and write each session file, skipping files whose
+        // content is byte-identical to what's already on disk (unchanged hash).
+        let mut new_entries: Vec<SessionEntry> =
+            Vec::with_capacity(sessions.sdk_sessions.len() + sessions.terminal_sessions.len());
         for sdk in &sessions.sdk_sessions {
-            self.save_session_data(&sdk.id, sdk)?;
+            let entry = sdk_to_session_entry(sdk);
+            if Self::needs_write(&entry, &old_hashes) {
+                self.save_session_data(&sdk.id, sdk)?;
+            }
+            new_entries.push(entry);
         }
         for pty in &sessions.terminal_sessions {
-            self.save_session_data(&pty.id, pty)?;
+            let entry = pty_to_session_entry(pty);
+            if Self::needs_write(&entry, &old_hashes) {
+                self.save_session_data(&pty.id, pty)?;
+            }
+            new_entries.push(entry);
         }
-
-        // Rebuild index entries from the session data
-        self.entries = sessions
-            .sdk_sessions
-            .iter()
-            .map(sdk_to_session_entry)
-            .chain(sessions.terminal_sessions.iter().map(pty_to_session_entry))
-            .collect();
+        self.entries = new_entries;
 
         // Copy active IDs and timestamp
         self.active_sdk_session_id = sessions.active_sdk_session_id.clone();
@@ -585,6 +596,55 @@ impl SessionIndex {
         self.saved_at = sessions.saved_at;
 
         // Save index
+        self.save()
+    }
+
+    /// Decide whether a session's data file must be (re)written. Writes when the
+    /// hash couldn't be computed (fail-safe) or differs from the stored hash.
+    fn needs_write(entry: &SessionEntry, old_hashes: &HashMap<String, Option<u64>>) -> bool {
+        match entry.content_hash {
+            // No hash available → always write to be safe.
+            None => true,
+            // Compare against the previously-stored hash for this id.
+            Some(_) => old_hashes.get(&entry.id).copied().flatten() != entry.content_hash,
+        }
+    }
+
+    /// Partial save: upsert just the given SDK sessions (used by the frequent
+    /// debounced autosave during a live query). Only rewrites the data files of
+    /// sessions whose content changed, then rewrites the (small) index once.
+    ///
+    /// Unlike `save_from_bulk`, this does NOT delete stale files, touch terminal
+    /// sessions, or enforce overflow — those are handled by full saves, which
+    /// still run on structural changes, on the periodic timer, and on
+    /// visibility/unload. This keeps the hot path down to ~1 session-file write
+    /// plus the index write.
+    pub fn upsert_sdk_sessions(
+        &mut self,
+        sessions: &[PersistedSdkSession],
+        active_sdk_session_id: Option<String>,
+    ) -> Result<(), String> {
+        for sdk in sessions {
+            let entry = sdk_to_session_entry(sdk);
+            let old_hash = self
+                .entries
+                .iter()
+                .find(|e| e.id == sdk.id)
+                .and_then(|e| e.content_hash);
+            let unchanged = entry.content_hash.is_some() && old_hash == entry.content_hash;
+            if !unchanged {
+                self.save_session_data(&sdk.id, sdk)?;
+            }
+            match self.entries.iter_mut().find(|e| e.id == sdk.id) {
+                Some(existing) => *existing = entry,
+                None => self.entries.push(entry),
+            }
+        }
+
+        if let Some(active) = active_sdk_session_id {
+            self.active_sdk_session_id = Some(active);
+        }
+        self.saved_at = crate::util::now_secs();
         self.save()
     }
 
@@ -774,6 +834,21 @@ impl SessionIndex {
     }
 }
 
+/// Compute a stable content hash of a serializable session, used to detect
+/// whether a session's data file needs rewriting. Returns `None` if the value
+/// can't be serialized, in which case callers always write (fail-safe).
+///
+/// Uses `DefaultHasher` over the serialized JSON bytes. The hash is persisted in
+/// the index; if a toolchain change alters the hash function, every session
+/// simply gets rewritten once and the new hashes are stored — self-healing.
+fn compute_content_hash<T: Serialize>(value: &T) -> Option<u64> {
+    use std::hash::Hasher;
+    let bytes = serde_json::to_vec(value).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(&bytes);
+    Some(hasher.finish())
+}
+
 /// Extract lightweight index metadata from an SDK session
 fn sdk_to_session_entry(session: &PersistedSdkSession) -> SessionEntry {
     SessionEntry {
@@ -786,6 +861,7 @@ fn sdk_to_session_entry(session: &PersistedSdkSession) -> SessionEntry {
         created_at: session.created_at,
         last_activity_at: session.last_activity_at,
         total_cost: session.usage.as_ref().map(|u| u.total_cost_usd),
+        content_hash: compute_content_hash(session),
     }
 }
 
@@ -801,6 +877,7 @@ fn pty_to_session_entry(session: &PersistedTerminalSession) -> SessionEntry {
         created_at: session.created_at,
         last_activity_at: None,
         total_cost: None,
+        content_hash: compute_content_hash(session),
     }
 }
 

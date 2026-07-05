@@ -23,8 +23,6 @@ export interface RepoConfig {
   color?: string;
   /** List of MCP server IDs to use for this repository (overrides global servers) */
   mcp_servers?: string[];
-  /** List of MCP server IDs to use for note-taking mode in this repository */
-  note_mcp_servers?: string[];
   /** Tags for multi-repo sequence filtering (e.g., "frontend", "backend", "infra") */
   tags: string[];
   /** Whether this repo is active (shown in selectors, eligible for auto-select). Defaults to true. */

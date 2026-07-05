@@ -28,11 +28,13 @@
     sdkSessions,
     activeSdkSessionId,
     activeSdkSession,
+    type EffortLevel,
+    type SdkImageContent,
   } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import { repos, activeRepo, findRepoById } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
-  import { sidebarTab, pileCount, selectedPileItem, selectedPileItemId } from '$lib/stores/pile';
+  import { pile, sidebarTab, pileCount, selectedPileItem, selectedPileItemId } from '$lib/stores/pile';
   import {
     activeExecution,
     activeExecutionId,
@@ -216,6 +218,43 @@
     sdkSessions.cancelSetupSession(sessionId);
     activeSdkSessionId.set(null);
   }
+
+  /**
+   * Demote a New Session draft into the pile: save the assembled prompt (plus any
+   * captured screenshot, model/effort/repo) as an unprocessed pile item, then tear
+   * down the setup session and switch to the pile tab.
+   */
+  function handleSetupToPile(
+    sessionId: string,
+    config: {
+      prompt: string;
+      images?: SdkImageContent[];
+      model: string;
+      effortLevel: EffortLevel;
+      cwd: string;
+    }
+  ) {
+    const prompt = config.prompt?.trim();
+    if (!prompt) return;
+
+    const repo = config.cwd && config.cwd !== '.'
+      ? $repos.list.find((r) => r.path === config.cwd)
+      : undefined;
+
+    pile.addRecording({
+      transcript: prompt,
+      process: false,
+      // Pile items carry a single screenshot; only forward a genuine screenshot capture.
+      screenshot: config.images?.find((img) => img.source === 'screenshot'),
+      repoId: repo?.id,
+      model: config.model,
+      effortLevel: config.effortLevel ?? undefined,
+    });
+
+    sdkSessions.cancelSetupSession(sessionId);
+    activeSdkSessionId.set(null);
+    sidebarTab.set('pile');
+  }
 </script>
 
 <svelte:window
@@ -318,7 +357,6 @@
           initialCwd={activeSession.setupRepoPath || activeSession.cwd || $activeRepo?.path || ''}
           initialWorktreeMode={activeSession.setupWorktreeMode || 'main'}
           initialWorktreePath={activeSession.setupWorktreePath || ''}
-          initialPlanMode={activeSession.planMode?.isActive || false}
           initialReadOnlyMode={activeSession.readOnlyMode || false}
           initialPlaywrightQa={activeSession.playwrightQa || false}
           initialDraftPrompt={activeSession.draftPrompt || ''}
@@ -327,6 +365,9 @@
           forkedFromLabel={activeSession.forkedFromSessionLabel || ''}
           isRecordingForSetup={$isRecordingForSetup}
           onStart={(config) => handleSetupSessionStart(sessionId, config)}
+          onSchedule={(config, window) =>
+            handleSetupSessionStart(sessionId, { ...config, schedule: window })}
+          onToPile={(config) => handleSetupToPile(sessionId, config)}
           onDraftChange={(targetSessionId, prompt, images) =>
             sdkSessions.updateDraft(
               targetSessionId,

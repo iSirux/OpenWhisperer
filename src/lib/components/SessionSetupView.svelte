@@ -1,7 +1,8 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { normalizeEffortLevel, sdkSessions, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
-  import { settings, isNoteModeAvailable } from '$lib/stores/settings';
+  import type { QueueWindow } from '$lib/stores/queueDetection';
+  import { settings } from '$lib/stores/settings';
   import { repos, type RepoConfig } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import PromptChips from '$lib/components/PromptChips.svelte';
@@ -38,6 +39,21 @@
     type WorktreeCreationResult,
   } from '$lib/components/session-setup/sessionSetupHelpers';
 
+  interface SetupLaunchConfig {
+    prompt: string;
+    images?: SdkImageContent[];
+    model: string;
+    effortLevel: EffortLevel;
+    cwd: string;
+    readOnlyMode: boolean;
+    provider?: SdkProvider;
+    worktreeMode?: 'main' | 'new' | 'existing';
+    worktreeBranch?: string;
+    worktreeRepoPath?: string;
+    worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
+    playwrightQa?: boolean;
+  }
+
   interface Props {
     sessionId: string;
     initialModel?: string;
@@ -46,8 +62,6 @@
     initialCwd?: string;
     initialWorktreeMode?: 'main' | 'new' | 'existing';
     initialWorktreePath?: string;
-    initialPlanMode?: boolean;
-    initialNoteMode?: boolean;
     initialReadOnlyMode?: boolean;
     initialPlaywrightQa?: boolean;
     initialDraftPrompt?: string;
@@ -55,22 +69,11 @@
     providerLocked?: boolean;
     forkedFromLabel?: string;
     isRecordingForSetup?: boolean;
-    onStart: (config: {
-      prompt: string;
-      images?: SdkImageContent[];
-      model: string;
-      effortLevel: EffortLevel;
-      cwd: string;
-      planMode: boolean;
-      noteMode: boolean;
-      readOnlyMode: boolean;
-      provider?: SdkProvider;
-      worktreeMode?: 'main' | 'new' | 'existing';
-      worktreeBranch?: string;
-      worktreeRepoPath?: string;
-      worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
-      playwrightQa?: boolean;
-    }) => void;
+    onStart: (config: SetupLaunchConfig) => void;
+    /** Schedule the launch for a later usage window (fire-and-forget) instead of starting now. */
+    onSchedule?: (config: SetupLaunchConfig, window: QueueWindow) => void;
+    /** Save this draft to the pile to handle later instead of starting a session. */
+    onToPile?: (config: SetupLaunchConfig) => void;
     onDraftChange?: (
       sessionId: string,
       prompt: string,
@@ -89,8 +92,6 @@
     initialCwd = '',
     initialWorktreeMode = 'main',
     initialWorktreePath = '',
-    initialPlanMode = false,
-    initialNoteMode = false,
     initialReadOnlyMode = false,
     initialPlaywrightQa = false,
     initialDraftPrompt = '',
@@ -99,19 +100,21 @@
     forkedFromLabel = '',
     isRecordingForSetup = false,
     onStart,
+    onSchedule,
+    onToPile,
     onDraftChange,
     onStartRecording,
     onStopRecording,
     onCancel,
   }: Props = $props();
 
+  let scheduleMenuOpen = $state(false);
+
   // Local state
   let prompt = $state(initialDraftPrompt);
   let model = $state(initialModel);
   let effortLevel = $state<EffortLevel>(normalizeEffortLevel(initialEffortLevel));
   let cwd = $state(initialCwd);
-  let planMode = $state(initialPlanMode);
-  let noteMode = $state(initialNoteMode);
   let readOnlyMode = $state(initialReadOnlyMode);
   let selectedChips = $state<string[]>([]);
   let pendingImages = $state<ImageData[]>(toImageData(initialDraftImages));
@@ -137,7 +140,6 @@
 
   // Derived state
   const activeRepos = $derived(($repos.list || []).filter((r) => r.active !== false));
-  const noteModeAvailable = $derived(isNoteModeAvailable());
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
   const isAutoRepoMode = $derived(!cwd || cwd === '.');
   const isSmartModelEnabled = $derived(
@@ -161,7 +163,7 @@
 
   // Focus textarea on mount
   $effect(() => {
-    if (textareaEl && !initialPlanMode) {
+    if (textareaEl) {
       textareaEl.focus();
     }
   });
@@ -175,31 +177,11 @@
       cwd = initialCwd;
       worktreeMode = initialWorktreeMode;
       selectedWorktreePath = initialWorktreePath;
-      planMode = initialPlanMode;
-      noteMode = initialNoteMode;
       readOnlyMode = initialReadOnlyMode;
       prompt = initialDraftPrompt;
       pendingImages = toImageData(initialDraftImages);
       selectedChips = [];
       prevSessionId = sessionId;
-    }
-  });
-
-  $effect(() => {
-    if (!noteModeAvailable && noteMode) {
-      noteMode = false;
-    }
-  });
-
-  $effect(() => {
-    if (providerLocked && noteMode) {
-      noteMode = false;
-    }
-  });
-
-  $effect(() => {
-    if (noteMode && readOnlyMode) {
-      readOnlyMode = false;
     }
   });
 
@@ -275,94 +257,121 @@
       setupWorktreePath: selectedWorktreePath,
       currentBranch: null,
       provider,
-      planMode: planMode
-        ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false }
-        : undefined,
-      noteMode: noteMode
-        ? { isActive: true, noteCreated: false }
-        : undefined,
       readOnlyMode,
     });
   });
 
-  async function handleStart() {
-    if (!canStart || isStarting) return;
-
-    isStarting = true;
-
+  /**
+   * Resolve the full launch config from the current form state, creating a git worktree up-front
+   * when in "new"/"existing" worktree mode. Shared by "Start" (launch now) and "Schedule for later"
+   * (defer via the Smart Queue). Returns null if worktree creation failed.
+   */
+  async function resolveStartConfig(): Promise<SetupLaunchConfig | null> {
     const imageContent: SdkImageContent[] | undefined = pendingImages.length > 0
       ? toSdkImageContent(pendingImages)
       : undefined;
 
-    try {
-      const effectiveNoteMode = noteModeAvailable ? noteMode : false;
-      const effectiveReadOnlyMode = effectiveNoteMode ? false : readOnlyMode;
+    let effectiveCwd = cwd;
+    let worktreeBranch: string | undefined;
+    let worktreeRepoPath: string | undefined;
+    let worktreePostSetup: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] } | undefined;
 
-      let effectiveCwd = cwd;
-      let worktreeBranch: string | undefined;
-      let worktreeRepoPath: string | undefined;
+    if (worktreeMode === 'new' && cwd && cwd !== '.') {
+      isCreatingWorktree = true;
+      try {
+        const branchName = await invoke<string>('generate_worktree_branch_name', {
+          prompt: prompt.trim(),
+          repoPath: cwd,
+        });
 
-      let worktreePostSetup: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] } | undefined;
+        const repo = currentRepo;
+        const result = await invoke<WorktreeCreationResult>('create_git_worktree_only', {
+          repoPath: cwd,
+          branchName,
+          worktreePath: null,
+          baseBranch: repo?.worktree_base_branch || null,
+        });
 
-      if (worktreeMode === 'new' && cwd && cwd !== '.') {
-        isCreatingWorktree = true;
-        try {
-          const branchName = await invoke<string>('generate_worktree_branch_name', {
-            prompt: prompt.trim(),
-            repoPath: cwd,
-          });
-
-          const repo = currentRepo;
-          const result = await invoke<WorktreeCreationResult>('create_git_worktree_only', {
-            repoPath: cwd,
-            branchName,
-            worktreePath: null,
-            baseBranch: repo?.worktree_base_branch || null,
-          });
-
-          worktreeRepoPath = cwd;
-          effectiveCwd = result.worktree_path;
-          worktreeBranch = result.branch;
-
-          const copyFiles = repo?.worktree_copy_files || [];
-          const postCreateCommands = repo?.worktree_post_create_commands || [];
-          if (copyFiles.length > 0 || postCreateCommands.length > 0) {
-            worktreePostSetup = { repoPath: cwd, copyFiles, postCreateCommands };
-          }
-        } catch (err) {
-          console.error('[SessionSetupView] Failed to create worktree:', err);
-          isCreatingWorktree = false;
-          isStarting = false;
-          return;
-        } finally {
-          isCreatingWorktree = false;
-        }
-      } else if (worktreeMode === 'existing' && selectedWorktreePath) {
         worktreeRepoPath = cwd;
-        effectiveCwd = selectedWorktreePath;
-        const selectedWt = existingWorktrees.find(w => w.path === selectedWorktreePath);
-        worktreeBranch = selectedWt?.branch || undefined;
-      }
+        effectiveCwd = result.worktree_path;
+        worktreeBranch = result.branch;
 
-      await onStart({
-        prompt: appendChips(prompt.trim(), noteMode ? [] : selectedChips),
-        images: imageContent,
-        model,
-        effortLevel,
-        cwd: effectiveCwd,
-        planMode,
-        noteMode: effectiveNoteMode,
-        readOnlyMode: effectiveReadOnlyMode,
-        provider: effectiveNoteMode ? 'claude' : provider,
-        worktreeMode: worktreeMode !== 'main' ? worktreeMode : undefined,
-        worktreeBranch,
-        worktreeRepoPath,
-        worktreePostSetup,
-        playwrightQa: playwrightQa || undefined,
-      });
+        const copyFiles = repo?.worktree_copy_files || [];
+        const postCreateCommands = repo?.worktree_post_create_commands || [];
+        if (copyFiles.length > 0 || postCreateCommands.length > 0) {
+          worktreePostSetup = { repoPath: cwd, copyFiles, postCreateCommands };
+        }
+      } catch (err) {
+        console.error('[SessionSetupView] Failed to create worktree:', err);
+        return null;
+      } finally {
+        isCreatingWorktree = false;
+      }
+    } else if (worktreeMode === 'existing' && selectedWorktreePath) {
+      worktreeRepoPath = cwd;
+      effectiveCwd = selectedWorktreePath;
+      const selectedWt = existingWorktrees.find(w => w.path === selectedWorktreePath);
+      worktreeBranch = selectedWt?.branch || undefined;
+    }
+
+    return {
+      prompt: appendChips(prompt.trim(), selectedChips),
+      images: imageContent,
+      model,
+      effortLevel,
+      cwd: effectiveCwd,
+      readOnlyMode,
+      provider,
+      worktreeMode: worktreeMode !== 'main' ? worktreeMode : undefined,
+      worktreeBranch,
+      worktreeRepoPath,
+      worktreePostSetup,
+      playwrightQa: playwrightQa || undefined,
+    };
+  }
+
+  async function handleStart() {
+    if (!canStart || isStarting) return;
+    isStarting = true;
+    try {
+      const config = await resolveStartConfig();
+      if (config) await onStart(config);
     } finally {
       isStarting = false;
     }
+  }
+
+  async function handleSchedule(window: QueueWindow) {
+    scheduleMenuOpen = false;
+    if (!canStart || isStarting || !onSchedule) return;
+    isStarting = true;
+    try {
+      const config = await resolveStartConfig();
+      if (config) await onSchedule(config, window);
+    } finally {
+      isStarting = false;
+    }
+  }
+
+  /**
+   * Save the current draft to the pile (no worktree creation, no launch).
+   * Hands the assembled prompt/images/model/effort/repo to the parent, which owns
+   * the pile write + session teardown.
+   */
+  function handleToPile() {
+    if (!canStart || isStarting || !onToPile) return;
+    const imageContent: SdkImageContent[] | undefined = pendingImages.length > 0
+      ? toSdkImageContent(pendingImages)
+      : undefined;
+    onToPile({
+      prompt: appendChips(prompt.trim(), selectedChips),
+      images: imageContent,
+      model,
+      effortLevel,
+      cwd,
+      readOnlyMode,
+      provider,
+    });
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -505,6 +514,9 @@
     if (!target.closest('.worktree-selector-container')) {
       showWorktreeDropdown = false;
     }
+    if (!target.closest('.schedule-split-container')) {
+      scheduleMenuOpen = false;
+    }
   }
 </script>
 
@@ -515,30 +527,14 @@
   <div class="setup-content">
     <!-- Header -->
     <div class="setup-header">
-      <div class="header-icon" class:note={noteMode}>
-        {#if noteMode}
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-        {:else if planMode}
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-          </svg>
-        {:else}
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-        {/if}
+      <div class="header-icon">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
       </div>
       <div class="header-content">
         <h3 class="header-title">
-          {providerLocked
-            ? 'Fork Session'
-            : noteMode
-              ? 'New Note'
-              : planMode
-                ? 'Start Planning Session'
-                : 'New Session'}
+          {providerLocked ? 'Fork Session' : 'New Session'}
         </h3>
         {#if providerLocked}
           <p class="header-description">
@@ -546,12 +542,6 @@
               ? `Forked from ${forkedFromLabel}.`
               : 'Forked from an earlier session point.'}
             You can adjust model, effort, repo, and prompt before starting.
-          </p>
-        {:else if noteMode || planMode}
-          <p class="header-description">
-            {noteMode
-              ? 'Capture a voice note. The AI will create a note using your configured note-taking tools.'
-              : 'Describe the feature you want to plan. The AI will help you flesh out the requirements.'}
           </p>
         {/if}
       </div>
@@ -561,71 +551,31 @@
       <div class="option-row option-row--wide">
         <div class="session-control-row session-control-row--double">
           <div class="option-cell">
-            <label class="option-label">Mode</label>
+            <label class="option-label">Access</label>
             <div class="mode-toggle">
               <button
                 class="mode-btn"
-                class:active={!planMode && !noteMode}
-                onclick={() => { planMode = false; noteMode = false; }}
+                class:active={!readOnlyMode}
+                onclick={() => { readOnlyMode = false; }}
               >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                Execute
+                Full
               </button>
               <button
-                class="mode-btn plan"
-                class:active={planMode}
-                onclick={() => { planMode = true; noteMode = false; }}
+                class="mode-btn readonly"
+                class:active={readOnlyMode}
+                onclick={() => { readOnlyMode = true; }}
+                title="Read-only tools (Read, Glob, Grep) + WebSearch"
               >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                </svg>
-                Plan
+                Readonly
               </button>
-              {#if noteModeAvailable && !providerLocked}
-                <button
-                  class="mode-btn note"
-                  class:active={noteMode}
-                  onclick={() => { noteMode = true; planMode = false; }}
-                >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                  </svg>
-                  Note
-                </button>
-              {/if}
             </div>
           </div>
-
-          {#if !noteMode}
-            <div class="option-cell">
-              <label class="option-label">Access</label>
-              <div class="mode-toggle">
-                <button
-                  class="mode-btn"
-                  class:active={!readOnlyMode}
-                  onclick={() => { readOnlyMode = false; }}
-                >
-                  Full
-                </button>
-                <button
-                  class="mode-btn readonly"
-                  class:active={readOnlyMode}
-                  onclick={() => { readOnlyMode = true; }}
-                  title="Read-only tools (Read, Glob, Grep) + WebSearch"
-                >
-                  Readonly
-                </button>
-              </div>
-            </div>
-          {/if}
         </div>
       </div>
 
       <div class="option-row option-row--wide">
-        <div class="session-control-row" class:session-control-row--triple={!noteMode && (openaiAvailable || providerLocked) && (modelSupportsEffort(model) || isAutoModel(model))} class:session-control-row--double={noteMode || !(openaiAvailable || providerLocked) || !(modelSupportsEffort(model) || isAutoModel(model))}>
-          {#if openaiAvailable && !noteMode && !providerLocked}
+        <div class="session-control-row" class:session-control-row--triple={(openaiAvailable || providerLocked) && (modelSupportsEffort(model) || isAutoModel(model))} class:session-control-row--double={!(openaiAvailable || providerLocked) || !(modelSupportsEffort(model) || isAutoModel(model))}>
+          {#if openaiAvailable && !providerLocked}
             <div class="option-cell">
               <label class="option-label">Provider</label>
               <div class="mode-toggle">
@@ -647,7 +597,7 @@
                 </button>
               </div>
             </div>
-          {:else if !noteMode && providerLocked}
+          {:else if providerLocked}
             <div class="option-cell">
               <label class="option-label">Provider</label>
               <div class="locked-provider">
@@ -911,7 +861,7 @@
     <!-- Prompt Input -->
     <div class="prompt-section">
       <label class="option-label">
-        {noteMode ? 'Your note' : planMode ? 'What do you want to plan?' : 'Your prompt'}
+        Your prompt
       </label>
 
       {#if pendingImages.length > 0 || isProcessingImages}
@@ -945,11 +895,7 @@
         oninput={autoResize}
         onkeydown={handleKeydown}
         onpaste={handlePaste}
-        placeholder={noteMode
-          ? 'Enter your note content or use the Record button...'
-          : planMode
-            ? 'Describe the feature you want to plan...'
-            : 'Enter your prompt... (Ctrl+V to paste images)'}
+        placeholder={'Enter your prompt... (Ctrl+V to paste images)'}
         rows="1"
       ></textarea>
 
@@ -957,11 +903,9 @@
         Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to start, or use the button below
       </div>
 
-      {#if !noteMode}
-        <div class="chips-row">
-          <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
-        </div>
-      {/if}
+      <div class="chips-row">
+        <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
+      </div>
     </div>
 
     <!-- Action Buttons -->
@@ -990,25 +934,13 @@
 
       <button
         class="start-btn"
-        class:plan={planMode}
-        class:note={noteMode}
         class:loading={isStarting}
         disabled={!canStart || isStarting}
         onclick={handleStart}
       >
         {#if isStarting}
           <div class="start-spinner"></div>
-          {isCreatingWorktree ? 'Creating worktree...' : noteMode ? 'Creating Note...' : planMode ? 'Starting Planning...' : 'Starting Session...'}
-        {:else if noteMode}
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-          Create Note
-        {:else if planMode}
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-          </svg>
-          Start Planning
+          {isCreatingWorktree ? 'Creating worktree...' : 'Starting Session...'}
         {:else}
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -1017,6 +949,51 @@
           Start Session
         {/if}
       </button>
+
+      {#if onSchedule}
+        <div class="schedule-split-container relative">
+          <button
+            class="schedule-toggle"
+            onclick={() => (scheduleMenuOpen = !scheduleMenuOpen)}
+            disabled={!canStart || isStarting}
+            aria-haspopup="menu"
+            aria-expanded={scheduleMenuOpen}
+            title="Fire-and-forget: schedule this launch for the next 5h or 7d usage-window reset"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+            </svg>
+            Schedule
+            <svg viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5">
+              <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" />
+            </svg>
+          </button>
+          {#if scheduleMenuOpen}
+            <div class="schedule-menu" role="menu">
+              <button class="schedule-menu-item" role="menuitem" onclick={() => handleSchedule('5h')}>
+                Next 5h reset
+              </button>
+              <button class="schedule-menu-item" role="menuitem" onclick={() => handleSchedule('7d')}>
+                Next 7d reset
+              </button>
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      {#if onToPile}
+        <button
+          class="pile-btn"
+          onclick={handleToPile}
+          disabled={!canStart || isStarting}
+          title="Save this draft to the pile to handle later"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+            <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+          </svg>
+          To Pile
+        </button>
+      {/if}
     </div>
 
     {#if onCancel}
@@ -1071,11 +1048,6 @@
   .header-icon :global(svg) {
     width: 16px;
     height: 16px;
-  }
-
-  .header-icon.note {
-    color: #f59e0b;
-    background: rgba(245, 158, 11, 0.1);
   }
 
   .header-content {
@@ -1228,14 +1200,6 @@
     background: var(--color-accent);
     color: white;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-  }
-
-  .mode-btn.plan.active {
-    background: #06b6d4;
-  }
-
-  .mode-btn.note.active {
-    background: #f59e0b;
   }
 
   .mode-btn.readonly.active {
@@ -1628,24 +1592,95 @@
     cursor: not-allowed;
   }
 
-  .start-btn.plan {
-    background: #0891b2;
-  }
-
-  .start-btn.plan:hover:not(:disabled) {
-    background: #06b6d4;
-  }
-
-  .start-btn.note {
-    background: #d97706;
-  }
-
-  .start-btn.note:hover:not(:disabled) {
-    background: #f59e0b;
-  }
-
   .start-btn.loading {
     cursor: wait;
+  }
+
+  /* Schedule-for-later split button */
+  .schedule-split-container {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .schedule-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    height: 100%;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--color-text-primary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    transition: all 0.15s ease;
+  }
+
+  .schedule-toggle:hover:not(:disabled) {
+    background: var(--color-surface-elevated);
+    border-color: var(--color-accent);
+  }
+
+  .schedule-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* To Pile secondary button */
+  .pile-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--color-text-primary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    transition: all 0.15s ease;
+  }
+
+  .pile-btn:hover:not(:disabled) {
+    background: var(--color-surface-elevated);
+    border-color: var(--color-accent);
+  }
+
+  .pile-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .schedule-menu {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    z-index: 50;
+    min-width: 12rem;
+    display: flex;
+    flex-direction: column;
+    padding: 0.25rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  }
+
+  .schedule-menu-item {
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    text-align: left;
+    border-radius: 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-text-primary);
+    transition: background 0.15s ease;
+  }
+
+  .schedule-menu-item:hover {
+    background: var(--color-border);
   }
 
   .start-spinner {

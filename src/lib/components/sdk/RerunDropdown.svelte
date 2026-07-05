@@ -30,7 +30,6 @@
     const newSessionId = sdkSessions.createSetupSession(
       model,
       effortLevel,
-      false,
       undefined,
       repoPath
     );

@@ -33,9 +33,6 @@ export function getStatusCategory(status: string): StatusCategory {
     case 'seq_cancelled':
       return 'error';
 
-    case 'prepared':
-      return 'ready';
-
     default:
       return 'ready';
   }
@@ -53,8 +50,6 @@ export function getStatusColor(status: string): string {
       return 'text-yellow-400';
     case 'pending_transcription':
       return 'text-violet-400';
-    case 'prepared':
-      return 'text-teal-400';
     case 'queued':
       return 'text-sky-400';
     case 'rate_limited':
@@ -107,8 +102,6 @@ export function getStatusBgColor(status: string): string {
       return 'bg-yellow-400';
     case 'pending_transcription':
       return 'bg-violet-400';
-    case 'prepared':
-      return 'bg-teal-400';
     case 'queued':
       return 'bg-sky-400';
     case 'rate_limited':
@@ -264,8 +257,6 @@ export function getStatusLabel(status: string, detail?: string): string {
       return 'Pending';
     case 'transcription_error':
       return 'Retry?';
-    case 'prepared':
-      return 'Prepared';
     case 'queued':
       return 'Queued';
     case 'rate_limited':
@@ -369,9 +360,7 @@ export function getStatusSortOrder(status: string): number {
     case 'pending_transcription':
     case 'transcription_error':
       return -1;
-    case 'prepared':
-      return -0.5;
-    // Queued sits just after prepared (both are parked, ready-to-dispatch work)
+    // Queued sits near the top (parked, ready-to-dispatch work)
     case 'queued':
       return -0.4;
     case 'pending_repo':

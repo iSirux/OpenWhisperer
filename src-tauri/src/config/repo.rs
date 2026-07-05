@@ -31,9 +31,6 @@ pub struct RepoConfig {
     /// List of MCP server IDs to use for this repository (overrides global servers)
     #[serde(default)]
     pub mcp_servers: Option<Vec<String>>,
-    /// List of MCP server IDs to use for note-taking mode in this repository
-    #[serde(default)]
-    pub note_mcp_servers: Option<Vec<String>>,
     /// Tags for multi-repo sequence filtering (e.g., "frontend", "backend", "infra")
     #[serde(default)]
     pub tags: Vec<String>,

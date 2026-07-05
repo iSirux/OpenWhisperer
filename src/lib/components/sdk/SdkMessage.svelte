@@ -71,9 +71,7 @@
   );
   let thinkingDuration = $derived(formatDuration(message.thinkingDurationMs));
   let isThinkingComplete = $derived(message.type === "thinking" && message.thinkingDurationMs !== undefined);
-  let isPlanApprovalTool = $derived(
-    message.tool === "ExitPlanMode" || message.tool === "complete_planning" || message.tool === "mcp__planning-tools__complete_planning"
-  );
+  let isPlanApprovalTool = $derived(message.tool === "ExitPlanMode");
 </script>
 
 <div class="message message-{message.type}">

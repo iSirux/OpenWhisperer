@@ -49,7 +49,6 @@
       const newId = sdkSessions.createSetupSession(
         session.model,
         session.effortLevel,
-        false,
         session.provider,
         session.cwd,
         session.readOnlyMode ?? false,

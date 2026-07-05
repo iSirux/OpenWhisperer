@@ -46,7 +46,6 @@
     handleRetryTranscription,
     handleApproveTranscription,
     handleRepoSelectionForSession,
-    handleLaunchPrepared,
     handleSendSelection,
     handlePrepareSelection,
     handleVoiceCommand,
@@ -81,7 +80,6 @@
         onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
         onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
         onStopAndPile: () => recordingFlow.stopRecordingToPile(),
-        onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
         onSendSelection: handleSendSelection,
         onPrepareSelection: handlePrepareSelection,
       });
@@ -210,7 +208,6 @@
           recordingFlow.cleanupAudioVisualizationListener,
         ),
       onUnregisterRecordingHotkeys: () => hotkeyManager.unregisterRecordingHotkeys(),
-      onLaunchPrepared: handleLaunchPrepared,
       onCycleStopMode: async () => {
         const current = get(settings);
         const next = nextRecordStopMode(current.audio.record_and_send_action);
@@ -230,7 +227,6 @@
       onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
       onStopAndPaste: () => recordingFlow.handleTranscribeToInput(),
       onStopAndPile: () => recordingFlow.stopRecordingToPile(),
-      onStartNoteRecording: () => recordingFlow.startRecordingForNoteMode(),
       onSendSelection: handleSendSelection,
       onPrepareSelection: handlePrepareSelection,
     });

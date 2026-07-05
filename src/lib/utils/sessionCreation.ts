@@ -18,7 +18,7 @@ export async function createAndActivateNewSession(): Promise<void> {
       ? (currentSettings.openai_model || DEFAULT_OPENAI_MODEL_ID)
       : currentSettings.default_model;
     const effortLevel = settingsToStoreEffort(currentSettings.default_effort_level);
-    const sessionId = sdkSessions.createSetupSession(model, effortLevel, false, provider);
+    const sessionId = sdkSessions.createSetupSession(model, effortLevel, provider);
     activeSdkSessionId.set(sessionId);
     activeSessionId.set(null);
     window.dispatchEvent(new CustomEvent('switch-to-sessions'));

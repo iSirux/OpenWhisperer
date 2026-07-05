@@ -1,8 +1,8 @@
 import { get } from "svelte/store";
-import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS, NOTE_COMMAND_PRESETS, SEQUENCE_COMMAND_PRESETS, APPROVE_COMMAND_PRESETS, REJECT_COMMAND_PRESETS, PREPARE_COMMAND_PRESETS, PILE_COMMAND_PRESETS, isNoteModeAvailable } from "$lib/stores/settings";
+import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS, SEQUENCE_COMMAND_PRESETS, APPROVE_COMMAND_PRESETS, REJECT_COMMAND_PRESETS, PREPARE_COMMAND_PRESETS, PILE_COMMAND_PRESETS } from "$lib/stores/settings";
 
 /** Type of voice command action */
-export type VoiceCommandType = 'send' | 'transcribe' | 'cancel' | 'note' | 'sequence' | 'approve' | 'reject' | 'prepare' | 'pile' | null;
+export type VoiceCommandType = 'send' | 'transcribe' | 'cancel' | 'sequence' | 'approve' | 'reject' | 'prepare' | 'pile' | null;
 
 export interface VoiceCommandResult {
   /** The cleaned transcript with voice commands removed */
@@ -17,8 +17,6 @@ export interface VoiceCommandResult {
   shouldTranscribe: boolean;
   /** Whether the command should cancel/discard the recording */
   shouldCancel: boolean;
-  /** Whether the command should trigger note-taking mode */
-  shouldNote: boolean;
   /** Whether the command should trigger running a sequence */
   shouldRunSequence: boolean;
   /** Whether the command should approve a pending approval */
@@ -65,17 +63,6 @@ export function getActiveTranscribeCommands(): string[] {
 export function getActiveCancelCommands(): string[] {
   const currentSettings = get(settings);
   return currentSettings.audio.voice_commands.cancel_commands ?? [];
-}
-
-/**
- * Get the list of active note commands
- */
-export function getActiveNoteCommands(): string[] {
-  if (!isNoteModeAvailable()) {
-    return [];
-  }
-  const currentSettings = get(settings);
-  return currentSettings.audio.voice_commands.note_commands ?? [];
 }
 
 /**
@@ -150,7 +137,6 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
     shouldSend: false,
     shouldTranscribe: false,
     shouldCancel: false,
-    shouldNote: false,
     shouldRunSequence: false,
     shouldApprove: false,
     shouldReject: false,
@@ -167,7 +153,6 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
   const sendCommands = getActiveVoiceCommands();
   const transcribeCommands = getActiveTranscribeCommands();
   const cancelCommands = getActiveCancelCommands();
-  const noteCommands = getActiveNoteCommands();
   const sequenceCommands = getActiveSequenceCommands();
   const approveCommands = getActiveApproveCommands();
   const rejectCommands = getActiveRejectCommands();
@@ -179,7 +164,6 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
     ...cancelCommands.map(cmd => ({ command: cmd, type: 'cancel' as const })),
     ...approveCommands.map(cmd => ({ command: cmd, type: 'approve' as const })),
     ...rejectCommands.map(cmd => ({ command: cmd, type: 'reject' as const })),
-    ...noteCommands.map(cmd => ({ command: cmd, type: 'note' as const })),
     ...sequenceCommands.map(cmd => ({ command: cmd, type: 'sequence' as const })),
     ...prepareCommands.map(cmd => ({ command: cmd, type: 'prepare' as const })),
     ...pileCommands.map(cmd => ({ command: cmd, type: 'pile' as const })),
@@ -239,7 +223,6 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
           result.shouldSend = type === 'send';
           result.shouldTranscribe = type === 'transcribe';
           result.shouldCancel = type === 'cancel';
-          result.shouldNote = type === 'note';
           result.shouldRunSequence = type === 'sequence';
           result.shouldApprove = type === 'approve';
           result.shouldReject = type === 'reject';
@@ -291,7 +274,6 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
           result.shouldSend = type === 'send';
           result.shouldTranscribe = type === 'transcribe';
           result.shouldCancel = type === 'cancel';
-          result.shouldNote = type === 'note';
           result.shouldRunSequence = type === 'sequence';
           result.shouldApprove = type === 'approve';
           result.shouldReject = type === 'reject';
@@ -424,13 +406,6 @@ export function getTranscribeCommandPresets(): readonly string[] {
  */
 export function getCancelCommandPresets(): readonly string[] {
   return CANCEL_COMMAND_PRESETS;
-}
-
-/**
- * Get all available note command presets
- */
-export function getNoteCommandPresets(): readonly string[] {
-  return NOTE_COMMAND_PRESETS;
 }
 
 /**

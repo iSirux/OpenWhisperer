@@ -23,14 +23,11 @@
   import SdkPromptInput from "./sdk/SdkPromptInput.svelte";
   import SessionRecordingHeader from "./sdk/SessionRecordingHeader.svelte";
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
-  import PlanningWizard from "./sdk/PlanningWizard.svelte";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
-  import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
   import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
   import RateLimitBanner from "./sdk/RateLimitBanner.svelte";
-  import { nextWindowResetAt, type QueueWindow } from "$lib/stores/queueDetection";
-  import { rateLimitData, codexRateLimitData } from "$lib/stores/rateLimits";
+  import { type QueueWindow } from "$lib/stores/queueDetection";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import LaunchBar from "./sdk/LaunchBar.svelte";
   import { launchStore, getLaunchRuntime, queuedLaunch } from "$lib/stores/launchProfiles";
@@ -114,28 +111,17 @@
   let isInitializing = $derived(status === "initializing");
   let isPendingTranscription = $derived(status === "pending_transcription");
   let isPendingApproval = $derived(status === "pending_approval");
-  let isPrepared = $derived(status === "prepared");
-  let preparedPrompt = $derived(session?.preparedPrompt ?? "");
-  let preparedChips = $derived(session?.preparedChips);
-  let preparedRepoRecommendation = $derived(
-    session?.preparedRepoRecommendation,
-  );
   // Note: isLoading is suppressed when the session is waiting for user input
   // (plan approval or AskUserQuestion) to avoid showing a spinner alongside the dialog.
   let isWaitingForUserInput = $derived(!!session?.pendingPlanApproval || !!(session?.askUserQuestion?.questions?.length));
   let isLoading = $derived((isQuerying || isInitializing) && !isWaitingForUserInput);
-
-  // Plan mode state (must be defined before showQuickActions which uses isPlanMode)
-  let planMode = $derived(session?.planMode);
-  let isPlanMode = $derived(planMode?.isActive ?? false);
 
   let showQuickActions = $derived(
     status === "idle" &&
       messages.length > 0 &&
       !isPendingRepo &&
       !isPendingTranscription &&
-      !isPendingApproval &&
-      !isPlanMode,
+      !isPendingApproval,
   );
   let generatedQuickActions = $derived(session?.aiMetadata?.quickActions);
   let sessionOutcome = $derived(session?.aiMetadata?.outcome);
@@ -192,12 +178,6 @@
   let pendingTranscription = $derived(session?.pendingTranscription);
   let draftPrompt = $derived(session?.draftPrompt ?? "");
   let draftImages = $derived(session?.draftImages ?? []);
-  let hasPlanningQuestions = $derived(
-    isPlanMode &&
-      planMode?.questions.length &&
-      planMode.questions.length > 0 &&
-      !planMode.isComplete,
-  );
 
   // AskUserQuestion state
   let askUserQuestion = $derived(session?.askUserQuestion);
@@ -216,7 +196,7 @@
     if (!messages) return pendingPlanApprovalRaw;
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
-      if (msg.type === 'tool_start' && (msg.tool === 'ExitPlanMode' || msg.tool === 'complete_planning' || msg.tool === 'mcp__planning-tools__complete_planning')) {
+      if (msg.type === 'tool_start' && msg.tool === 'ExitPlanMode') {
         const plan = (msg.input as { plan?: string })?.plan;
         if (plan) {
           return { ...pendingPlanApprovalRaw, plan };
@@ -236,9 +216,9 @@
 
     const isPlanApprovalToolMessage = (msg: SdkMessage) =>
       (msg.type === "tool_start" || msg.type === "tool_result") &&
-      (msg.tool === "ExitPlanMode" || msg.tool === "complete_planning" || msg.tool === "mcp__planning-tools__complete_planning");
+      msg.tool === "ExitPlanMode";
 
-    // Prefer anchoring directly after the plan-approval tool (ExitPlanMode or complete_planning).
+    // Prefer anchoring directly after the plan-approval tool (ExitPlanMode).
     for (let i = renderItems.length - 1; i >= 0; i -= 1) {
       const item = renderItems[i];
       if (
@@ -435,18 +415,6 @@
           found?.aiMetadata?.name !== session?.aiMetadata?.name ||
           found?.aiMetadata?.quickActions?.length !==
             session?.aiMetadata?.quickActions?.length;
-        const planModeChanged =
-          found?.planMode?.isActive !== session?.planMode?.isActive ||
-          found?.planMode?.questions.length !==
-            session?.planMode?.questions.length ||
-          found?.planMode?.answers.length !==
-            session?.planMode?.answers.length ||
-          found?.planMode?.currentQuestionIndex !==
-            session?.planMode?.currentQuestionIndex ||
-          found?.planMode?.isComplete !== session?.planMode?.isComplete ||
-          // Deep check for answer changes (selectedOptions)
-          JSON.stringify(found?.planMode?.answers) !==
-            JSON.stringify(session?.planMode?.answers);
         const askUserQuestionChanged =
           found?.askUserQuestion?.questions.length !==
             session?.askUserQuestion?.questions.length ||
@@ -481,7 +449,6 @@
           usageChanged ||
           pendingChanged ||
           aiMetadataChanged ||
-          planModeChanged ||
           askUserQuestionChanged ||
           draftChanged ||
           planApprovalChanged ||
@@ -583,10 +550,6 @@
 
     if (status === "pending_repo") {
       return { status: "pending_repo" };
-    }
-
-    if (status === "prepared") {
-      return { status: "prepared" };
     }
 
     if (status === "pending_approval") {
@@ -1241,47 +1204,20 @@
     sdkSessions.cancelApproval(sessionId);
   }
 
-  // Handlers for prepared sessions
-  function handleLaunchPrepared(editedPrompt?: string) {
-    window.dispatchEvent(
-      new CustomEvent("launch-prepared", {
-        detail: { sessionId, editedPrompt },
-      }),
-    );
-  }
-
-  function handleCancelPrepared() {
-    sdkSessions.cancelPrepared(sessionId);
-  }
-
   // --- Smart Queue: scheduling + queued state ---
   let isQueued = $derived(status === "queued");
   let queueInfo = $derived(session?.queueInfo);
   let sessionProvider = $derived(session?.provider ?? "claude");
-  let scheduleMenuOpen = $state(false);
 
   // Live countdown tick for queue/schedule labels (only runs while a countdown is shown).
   let nowTick = $state(Date.now());
   $effect(() => {
-    if (!isPrepared && !isQueued) return;
+    if (!isQueued) return;
     nowTick = Date.now();
     const t = setInterval(() => {
       nowTick = Date.now();
     }, 1000);
     return () => clearInterval(t);
-  });
-
-  // Re-read reset times when the provider's rate-limit store updates (or provider changes).
-  let providerRateData = $derived(
-    sessionProvider === "openai" ? $codexRateLimitData : $rateLimitData,
-  );
-  let reset5hMs = $derived.by(() => {
-    void providerRateData;
-    return nextWindowResetAt(sessionProvider, "5h");
-  });
-  let reset7dMs = $derived.by(() => {
-    void providerRateData;
-    return nextWindowResetAt(sessionProvider, "7d");
   });
 
   function formatCountdown(ms: number | undefined | null): string {
@@ -1297,9 +1233,6 @@
     if (minutes > 0) return `${minutes}m ${seconds}s`;
     return `${seconds}s`;
   }
-
-  let countdown5h = $derived(formatCountdown(reset5hMs));
-  let countdown7d = $derived(formatCountdown(reset7dMs));
 
   // Queued-panel labels.
   let queueWindowLabel = $derived(
@@ -1320,11 +1253,6 @@
     (status === "idle" || status === "done") && messages.length > 0,
   );
 
-  function handleScheduleForWindow(window: QueueWindow) {
-    scheduleMenuOpen = false;
-    sdkSessions.scheduleForWindow(sessionId, window);
-  }
-
   function handleRunQueuedNow() {
     sdkSessions.launchPrepared(sessionId);
   }
@@ -1341,12 +1269,8 @@
     await sdkSessions.queueTurnForWindow(sessionId, prompt, images, window);
   }
 
-  function handleSelectPreparedRepo(repoCwd: string) {
-    sdkSessions.updatePreparedRepo(sessionId, repoCwd);
-  }
-
   /**
-   * Demote a prepared / pending-approval prompt into the pile.
+   * Demote a pending-approval prompt into the pile.
    * Carries over the session's processing results (cleanup, repo/model recs,
    * audio, waveform) so no LLM work is redone, then closes the session.
    */
@@ -1416,32 +1340,6 @@
     );
   }
 
-  // Plan mode handlers
-  function handlePlanningAnswerChange(answer: PlanningAnswer) {
-    sdkSessions.updatePlanningAnswer(sessionId, answer);
-  }
-
-  function handlePlanningNavigate(index: number) {
-    sdkSessions.setCurrentQuestionIndex(sessionId, index);
-  }
-
-  function handlePlanningSubmit() {
-    sdkSessions.submitPlanningAnswers(sessionId);
-  }
-
-  async function handleImplementPlan() {
-    const implSessionId =
-      await sdkSessions.spawnImplementationSession(sessionId);
-    if (implSessionId) {
-      // Dispatch event to switch to the new implementation session
-      window.dispatchEvent(
-        new CustomEvent("switch-to-session", {
-          detail: { sessionId: implSessionId },
-        }),
-      );
-    }
-  }
-
   // AskUserQuestion handlers
   function handleAskUserAnswerChange(answer: PlanningAnswer) {
     sdkSessions.updateAskUserAnswer(sessionId, answer);
@@ -1489,10 +1387,6 @@
     <RateLimitBanner session={session} />
   {/if}
 
-  {#if isPlanMode && planMode}
-    <PlanModeBanner {planMode} />
-  {/if}
-
   {#if hasUsageData && usage}
     <SdkUsageBar
       {usage}
@@ -1536,68 +1430,6 @@
         />
       {/if}
 
-      <!-- Prepared session UI -->
-      {#if isPrepared && pendingTranscription}
-        {#snippet scheduleAction()}
-          <div class="schedule-split">
-            <button
-              class="schedule-toggle"
-              onclick={() => (scheduleMenuOpen = !scheduleMenuOpen)}
-              aria-haspopup="menu"
-              aria-expanded={scheduleMenuOpen}
-              title="Fire-and-forget: schedule this launch for the next 5h or 7d reset"
-            >
-              <svg viewBox="0 0 20 20" fill="currentColor" class="schedule-icon">
-                <path
-                  fill-rule="evenodd"
-                  d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
-                  clip-rule="evenodd"
-                />
-              </svg>
-              <span>Schedule for later</span>
-              <svg viewBox="0 0 20 20" fill="currentColor" class="schedule-caret">
-                <path
-                  fill-rule="evenodd"
-                  d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
-                  clip-rule="evenodd"
-                />
-              </svg>
-            </button>
-            {#if scheduleMenuOpen}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="schedule-menu-backdrop" onclick={() => (scheduleMenuOpen = false)}></div>
-              <div class="schedule-menu" role="menu">
-                <button class="schedule-menu-item" role="menuitem" onclick={() => handleScheduleForWindow("5h")}>
-                  <span>Next 5h reset</span>
-                  {#if countdown5h}<span class="schedule-menu-countdown">in {countdown5h}</span>{/if}
-                </button>
-                <button class="schedule-menu-item" role="menuitem" onclick={() => handleScheduleForWindow("7d")}>
-                  <span>Next 7d reset</span>
-                  {#if countdown7d}<span class="schedule-menu-countdown">in {countdown7d}</span>{/if}
-                </button>
-              </div>
-            {/if}
-          </div>
-        {/snippet}
-        <SessionRecordingHeader
-          {pendingTranscription}
-          {sessionId}
-          showPrepared={true}
-          {preparedPrompt}
-          {preparedChips}
-          onLaunch={handleLaunchPrepared}
-          onCancelPrepared={handleCancelPrepared}
-          onDemoteToPile={handleDemoteToPile}
-          repos={$repos.list.filter((r) => r.active !== false)}
-          {preparedRepoRecommendation}
-          selectedRepoCwd={cwd}
-          onSelectRepo={handleSelectPreparedRepo}
-          autoModelEffort={$settings.llm?.features?.auto_model_effort}
-          {scheduleAction}
-        />
-      {/if}
-
       <!-- Queued session UI (rate-limited first launch or a scheduled launch) -->
       {#if isQueued}
         <div class="queued-panel" class:scheduled={queueInfo?.reason === "scheduled"}>
@@ -1632,7 +1464,7 @@
       {/if}
 
       <!-- Completed recording context shown at the top of active sessions -->
-      {#if hasCompletedRecordingData && pendingTranscription && !isPendingApproval && !isPrepared}
+      {#if hasCompletedRecordingData && pendingTranscription && !isPendingApproval}
         <SessionRecordingHeader
           {pendingTranscription}
           {sessionId}
@@ -1677,7 +1509,7 @@
           </div>
         {/if}
         {#if item.type === "message"}
-          {@const isPlanApprovalMsg = (item.message.type === "tool_start" || item.message.type === "tool_result") && (item.message.tool === "ExitPlanMode" || item.message.tool === "complete_planning" || item.message.tool === "mcp__planning-tools__complete_planning")}
+          {@const isPlanApprovalMsg = (item.message.type === "tool_start" || item.message.type === "tool_result") && item.message.tool === "ExitPlanMode"}
           {#if isPlanApprovalMsg && hasPlanApproval && pendingPlanApproval}
             <!-- Replace ExitPlanMode tool card with plan approval UI -->
             <PlanApprovalDialog
@@ -1785,35 +1617,6 @@
         />
       {/if}
 
-      {#if hasPlanningQuestions && planMode}
-        <PlanningWizard
-          questions={planMode.questions}
-          answers={planMode.answers}
-          currentQuestionIndex={planMode.currentQuestionIndex}
-          isComplete={planMode.isComplete}
-          planFilePath={planMode.planFilePath}
-          featureName={planMode.featureName}
-          planSummary={planMode.planSummary}
-          onAnswerChange={handlePlanningAnswerChange}
-          onNavigate={handlePlanningNavigate}
-          onSubmit={handlePlanningSubmit}
-          onImplement={handleImplementPlan}
-        />
-      {:else if planMode?.isComplete}
-        <PlanningWizard
-          questions={planMode.questions}
-          answers={planMode.answers}
-          currentQuestionIndex={planMode.currentQuestionIndex}
-          isComplete={true}
-          planFilePath={planMode.planFilePath}
-          featureName={planMode.featureName}
-          planSummary={planMode.planSummary}
-          onAnswerChange={handlePlanningAnswerChange}
-          onNavigate={handlePlanningNavigate}
-          onSubmit={handlePlanningSubmit}
-          onImplement={handleImplementPlan}
-        />
-      {/if}
     </div>
 
     {#if showGoToTop}
@@ -1847,7 +1650,7 @@
     />
   {/if}
 
-  {#if !isPrepared && !isQueued}
+  {#if !isQueued}
     {#if session?.failedRecording}
       <div
         class="flex items-center gap-2 mx-3 mb-2 px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/10"
@@ -2141,91 +1944,6 @@
   .fork-divider-icon {
     width: 12px;
     height: 12px;
-  }
-
-  /* Prepared-session schedule button (lives in the prepared action group) */
-  .schedule-split {
-    position: relative;
-  }
-
-  .schedule-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
-    padding: 0.4rem 0.7rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    border-radius: 6px;
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: var(--color-text-primary);
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-  }
-
-  .schedule-toggle:hover {
-    background: var(--color-border);
-  }
-
-  .schedule-icon {
-    width: 15px;
-    height: 15px;
-    color: var(--color-text-secondary);
-  }
-
-  .schedule-caret {
-    width: 14px;
-    height: 14px;
-    color: var(--color-text-muted);
-  }
-
-  .schedule-menu-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 20;
-    background: transparent;
-  }
-
-  .schedule-menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    z-index: 21;
-    min-width: 200px;
-    display: flex;
-    flex-direction: column;
-    padding: 0.25rem;
-    background: var(--color-surface-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
-  }
-
-  .schedule-menu-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    width: 100%;
-    padding: 0.5rem 0.625rem;
-    background: transparent;
-    border: none;
-    border-radius: 6px;
-    color: var(--color-text-primary);
-    font-size: 0.8125rem;
-    font-weight: 500;
-    cursor: pointer;
-    text-align: left;
-  }
-
-  .schedule-menu-item:hover {
-    background: var(--color-border);
-  }
-
-  .schedule-menu-countdown {
-    font-size: 0.7rem;
-    color: var(--color-text-muted);
-    white-space: nowrap;
   }
 
   /* Queued session panel */

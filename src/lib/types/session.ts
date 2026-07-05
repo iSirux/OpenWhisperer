@@ -1,6 +1,6 @@
 // Shared session types used across SessionList and SessionCard components
 
-import type { SessionAiMetadata, PlanModeState, NoteModeState, QueueInfo, RateLimitedState } from '$lib/stores/sdkSessions';
+import type { SessionAiMetadata, QueueInfo, RateLimitedState } from '$lib/stores/sdkSessions';
 import type { SdkProvider } from '$lib/utils/models';
 import type { ExecutionStatus } from '$lib/types/sequence';
 
@@ -45,12 +45,6 @@ export interface DisplaySession {
     reasoning: string;
     confidence: string;
   };
-
-  // Plan mode state
-  planMode?: PlanModeState;
-
-  // Note mode state
-  noteMode?: NoteModeState;
 
   // Pending plan approval (ExitPlanMode waiting for user)
   pendingPlanApproval?: boolean;

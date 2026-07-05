@@ -170,17 +170,24 @@ export async function launchPileItemsTogether(
 }
 
 /**
- * Create a prepared (draft) session from a pile item without starting it.
- * Returns the session ID, or null if no repo could be resolved.
+ * Create a draft (setup) session from a pile item without starting it. The transcript becomes the
+ * New Session view's prompt draft, opening with the full setup controls (model/effort/repo/worktree/
+ * schedule). Any pre-toggled prompt chips are folded into the draft prompt so nothing is lost, and
+ * the recording screenshot is attached as a draft image. Returns the session ID, or null if no repo
+ * could be resolved.
  */
-export function preparePileItem(item: PileItem, select: boolean = true): string | null {
+export async function preparePileItem(item: PileItem, select: boolean = true): Promise<string | null> {
   const params = resolveLaunchParams(item);
   if (!params || !item.transcript.trim()) return null;
 
-  const sessionId = sdkSessions.createPendingTranscriptionSession(
+  // Load the recording screenshot up-front so it's part of the draft before the setup view mounts.
+  const screenshot = item.hasScreenshot ? await pile.getScreenshotImage(item.id) : null;
+
+  const sessionId = sdkSessions.createSetupSession(
     params.model,
     params.effortLevel,
-    params.provider
+    params.provider,
+    params.repo.path
   );
 
   sdkSessions.set(
@@ -191,24 +198,9 @@ export function preparePileItem(item: PileItem, select: boolean = true): string 
     )
   );
 
-  sdkSessions.setPrepared(
-    sessionId,
-    item.transcript.trim(),
-    params.repo.path,
-    params.systemPrompt,
-    undefined,
-    item.selectedChips
-  );
+  const draftPrompt = appendChips(item.transcript.trim(), item.selectedChips ?? []);
+  sdkSessions.updateDraft(sessionId, draftPrompt, screenshot ? [screenshot] : undefined);
   pile.linkSession(item.id, sessionId);
-
-  // Carry the recording screenshot over so it's attached when the draft launches
-  if (item.hasScreenshot) {
-    void pile.getScreenshotImage(item.id).then((screenshot) => {
-      if (screenshot) {
-        sdkSessions.updatePendingTranscription(sessionId, { screenshots: [screenshot] });
-      }
-    });
-  }
 
   if (select) {
     selectPreparedSession(sessionId);
@@ -218,10 +210,10 @@ export function preparePileItem(item: PileItem, select: boolean = true): string 
 }
 
 /**
- * Create one prepared (draft) session covering several pile items.
+ * Create one draft (setup) session covering several pile items.
  * Returns the session ID, or null if no repo could be resolved.
  */
-export function preparePileItemsTogether(items: PileItem[], select: boolean = true): string | null {
+export async function preparePileItemsTogether(items: PileItem[], select: boolean = true): Promise<string | null> {
   const usable = items.filter((i) => i.transcript.trim());
   if (usable.length === 0) return null;
   if (usable.length === 1) return preparePileItem(usable[0], select);
@@ -229,11 +221,17 @@ export function preparePileItemsTogether(items: PileItem[], select: boolean = tr
   const params = resolveLaunchParams(usable[0]);
   if (!params) return null;
 
+  // Load every item's screenshot up-front so they're attached to the draft before it mounts.
+  const withScreenshots = usable.filter((i) => i.hasScreenshot);
+  const loaded = await Promise.all(withScreenshots.map((i) => pile.getScreenshotImage(i.id)));
+  const screenshots = loaded.filter((s): s is NonNullable<typeof s> => s !== null);
+
   const title = combinedPileTitle(usable);
-  const sessionId = sdkSessions.createPendingTranscriptionSession(
+  const sessionId = sdkSessions.createSetupSession(
     params.model,
     params.effortLevel,
-    params.provider
+    params.provider,
+    params.repo.path
   );
 
   sdkSessions.set(
@@ -242,27 +240,13 @@ export function preparePileItemsTogether(items: PileItem[], select: boolean = tr
     )
   );
 
-  sdkSessions.setPrepared(
-    sessionId,
+  const draftPrompt = appendChips(
     buildCombinedTranscript(usable),
-    params.repo.path,
-    params.systemPrompt,
-    undefined,
     mergeChips(...usable.map((i) => i.selectedChips))
   );
+  sdkSessions.updateDraft(sessionId, draftPrompt, screenshots.length > 0 ? screenshots : undefined);
   for (const item of usable) {
     pile.linkSession(item.id, sessionId);
-  }
-
-  // Carry every item's screenshot into the draft so all are attached at launch
-  const withScreenshots = usable.filter((i) => i.hasScreenshot);
-  if (withScreenshots.length > 0) {
-    void Promise.all(withScreenshots.map((i) => pile.getScreenshotImage(i.id))).then((loaded) => {
-      const screenshots = loaded.filter((s): s is NonNullable<typeof s> => s !== null);
-      if (screenshots.length > 0) {
-        sdkSessions.updatePendingTranscription(sessionId, { screenshots });
-      }
-    });
   }
 
   if (select) {

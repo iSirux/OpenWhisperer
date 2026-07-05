@@ -18,7 +18,7 @@ import {
   settingsToStoreEffort,
 } from '$lib/stores/sdkSessions';
 import { sessions, activeSessionId } from '$lib/stores/sessions';
-import { settings, getEffectiveTerminalMode, isNoteModeAvailable } from '$lib/stores/settings';
+import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
 import { repos, activeRepo, isAutoRepoSelected, isRepoActive, type RepoConfig } from '$lib/stores/repos';
 import { recording } from '$lib/stores/recording';
 import { navigation } from '$lib/stores/navigation';
@@ -68,8 +68,7 @@ function getActiveReposList() {
 export async function handleTranscriptReady(
   transcript: string,
   pendingSessionId: string | null,
-  voskTranscript?: string,
-  isNoteMode?: boolean
+  voskTranscript?: string
 ) {
   if (!transcript.trim()) {
     console.log('[transcript] Empty transcript, skipping');
@@ -90,11 +89,7 @@ export async function handleTranscriptReady(
 
   const currentSettings = get(settings);
   if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
-    if (isNoteMode) {
-      await processNoteTranscript(transcript, pendingSessionId);
-    } else {
-      await processSdkTranscript(transcript, pendingSessionId, voskTranscript);
-    }
+    await processSdkTranscript(transcript, pendingSessionId, voskTranscript);
   } else {
     await processPtyTranscript(transcript, pendingSessionId, voskTranscript);
   }
@@ -185,48 +180,6 @@ async function processSdkTranscript(
   } else {
     await createSessionWithPrompt(finalTranscript, sessionRepo);
   }
-}
-
-/**
- * Process transcript for note mode.
- */
-async function processNoteTranscript(
-  transcript: string,
-  pendingSessionId: string | null
-) {
-  const currentActiveRepo = get(activeRepo);
-  const repoPath = currentActiveRepo?.path || '.';
-
-  let finalTranscript = transcript;
-  if (isTranscriptionCleanupEnabled()) {
-    const repoContext = currentActiveRepo ? buildSingleRepoContext(currentActiveRepo) : undefined;
-    const cleanupResult = await cleanupTranscript(transcript, undefined, repoContext);
-    finalTranscript = cleanupResult.text;
-
-    if (pendingSessionId) {
-      updatePendingWithCleanup(
-        pendingSessionId,
-        undefined,
-        finalTranscript,
-        cleanupResult.wasCleanedUp,
-        cleanupResult.corrections,
-        cleanupResult.usedDualSource
-      );
-    }
-  }
-
-  if (pendingSessionId) {
-    await sdkSessions.completePendingNoteSession(pendingSessionId, repoPath, finalTranscript);
-    activeSessionId.set(null);
-  } else {
-    const sessionId = sdkSessions.createPendingNoteSession();
-    sdkSessions.selectSession(sessionId);
-    await sdkSessions.completePendingNoteSession(sessionId, repoPath, finalTranscript);
-    activeSdkSessionId.set(sessionId);
-    activeSessionId.set(null);
-  }
-
-  navigation.setView('sessions');
 }
 
 /**
@@ -400,12 +353,10 @@ export async function handlePrepareTranscriptReady(
     );
   }
 
-  // Step 2: Get repo recommendation if in auto-repo mode
+  // Step 2: Get repo recommendation if in auto-repo mode. A confident match sets the draft's repo;
+  // a low-confidence match leaves the repo unset (the setup view opens in Auto with a repo picker).
   let sessionCwd = '';
   let sessionRepo = currentActiveRepo;
-  let preparedRepoRecommendation:
-    | { recommendedIndex: number | null; reasoning: string; confidence: string }
-    | undefined;
 
   if (
     get(isAutoRepoSelected) &&
@@ -423,12 +374,6 @@ export async function handlePrepareTranscriptReady(
         sessionRepo?.name || 'Unknown'
       );
     } else {
-      preparedRepoRecommendation = {
-        recommendedIndex: repoRecommendation?.repoIndex ?? null,
-        reasoning:
-          repoRecommendation?.reasoning ?? 'Not enough information to determine repository',
-        confidence: repoRecommendation?.confidence ?? 'low',
-      };
       sessionCwd = '';
     }
   } else {
@@ -449,22 +394,13 @@ export async function handlePrepareTranscriptReady(
     }
   }
 
-  // Step 4: Build system prompt
-  const systemPrompt = buildSystemPrompt({
-    repoPath: sessionCwd,
-    repoName: sessionRepo?.name || '',
-    includeTranscriptionNotice: true,
-    allRepos: activeReposList,
+  // Step 4: Open the transcript as an editable New Session draft instead of launching.
+  // The setup view builds its own system prompt at launch; recording screenshots (if any)
+  // are carried onto the draft automatically.
+  sdkSessions.setupFromPending(sessionId, {
+    prompt: finalTranscript,
+    cwd: sessionCwd,
   });
-
-  // Step 5: Set prepared status instead of launching
-  sdkSessions.setPrepared(
-    sessionId,
-    finalTranscript,
-    sessionCwd,
-    systemPrompt,
-    preparedRepoRecommendation
-  );
   activeSessionId.set(null);
 }
 
@@ -641,9 +577,6 @@ export async function handlePrepareSelection() {
 
     let sessionCwd = '';
     let sessionRepo = currentActiveRepo;
-    let preparedRepoRecommendation:
-      | { recommendedIndex: number | null; reasoning: string; confidence: string }
-      | undefined;
 
     if (
       get(isAutoRepoSelected) &&
@@ -661,12 +594,6 @@ export async function handlePrepareSelection() {
           sessionRepo?.name || 'Unknown'
         );
       } else {
-        preparedRepoRecommendation = {
-          recommendedIndex: repoRecommendation?.repoIndex ?? null,
-          reasoning:
-            repoRecommendation?.reasoning ?? 'Not enough information to determine repository',
-          confidence: repoRecommendation?.confidence ?? 'low',
-        };
         sessionCwd = '';
       }
     } else {
@@ -686,20 +613,11 @@ export async function handlePrepareSelection() {
       }
     }
 
-    const systemPrompt = buildSystemPrompt({
-      repoPath: sessionCwd,
-      repoName: sessionRepo?.name || '',
-      includeTranscriptionNotice: false,
-      allRepos: activeReposList,
+    // Open the selected text as an editable New Session draft instead of launching.
+    sdkSessions.setupFromPending(sessionId, {
+      prompt: selectedText,
+      cwd: sessionCwd,
     });
-
-    sdkSessions.setPrepared(
-      sessionId,
-      selectedText,
-      sessionCwd,
-      systemPrompt,
-      preparedRepoRecommendation
-    );
   } catch (error) {
     console.error('[selection] Failed to prepare selection:', error);
   }
@@ -765,56 +683,6 @@ export async function handleVoiceCommand(
       clearPendingSessionId();
     }
     await recording.cancelRecording();
-    return;
-  }
-
-  if (commandType === 'note' && isNoteModeAvailable()) {
-    if (pendingSessionId) {
-      sdkSessions.cancelPendingTranscription(pendingSessionId);
-    }
-
-    const noteSessionId = sdkSessions.createPendingNoteSession();
-    sdkSessions.selectSession(noteSessionId);
-    navigation.setView('sessions');
-    sdkSessions.updatePendingTranscription(noteSessionId, { status: 'transcribing' });
-
-    recording
-      .stopRecording(true)
-      .then(async (whisperTranscript) => {
-        if (noteSessionId) {
-          const audioData = get(recording).audioData;
-          if (audioData) {
-            sdkSessions.storeAudioData(noteSessionId, audioData);
-          }
-        }
-
-        const finalTranscript = whisperTranscript
-          ? processVoiceCommand(whisperTranscript).cleanedTranscript
-          : cleanedTranscript;
-
-        if (finalTranscript) {
-          await handleTranscriptReady(finalTranscript, noteSessionId, cleanedTranscript, true);
-        } else {
-          // No usable transcript — salvage the recording to the pile for retry.
-          await handlePileTranscriptReady(
-            '',
-            noteSessionId,
-            cleanedTranscript,
-            'No transcription available'
-          );
-        }
-
-        clearPendingSessionId();
-      })
-      .catch(async (error) => {
-        await handlePileTranscriptReady(
-          '',
-          noteSessionId,
-          cleanedTranscript,
-          error?.message || 'Transcription failed'
-        );
-        clearPendingSessionId();
-      });
     return;
   }
 
@@ -1073,17 +941,6 @@ export async function handleRepoSelectionForSession(
   }
 }
 
-/**
- * Launch a prepared session.
- */
-export async function handleLaunchPrepared(sessionId: string, editedPrompt?: string) {
-  try {
-    await sdkSessions.launchPrepared(sessionId, editedPrompt);
-  } catch (error) {
-    console.error('[session] Failed to launch prepared session:', error);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Session setup handling
 // ---------------------------------------------------------------------------
@@ -1099,14 +956,14 @@ export async function handleSetupSessionStart(
     model: string;
     effortLevel: EffortLevel;
     cwd: string;
-    planMode: boolean;
-    noteMode: boolean;
     readOnlyMode: boolean;
     provider?: import('$lib/utils/models').SdkProvider;
     worktreeRepoPath?: string;
     worktreeBranch?: string;
     worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
     playwrightQa?: boolean;
+    /** When set, defer the launch to the next usage-window reset (fire-and-forget) instead of starting now. */
+    schedule?: import('$lib/stores/queueDetection').QueueWindow;
   }
 ) {
   const currentSettings = get(settings);
@@ -1165,12 +1022,11 @@ export async function handleSetupSessionStart(
     repoId,
     model: finalModel,
     effortLevel: finalEffort,
-    planMode: config.planMode,
-    noteMode: config.noteMode,
     readOnlyMode: config.readOnlyMode,
     provider: config.provider,
     createdBranch: config.worktreeBranch,
     worktreePostSetup: config.worktreePostSetup,
     playwrightQa: config.playwrightQa,
+    schedule: config.schedule,
   });
 }

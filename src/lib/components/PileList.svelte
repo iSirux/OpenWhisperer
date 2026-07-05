@@ -106,12 +106,12 @@
     pendingAction = null;
 
     if (action === 'prepare') {
-      // Prepared sessions are cheap to create — no queue/stagger needed
+      // Draft (setup) sessions are cheap to create — no queue/stagger needed
       if (together) {
-        preparePileItemsTogether(itemsSnapshot);
+        void preparePileItemsTogether(itemsSnapshot);
       } else {
         for (const item of itemsSnapshot) {
-          preparePileItem(item, itemsSnapshot.length === 1);
+          void preparePileItem(item, itemsSnapshot.length === 1);
         }
       }
       return;

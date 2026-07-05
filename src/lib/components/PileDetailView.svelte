@@ -170,9 +170,9 @@
     }
   }
 
-  function runPrepare() {
+  async function runPrepare() {
     saveTranscript();
-    const sessionId = preparePileItem(pile.getItem(item.id)!, true);
+    const sessionId = await preparePileItem(pile.getItem(item.id)!, true);
     if (sessionId) {
       selectedPileItemId.set(null);
     }

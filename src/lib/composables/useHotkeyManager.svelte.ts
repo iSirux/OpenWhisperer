@@ -4,7 +4,7 @@
  */
 
 import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
-import { settings, isNoteModeAvailable, type HotkeyEnabledConfig } from '$lib/stores/settings';
+import { settings, type HotkeyEnabledConfig } from '$lib/stores/settings';
 import { repos } from '$lib/stores/repos';
 import { isRecording } from '$lib/stores/recording';
 import { overlay } from '$lib/stores/overlay';
@@ -22,8 +22,6 @@ export interface HotkeyCallbacks {
   onStopAndPaste: () => Promise<void>;
   /** Called when recording should stop and be saved to the pile */
   onStopAndPile: () => Promise<void>;
-  /** Called when recording should start in note mode */
-  onStartNoteRecording: () => Promise<void>;
   /** Called when selected text should be copied and sent as a new prompt */
   onSendSelection: () => Promise<void>;
   /** Called when selected text should be copied and prepared as a session */
@@ -37,11 +35,9 @@ export function useHotkeyManager() {
   let registeredPileHotkey: string | null = null;
   let cycleRepoHotkeyRegistered = false;
   let cycleModelHotkeyRegistered = false;
-  let noteModeHotkeyRegistered = false;
   let registeredCycleRepoHotkey: string | null = null;
   let registeredCycleModelHotkey: string | null = null;
   let registeredToggleRecordingHotkey: string | null = null;
-  let registeredNoteModeHotkey: string | null = null;
   let sendSelectionHotkeyRegistered = false;
   let prepareSelectionHotkeyRegistered = false;
   let registeredSendSelectionHotkey: string | null = null;
@@ -51,7 +47,6 @@ export function useHotkeyManager() {
   let isTogglingRecording = false;
   let isCyclingRepo = false;
   let isCyclingModel = false;
-  let isStartingNoteMode = false;
   let isSendingSelection = false;
   let isPreparingSelection = false;
 
@@ -70,7 +65,7 @@ export function useHotkeyManager() {
   }
 
   /**
-   * Setup the main toggle_recording and note_mode hotkeys
+   * Setup the main toggle_recording hotkey
    * @param cb Callbacks for recording actions
    */
   async function setup(cb: HotkeyCallbacks) {
@@ -82,11 +77,9 @@ export function useHotkeyManager() {
       transcribeHotkeyRegistered = false;
       cycleRepoHotkeyRegistered = false;
       cycleModelHotkeyRegistered = false;
-      noteModeHotkeyRegistered = false;
       registeredCycleRepoHotkey = null;
       registeredCycleModelHotkey = null;
       registeredToggleRecordingHotkey = null;
-      registeredNoteModeHotkey = null;
 
       const currentSettings = get(settings);
       const enabled = currentSettings.hotkeys_enabled;
@@ -118,37 +111,9 @@ export function useHotkeyManager() {
         console.log('[Hotkey] toggle_recording is disabled, skipping registration');
       }
 
-      // Register note mode hotkey (only if enabled)
-      const noteModeHotkey = currentSettings.hotkeys.note_mode;
-      const noteModeAvailable = isNoteModeAvailable();
-      if (noteModeAvailable && enabled.note_mode && noteModeHotkey && noteModeHotkey !== currentSettings.hotkeys.toggle_recording) {
-        console.log('[Hotkey] Registering note_mode:', noteModeHotkey);
-        await register(noteModeHotkey, async () => {
-          if (isStartingNoteMode || get(isRecording)) return;
-          isStartingNoteMode = true;
-
-          try {
-            await callbacks?.onStartNoteRecording();
-          } finally {
-            setTimeout(() => {
-              isStartingNoteMode = false;
-            }, 200);
-          }
-        });
-
-        registeredNoteModeHotkey = noteModeHotkey;
-        noteModeHotkeyRegistered = true;
-        console.log('[Hotkey] Successfully registered note_mode:', noteModeHotkey);
-      } else if (!noteModeAvailable) {
-        console.log('[Hotkey] note_mode unavailable in production, skipping registration');
-      } else if (!enabled.note_mode) {
-        console.log('[Hotkey] note_mode is disabled, skipping registration');
-      }
-
       // Collect already-registered hotkeys for collision detection
       const registeredHotkeys = new Set([
         currentSettings.hotkeys.toggle_recording,
-        noteModeAvailable ? noteModeHotkey : null,
       ].filter(Boolean));
 
       // Register send_selection hotkey (only if enabled)
@@ -563,11 +528,9 @@ export function useHotkeyManager() {
       registeredPileHotkey = null;
       cycleRepoHotkeyRegistered = false;
       cycleModelHotkeyRegistered = false;
-      noteModeHotkeyRegistered = false;
       registeredCycleRepoHotkey = null;
       registeredCycleModelHotkey = null;
       registeredToggleRecordingHotkey = null;
-      registeredNoteModeHotkey = null;
       sendSelectionHotkeyRegistered = false;
       prepareSelectionHotkeyRegistered = false;
       registeredSendSelectionHotkey = null;

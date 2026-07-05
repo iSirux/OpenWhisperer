@@ -118,8 +118,6 @@ impl SequenceExecutor {
                 system_prompt,
                 messages: None,
                 sdk_session_id: None,
-                plan_mode: None,
-                note_mode: None,
                 read_only_mode: None,
                 mcp_servers: None,
                 fork_from_sdk_session_id: None,

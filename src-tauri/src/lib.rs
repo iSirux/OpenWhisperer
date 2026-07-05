@@ -424,6 +424,7 @@ pub fn run() {
             // --- Session persistence ---
             session_cmds::get_persisted_sessions,
             session_cmds::save_persisted_sessions,
+            session_cmds::upsert_persisted_sdk_sessions,
             session_cmds::clear_persisted_sessions,
             // --- Pile & captures ---
             pile_cmds::get_pile_items,

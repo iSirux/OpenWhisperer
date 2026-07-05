@@ -17,7 +17,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 // Stores
 import { recording, isRecording } from '$lib/stores/recording';
 import { sdkSessions, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-import { settings, getEffectiveTerminalMode, isNoteModeAvailable } from '$lib/stores/settings';
+import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
 import { activeRepo } from '$lib/stores/repos';
 import { overlay } from '$lib/stores/overlay';
 import { openMic } from '$lib/stores/openMic';
@@ -46,8 +46,6 @@ interface RecordingFlowState {
   isRecordingForNewSession: boolean;
   /** True while recording from the setup view. */
   isRecordingForSetup: boolean;
-  /** True while recording for note mode. */
-  isRecordingForNoteMode: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +57,6 @@ function createRecordingFlowStore() {
   const { subscribe, set, update } = writable<RecordingFlowState>({
     isRecordingForNewSession: false,
     isRecordingForSetup: false,
-    isRecordingForNoteMode: false,
   });
 
   // Private (non-observable) state ------------------------------------------
@@ -174,16 +171,15 @@ function createRecordingFlowStore() {
   function handleRecordingStop(
     sessionIdToProcess: string | null,
     capturedVoskTranscript: string | undefined,
-    isNoteMode: boolean = false,
     forceAction?: RecordAndSendAction
   ) {
     const currentSettings = get(settings);
     const isSdk = getEffectiveTerminalMode(currentSettings) === 'Sdk';
     const stopAction: RecordAndSendAction =
       forceAction ??
-      (!isNoteMode && isSdk ? currentSettings.audio.record_and_send_action : 'send');
+      (isSdk ? currentSettings.audio.record_and_send_action : 'send');
     const shouldPileOnStop = stopAction === 'pile';
-    const shouldPrepareOnStop = !isNoteMode && isSdk && stopAction === 'prepare';
+    const shouldPrepareOnStop = isSdk && stopAction === 'prepare';
 
     recording
       .stopRecording(true)
@@ -214,8 +210,7 @@ function createRecordingFlowStore() {
             await handleTranscriptReady(
               transcript,
               sessionIdToProcess,
-              capturedVoskTranscript,
-              isNoteMode
+              capturedVoskTranscript
             );
           }
         } else {
@@ -326,13 +321,6 @@ function createRecordingFlowStore() {
 
   /** Stop recording from hotkey (standard toggle). */
   async function stopRecordingFromHotkey() {
-    // Delegate to note mode if active
-    const state = get({ subscribe });
-    if (state.isRecordingForNoteMode) {
-      await stopRecordingForNoteMode();
-      return;
-    }
-
     await hotkeyCallbacks?.unregisterRecordingHotkeys();
     await overlay.hide();
     overlay.clearSessionInfo();
@@ -366,10 +354,9 @@ function createRecordingFlowStore() {
     update((s) => ({
       ...s,
       isRecordingForNewSession: false,
-      isRecordingForNoteMode: false,
     }));
 
-    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript, false, 'pile');
+    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript, 'pile');
   }
 
   /** Start recording from open mic wake command. */
@@ -415,7 +402,6 @@ function createRecordingFlowStore() {
     update((s) => ({
       ...s,
       isRecordingForNewSession: false,
-      isRecordingForNoteMode: false,
     }));
   }
 
@@ -461,7 +447,6 @@ function createRecordingFlowStore() {
     update((s) => ({
       ...s,
       isRecordingForNewSession: false,
-      isRecordingForNoteMode: false,
     }));
 
     recording
@@ -483,56 +468,6 @@ function createRecordingFlowStore() {
           error?.message || 'Transcription failed'
         );
       });
-  }
-
-  /** Start recording for note-taking mode. */
-  async function startRecordingForNoteMode() {
-    if (!isNoteModeAvailable()) return;
-    if (get(isRecording)) return;
-    update((s) => ({ ...s, isRecordingForNoteMode: true }));
-
-    await openMic.stop();
-
-    const mainWindow = getCurrentWindow();
-    wasAppFocusedOnRecordStart = await mainWindow.isFocused();
-
-    overlay.setMode('note');
-    overlay.setSessionInfo(null, 'haiku', false);
-
-    const currentSettings = get(settings);
-    if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
-      const sessionId = sdkSessions.createPendingNoteSession();
-      pendingTranscriptionSessionId = sessionId;
-      sdkSessions.selectSession(sessionId);
-      // NOTE: We intentionally do NOT call navigation.setView('sessions') here.
-      await setupAudioVisualizationListener();
-    }
-
-    await recording.startRecording(currentSettings.audio.device_id || undefined);
-    await hotkeyCallbacks?.registerRecordingHotkeys();
-
-    if (!wasAppFocusedOnRecordStart || currentSettings.overlay.show_when_focused) {
-      await overlay.show();
-    }
-  }
-
-  /** Stop recording for note-taking mode. */
-  async function stopRecordingForNoteMode() {
-    await hotkeyCallbacks?.unregisterRecordingHotkeys();
-    await overlay.hide();
-    overlay.clearSessionInfo();
-    cleanupAudioVisualizationListener();
-
-    const sessionIdToProcess = pendingTranscriptionSessionId;
-    if (sessionIdToProcess) {
-      sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
-    }
-
-    const capturedVoskTranscript = get(recording).realtimeTranscript;
-
-    update((s) => ({ ...s, isRecordingForNoteMode: false }));
-
-    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript, true);
   }
 
   /** Clean up resources. */
@@ -565,8 +500,6 @@ function createRecordingFlowStore() {
     startRecordingForSetup,
     stopRecordingForSetup,
     handleTranscribeToInput,
-    startRecordingForNoteMode,
-    stopRecordingForNoteMode,
 
     // Cleanup
     cleanupAudioVisualizationListener,
@@ -583,4 +516,3 @@ export const isRecordingForNewSession = derived(
   ($rf) => $rf.isRecordingForNewSession
 );
 export const isRecordingForSetup = derived(recordingFlow, ($rf) => $rf.isRecordingForSetup);
-export const isRecordingForNoteMode = derived(recordingFlow, ($rf) => $rf.isRecordingForNoteMode);

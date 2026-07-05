@@ -15,9 +15,6 @@ pub struct HotkeyConfig {
     /// In-app hotkey to create a new session while the app is focused
     #[serde(default = "default_new_session")]
     pub new_session: String,
-    /// Hotkey to start recording in note-taking mode
-    #[serde(default = "default_note_mode")]
-    pub note_mode: String,
     /// Hotkey to copy selected text and immediately send as a new prompt
     #[serde(default = "default_send_selection")]
     pub send_selection: String,
@@ -49,10 +46,6 @@ fn default_new_session() -> String {
     "CommandOrControl+N".to_string()
 }
 
-fn default_note_mode() -> String {
-    "CommandOrControl+Shift+N".to_string()
-}
-
 fn default_send_selection() -> String {
     "CommandOrControl+Shift+E".to_string()
 }
@@ -75,7 +68,6 @@ impl Default for HotkeyConfig {
             cycle_repo: default_cycle_repo(),
             cycle_model: default_cycle_model(),
             new_session: default_new_session(),
-            note_mode: default_note_mode(),
             send_selection: default_send_selection(),
             prepare_selection: default_prepare_selection(),
             pile_recording: default_pile_recording(),
@@ -101,8 +93,6 @@ pub struct HotkeyEnabledConfig {
     pub cycle_model: bool,
     #[serde(default = "default_hotkey_enabled")]
     pub new_session: bool,
-    #[serde(default)]
-    pub note_mode: bool,
     #[serde(default = "default_hotkey_enabled")]
     pub send_selection: bool,
     #[serde(default = "default_hotkey_enabled")]
@@ -119,7 +109,6 @@ impl Default for HotkeyEnabledConfig {
             cycle_repo: default_hotkey_enabled(),
             cycle_model: default_hotkey_enabled(),
             new_session: default_hotkey_enabled(),
-            note_mode: false,
             send_selection: default_hotkey_enabled(),
             prepare_selection: default_hotkey_enabled(),
             pile_recording: default_hotkey_enabled(),
