@@ -727,6 +727,33 @@ function sendError(id: string, message: string): void {
   send({ type: "error", id, message });
 }
 
+function sendRateLimit(
+  id: string,
+  info: { status: string; resetsAt?: number; utilization?: number }
+): void {
+  send({
+    type: "rate_limit",
+    id,
+    status: info.status,
+    resetsAt: info.resetsAt,
+    utilization: info.utilization,
+  });
+}
+
+// Conservative case-insensitive detection of rate-limit / usage-limit errors so we can
+// surface a recoverable rate-limited state (in addition to the normal error) when the SDK
+// only gives us an opaque error string rather than an explicit rate_limit_event.
+function isRateLimitError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("rate limit") ||
+    lower.includes("rate_limit") ||
+    lower.includes("ratelimit") ||
+    lower.includes("usage limit") ||
+    lower.includes("429")
+  );
+}
+
 function sendSubagentStart(
   id: string,
   agentId: string,
@@ -1897,8 +1924,8 @@ async function ensureCodexAppServer(
 
   const initResult = (await appServerRequest(state, "initialize", {
     clientInfo: {
-      name: "claude_whisperer",
-      title: "Claude Whisperer",
+      name: "open_whisperer",
+      title: "OpenWhisperer",
       version: "1.0.0",
     },
   })) as Record<string, unknown>;
@@ -2136,6 +2163,10 @@ async function handleCodexAppServerQuery(
         sendDone(msg.id);
       } else {
         sendError(msg.id, errorMessage);
+        // Fallback rate-limit detection when the SDK gives only an opaque error string.
+        if (isRateLimitError(errorMessage)) {
+          sendRateLimit(msg.id, { status: "rejected" });
+        }
       }
     }
   } finally {
@@ -2632,6 +2663,10 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
         sendDone(msg.id);
       } else {
         sendError(msg.id, errorMessage);
+        // Fallback rate-limit detection when the SDK gives only an opaque error string.
+        if (isRateLimitError(errorMessage)) {
+          sendRateLimit(msg.id, { status: "rejected" });
+        }
       }
     }
   } finally {
@@ -4242,6 +4277,10 @@ async function runClaudeQueryItem(
     // Only emit error if this query is still the current one
     if (sessions.get(msg.id) === session && session.currentQueryId === queryId) {
       sendError(msg.id, errorMessage);
+      // Fallback rate-limit detection when the SDK gives only an opaque error string.
+      if (isRateLimitError(errorMessage)) {
+        sendRateLimit(msg.id, { status: "rejected" });
+      }
     } else {
       send({
         type: "debug",
@@ -4576,6 +4615,11 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           errorText = `Prompt is too long: ${usedContext} tokens, context window ${contextWindow}. ${errorText}`;
         }
         sendError(id, errorText);
+        // Fallback rate-limit detection: some rejections surface here as an error result
+        // subtype (e.g. error: 'rate_limit') rather than an explicit rate_limit_event.
+        if (isRateLimitError(message.subtype) || isRateLimitError(errorText)) {
+          sendRateLimit(id, { status: "rejected" });
+        }
       }
       break;
     }
@@ -4693,6 +4737,26 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         `[${message.tool_name}: ${message.elapsed_time_seconds.toFixed(1)}s]`,
         progressParentToolUseId
       );
+      break;
+    }
+
+    case "rate_limit_event": {
+      // SDKRateLimitEvent: rate_limit_info.{ status, resetsAt?, utilization? }
+      // Only act on a hard rejection; "allowed"/"allowed_warning" are ignored for now.
+      const rateLimitInfo = (message as {
+        rate_limit_info?: {
+          status?: string;
+          resetsAt?: number;
+          utilization?: number;
+        };
+      }).rate_limit_info;
+      if (rateLimitInfo?.status === "rejected") {
+        sendRateLimit(id, {
+          status: "rejected",
+          resetsAt: rateLimitInfo.resetsAt,
+          utilization: rateLimitInfo.utilization,
+        });
+      }
       break;
     }
 

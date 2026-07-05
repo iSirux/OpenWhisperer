@@ -1,6 +1,6 @@
 # Auto-Update Implementation Plan
 
-This document outlines the steps needed to implement auto-updates for Claude Whisperer using Tauri v2's updater plugin.
+This document outlines the steps needed to implement auto-updates for OpenWhisperer using Tauri v2's updater plugin.
 
 ## Overview
 
@@ -34,12 +34,12 @@ Note: `@tauri-apps/plugin-dialog` is already installed.
 Generate an Ed25519 keypair for update verification:
 
 ```bash
-npm run tauri signer generate -- -w ~/.tauri/claude-whisperer.key
+npm run tauri signer generate -- -w ~/.tauri/open-whisperer.key
 ```
 
 This creates:
-- `~/.tauri/claude-whisperer.key` - **Private key** (keep secure, never commit)
-- `~/.tauri/claude-whisperer.key.pub` - **Public key** (embed in config)
+- `~/.tauri/open-whisperer.key` - **Private key** (keep secure, never commit)
+- `~/.tauri/open-whisperer.key.pub` - **Public key** (embed in config)
 
 ### Security Requirements
 
@@ -71,7 +71,7 @@ Add to the `plugins` section:
     "updater": {
       "pubkey": "PASTE_PUBLIC_KEY_CONTENT_HERE",
       "endpoints": [
-        "https://github.com/USERNAME/claude-whisperer/releases/latest/download/latest.json"
+        "https://github.com/USERNAME/open-whisperer/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
@@ -272,7 +272,7 @@ The `latest.json` file describes available updates:
   "platforms": {
     "windows-x86_64": {
       "signature": "CONTENTS_OF_SIG_FILE",
-      "url": "https://github.com/USER/REPO/releases/download/v1.0.0/claude-whisperer_1.0.0_x64-setup.nsis.zip"
+      "url": "https://github.com/USER/REPO/releases/download/v1.0.0/open-whisperer_1.0.0_x64-setup.nsis.zip"
     }
   }
 }
@@ -303,7 +303,7 @@ Set before building:
 
 **PowerShell:**
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = "C:\Users\USERNAME\.tauri\claude-whisperer.key"
+$env:TAURI_SIGNING_PRIVATE_KEY = "C:\Users\USERNAME\.tauri\open-whisperer.key"
 # Or paste the key content directly:
 # $env:TAURI_SIGNING_PRIVATE_KEY = "dW50cnVzdGVkIGNvbW1lbnQ6..."
 
@@ -312,7 +312,7 @@ $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""  # If key is password-protected
 
 **CMD:**
 ```cmd
-set TAURI_SIGNING_PRIVATE_KEY=C:\Users\USERNAME\.tauri\claude-whisperer.key
+set TAURI_SIGNING_PRIVATE_KEY=C:\Users\USERNAME\.tauri\open-whisperer.key
 ```
 
 ### Build Command
@@ -324,10 +324,10 @@ npm run tauri:build
 ### Build Output
 
 Located in `src-tauri/target/release/bundle/`:
-- `nsis/claude-whisperer_X.X.X_x64-setup.exe`
-- `nsis/claude-whisperer_X.X.X_x64-setup.exe.sig` (signature file)
-- `nsis/claude-whisperer_X.X.X_x64-setup.nsis.zip` (for updater)
-- `nsis/claude-whisperer_X.X.X_x64-setup.nsis.zip.sig`
+- `nsis/open-whisperer_X.X.X_x64-setup.exe`
+- `nsis/open-whisperer_X.X.X_x64-setup.exe.sig` (signature file)
+- `nsis/open-whisperer_X.X.X_x64-setup.nsis.zip` (for updater)
+- `nsis/open-whisperer_X.X.X_x64-setup.nsis.zip.sig`
 
 ---
 
@@ -339,8 +339,8 @@ Located in `src-tauri/target/release/bundle/`:
 2. Build with signing keys set
 3. Create GitHub release with tag `vX.X.X`
 4. Upload:
-   - `claude-whisperer_X.X.X_x64-setup.nsis.zip`
-   - `claude-whisperer_X.X.X_x64-setup.nsis.zip.sig`
+   - `open-whisperer_X.X.X_x64-setup.nsis.zip`
+   - `open-whisperer_X.X.X_x64-setup.nsis.zip.sig`
    - `latest.json` (created manually or via script)
 
 ### Automated Release with GitHub Actions
@@ -396,7 +396,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: 'Claude Whisperer v__VERSION__'
+          releaseName: 'OpenWhisperer v__VERSION__'
           releaseBody: 'See the assets to download and install this version.'
           releaseDraft: true
           prerelease: false

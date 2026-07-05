@@ -1,4 +1,4 @@
-# Notion Integration Research for Claude Whisperer
+# Notion Integration Research for OpenWhisperer
 
 ## Goal
 
@@ -53,7 +53,7 @@ For a desktop app, use **Internal Integration**:
 
 1. User creates integration at [notion.so/my-integrations](https://www.notion.so/my-integrations)
 2. User copies the "Internal Integration Secret"
-3. User pastes token into Claude Whisperer settings
+3. User pastes token into OpenWhisperer settings
 4. User shares target page/database with the integration in Notion UI
 
 **Tokens don't expire** - set once and forget.

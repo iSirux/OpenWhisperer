@@ -34,6 +34,22 @@ fn audio_file_path(id: &str) -> PathBuf {
     pile_audio_dir().join(format!("{}.webm", id))
 }
 
+/// Directory where in-flight recording captures are staged before transcription.
+/// Acts as crash insurance: audio is written here the moment a recording stops and
+/// removed once transcription settles. Any file left here on startup is a recording
+/// that was interrupted mid-transcription and can be recovered into the pile.
+fn capture_dir() -> PathBuf {
+    #[cfg(debug_assertions)]
+    let dirname = "recording-captures-dev";
+    #[cfg(not(debug_assertions))]
+    let dirname = "recording-captures";
+    AppConfig::config_dir().join(dirname)
+}
+
+fn capture_file_path(id: &str) -> PathBuf {
+    capture_dir().join(format!("{}.webm", id))
+}
+
 /// Directory where pile screenshots are stored
 fn pile_screenshot_dir() -> PathBuf {
     #[cfg(debug_assertions)]
@@ -102,6 +118,56 @@ pub fn delete_pile_audio(id: String) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("Failed to delete pile audio: {}", e)),
     }
+}
+
+/// Stage a recording's audio to disk before transcription (crash insurance).
+/// Atomic write so a crash mid-write can't leave a truncated capture.
+#[tauri::command]
+pub fn save_capture(id: String, audio_data: Vec<u8>) -> Result<String, String> {
+    validate_id(&id)?;
+    let dir = capture_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create capture dir: {}", e))?;
+    let path = capture_file_path(&id);
+    atomic_write(&path, &audio_data)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Read a staged recording capture.
+#[tauri::command]
+pub fn read_capture(id: String) -> Result<Vec<u8>, String> {
+    validate_id(&id)?;
+    fs::read(capture_file_path(&id)).map_err(|e| format!("Failed to read capture: {}", e))
+}
+
+/// Delete a staged recording capture (no-op if missing).
+#[tauri::command]
+pub fn delete_capture(id: String) -> Result<(), String> {
+    validate_id(&id)?;
+    match fs::remove_file(capture_file_path(&id)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Failed to delete capture: {}", e)),
+    }
+}
+
+/// List the ids of all staged recording captures currently on disk (for crash recovery).
+#[tauri::command]
+pub fn list_captures() -> Vec<String> {
+    let dir = capture_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("webm") {
+                return None;
+            }
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect()
 }
 
 /// Save the screenshot for a pile item (base64-encoded image bytes).

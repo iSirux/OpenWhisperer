@@ -10,6 +10,12 @@ use crate::config::AppConfig;
 /// Write data to a file atomically: write to a `.tmp` sibling, fsync, then rename.
 /// Prevents data loss from crashes mid-write (the old file remains intact if the
 /// rename never completes).
+///
+/// TODO(refactor): This byte-oriented writer is retained only for the binary
+/// callers in `archive.rs` and `pile_cmds.rs` (audio/screenshot blobs). JSON
+/// callers now use `crate::persist::save_json_atomic`. Once those non-owned
+/// modules migrate to `crate::persist::atomic_write` (text) or a bytes variant,
+/// this function can be removed.
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
     let tmp_path = path.with_extension("json.tmp");
 
@@ -134,7 +140,8 @@ pub struct PersistedSdkSessionUsage {
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSessionAiMetadata {
     pub name: Option<String>,
-    /// @deprecated - kept for backward compat with older session files
+    /// DEPRECATED: kept only for backward-compat with older session files; the
+    /// serialized name is preserved. Superseded by `outcome`.
     pub summary: Option<String>,
     pub category: Option<String>,
     /// Session outcome description
@@ -218,7 +225,8 @@ pub struct PersistedSdkSession {
     /// Effort level: null = off, "low"/"medium"/"high"/"max"
     #[serde(default)]
     pub effort_level: Option<String>,
-    /// @deprecated Thinking level - kept for backward compat loading
+    /// DEPRECATED: legacy thinking level, superseded by `effort_level`. Kept only so
+    /// old session files still deserialize; the serialized name is preserved.
     #[serde(default)]
     pub thinking_level: Option<String>,
     pub messages: Vec<PersistedSdkMessage>,
@@ -273,6 +281,12 @@ pub struct PersistedSdkSession {
     /// Repo recommendation stored for a prepared session (opaque JSON)
     #[serde(default)]
     pub prepared_repo_recommendation: Option<serde_json::Value>,
+    /// Smart queue info for a queued session (opaque JSON: reason/provider/window/queuedAt/targetStartAt)
+    #[serde(default)]
+    pub queue_info: Option<serde_json::Value>,
+    /// Rate-limited / scheduled pending-turn state for a live session (opaque JSON)
+    #[serde(default)]
+    pub rate_limited: Option<serde_json::Value>,
 }
 
 /// Represents a persisted terminal session (PTY)
@@ -413,31 +427,13 @@ impl SessionIndex {
 
     /// Save the session index to disk (atomic write)
     pub fn save(&self) -> Result<(), String> {
-        let dir = Self::sessions_dir();
-        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {}", e))?;
-
-        let path = Self::index_path();
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize session index: {}", e))?;
-
-        atomic_write(&path, content.as_bytes())
-            .map_err(|e| format!("Failed to write session index: {}", e))?;
-        Ok(())
+        crate::persist::save_json_atomic(&Self::index_path(), self, "session index", 0)
     }
 
     /// Save full session data to an individual file (atomic write)
     fn save_session_data(&self, id: &str, data: &impl Serialize) -> Result<(), String> {
-        let dir = Self::data_dir();
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create session data dir: {}", e))?;
-
-        let path = dir.join(format!("{}.json", id));
-        let content = serde_json::to_string_pretty(data)
-            .map_err(|e| format!("Failed to serialize session data: {}", e))?;
-
-        atomic_write(&path, content.as_bytes())
-            .map_err(|e| format!("Failed to write session data for {}: {}", id, e))?;
-        Ok(())
+        let path = Self::data_dir().join(format!("{}.json", id));
+        crate::persist::save_json_atomic(&path, data, "session data", 0)
     }
 
     /// Load full session data from an individual file

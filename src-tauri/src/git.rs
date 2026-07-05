@@ -1,12 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use crate::proc::{run_git, run_shell};
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+/// Errors from git operations. Kept internal; converted to `String` at the
+/// command boundary (all public `GitManager` methods return `Result<_, String>`
+/// for Tauri compatibility) via `impl From<GitError> for String`.
+#[derive(Debug, thiserror::Error)]
+pub enum GitError {
+    /// A git invocation failed; carries the trimmed stderr / spawn error.
+    #[error("{0}")]
+    Command(String),
+    #[error("Could not detect remote default branch. Set a base branch in repo settings.")]
+    NoRemoteDefault,
+}
+
+impl From<GitError> for String {
+    fn from(e: GitError) -> String {
+        e.to_string()
+    }
+}
 
 /// Information about a git worktree
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,50 +45,20 @@ pub struct WorktreeSetupStepResult {
     pub output: Option<String>,
 }
 
-#[allow(dead_code)]
 pub struct GitManager;
 
-#[allow(dead_code)]
 impl GitManager {
-    pub fn is_git_repo(path: &str) -> bool {
-        Path::new(path).join(".git").exists()
+    /// Run `git <args>` in `repo_path`, mapping proc errors into [`GitError`].
+    fn git(repo_path: &str, args: &[&str]) -> Result<String, GitError> {
+        run_git(repo_path, args).map_err(GitError::Command)
     }
 
     pub fn get_current_branch(repo_path: &str) -> Result<String, String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(Self::git(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])?)
     }
 
     pub fn create_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["checkout", "-b", branch_name])
-            .current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
+        Self::git(repo_path, &["checkout", "-b", branch_name])?;
         Ok(())
     }
 
@@ -85,7 +68,6 @@ impl GitManager {
         worktree_path: &str,
         start_point: Option<&str>,
     ) -> Result<(), String> {
-        let mut cmd = Command::new("git");
         // Use --no-track to prevent the new branch from automatically tracking the
         // start point (e.g., origin/master). Without this, `git push` would push
         // directly to the base branch instead of the feature branch's own remote.
@@ -100,183 +82,63 @@ impl GitManager {
         if let Some(sp) = start_point {
             args.push(sp);
         }
-        cmd.args(&args).current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
+        Self::git(repo_path, &args)?;
         Ok(())
     }
 
     /// Detect the default remote branch (e.g., "origin/main" or "origin/master")
     pub fn get_default_remote_branch(repo_path: &str) -> Result<String, String> {
         // Try git symbolic-ref refs/remotes/origin/HEAD first
-        let mut cmd = Command::new("git");
-        cmd.args(["symbolic-ref", "refs/remotes/origin/HEAD"])
-            .current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
-                let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                // Convert refs/remotes/origin/main → origin/main
-                if let Some(short) = full_ref.strip_prefix("refs/remotes/") {
-                    return Ok(short.to_string());
-                }
+        if let Ok(full_ref) = Self::git(repo_path, &["symbolic-ref", "refs/remotes/origin/HEAD"]) {
+            // Convert refs/remotes/origin/main → origin/main
+            if let Some(short) = full_ref.strip_prefix("refs/remotes/") {
+                return Ok(short.to_string());
             }
         }
 
         // Fallback: check if origin/main or origin/master exists
         for candidate in &["origin/main", "origin/master"] {
-            let mut cmd = Command::new("git");
-            cmd.args(["rev-parse", "--verify", candidate])
-                .current_dir(repo_path);
-
-            #[cfg(windows)]
-            cmd.creation_flags(CREATE_NO_WINDOW);
-
-            if let Ok(output) = cmd.output() {
-                if output.status.success() {
-                    return Ok(candidate.to_string());
-                }
+            if Self::git(repo_path, &["rev-parse", "--verify", candidate]).is_ok() {
+                return Ok(candidate.to_string());
             }
         }
 
-        Err(
-            "Could not detect remote default branch. Set a base branch in repo settings."
-                .to_string(),
-        )
+        Err(GitError::NoRemoteDefault.into())
     }
 
-    /// Fetch the latest from remote for a given branch ref
+    /// Fetch the latest from remote for a given branch ref. Non-fatal: logs and
+    /// returns Ok on failure (the user may be offline).
     pub fn fetch_remote(repo_path: &str, remote_branch: &str) -> Result<(), String> {
         // Extract the branch name from "origin/main" → "main"
         let branch = remote_branch
             .strip_prefix("origin/")
             .unwrap_or(remote_branch);
 
-        let mut cmd = Command::new("git");
-        cmd.args(["fetch", "origin", branch]).current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git fetch: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            log::warn!("[git] Fetch failed (will proceed anyway): {}", stderr);
-            // Don't fail — the user might be offline; we'll still use whatever ref is available locally
+        if let Err(e) = Self::git(repo_path, &["fetch", "origin", branch]) {
+            log::warn!("[git] Fetch failed (will proceed anyway): {}", e);
+            // Don't fail — we'll still use whatever ref is available locally.
         }
 
         Ok(())
     }
 
     pub fn remove_worktree(repo_path: &str, worktree_path: &str) -> Result<(), String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["worktree", "remove", worktree_path, "--force"])
-            .current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
-        Ok(())
-    }
-
-    pub fn merge_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["merge", branch_name, "--no-edit"])
-            .current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
+        Self::git(repo_path, &["worktree", "remove", worktree_path, "--force"])?;
         Ok(())
     }
 
     pub fn checkout_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["checkout", branch_name]).current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
-        Ok(())
-    }
-
-    pub fn delete_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["branch", "-D", branch_name])
-            .current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
+        Self::git(repo_path, &["checkout", branch_name])?;
         Ok(())
     }
 
     /// List all existing branches in the repo
     pub fn list_branches(repo_path: &str) -> Result<Vec<String>, String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["branch", "--list", "--format=%(refname:short)"])
-            .current_dir(repo_path);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout)
+        let stdout = Self::git(
+            repo_path,
+            &["branch", "--list", "--format=%(refname:short)"],
+        )?;
+        Ok(stdout
             .lines()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -285,45 +147,28 @@ impl GitManager {
 
     /// List all worktrees for a repository using `git worktree list --porcelain`
     pub fn list_worktrees(repo_path: &str) -> Result<Vec<WorktreeInfo>, String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["worktree", "list", "--porcelain"])
-            .current_dir(repo_path);
+        let stdout = Self::git(repo_path, &["worktree", "list", "--porcelain"])?;
 
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
         let mut worktrees = Vec::new();
         let mut current_path: Option<String> = None;
         let mut current_branch: Option<String> = None;
-        let mut is_bare = false;
         let mut is_detached = false;
 
         for line in stdout.lines() {
-            if line.starts_with("worktree ") {
+            if let Some(path) = line.strip_prefix("worktree ") {
                 // Save previous entry if any
-                if let Some(path) = current_path.take() {
+                if let Some(prev_path) = current_path.take() {
                     worktrees.push(WorktreeInfo {
-                        path: path.clone(),
+                        path: prev_path,
                         branch: current_branch.take(),
                         is_main: worktrees.is_empty(), // First worktree is always the main one
                         is_detached,
                     });
                 }
-                current_path = Some(line.strip_prefix("worktree ").unwrap().to_string());
+                current_path = Some(path.to_string());
                 current_branch = None;
-                is_bare = false;
                 is_detached = false;
-            } else if line.starts_with("branch ") {
-                let full_ref = line.strip_prefix("branch ").unwrap();
+            } else if let Some(full_ref) = line.strip_prefix("branch ") {
                 // Convert refs/heads/branch-name → branch-name
                 current_branch = Some(
                     full_ref
@@ -331,12 +176,8 @@ impl GitManager {
                         .unwrap_or(full_ref)
                         .to_string(),
                 );
-            } else if line == "bare" {
-                is_bare = true;
             } else if line == "detached" {
                 is_detached = true;
-            } else if line.is_empty() {
-                // Block separator — handled by "worktree " prefix of next block
             }
         }
 
@@ -348,13 +189,6 @@ impl GitManager {
                 is_main: worktrees.is_empty(),
                 is_detached,
             });
-        }
-
-        // Mark bare worktrees as main too (shouldn't normally appear but be safe)
-        if is_bare {
-            if let Some(last) = worktrees.last_mut() {
-                last.is_main = true;
-            }
         }
 
         Ok(worktrees)
@@ -379,7 +213,79 @@ impl GitManager {
             let _ = Self::fetch_remote(repo_path, sp);
         }
         Self::create_worktree(repo_path, branch_name, &effective_path, start_point.as_deref())?;
-        Ok(WorktreeCreationResult { worktree_path: effective_path, branch: branch_name.to_string() })
+        Ok(WorktreeCreationResult {
+            worktree_path: effective_path,
+            branch: branch_name.to_string(),
+        })
+    }
+
+    /// Shared post-setup for a worktree: copy files from `src_base` into the
+    /// worktree, then run each post-create command in the worktree. Each step is
+    /// collected as a [`WorktreeSetupStepResult`]; the pass never aborts (the
+    /// worktree already exists, so partial failures are reported, not fatal).
+    fn apply_worktree_setup(
+        src_base: &str,
+        worktree_path: &str,
+        copy_files: &[String],
+        post_create_commands: &[String],
+    ) -> Vec<WorktreeSetupStepResult> {
+        let mut results = Vec::new();
+
+        for file in copy_files {
+            let src = Path::new(src_base).join(file);
+            let dst = Path::new(worktree_path).join(file);
+            // Silently skip missing files — user may list files that only exist in some repos.
+            if !src.exists() {
+                continue;
+            }
+            if let Some(parent) = dst.parent() {
+                if !parent.exists() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            match std::fs::copy(&src, &dst) {
+                Ok(_) => results.push(WorktreeSetupStepResult {
+                    description: format!("Copy {}", file),
+                    success: true,
+                    output: None,
+                }),
+                Err(e) => results.push(WorktreeSetupStepResult {
+                    description: format!("Copy {}", file),
+                    success: false,
+                    output: Some(e.to_string()),
+                }),
+            }
+        }
+
+        for cmd_str in post_create_commands {
+            match run_shell(Path::new(worktree_path), cmd_str) {
+                Ok(out) => {
+                    let stdout = out.stdout;
+                    let stderr = out.stderr;
+                    let combined = if stderr.trim().is_empty() {
+                        stdout
+                    } else {
+                        format!("{}\n{}", stdout, stderr)
+                    };
+                    results.push(WorktreeSetupStepResult {
+                        description: cmd_str.clone(),
+                        success: out.success,
+                        output: if combined.trim().is_empty() {
+                            None
+                        } else {
+                            Some(combined.trim().to_string())
+                        },
+                    });
+                }
+                Err(e) => results.push(WorktreeSetupStepResult {
+                    description: cmd_str.clone(),
+                    success: false,
+                    output: Some(e),
+                }),
+            }
+        }
+
+        results
     }
 
     /// Run post-setup on an existing worktree: copy files and run commands.
@@ -389,47 +295,10 @@ impl GitManager {
         copy_files: &[String],
         post_create_commands: &[String],
     ) -> Vec<WorktreeSetupStepResult> {
-        let mut results = Vec::new();
-        for file in copy_files {
-            let src = Path::new(repo_path).join(file);
-            let dst = Path::new(worktree_path).join(file);
-            if src.exists() {
-                if let Some(parent) = dst.parent() {
-                    if !parent.exists() { let _ = std::fs::create_dir_all(parent); }
-                }
-                match std::fs::copy(&src, &dst) {
-                    Ok(_) => results.push(WorktreeSetupStepResult { description: format!("Copy {}", file), success: true, output: None }),
-                    Err(e) => results.push(WorktreeSetupStepResult { description: format!("Copy {}", file), success: false, output: Some(e.to_string()) }),
-                }
-            }
-        }
-        for cmd_str in post_create_commands {
-            let mut cmd;
-            #[cfg(windows)]
-            { cmd = Command::new("cmd"); cmd.args(["/c", cmd_str]); }
-            #[cfg(not(windows))]
-            { cmd = Command::new("sh"); cmd.args(["-c", cmd_str]); }
-            cmd.current_dir(worktree_path);
-            #[cfg(windows)]
-            cmd.creation_flags(CREATE_NO_WINDOW);
-            match cmd.output() {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    let combined = if stderr.is_empty() { stdout } else { format!("{}\n{}", stdout, stderr) };
-                    results.push(WorktreeSetupStepResult {
-                        description: cmd_str.clone(),
-                        success: output.status.success(),
-                        output: if combined.trim().is_empty() { None } else { Some(combined.trim().to_string()) },
-                    });
-                }
-                Err(e) => results.push(WorktreeSetupStepResult { description: cmd_str.clone(), success: false, output: Some(e.to_string()) }),
-            }
-        }
-        results
+        Self::apply_worktree_setup(repo_path, worktree_path, copy_files, post_create_commands)
     }
 
-    /// Create a worktree with full setup: copy files and run post-create commands
+    /// Create a worktree with full setup: copy files and run post-create commands.
     pub fn create_worktree_with_setup(
         repo_path: &str,
         branch_name: &str,
@@ -438,93 +307,32 @@ impl GitManager {
         post_create_commands: &[String],
         base_branch: Option<&str>,
     ) -> Result<WorktreeCreationResult, String> {
-        // Calculate worktree path if not provided
-        let effective_path = match worktree_path {
-            Some(p) => p.to_string(),
-            None => Self::get_worktree_path(repo_path, branch_name),
-        };
+        let created =
+            Self::create_worktree_only(repo_path, branch_name, worktree_path, base_branch)?;
 
-        // Resolve the start point: use provided base_branch, or auto-detect
-        let start_point = match base_branch.filter(|b| !b.is_empty()) {
-            Some(b) => Some(b.to_string()),
-            None => Self::get_default_remote_branch(repo_path).ok(),
-        };
-
-        // Fetch latest from remote before creating the worktree
-        if let Some(ref sp) = start_point {
-            let _ = Self::fetch_remote(repo_path, sp);
-        }
-
-        // Create the worktree
-        Self::create_worktree(
+        // The worktree exists; setup failures are reported/logged but not fatal.
+        let steps = Self::apply_worktree_setup(
             repo_path,
-            branch_name,
-            &effective_path,
-            start_point.as_deref(),
-        )?;
-
-        // Copy files from main worktree
-        for file in copy_files {
-            let src = Path::new(repo_path).join(file);
-            let dst = Path::new(&effective_path).join(file);
-
-            if src.exists() {
-                // Create parent directories if needed
-                if let Some(parent) = dst.parent() {
-                    if !parent.exists() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            format!("Failed to create directory for {}: {}", file, e)
-                        })?;
-                    }
-                }
-                std::fs::copy(&src, &dst).map_err(|e| format!("Failed to copy {}: {}", file, e))?;
-            }
-            // Silently skip missing files — user may list files that only exist in some repos
-        }
-
-        // Run post-create commands
-        for cmd_str in post_create_commands {
-            let mut cmd;
-            #[cfg(windows)]
-            {
-                cmd = Command::new("cmd");
-                cmd.args(["/c", cmd_str]);
-            }
-            #[cfg(not(windows))]
-            {
-                cmd = Command::new("sh");
-                cmd.args(["-c", cmd_str]);
-            }
-
-            cmd.current_dir(&effective_path);
-
-            #[cfg(windows)]
-            cmd.creation_flags(CREATE_NO_WINDOW);
-
-            let output = cmd
-                .output()
-                .map_err(|e| format!("Failed to run post-create command '{}': {}", cmd_str, e))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                log::error!("[git] Post-create command '{}' failed: {}", cmd_str, stderr);
-                // Don't fail the whole operation — the worktree is already created
-                // Log the error but continue with remaining commands
+            &created.worktree_path,
+            copy_files,
+            post_create_commands,
+        );
+        for step in &steps {
+            if !step.success {
+                log::error!(
+                    "[git] Worktree setup step '{}' failed: {}",
+                    step.description,
+                    step.output.as_deref().unwrap_or("")
+                );
             }
         }
 
-        Ok(WorktreeCreationResult {
-            worktree_path: effective_path,
-            branch: branch_name.to_string(),
-        })
+        Ok(created)
     }
 
     /// Generate a fallback branch name from a prompt (used when LLM is unavailable)
     pub fn generate_branch_name(prompt: &str) -> String {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let timestamp = crate::util::now_secs();
 
         let slug: String = prompt
             .chars()

@@ -74,9 +74,22 @@ export function getSdkSmartStatus(session: SdkSession): {
     return { status: 'awaiting_input' };
   }
 
+  // Handle queued status (Smart Queue: a never-launched session parked until
+  // its provider's usage window resets or a scheduled window boundary passes)
+  if (session.status === 'queued') {
+    return { status: 'queued' };
+  }
+
   // Handle prepared status
   if (session.status === 'prepared') {
     return { status: 'prepared' };
+  }
+
+  // Smart Queue: a live session with a pending turn waiting on a rate-limit
+  // reset or a scheduled send surfaces as rate_limited (takes precedence over
+  // the message-derived querying/idle status below).
+  if (session.rateLimited != null) {
+    return { status: 'rate_limited' };
   }
 
   // Handle initializing status
@@ -177,12 +190,51 @@ export function getSdkSmartStatus(session: SdkSession): {
 }
 
 /**
- * Extract todo progress from the latest TodoWrite tool_start message.
- * Scans backwards for efficiency - stops at first match since it represents
- * the most recent todo state.
+ * Extract todo/task progress from the SDK message stream.
+ *
+ * Claude Code replaced the single-snapshot `TodoWrite` tool (one call carried the
+ * full list) with per-task `TaskCreate`/`TaskUpdate` tools (each call touches one
+ * task). We therefore accumulate across the whole session: every TaskCreate adds a
+ * task (starting pending) and every TaskUpdate changes a task's status by id.
+ * Falls back to the legacy TodoWrite snapshot for older/restored sessions.
  */
 export function getTodoProgress(messages: SdkSession['messages']):
   { completed: number; total: number } | undefined {
+  let hasTaskTools = false;
+  let created = 0;
+  // Latest status per task id (from TaskUpdate). Ids that never receive an
+  // update simply stay pending and only contribute to the total via `created`.
+  const statusById = new Map<string, string>();
+
+  for (const msg of messages) {
+    if (msg.type !== 'tool_start' || !msg.input) continue;
+    if (msg.tool === 'TaskCreate') {
+      hasTaskTools = true;
+      created++;
+    } else if (msg.tool === 'TaskUpdate') {
+      hasTaskTools = true;
+      const taskId = msg.input.taskId;
+      const status = msg.input.status;
+      if (typeof taskId === 'string' && typeof status === 'string') {
+        statusById.set(taskId, status);
+      }
+    }
+  }
+
+  if (hasTaskTools) {
+    let completed = 0;
+    let deleted = 0;
+    for (const status of statusById.values()) {
+      if (status === 'deleted') deleted++;
+      else if (status === 'completed') completed++;
+    }
+    const total = Math.max(0, created - deleted);
+    if (total === 0) return undefined;
+    return { completed: Math.min(completed, total), total };
+  }
+
+  // Legacy TodoWrite: a single message carries the full list snapshot. Scan
+  // backwards and stop at the first match (the most recent todo state).
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.type === 'tool_start' && msg.tool === 'TodoWrite' && msg.input) {
@@ -328,6 +380,8 @@ export function transformToDisplaySessions(
           : undefined,
         notionCard: s.notionCard,
         pileItem: s.pileItem,
+        queueInfo: s.queueInfo,
+        rateLimited: s.rateLimited,
       };
     }),
     ...sequenceExecutions.map((exec) => {

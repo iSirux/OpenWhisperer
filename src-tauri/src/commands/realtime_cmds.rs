@@ -3,9 +3,11 @@ use crate::realtime::{
     test_sherpa_connection, test_speaches_connection, test_vosk_connection, test_vsai_connection,
     RealtimeConnectionTestResult, RealtimeResponse, RealtimeSessionManager,
 };
+use crate::util::emit_or_log;
 use parking_lot::Mutex as ParkingLotMutex;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 pub type ConfigState = ParkingLotMutex<AppConfig>;
 
@@ -49,10 +51,22 @@ pub async fn start_realtime_session(
         return Err("Real-time transcription is not enabled".to_string());
     }
 
-    // Close any existing session with this ID first to prevent duplicate polling tasks
+    // Stop any existing polling loop and close the old session first, so we
+    // never leave a duplicate poller racing against the new session (I6).
+    realtime_manager.stop_polling(&session_id).await;
     if let Some(old_session) = realtime_manager.remove_session(&session_id).await {
-        if let Ok(mut session) = old_session.try_lock() {
-            let _ = session.close().await;
+        match old_session.try_lock() {
+            Ok(mut session) => {
+                if let Err(e) = session.close().await {
+                    log::warn!("Failed to close previous realtime session: {}", e);
+                }
+            }
+            Err(_) => {
+                log::warn!(
+                    "Could not lock previous realtime session {} to close it",
+                    session_id
+                );
+            }
         }
     }
 
@@ -68,11 +82,18 @@ pub async fn start_realtime_session(
         )
         .await?;
 
+    // Cooperative cancellation for the polling loop; stop_realtime_session flips
+    // this and awaits the loop's exit before finalizing (I6).
+    let cancel = match realtime_manager.get_cancel(&session_id).await {
+        Some(c) => c,
+        None => return Err("Realtime session vanished right after creation".to_string()),
+    };
+
     let manager = Arc::clone(&*realtime_manager);
     let session_id_clone = session_id.clone();
     let app_clone = app.clone();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         // Add a small initial delay to ensure session is fully registered
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
@@ -80,6 +101,10 @@ pub async fn start_realtime_session(
         const MAX_CONSECUTIVE_ERRORS: u32 = 5;
 
         loop {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+
             let session = match manager.get_session(&session_id_clone).await {
                 Some(s) => s,
                 None => break,
@@ -93,14 +118,16 @@ pub async fn start_realtime_session(
             match result {
                 Ok(Some(RealtimeResponse::Partial { partial })) => {
                     consecutive_errors = 0;
-                    let _ = app_clone.emit(
+                    emit_or_log(
+                        &app_clone,
                         &format!("realtime-partial-{}", session_id_clone),
                         serde_json::json!({ "partial": partial }),
                     );
                 }
                 Ok(Some(RealtimeResponse::Final { text })) => {
                     consecutive_errors = 0;
-                    let _ = app_clone.emit(
+                    emit_or_log(
+                        &app_clone,
                         &format!("realtime-final-{}", session_id_clone),
                         serde_json::json!({ "text": text }),
                     );
@@ -111,7 +138,8 @@ pub async fn start_realtime_session(
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    let _ = app_clone.emit(
+                    emit_or_log(
+                        &app_clone,
                         &format!("realtime-error-{}", session_id_clone),
                         serde_json::json!({ "error": e }),
                     );
@@ -125,6 +153,8 @@ pub async fn start_realtime_session(
             }
         }
     });
+
+    realtime_manager.set_poll_handle(&session_id, handle).await;
 
     Ok(())
 }
@@ -150,9 +180,14 @@ pub async fn stop_realtime_session(
     realtime_manager: State<'_, Arc<RealtimeSessionManager>>,
     session_id: String,
 ) -> Result<String, String> {
+    // Signal the polling loop and wait for it to exit BEFORE finalizing, so the
+    // final drain doesn't race an in-flight try_recv (I6).
+    realtime_manager.stop_polling(&session_id).await;
+
     let final_text = realtime_manager.close_session(&session_id).await?;
 
-    let _ = app.emit(
+    emit_or_log(
+        &app,
         &format!("realtime-final-{}", session_id),
         serde_json::json!({ "text": final_text }),
     );

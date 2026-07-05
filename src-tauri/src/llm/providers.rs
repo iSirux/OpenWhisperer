@@ -1,6 +1,7 @@
 //! Provider-specific API implementations (Gemini, OpenAI-compatible)
 
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::config::LlmProvider;
 
@@ -15,134 +16,158 @@ pub struct GenerationResult<T> {
     pub usage: LlmUsage,
 }
 
+/// Common shape of a provider's JSON response body, so a single generic request
+/// pipeline can drive both Gemini and OpenAI-compatible providers.
+trait ProviderResponse {
+    /// An in-body error message (HTTP 200 with an `error` object), if present.
+    fn error_message(&self) -> Option<String>;
+    /// Extract the generated text and token usage from a successful response.
+    fn into_text_and_usage(self) -> Result<(String, LlmUsage), String>;
+}
+
+impl ProviderResponse for GeminiResponse {
+    fn error_message(&self) -> Option<String> {
+        self.error.as_ref().map(|e| e.message.clone())
+    }
+
+    fn into_text_and_usage(self) -> Result<(String, LlmUsage), String> {
+        let usage = self
+            .usage_metadata
+            .map(|u| LlmUsage {
+                input_tokens: u.prompt_token_count.unwrap_or(0),
+                output_tokens: u.candidates_token_count.unwrap_or(0),
+                total_tokens: u.total_token_count.unwrap_or(0),
+            })
+            .unwrap_or_default();
+
+        let text = self
+            .candidates
+            .and_then(|c| c.into_iter().next())
+            .and_then(|c| c.content.parts.into_iter().next())
+            .map(|p| p.text)
+            .ok_or_else(|| "No response from Gemini".to_string())?;
+
+        Ok((text, usage))
+    }
+}
+
+impl ProviderResponse for OpenAIResponse {
+    fn error_message(&self) -> Option<String> {
+        self.error.as_ref().map(|e| e.message.clone())
+    }
+
+    fn into_text_and_usage(self) -> Result<(String, LlmUsage), String> {
+        let usage = self
+            .usage
+            .map(|u| LlmUsage {
+                input_tokens: u.prompt_tokens.unwrap_or(0),
+                output_tokens: u.completion_tokens.unwrap_or(0),
+                total_tokens: u.total_tokens.unwrap_or(0),
+            })
+            .unwrap_or_default();
+
+        let text = self
+            .choices
+            .and_then(|c| c.into_iter().next())
+            .map(|c| c.message.content)
+            .ok_or_else(|| "No response from API".to_string())?;
+
+        Ok((text, usage))
+    }
+}
+
 impl LlmClient {
-    /// Test connection to the LLM API
+    /// Attach the Authorization header for OpenAI-compatible, non-local providers
+    /// that have a key. Gemini authenticates via the URL query string, so it is
+    /// intentionally excluded here.
+    fn add_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if self.is_openai_compatible()
+            && !matches!(self.provider, LlmProvider::Local)
+            && !self.api_key.is_empty()
+        {
+            req.header("Authorization", format!("Bearer {}", self.api_key))
+        } else {
+            req
+        }
+    }
+
+    /// Generic send → status-check → parse → extract-error pipeline shared by all
+    /// providers. Returns the generated text and token usage.
+    async fn send_and_parse<Req, Resp>(
+        &self,
+        url: &str,
+        request: &Req,
+    ) -> Result<(String, LlmUsage), String>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned + ProviderResponse,
+    {
+        let req = self.add_auth(self.client.post(url).json(request));
+
+        let response = req
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("API error ({}): {}", status, error_text));
+        }
+
+        let parsed: Resp = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+        if let Some(err) = parsed.error_message() {
+            return Err(err);
+        }
+
+        parsed.into_text_and_usage()
+    }
+
+    /// Test connection to the LLM API (provider-agnostic).
     pub async fn test_connection(&self) -> Result<ConnectionTestResult, String> {
         let prompt = "Say 'Hello' in one word.";
 
-        if self.is_openai_compatible() {
-            self.test_connection_openai(prompt).await
-        } else {
-            self.test_connection_gemini(prompt).await
-        }
-    }
-
-    async fn test_connection_gemini(&self, prompt: &str) -> Result<ConnectionTestResult, String> {
-        let request = GeminiRequest {
-            contents: vec![GeminiContent {
-                parts: vec![GeminiPart {
-                    text: prompt.to_string(),
+        let result = if self.is_openai_compatible() {
+            let request = OpenAIRequest {
+                model: self.model.clone(),
+                messages: vec![OpenAIMessage {
+                    role: "user".to_string(),
+                    content: prompt.to_string(),
                 }],
-            }],
-            generation_config: None,
+                response_format: None,
+                temperature: Some(0.0),
+            };
+            self.send_and_parse::<_, OpenAIResponse>(&self.api_url(), &request)
+                .await
+        } else {
+            let request = GeminiRequest {
+                contents: vec![GeminiContent {
+                    parts: vec![GeminiPart {
+                        text: prompt.to_string(),
+                    }],
+                }],
+                generation_config: None,
+            };
+            self.send_and_parse::<_, GeminiResponse>(&self.api_url(), &request)
+                .await
         };
 
-        match self
-            .client
-            .post(&self.api_url())
-            .json(&request)
-            .send()
-            .await
-        {
-            Ok(response) => {
-                if response.status().is_success() {
-                    match response.json::<GeminiResponse>().await {
-                        Ok(resp) => {
-                            if let Some(error) = resp.error {
-                                Ok(ConnectionTestResult {
-                                    success: false,
-                                    error: Some(error.message),
-                                    model_info: None,
-                                })
-                            } else {
-                                Ok(ConnectionTestResult {
-                                    success: true,
-                                    error: None,
-                                    model_info: Some(self.model.clone()),
-                                })
-                            }
-                        }
-                        Err(e) => Ok(ConnectionTestResult {
-                            success: false,
-                            error: Some(format!("Failed to parse response: {}", e)),
-                            model_info: None,
-                        }),
-                    }
-                } else {
-                    let error_text = response.text().await.unwrap_or_default();
-                    Ok(ConnectionTestResult {
-                        success: false,
-                        error: Some(format!("API error: {}", error_text)),
-                        model_info: None,
-                    })
-                }
-            }
-            Err(e) => Ok(ConnectionTestResult {
+        Ok(match result {
+            Ok(_) => ConnectionTestResult {
+                success: true,
+                error: None,
+                model_info: Some(self.model.clone()),
+            },
+            Err(e) => ConnectionTestResult {
                 success: false,
-                error: Some(format!("Request failed: {}", e)),
+                error: Some(e),
                 model_info: None,
-            }),
-        }
-    }
-
-    async fn test_connection_openai(&self, prompt: &str) -> Result<ConnectionTestResult, String> {
-        let request = OpenAIRequest {
-            model: self.model.clone(),
-            messages: vec![OpenAIMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
-            response_format: None,
-            temperature: Some(0.0),
-        };
-
-        let mut req = self.client.post(&self.api_url()).json(&request);
-
-        // Add Authorization header for non-local providers
-        if !matches!(self.provider, LlmProvider::Local) && !self.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        match req.send().await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    match response.json::<OpenAIResponse>().await {
-                        Ok(resp) => {
-                            if let Some(error) = resp.error {
-                                Ok(ConnectionTestResult {
-                                    success: false,
-                                    error: Some(error.message),
-                                    model_info: None,
-                                })
-                            } else {
-                                Ok(ConnectionTestResult {
-                                    success: true,
-                                    error: None,
-                                    model_info: Some(self.model.clone()),
-                                })
-                            }
-                        }
-                        Err(e) => Ok(ConnectionTestResult {
-                            success: false,
-                            error: Some(format!("Failed to parse response: {}", e)),
-                            model_info: None,
-                        }),
-                    }
-                } else {
-                    let error_text = response.text().await.unwrap_or_default();
-                    Ok(ConnectionTestResult {
-                        success: false,
-                        error: Some(format!("API error: {}", error_text)),
-                        model_info: None,
-                    })
-                }
-            }
-            Err(e) => Ok(ConnectionTestResult {
-                success: false,
-                error: Some(format!("Request failed: {}", e)),
-                model_info: None,
-            }),
-        }
+            },
+        })
     }
 
     /// Internal method for structured generation with usage tracking
@@ -185,46 +210,8 @@ impl LlmClient {
             }),
         };
 
-        let response = self
-            .client
-            .post(&self.api_url_for_model(model))
-            .json(&request)
-            .send()
+        self.send_and_parse::<_, GeminiResponse>(&self.api_url_for_model(model), &request)
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Gemini API error ({}): {}", model, error_text));
-        }
-
-        let gemini_response: GeminiResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-        if let Some(error) = gemini_response.error {
-            return Err(format!("Gemini error ({}): {}", model, error.message));
-        }
-
-        // Extract usage data
-        let usage = gemini_response
-            .usage_metadata
-            .map(|u| LlmUsage {
-                input_tokens: u.prompt_token_count.unwrap_or(0),
-                output_tokens: u.candidates_token_count.unwrap_or(0),
-                total_tokens: u.total_token_count.unwrap_or(0),
-            })
-            .unwrap_or_default();
-
-        let text = gemini_response
-            .candidates
-            .and_then(|c| c.into_iter().next())
-            .and_then(|c| c.content.parts.into_iter().next())
-            .map(|p| p.text)
-            .ok_or_else(|| format!("No response from Gemini ({})", model))?;
-
-        Ok((text, usage))
     }
 
     async fn generate_gemini_with_usage(
@@ -241,12 +228,11 @@ impl LlmClient {
             for model in fallback_chain {
                 match self.try_gemini_model(model, prompt, &schema).await {
                     Ok((text, usage)) => {
-                        // Log which model succeeded (helpful for debugging)
-                        log::error!("[gemini] Request succeeded with model: {}", model);
+                        log::debug!("[gemini] Request succeeded with model: {}", model);
                         return Ok((text, usage));
                     }
                     Err(e) => {
-                        log::error!("[gemini] Model {} failed, trying next: {}", model, e);
+                        log::warn!("[gemini] Model {} failed, trying next: {}", model, e);
                         last_error = e;
                     }
                 }
@@ -282,49 +268,7 @@ impl LlmClient {
             temperature: Some(0.0),
         };
 
-        let mut req = self.client.post(&self.api_url()).json(&request);
-
-        // Add Authorization header for non-local providers
-        if !matches!(self.provider, LlmProvider::Local) && !self.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        let response = req
-            .send()
+        self.send_and_parse::<_, OpenAIResponse>(&self.api_url(), &request)
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("API error ({}): {}", status, error_text));
-        }
-
-        let openai_response: OpenAIResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-        if let Some(error) = openai_response.error {
-            return Err(format!("API error: {}", error.message));
-        }
-
-        // Extract usage data
-        let usage = openai_response
-            .usage
-            .map(|u| LlmUsage {
-                input_tokens: u.prompt_tokens.unwrap_or(0),
-                output_tokens: u.completion_tokens.unwrap_or(0),
-                total_tokens: u.total_tokens.unwrap_or(0),
-            })
-            .unwrap_or_default();
-
-        let text = openai_response
-            .choices
-            .and_then(|c| c.into_iter().next())
-            .map(|c| c.message.content)
-            .ok_or_else(|| "No response from API".to_string())?;
-
-        Ok((text, usage))
     }
 }

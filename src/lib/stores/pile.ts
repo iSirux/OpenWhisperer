@@ -64,6 +64,8 @@ export interface PileItem {
   screenshotMediaType?: string;
   /** SDK session IDs launched from this item */
   linkedSessionIds?: string[];
+  /** Toggleable prompt chips appended to the prompt when this item is launched */
+  selectedChips?: string[];
 }
 
 export interface AddRecordingInput {
@@ -132,6 +134,29 @@ function createPileStore() {
       loaded = true;
     } catch (error) {
       console.error('[pile] Failed to load pile items:', error);
+    }
+
+    // Recover recordings interrupted mid-transcription by a previous app crash:
+    // their audio was staged to the capture buffer but never transcribed. Materialize
+    // each as a retriable audio-only error item, then clear the capture buffer.
+    try {
+      const captureIds = await invoke<string[]>('list_captures');
+      for (const captureId of captureIds) {
+        try {
+          const audioData = await invoke<number[]>('read_capture', { id: captureId });
+          addRecording({
+            audioData: new Uint8Array(audioData),
+            transcript: '',
+            transcriptionError: 'Recording recovered after interruption',
+          });
+        } catch (error) {
+          console.error('[pile] Failed to recover capture', captureId, error);
+        } finally {
+          invoke('delete_capture', { id: captureId }).catch(() => {});
+        }
+      }
+    } catch (error) {
+      console.error('[pile] Failed to list captures for recovery:', error);
     }
   }
 
@@ -380,6 +405,39 @@ function createPileStore() {
     }
   }
 
+  /**
+   * Retry transcription for every failed item that still has audio, one at a time.
+   * Sequential so we don't hammer a recovering service or fight the single-flight
+   * transcription path; continues through all items so partial recovery works even
+   * if some still fail. Returns a summary.
+   */
+  async function retryAllFailed(): Promise<{
+    attempted: number;
+    succeeded: number;
+    failed: number;
+  }> {
+    const targets = get({ subscribe }).filter(
+      (item) => item.status === 'error' && item.hasAudio
+    );
+    if (targets.length === 0) return { attempted: 0, succeeded: 0, failed: 0 };
+
+    let succeeded = 0;
+    let failed = 0;
+    pileRetryingAll.set(true);
+    try {
+      for (const target of targets) {
+        await retranscribe(target.id);
+        const updated = getItem(target.id);
+        if (updated && updated.status !== 'error') succeeded += 1;
+        else failed += 1;
+      }
+    } finally {
+      pileRetryingAll.set(false);
+    }
+
+    return { attempted: targets.length, succeeded, failed };
+  }
+
   /** Read an item's screenshot from disk as an attachable image (null if missing). */
   async function getScreenshotImage(id: string): Promise<SdkImageContent | null> {
     const item = getItem(id);
@@ -429,6 +487,7 @@ function createPileStore() {
     addRecording,
     processItem,
     retranscribe,
+    retryAllFailed,
     updateItem,
     getItem,
     removeItem,
@@ -439,7 +498,16 @@ function createPileStore() {
   };
 }
 
+/** True while a "retry all failed" run is in progress (drives the retry-all button). */
+export const pileRetryingAll = writable(false);
+
 export const pile = createPileStore();
+
+/** Number of failed items that still have audio and can be retried. */
+export const failedRetriableCount = derived(
+  pile,
+  ($pile) => $pile.filter((item) => item.status === 'error' && item.hasAudio).length
+);
 
 /** Currently selected pile item (shown in the main pane). */
 export const selectedPileItemId = writable<string | null>(null);

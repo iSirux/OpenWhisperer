@@ -1,5 +1,5 @@
 {
-  "name": "claude-whisperer-sidecar",
+  "name": "open-whisperer-sidecar",
   "version": "1.0.0",
   "type": "module",
   "scripts": {

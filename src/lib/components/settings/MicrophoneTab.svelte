@@ -92,7 +92,7 @@
             >Hold Space for Inline Recording</label
           >
           <p class="text-xs text-text-muted mt-0.5">
-            While an SDK session is open and ClaudeWhisperer is focused, hold Space to record into the prompt and transcribe on release
+            While an SDK session is open and OpenWhisperer is focused, hold Space to record into the prompt and transcribe on release
           </p>
         </div>
         <input

@@ -1,5 +1,5 @@
 {
-    "name": "claude-whisperer",
+    "name": "open-whisperer",
     "version": "0.14.0",
     "description": "Voice-controlled interface for Claude Code",
     "type": "module",

@@ -11,6 +11,8 @@
   import TranscriptDiff from "../TranscriptDiff.svelte";
   import RepoIcon from "$lib/components/RepoIcon.svelte";
   import { findRepoByPath } from "$lib/utils/repoIcons";
+  import PromptChips from "$lib/components/PromptChips.svelte";
+  import { appendChips } from "$lib/utils/promptChips";
 
   interface Props {
     pendingTranscription: PendingTranscriptionInfo;
@@ -35,6 +37,8 @@
     showPrepared?: boolean;
     /** The prepared prompt for display/editing */
     preparedPrompt?: string;
+    /** Pre-toggled prompt chips carried into a prepared session (e.g. from a pile item) */
+    preparedChips?: string[];
     /** Callback when user launches the prepared session */
     onLaunch?: (editedPrompt?: string) => void;
     /** Callback when user cancels the prepared session */
@@ -49,6 +53,8 @@
     onSelectRepo?: (repoCwd: string) => void;
     /** Callback to demote this prompt to the pile instead of sending (approval + prepared modes) */
     onDemoteToPile?: (prompt: string) => void;
+    /** Extra action rendered inside the prepared button group (e.g. schedule-for-later menu) */
+    scheduleAction?: import("svelte").Snippet;
   }
 
   let {
@@ -65,6 +71,7 @@
     autoModelEffort = "dynamic",
     showPrepared = false,
     preparedPrompt,
+    preparedChips,
     onLaunch,
     onCancelPrepared,
     repos = [],
@@ -72,6 +79,7 @@
     selectedRepoCwd = "",
     onSelectRepo,
     onDemoteToPile,
+    scheduleAction,
   }: Props = $props();
 
   // Resolve the recommended repo path using full repos array (recommendation index is into full array)
@@ -81,16 +89,37 @@
       : null
   );
 
-  // Approval mode state
-  let isEditingPrompt = $state(false);
+  // Editable prompt state (prepared + approval modes are always editable)
   let editedPrompt = $state("");
   let textareaEl: HTMLTextAreaElement | null = $state(null);
 
-  // Recording screenshot preview
-  let screenshotExpanded = $state(false);
+  // Toggleable prompt chips appended to the prompt on send/launch.
+  // Reset when the session changes so selections don't leak across sessions.
+  let selectedChips = $state<string[]>([]);
+  let chipsSessionId = $state("");
+  $effect(() => {
+    if (sessionId !== chipsSessionId) {
+      chipsSessionId = sessionId;
+      selectedChips = preparedChips ? [...preparedChips] : [];
+    }
+  });
 
-  function removeScreenshot() {
-    sdkSessions.updatePendingTranscription(sessionId, { screenshot: undefined });
+  // Recording screenshot previews (expanded state per thumbnail index)
+  let expandedScreenshots = $state<Set<number>>(new Set());
+
+  function toggleScreenshot(idx: number) {
+    const next = new Set(expandedScreenshots);
+    if (next.has(idx)) next.delete(idx);
+    else next.add(idx);
+    expandedScreenshots = next;
+  }
+
+  function removeScreenshot(idx: number) {
+    const remaining = pendingTranscription.screenshots?.filter((_, i) => i !== idx);
+    expandedScreenshots = new Set();
+    sdkSessions.updatePendingTranscription(sessionId, {
+      screenshots: remaining && remaining.length > 0 ? remaining : undefined,
+    });
   }
 
   // Initialize edited prompt when approval mode is shown
@@ -115,20 +144,21 @@
     }
   }
 
-  // Focus textarea when entering edit mode
+  // Keep the always-on textarea sized to its content
   $effect(() => {
-    if (isEditingPrompt && textareaEl) {
-      textareaEl.focus();
-      textareaEl.select();
-      autoResizeTextarea();
-    }
+    // re-run when the prompt text changes
+    void editedPrompt;
+    if (textareaEl) autoResizeTextarea();
   });
 
   function handleApprove() {
     if (onApprove) {
-      // Only pass edited prompt if it was actually changed
+      const base = editedPrompt !== approvalPrompt ? editedPrompt : approvalPrompt ?? "";
+      // Only override if the prompt was edited or chips were selected
       const promptToSend =
-        editedPrompt !== approvalPrompt ? editedPrompt : undefined;
+        editedPrompt !== approvalPrompt || selectedChips.length > 0
+          ? appendChips(base, selectedChips)
+          : undefined;
       onApprove(promptToSend);
     }
   }
@@ -141,7 +171,11 @@
 
   function handleLaunch() {
     if (onLaunch) {
-      const promptToSend = editedPrompt !== preparedPrompt ? editedPrompt : undefined;
+      const base = editedPrompt !== preparedPrompt ? editedPrompt : preparedPrompt ?? "";
+      const promptToSend =
+        editedPrompt !== preparedPrompt || selectedChips.length > 0
+          ? appendChips(base, selectedChips)
+          : undefined;
       onLaunch(promptToSend);
     }
   }
@@ -271,8 +305,8 @@
 </script>
 
 <div class="session-recording-header" class:completed>
-  <!-- Status indicator (only show when pending, not completed) -->
-  {#if !completed}
+  <!-- Status indicator (only show when pending, not completed or prepared) -->
+  {#if !completed && !showPrepared}
     <div class="status-row">
       <div class="status-indicator">
         <span
@@ -389,34 +423,42 @@
     </div>
   {/if}
 
-  <!-- Recording screenshot (auto-captured at record start, attached to the prompt) -->
-  {#if pendingTranscription.screenshot}
+  <!-- Recording screenshots (auto-captured at record start, attached to the prompt) -->
+  {#if pendingTranscription.screenshots && pendingTranscription.screenshots.length > 0}
     <div class="screenshot-section">
       <div class="screenshot-header">
-        <span class="screenshot-label">Screenshot</span>
+        <span class="screenshot-label">
+          Screenshot{pendingTranscription.screenshots.length > 1 ? "s" : ""}
+        </span>
         <span class="screenshot-hint">captured at recording start — attached to the prompt</span>
-        {#if !completed}
-          <button
-            class="screenshot-remove-btn"
-            onclick={removeScreenshot}
-            title="Remove screenshot (won't be attached to the prompt)"
-          >
-            ✕
-          </button>
-        {/if}
       </div>
-      <button
-        class="screenshot-thumb-wrap"
-        onclick={() => (screenshotExpanded = !screenshotExpanded)}
-        title={screenshotExpanded ? "Collapse" : "Expand"}
-      >
-        <img
-          src={`data:${pendingTranscription.screenshot.mediaType};base64,${pendingTranscription.screenshot.base64Data}`}
-          alt="Screen captured when recording started"
-          class="screenshot-thumb"
-          class:expanded={screenshotExpanded}
-        />
-      </button>
+      <div class="screenshot-thumbs">
+        {#each pendingTranscription.screenshots as screenshot, idx}
+          <div class="screenshot-thumb-item">
+            <button
+              class="screenshot-thumb-wrap"
+              onclick={() => toggleScreenshot(idx)}
+              title={expandedScreenshots.has(idx) ? "Collapse" : "Expand"}
+            >
+              <img
+                src={`data:${screenshot.mediaType};base64,${screenshot.base64Data}`}
+                alt="Screen captured when recording started"
+                class="screenshot-thumb"
+                class:expanded={expandedScreenshots.has(idx)}
+              />
+            </button>
+            {#if !completed}
+              <button
+                class="screenshot-remove-btn screenshot-remove-overlay"
+                onclick={() => removeScreenshot(idx)}
+                title="Remove screenshot (won't be attached to the prompt)"
+              >
+                ✕
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -545,34 +587,21 @@
         {/if}
       </div>
 
-      <!-- Editable prompt -->
+      <!-- Editable prompt (always editable) -->
       <div class="prepared-prompt">
-        {#if isEditingPrompt}
-          <textarea
-            bind:this={textareaEl}
-            bind:value={editedPrompt}
-            oninput={autoResizeTextarea}
-            class="prompt-textarea prepared-textarea"
-            placeholder="Enter your prompt..."
-            rows="2"
-          ></textarea>
-        {:else}
-          <div class="prompt-display prepared-prompt-display" onclick={() => (isEditingPrompt = true)}>
-            <span class="prompt-text">{editedPrompt || preparedPrompt}</span>
-            <button
-              class="edit-inline-btn"
-              onclick={(e) => {
-                e.stopPropagation();
-                isEditingPrompt = true;
-              }}
-              title="Edit prompt"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-            </button>
-          </div>
-        {/if}
+        <textarea
+          bind:this={textareaEl}
+          bind:value={editedPrompt}
+          oninput={autoResizeTextarea}
+          class="prompt-textarea prepared-textarea"
+          placeholder="Enter your prompt..."
+          rows="2"
+        ></textarea>
+      </div>
+
+      <!-- Prompt chips -->
+      <div class="prompt-chips-row">
+        <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
       </div>
 
       <!-- Action buttons -->
@@ -585,11 +614,7 @@
             To Pile
           </button>
         {/if}
-        {#if isEditingPrompt}
-          <button class="done-edit-btn" onclick={() => (isEditingPrompt = false)}>
-            Done Editing
-          </button>
-        {/if}
+        {@render scheduleAction?.()}
         <button
           class="launch-btn"
           onclick={handleLaunch}
@@ -634,44 +659,21 @@
         </div>
       {/if}
 
-      <!-- Editable prompt -->
+      <!-- Editable prompt (always editable) -->
       <div class="approval-prompt">
-        {#if isEditingPrompt}
-          <textarea
-            bind:this={textareaEl}
-            bind:value={editedPrompt}
-            oninput={autoResizeTextarea}
-            class="prompt-textarea"
-            placeholder="Enter your prompt..."
-            rows="2"
-          ></textarea>
-        {:else}
-          <div class="prompt-display" onclick={() => (isEditingPrompt = true)}>
-            <span class="prompt-text">{editedPrompt || approvalPrompt}</span>
-            <button
-              class="edit-inline-btn"
-              onclick={(e) => {
-                e.stopPropagation();
-                isEditingPrompt = true;
-              }}
-              title="Edit prompt"
-            >
-              <svg
-                class="w-3.5 h-3.5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                />
-              </svg>
-            </button>
-          </div>
-        {/if}
+        <textarea
+          bind:this={textareaEl}
+          bind:value={editedPrompt}
+          oninput={autoResizeTextarea}
+          class="prompt-textarea"
+          placeholder="Enter your prompt..."
+          rows="2"
+        ></textarea>
+      </div>
+
+      <!-- Prompt chips -->
+      <div class="prompt-chips-row">
+        <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
       </div>
 
       <!-- Action buttons -->
@@ -682,14 +684,6 @@
         {#if onDemoteToPile}
           <button class="pile-btn" onclick={handleDemoteToPile} title="Save to the pile to handle later">
             To Pile
-          </button>
-        {/if}
-        {#if isEditingPrompt}
-          <button
-            class="done-edit-btn"
-            onclick={() => (isEditingPrompt = false)}
-          >
-            Done Editing
           </button>
         {/if}
         <button class="approve-btn" onclick={handleApprove}>
@@ -714,6 +708,10 @@
 </div>
 
 <style>
+  .prompt-chips-row {
+    margin: 8px 0 4px;
+  }
+
   .session-recording-header {
     background: var(--color-surface);
     border: 1px solid var(--color-border);
@@ -903,6 +901,31 @@
     background: rgba(239, 68, 68, 0.1);
     color: var(--color-error);
     border-color: var(--color-error);
+  }
+
+  .screenshot-thumbs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+
+  .screenshot-thumb-item {
+    position: relative;
+  }
+
+  .screenshot-remove-overlay {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.25rem;
+    margin-left: 0;
+    background: var(--color-surface);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .screenshot-thumb-item:hover .screenshot-remove-overlay {
+    opacity: 1;
   }
 
   .screenshot-thumb-wrap {
@@ -1225,44 +1248,6 @@
     margin-bottom: 0.75rem;
   }
 
-  .prompt-display {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0.75rem;
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    cursor: text;
-    transition: border-color 0.15s ease;
-  }
-
-  .prompt-display:hover {
-    border-color: var(--color-accent);
-  }
-
-  .prompt-display .prompt-text {
-    font-size: 0.875rem;
-    color: var(--color-text-primary);
-    line-height: 1.5;
-    flex: 1;
-  }
-
-  .edit-inline-btn {
-    flex-shrink: 0;
-    padding: 0.25rem;
-    color: var(--color-text-muted);
-    background: transparent;
-    border-radius: 4px;
-    transition: all 0.15s ease;
-  }
-
-  .edit-inline-btn:hover {
-    color: var(--color-accent);
-    background: rgba(var(--color-accent-rgb, 59, 130, 246), 0.1);
-  }
-
   .prompt-textarea {
     width: 100%;
     padding: 0.75rem;
@@ -1319,22 +1304,6 @@
 
   .pile-btn:hover {
     background: rgba(245, 158, 11, 0.2);
-  }
-
-  .done-edit-btn {
-    padding: 0.5rem 1rem;
-    font-size: 0.8125rem;
-    color: var(--color-text-secondary);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .done-edit-btn:hover {
-    background: var(--color-surface-elevated);
-    border-color: var(--color-text-muted);
   }
 
   .approve-btn {
@@ -1502,10 +1471,6 @@
 
   .prepared-textarea:focus {
     box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.2);
-    border-color: #2dd4bf;
-  }
-
-  .prepared-prompt-display:hover {
     border-color: #2dd4bf;
   }
 

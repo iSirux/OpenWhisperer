@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
-  import { sdkSessions } from "$lib/stores/sdkSessions";
+  import { sdkSessions, activeSdkSessionId } from "$lib/stores/sdkSessions";
+  import { activeSessionId } from "$lib/stores/sessions";
+  import { navigation } from "$lib/stores/navigation";
   import { activeRepo } from "$lib/stores/repos";
   import {
     createSessionQueue,
@@ -278,6 +281,54 @@
       }),
       { stagger: true },
     );
+  }
+
+  /**
+   * Draft (prepare) sessions from the selected cards without starting them.
+   * Each card becomes a pending/prepared session with the action's prompt
+   * pre-written, tagged with the card, ready for review before sending.
+   * Worktree/Playwright toggles don't apply here — those are chosen when the
+   * draft is actually launched from the session view.
+   */
+  function draftAction(action: string) {
+    if (selectedCards.length === 0) return;
+    const config = snapshotLaunchConfig();
+    if (!config) return;
+
+    const cardsSnapshot = [...selectedCards];
+    clearSelection();
+
+    let firstId: string | null = null;
+    for (const card of cardsSnapshot) {
+      const { prompt } = getPromptForAction(action, card);
+      const sessionId = sdkSessions.createPendingTranscriptionSession(
+        config.model,
+        config.effortLevel,
+        config.provider,
+      );
+      sdkSessions.set(
+        get(sdkSessions).map((s) =>
+          s.id === sessionId
+            ? { ...s, notionCard: { id: card.id, title: card.title } }
+            : s,
+        ),
+      );
+      sdkSessions.setPrepared(sessionId, prompt, config.repo.path);
+      if (!firstId) firstId = sessionId;
+    }
+
+    if (firstId) {
+      sdkSessions.selectSession(firstId);
+      activeSdkSessionId.set(firstId);
+      activeSessionId.set(null);
+      navigation.setView("sessions");
+    }
+  }
+
+  function confirmDraft() {
+    if (!pendingAction) return;
+    draftAction(pendingAction);
+    pendingAction = null;
   }
 
   function priorityBadge(p: string | null): string {
@@ -753,6 +804,13 @@
             <input type="checkbox" bind:checked={playwrightQa} class="accent-purple-500" />
             Playwright
           </label>
+          <button
+            class="h-8 px-4 rounded text-xs font-semibold border border-border bg-surface-elevated hover:bg-border text-text-primary transition-colors"
+            onclick={confirmDraft}
+            title="Create draft sessions with the prompt pre-written, without sending"
+          >
+            Draft
+          </button>
           <button
             class="h-8 px-5 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
             onclick={confirmAction}

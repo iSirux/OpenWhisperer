@@ -127,9 +127,14 @@ pub fn save_config(
         );
     }
 
-    let mut cfg = config.lock();
-    *cfg = new_config;
-    cfg.save()
+    // Mutate under the lock, then persist a snapshot after releasing it so the
+    // mutex is never held across the fsync-ing disk write (T7).
+    let snapshot = {
+        let mut cfg = config.lock();
+        *cfg = new_config;
+        cfg.clone()
+    };
+    snapshot.save()
 }
 
 #[tauri::command]
@@ -160,7 +165,9 @@ pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Resul
         "[add_repo] Repo added to config, total repos: {}",
         cfg.repos.len()
     );
-    let result = cfg.save();
+    let snapshot = cfg.clone();
+    drop(cfg);
+    let result = snapshot.save();
     match &result {
         Ok(()) => log::info!("[add_repo] Config saved successfully"),
         Err(e) => log::info!("[add_repo] Failed to save config: {}", e),
@@ -176,7 +183,9 @@ pub fn remove_repo(config: State<ConfigState>, index: usize) -> Result<(), Strin
         if cfg.active_repo_index >= cfg.repos.len() && !cfg.repos.is_empty() {
             cfg.active_repo_index = cfg.repos.len() - 1;
         }
-        cfg.save()
+        let snapshot = cfg.clone();
+        drop(cfg);
+        snapshot.save()
     } else {
         Err("Invalid repo index".to_string())
     }
@@ -193,14 +202,18 @@ pub fn set_active_repo(config: State<ConfigState>, index: usize) -> Result<(), S
     }
     cfg.active_repo_index = index;
     cfg.auto_repo_mode = false; // Disable auto mode when selecting specific repo
-    cfg.save()
+    let snapshot = cfg.clone();
+    drop(cfg);
+    snapshot.save()
 }
 
 #[tauri::command]
 pub fn set_auto_repo_mode(config: State<ConfigState>, enabled: bool) -> Result<(), String> {
     let mut cfg = config.lock();
     cfg.auto_repo_mode = enabled;
-    cfg.save()
+    let snapshot = cfg.clone();
+    drop(cfg);
+    snapshot.save()
 }
 
 #[tauri::command]
@@ -235,7 +248,9 @@ pub fn set_repo_active(
         }
     }
 
-    cfg.save()
+    let snapshot = cfg.clone();
+    drop(cfg);
+    snapshot.save()
 }
 
 #[tauri::command]

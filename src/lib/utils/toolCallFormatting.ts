@@ -114,6 +114,15 @@ export function getToolCallSummary(
         ? `${todos.length} item${todos.length > 1 ? 's' : ''}`
         : '';
     }
+    case 'TaskCreate':
+      return truncate(String(input.subject || input.description || ''), maxLen);
+    case 'TaskUpdate': {
+      const status = typeof input.status === 'string' ? input.status : '';
+      const subject = typeof input.subject === 'string' ? input.subject : '';
+      const label = subject || (input.taskId ? `#${input.taskId}` : '');
+      const summary = status && label ? `${label} → ${status}` : status || label;
+      return truncate(summary, maxLen);
+    }
     case 'NotebookEdit':
       return formatPath(input.notebook_path as string);
     default:

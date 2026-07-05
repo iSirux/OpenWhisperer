@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::thread;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -272,6 +272,13 @@ pub enum InboundMessage {
         id: String,
         message: String,
     },
+    RateLimit {
+        id: String,
+        status: String,
+        #[serde(rename = "resetsAt")]
+        resets_at: Option<f64>,
+        utilization: Option<f64>,
+    },
     Debug {
         id: String,
         message: String,
@@ -405,6 +412,255 @@ pub struct PlanningQuestion {
     pub multi_select: bool,
 }
 
+/// Internal error kinds for the sidecar IPC channel (T1). Converted to `String`
+/// at the Tauri command boundary; the `NotStarted` message keeps the
+/// "Sidecar not started" prefix the rest of the app expects.
+#[derive(Debug, thiserror::Error)]
+pub enum SidecarError {
+    #[error("Sidecar not started. Call start_sidecar first.")]
+    NotStarted,
+    #[error("Sidecar not running (process exited). Call start_sidecar to restart.")]
+    NotRunning,
+    #[error("Sidecar protocol (serialize) error: {0}")]
+    Protocol(#[from] serde_json::Error),
+    #[error("Sidecar transport error: {0}")]
+    Transport(#[from] std::io::Error),
+}
+
+impl From<SidecarError> for String {
+    fn from(e: SidecarError) -> Self {
+        e.to_string()
+    }
+}
+
+// ── Typed event payloads (I1) ─────────────────────────────────────────────────
+// Each payload struct serializes to exactly the JSON keys the frontend consumes.
+// The `#[serde(rename)]` attributes below MUST match the historical `json!`
+// blocks byte-for-byte; unit / bare-string / array payloads are emitted directly.
+
+#[derive(Serialize, Clone)]
+struct TextPayload {
+    content: String,
+    #[serde(rename = "parentToolUseId")]
+    parent_tool_use_id: Option<String>,
+    #[serde(rename = "turnUuid")]
+    turn_uuid: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct ToolStartPayload {
+    tool: String,
+    input: serde_json::Value,
+    #[serde(rename = "toolUseId")]
+    tool_use_id: String,
+    #[serde(rename = "parentToolUseId")]
+    parent_tool_use_id: Option<String>,
+    #[serde(rename = "turnUuid")]
+    turn_uuid: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct ToolResultPayload {
+    tool: String,
+    output: String,
+    #[serde(rename = "toolUseId")]
+    tool_use_id: String,
+    #[serde(rename = "parentToolUseId")]
+    parent_tool_use_id: Option<String>,
+    #[serde(rename = "turnUuid")]
+    turn_uuid: Option<String>,
+    images: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Serialize, Clone)]
+struct ThinkingStartPayload {
+    content: String,
+    timestamp: u64,
+    #[serde(rename = "parentToolUseId")]
+    parent_tool_use_id: Option<String>,
+    #[serde(rename = "turnUuid")]
+    turn_uuid: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct ThinkingEndPayload {
+    #[serde(rename = "durationMs")]
+    duration_ms: u64,
+    content: String,
+    #[serde(rename = "parentToolUseId")]
+    parent_tool_use_id: Option<String>,
+    #[serde(rename = "turnUuid")]
+    turn_uuid: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct UsagePayload {
+    #[serde(rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    output_tokens: u64,
+    #[serde(rename = "cacheReadTokens")]
+    cache_read_tokens: u64,
+    #[serde(rename = "cacheCreationTokens")]
+    cache_creation_tokens: u64,
+    #[serde(rename = "totalCostUsd")]
+    total_cost_usd: f64,
+    #[serde(rename = "durationMs")]
+    duration_ms: u64,
+    #[serde(rename = "durationApiMs")]
+    duration_api_ms: u64,
+    #[serde(rename = "numTurns")]
+    num_turns: u64,
+    #[serde(rename = "contextWindow")]
+    context_window: u64,
+    // Conditionally included (skipped when None) to match the historical payload.
+    #[serde(rename = "mainAgentInputTokens", skip_serializing_if = "Option::is_none")]
+    main_agent_input_tokens: Option<u64>,
+    #[serde(
+        rename = "mainAgentOutputTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    main_agent_output_tokens: Option<u64>,
+    #[serde(
+        rename = "mainAgentCacheReadTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    main_agent_cache_read_tokens: Option<u64>,
+    #[serde(
+        rename = "mainAgentCacheCreationTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    main_agent_cache_creation_tokens: Option<u64>,
+}
+
+#[derive(Serialize, Clone)]
+struct ProgressiveUsagePayload {
+    #[serde(rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    output_tokens: u64,
+    #[serde(rename = "cacheReadTokens")]
+    cache_read_tokens: u64,
+    #[serde(rename = "cacheCreationTokens")]
+    cache_creation_tokens: u64,
+}
+
+#[derive(Serialize, Clone)]
+struct RateLimitPayload {
+    status: String,
+    #[serde(rename = "resetsAt")]
+    resets_at: Option<f64>,
+    utilization: Option<f64>,
+}
+
+#[derive(Serialize, Clone)]
+struct SubagentStartPayload {
+    #[serde(rename = "agentId")]
+    agent_id: String,
+    #[serde(rename = "agentType")]
+    agent_type: String,
+}
+
+#[derive(Serialize, Clone)]
+struct SubagentStopPayload {
+    #[serde(rename = "agentId")]
+    agent_id: String,
+    #[serde(rename = "transcriptPath")]
+    transcript_path: String,
+}
+
+#[derive(Serialize, Clone)]
+struct TaskStartedPayload {
+    #[serde(rename = "taskId")]
+    task_id: String,
+    #[serde(rename = "toolUseId")]
+    tool_use_id: Option<String>,
+    description: String,
+    #[serde(rename = "taskType")]
+    task_type: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct TaskCompletedPayload {
+    #[serde(rename = "taskId")]
+    task_id: String,
+    #[serde(rename = "toolUseId")]
+    tool_use_id: Option<String>,
+    status: String,
+    summary: String,
+    usage: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Clone)]
+struct PlanningCompletePayload {
+    #[serde(rename = "planPath")]
+    plan_path: String,
+    #[serde(rename = "featureName")]
+    feature_name: String,
+    summary: String,
+}
+
+#[derive(Serialize, Clone)]
+struct PlanApprovalRequestPayload {
+    #[serde(rename = "allowedPrompts")]
+    allowed_prompts: Vec<serde_json::Value>,
+    plan: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct RepoDescriptionResultPayload {
+    description: String,
+    keywords: Vec<String>,
+    vocabulary: Vec<String>,
+    icon: Option<String>,
+    color: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct LaunchProfileResultPayload {
+    commands: Vec<LaunchProfileCommandResult>,
+    profiles: Vec<LaunchProfileGroupResult>,
+}
+
+impl InboundMessage {
+    /// Event-name suffix derived from the variant (I1). Empty for pure
+    /// log-only variants (Ready/Debug) that emit nothing.
+    fn event_suffix(&self) -> &'static str {
+        match self {
+            InboundMessage::Ready => "",
+            InboundMessage::Created { .. } => "sdk-created",
+            InboundMessage::Text { .. } => "sdk-text",
+            InboundMessage::ToolStart { .. } => "sdk-tool-start",
+            InboundMessage::ToolResult { .. } => "sdk-tool-result",
+            InboundMessage::ThinkingStart { .. } => "sdk-thinking-start",
+            InboundMessage::ThinkingEnd { .. } => "sdk-thinking-end",
+            InboundMessage::Done { .. } => "sdk-done",
+            InboundMessage::Usage { .. } => "sdk-usage",
+            InboundMessage::ProgressiveUsage { .. } => "sdk-progressive-usage",
+            InboundMessage::ModelUpdated { .. } => "sdk-model-updated",
+            InboundMessage::EffortUpdated { .. } => "sdk-effort-updated",
+            InboundMessage::Closed { .. } => "sdk-closed",
+            InboundMessage::Error { .. } => "sdk-error",
+            InboundMessage::RateLimit { .. } => "sdk-rate-limit",
+            InboundMessage::Debug { .. } => "",
+            InboundMessage::SubagentStart { .. } => "sdk-subagent-start",
+            InboundMessage::SubagentStop { .. } => "sdk-subagent-stop",
+            InboundMessage::TaskStarted { .. } => "sdk-task-started",
+            InboundMessage::TaskCompleted { .. } => "sdk-task-completed",
+            InboundMessage::PlanningQuestions { .. } => "sdk-planning-questions",
+            InboundMessage::PlanningComplete { .. } => "sdk-planning-complete",
+            InboundMessage::AskUserQuestions { .. } => "sdk-ask-user-questions",
+            InboundMessage::PlanApprovalRequest { .. } => "sdk-plan-approval-request",
+            InboundMessage::RepoDescriptionResult { .. } => "repo-description-result",
+            InboundMessage::RepoDescriptionError { .. } => "repo-description-error",
+            InboundMessage::LaunchProfileResult { .. } => "launch-profile-result",
+            InboundMessage::LaunchProfileError { .. } => "launch-profile-error",
+            InboundMessage::SdkSessionId { .. } => "sdk-session-id",
+            InboundMessage::ParallelSessionNotification { .. } => "sdk-parallel-notification",
+        }
+    }
+}
+
 pub struct SidecarManager {
     process: Arc<Mutex<Option<Child>>>,
     stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
@@ -515,13 +771,13 @@ impl SidecarManager {
             use tauri_plugin_keyring::KeyringExt;
             if let Ok(Some(key)) = app
                 .keyring()
-                .get_password("claude-whisperer", "anthropic-api-key")
+                .get_password("open-whisperer", "anthropic-api-key")
             {
                 cmd.env("ANTHROPIC_API_KEY", key);
             }
             if let Ok(Some(key)) = app
                 .keyring()
-                .get_password("claude-whisperer", "openai-api-key")
+                .get_password("open-whisperer", "openai-api-key")
             {
                 cmd.env("OPENAI_API_KEY", key);
             }
@@ -558,8 +814,13 @@ impl SidecarManager {
             });
         }
 
-        // Spawn stdout reader thread
+        // Spawn stdout reader thread. On exit (the Node process died or closed
+        // stdout) reset the manager state so `is_started()`/`send()` report the
+        // truth, and emit `sidecar-exited` so the frontend can react (I2).
         let app_clone = app.clone();
+        let started_ref = Arc::clone(&self.started);
+        let stdin_ref = Arc::clone(&self.stdin);
+        let process_ref = Arc::clone(&self.process);
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -574,39 +835,50 @@ impl SidecarManager {
                     }
                 }
             }
-            log::error!("[sidecar] Reader thread exited");
+            log::error!("[sidecar] Reader thread exited — resetting sidecar state");
+            *started_ref.lock() = false;
+            *stdin_ref.lock() = None;
+            *process_ref.lock() = None;
+            crate::util::emit_or_log(&app_clone, "sidecar-exited", ());
         });
 
         Ok(())
     }
 
+    /// Emit `<suffix>-<id>` with a serializable payload, logging emit failures.
+    fn emit<S: Serialize + Clone>(app: &AppHandle, suffix: &str, id: &str, payload: S) {
+        crate::util::emit_or_log(app, &format!("{}-{}", suffix, id), payload);
+    }
+
     fn handle_message(app: &AppHandle, msg: InboundMessage) {
+        // Event suffix is derived once from the variant (I1); the arms below only
+        // build the payload and any per-variant log line.
+        let suffix = msg.event_suffix();
         match msg {
             InboundMessage::Ready => {
                 log::info!("[sidecar] Ready");
             }
             InboundMessage::Created { id } => {
-                log::info!("[sidecar] Emitting sdk-created-{}", id);
-                let _ = app.emit(&format!("sdk-created-{}", id), ());
+                log::info!("[sidecar] Emitting {}-{}", suffix, id);
+                Self::emit(app, suffix, &id, ());
             }
             InboundMessage::Text {
                 id,
-                ref content,
-                ref parent_tool_use_id,
-                ref turn_uuid,
+                content,
+                parent_tool_use_id,
+                turn_uuid,
             } => {
-                log::info!(
-                    "[sidecar] Emitting sdk-text-{} with {} bytes",
-                    id,
-                    content.len()
+                log::info!("[sidecar] Emitting {}-{} with {} bytes", suffix, id, content.len());
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    TextPayload {
+                        content,
+                        parent_tool_use_id,
+                        turn_uuid,
+                    },
                 );
-                let result = app.emit(
-                    &format!("sdk-text-{}", id),
-                    serde_json::json!({ "content": content, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
-                );
-                if let Err(e) = result {
-                    log::error!("[sidecar] Failed to emit text event: {}", e);
-                }
             }
             InboundMessage::ToolStart {
                 id,
@@ -614,11 +886,19 @@ impl SidecarManager {
                 input,
                 tool_use_id,
                 parent_tool_use_id,
-                ref turn_uuid,
+                turn_uuid,
             } => {
-                let _ = app.emit(
-                    &format!("sdk-tool-start-{}", id),
-                    serde_json::json!({ "tool": tool, "input": input, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    ToolStartPayload {
+                        tool,
+                        input,
+                        tool_use_id,
+                        parent_tool_use_id,
+                        turn_uuid,
+                    },
                 );
             }
             InboundMessage::ToolResult {
@@ -627,12 +907,21 @@ impl SidecarManager {
                 output,
                 tool_use_id,
                 parent_tool_use_id,
-                ref turn_uuid,
+                turn_uuid,
                 images,
             } => {
-                let _ = app.emit(
-                    &format!("sdk-tool-result-{}", id),
-                    serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid, "images": images }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    ToolResultPayload {
+                        tool,
+                        output,
+                        tool_use_id,
+                        parent_tool_use_id,
+                        turn_uuid,
+                        images,
+                    },
                 );
             }
             InboundMessage::ThinkingStart {
@@ -640,11 +929,18 @@ impl SidecarManager {
                 content,
                 timestamp,
                 parent_tool_use_id,
-                ref turn_uuid,
+                turn_uuid,
             } => {
-                let _ = app.emit(
-                    &format!("sdk-thinking-start-{}", id),
-                    serde_json::json!({ "content": content, "timestamp": timestamp, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    ThinkingStartPayload {
+                        content,
+                        timestamp,
+                        parent_tool_use_id,
+                        turn_uuid,
+                    },
                 );
             }
             InboundMessage::ThinkingEnd {
@@ -652,19 +948,23 @@ impl SidecarManager {
                 duration_ms,
                 content,
                 parent_tool_use_id,
-                ref turn_uuid,
+                turn_uuid,
             } => {
-                let _ = app.emit(
-                    &format!("sdk-thinking-end-{}", id),
-                    serde_json::json!({ "durationMs": duration_ms, "content": content, "parentToolUseId": parent_tool_use_id, "turnUuid": turn_uuid }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    ThinkingEndPayload {
+                        duration_ms,
+                        content,
+                        parent_tool_use_id,
+                        turn_uuid,
+                    },
                 );
             }
             InboundMessage::Done { id } => {
-                log::info!("[sidecar] Emitting sdk-done-{}", id);
-                let result = app.emit(&format!("sdk-done-{}", id), ());
-                if let Err(e) = result {
-                    log::error!("[sidecar] Failed to emit done event: {}", e);
-                }
+                log::info!("[sidecar] Emitting {}-{}", suffix, id);
+                Self::emit(app, suffix, &id, ());
             }
             InboundMessage::Usage {
                 id,
@@ -683,37 +983,33 @@ impl SidecarManager {
                 main_agent_cache_creation_tokens,
             } => {
                 log::info!(
-                    "[sidecar] Emitting sdk-usage-{}: {} input, {} output, ${:.4}",
+                    "[sidecar] Emitting {}-{}: {} input, {} output, ${:.4}",
+                    suffix,
                     id,
                     input_tokens,
                     output_tokens,
                     total_cost_usd
                 );
-                let mut payload = serde_json::json!({
-                    "inputTokens": input_tokens,
-                    "outputTokens": output_tokens,
-                    "cacheReadTokens": cache_read_tokens,
-                    "cacheCreationTokens": cache_creation_tokens,
-                    "totalCostUsd": total_cost_usd,
-                    "durationMs": duration_ms,
-                    "durationApiMs": duration_api_ms,
-                    "numTurns": num_turns,
-                    "contextWindow": context_window,
-                });
-                // Conditionally include main-agent-only tokens for accurate context bar
-                if let Some(v) = main_agent_input_tokens {
-                    payload["mainAgentInputTokens"] = serde_json::json!(v);
-                }
-                if let Some(v) = main_agent_output_tokens {
-                    payload["mainAgentOutputTokens"] = serde_json::json!(v);
-                }
-                if let Some(v) = main_agent_cache_read_tokens {
-                    payload["mainAgentCacheReadTokens"] = serde_json::json!(v);
-                }
-                if let Some(v) = main_agent_cache_creation_tokens {
-                    payload["mainAgentCacheCreationTokens"] = serde_json::json!(v);
-                }
-                let _ = app.emit(&format!("sdk-usage-{}", id), payload);
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    UsagePayload {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_creation_tokens,
+                        total_cost_usd,
+                        duration_ms,
+                        duration_api_ms,
+                        num_turns,
+                        context_window,
+                        main_agent_input_tokens,
+                        main_agent_output_tokens,
+                        main_agent_cache_read_tokens,
+                        main_agent_cache_creation_tokens,
+                    },
+                );
             }
             InboundMessage::ProgressiveUsage {
                 id,
@@ -722,25 +1018,51 @@ impl SidecarManager {
                 cache_read_tokens,
                 cache_creation_tokens,
             } => {
-                let _ = app.emit(
-                    &format!("sdk-progressive-usage-{}", id),
-                    serde_json::json!({
-                        "inputTokens": input_tokens,
-                        "outputTokens": output_tokens,
-                        "cacheReadTokens": cache_read_tokens,
-                        "cacheCreationTokens": cache_creation_tokens,
-                    }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    ProgressiveUsagePayload {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_creation_tokens,
+                    },
                 );
             }
             InboundMessage::ModelUpdated { id, model } => {
                 log::info!("[sidecar] Model updated for {}: {}", id, model);
-                let _ = app.emit(&format!("sdk-model-updated-{}", id), &model);
+                Self::emit(app, suffix, &id, model);
             }
             InboundMessage::Closed { id } => {
-                let _ = app.emit(&format!("sdk-closed-{}", id), ());
+                Self::emit(app, suffix, &id, ());
             }
             InboundMessage::Error { id, message } => {
-                let _ = app.emit(&format!("sdk-error-{}", id), &message);
+                Self::emit(app, suffix, &id, message);
+            }
+            InboundMessage::RateLimit {
+                id,
+                status,
+                resets_at,
+                utilization,
+            } => {
+                log::info!(
+                    "[sidecar] Rate limit ({}) for session {} (resetsAt: {:?}, utilization: {:?})",
+                    status,
+                    id,
+                    resets_at,
+                    utilization
+                );
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    RateLimitPayload {
+                        status,
+                        resets_at,
+                        utilization,
+                    },
+                );
             }
             InboundMessage::Debug { id, message } => {
                 log::info!("[sidecar debug][{}] {}", id, message);
@@ -756,12 +1078,14 @@ impl SidecarManager {
                     agent_type,
                     id
                 );
-                let _ = app.emit(
-                    &format!("sdk-subagent-start-{}", id),
-                    serde_json::json!({
-                        "agentId": agent_id,
-                        "agentType": agent_type,
-                    }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    SubagentStartPayload {
+                        agent_id,
+                        agent_type,
+                    },
                 );
             }
             InboundMessage::SubagentStop {
@@ -769,17 +1093,15 @@ impl SidecarManager {
                 agent_id,
                 transcript_path,
             } => {
-                log::info!(
-                    "[sidecar] Subagent stopped: {} for session {}",
-                    agent_id,
-                    id
-                );
-                let _ = app.emit(
-                    &format!("sdk-subagent-stop-{}", id),
-                    serde_json::json!({
-                        "agentId": agent_id,
-                        "transcriptPath": transcript_path,
-                    }),
+                log::info!("[sidecar] Subagent stopped: {} for session {}", agent_id, id);
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    SubagentStopPayload {
+                        agent_id,
+                        transcript_path,
+                    },
                 );
             }
             InboundMessage::TaskStarted {
@@ -795,14 +1117,16 @@ impl SidecarManager {
                     tool_use_id,
                     id
                 );
-                let _ = app.emit(
-                    &format!("sdk-task-started-{}", id),
-                    serde_json::json!({
-                        "taskId": task_id,
-                        "toolUseId": tool_use_id,
-                        "description": description,
-                        "taskType": task_type,
-                    }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    TaskStartedPayload {
+                        task_id,
+                        tool_use_id,
+                        description,
+                        task_type,
+                    },
                 );
             }
             InboundMessage::TaskCompleted {
@@ -819,20 +1143,22 @@ impl SidecarManager {
                     status,
                     id
                 );
-                let _ = app.emit(
-                    &format!("sdk-task-completed-{}", id),
-                    serde_json::json!({
-                        "taskId": task_id,
-                        "toolUseId": tool_use_id,
-                        "status": status,
-                        "summary": summary,
-                        "usage": usage,
-                    }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    TaskCompletedPayload {
+                        task_id,
+                        tool_use_id,
+                        status,
+                        summary,
+                        usage,
+                    },
                 );
             }
             InboundMessage::EffortUpdated { id, effort_level } => {
                 log::info!("[sidecar] Effort updated for {}: {:?}", id, effort_level);
-                let _ = app.emit(&format!("sdk-effort-updated-{}", id), &effort_level);
+                Self::emit(app, suffix, &id, effort_level);
             }
             InboundMessage::PlanningQuestions { id, questions } => {
                 log::info!(
@@ -840,10 +1166,7 @@ impl SidecarManager {
                     id,
                     questions.len()
                 );
-                let _ = app.emit(
-                    &format!("sdk-planning-questions-{}", id),
-                    serde_json::to_value(&questions).unwrap_or_default(),
-                );
+                Self::emit(app, suffix, &id, questions);
             }
             InboundMessage::PlanningComplete {
                 id,
@@ -851,18 +1174,16 @@ impl SidecarManager {
                 feature_name,
                 summary,
             } => {
-                log::info!(
-                    "[sidecar] Planning complete for session {}: {}",
-                    id,
-                    feature_name
-                );
-                let _ = app.emit(
-                    &format!("sdk-planning-complete-{}", id),
-                    serde_json::json!({
-                        "planPath": plan_path,
-                        "featureName": feature_name,
-                        "summary": summary,
-                    }),
+                log::info!("[sidecar] Planning complete for session {}: {}", id, feature_name);
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    PlanningCompletePayload {
+                        plan_path,
+                        feature_name,
+                        summary,
+                    },
                 );
             }
             InboundMessage::AskUserQuestions { id, questions } => {
@@ -871,10 +1192,7 @@ impl SidecarManager {
                     id,
                     questions.len()
                 );
-                let _ = app.emit(
-                    &format!("sdk-ask-user-questions-{}", id),
-                    serde_json::to_value(&questions).unwrap_or_default(),
-                );
+                Self::emit(app, suffix, &id, questions);
             }
             InboundMessage::PlanApprovalRequest {
                 id,
@@ -887,12 +1205,14 @@ impl SidecarManager {
                     allowed_prompts.len(),
                     plan.is_some()
                 );
-                let _ = app.emit(
-                    &format!("sdk-plan-approval-request-{}", id),
-                    serde_json::json!({
-                        "allowedPrompts": allowed_prompts,
-                        "plan": plan,
-                    }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    PlanApprovalRequestPayload {
+                        allowed_prompts,
+                        plan,
+                    },
                 );
             }
             InboundMessage::RepoDescriptionResult {
@@ -908,20 +1228,22 @@ impl SidecarManager {
                     id,
                     description.chars().take(50).collect::<String>()
                 );
-                let _ = app.emit(
-                    &format!("repo-description-result-{}", id),
-                    serde_json::json!({
-                        "description": description,
-                        "keywords": keywords,
-                        "vocabulary": vocabulary,
-                        "icon": icon,
-                        "color": color,
-                    }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    RepoDescriptionResultPayload {
+                        description,
+                        keywords,
+                        vocabulary,
+                        icon,
+                        color,
+                    },
                 );
             }
             InboundMessage::RepoDescriptionError { id, error } => {
                 log::error!("[sidecar] Repo description error for {}: {}", id, error);
-                let _ = app.emit(&format!("repo-description-error-{}", id), &error);
+                Self::emit(app, suffix, &id, error);
             }
             InboundMessage::LaunchProfileResult {
                 id,
@@ -934,48 +1256,76 @@ impl SidecarManager {
                     commands.len(),
                     profiles.len()
                 );
-                let _ = app.emit(
-                    &format!("launch-profile-result-{}", id),
-                    serde_json::json!({
-                        "commands": commands,
-                        "profiles": profiles,
-                    }),
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    LaunchProfileResultPayload { commands, profiles },
                 );
             }
             InboundMessage::LaunchProfileError { id, error } => {
                 log::error!("[sidecar] Launch profile error for {}: {}", id, error);
-                let _ = app.emit(&format!("launch-profile-error-{}", id), &error);
+                Self::emit(app, suffix, &id, error);
             }
             InboundMessage::SdkSessionId { id, sdk_session_id } => {
                 log::info!("[sidecar] SDK session ID for {}: {}", id, sdk_session_id);
-                let _ = app.emit(&format!("sdk-session-id-{}", id), &sdk_session_id);
+                Self::emit(app, suffix, &id, sdk_session_id);
             }
             InboundMessage::ParallelSessionNotification { id, message } => {
-                log::info!(
-                    "[sidecar] Parallel session notification for {}: {}",
-                    id,
-                    message
-                );
-                let _ = app.emit(&format!("sdk-parallel-notification-{}", id), &message);
+                log::info!("[sidecar] Parallel session notification for {}: {}", id, message);
+                Self::emit(app, suffix, &id, message);
             }
         }
     }
 
+    /// Send a message to the sidecar. The started/alive guard (I3) lives here so
+    /// commands don't have to repeat it. Errors are stringified at the boundary
+    /// via `From<SidecarError>`.
     pub fn send(&self, msg: OutboundMessage) -> Result<(), String> {
-        let mut stdin = self.stdin.lock();
-        if let Some(ref mut stdin) = *stdin {
-            let json =
-                serde_json::to_string(&msg).map_err(|e| format!("Serialize error: {}", e))?;
-            writeln!(stdin, "{}", json).map_err(|e| format!("Write error: {}", e))?;
-            stdin.flush().map_err(|e| format!("Flush error: {}", e))?;
-            Ok(())
-        } else {
-            Err("Sidecar not started".to_string())
-        }
+        self.send_inner(msg).map_err(String::from)
     }
 
+    fn send_inner(&self, msg: OutboundMessage) -> Result<(), SidecarError> {
+        // Detect a dead process so callers get a clear "not running" error
+        // instead of an opaque write failure (I2).
+        {
+            let mut process = self.process.lock();
+            match process.as_mut() {
+                None => return Err(SidecarError::NotStarted),
+                Some(child) => {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        return Err(SidecarError::NotRunning);
+                    }
+                }
+            }
+        }
+
+        let mut stdin = self.stdin.lock();
+        let stdin = stdin.as_mut().ok_or(SidecarError::NotStarted)?;
+        let json = serde_json::to_string(&msg)?;
+        writeln!(stdin, "{}", json)?;
+        stdin.flush()?;
+        Ok(())
+    }
+
+    /// Send `msg`, auto-starting the sidecar first if it isn't running (I3).
+    pub fn send_or_start(&self, app: AppHandle, msg: OutboundMessage) -> Result<(), String> {
+        if !self.is_started() {
+            self.start(app)?;
+        }
+        self.send(msg)
+    }
+
+    /// Whether the sidecar is started AND its child process is still alive (I2).
     pub fn is_started(&self) -> bool {
-        *self.started.lock()
+        if !*self.started.lock() {
+            return false;
+        }
+        let mut process = self.process.lock();
+        match process.as_mut() {
+            Some(child) => !matches!(child.try_wait(), Ok(Some(_))),
+            None => false,
+        }
     }
 
     pub fn shutdown(&self) {

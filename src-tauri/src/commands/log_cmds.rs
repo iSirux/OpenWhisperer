@@ -4,11 +4,11 @@ use std::io::{BufWriter, Write};
 
 const LOG_RETENTION_DAYS: i64 = 7;
 
-/// Returns the shared logs directory: `{config_dir}/claude-whisperer/logs/`
+/// Returns the shared logs directory: `{config_dir}/open-whisperer/logs/`
 pub fn logs_dir() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("claude-whisperer")
+        .join("open-whisperer")
         .join("logs")
 }
 

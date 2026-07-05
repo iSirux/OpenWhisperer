@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-ClaudeWhisperer is a Tauri desktop app with three main code areas:
+OpenWhisperer is a Tauri desktop app with three main code areas:
 
 - `src/`: SvelteKit + TypeScript frontend (routes, components, stores, composables, utilities).
 - `src-tauri/src/`: Rust backend (Tauri commands, PTY/session management, Whisper/Vosk/LLM integrations, sequences).
@@ -14,7 +14,7 @@ Supporting folders:
 - `docs/` for design and architecture notes.
 - `.github/workflows/` for release automation (`release.yml`).
 
-> **Log files:** `%APPDATA%\claude-whisperer\logs\` (Windows) / `~/Library/Application Support/claude-whisperer/logs/` (macOS) — named `backend[-dev]-YYYY-MM-DD.log` and `frontend[-dev]-YYYY-MM-DD.log`.
+> **Log files:** `%APPDATA%\open-whisperer\logs\` (Windows) / `~/Library/Application Support/open-whisperer/logs/` (macOS) — named `backend[-dev]-YYYY-MM-DD.log` and `frontend[-dev]-YYYY-MM-DD.log`.
 
 ## Build, Test, and Development Commands
 

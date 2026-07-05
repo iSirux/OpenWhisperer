@@ -55,6 +55,10 @@ export function getStatusColor(status: string): string {
       return 'text-violet-400';
     case 'prepared':
       return 'text-teal-400';
+    case 'queued':
+      return 'text-sky-400';
+    case 'rate_limited':
+      return 'text-amber-400';
     case 'pending_repo':
       return 'text-amber-400';
     case 'pending_plan_approval':
@@ -105,6 +109,10 @@ export function getStatusBgColor(status: string): string {
       return 'bg-violet-400';
     case 'prepared':
       return 'bg-teal-400';
+    case 'queued':
+      return 'bg-sky-400';
+    case 'rate_limited':
+      return 'bg-amber-400';
     case 'pending_repo':
       return 'bg-amber-400';
     case 'pending_plan_approval':
@@ -203,7 +211,11 @@ function getToolLabel(detail: string): string {
       label = 'Delegating';
       break;
     case 'TodoWrite':
+    case 'TaskUpdate':
       label = 'Updating tasks';
+      break;
+    case 'TaskCreate':
+      label = 'Planning tasks';
       break;
     case 'NotebookEdit':
       label = 'Editing notebook';
@@ -254,6 +266,10 @@ export function getStatusLabel(status: string, detail?: string): string {
       return 'Retry?';
     case 'prepared':
       return 'Prepared';
+    case 'queued':
+      return 'Queued';
+    case 'rate_limited':
+      return 'Rate limited';
     case 'pending_repo':
       return 'Select Repo';
     case 'pending_plan_approval':
@@ -355,6 +371,9 @@ export function getStatusSortOrder(status: string): number {
       return -1;
     case 'prepared':
       return -0.5;
+    // Queued sits just after prepared (both are parked, ready-to-dispatch work)
+    case 'queued':
+      return -0.4;
     case 'pending_repo':
     case 'initializing':
     case 'Starting':
@@ -366,6 +385,8 @@ export function getStatusSortOrder(status: string): number {
     case 'subagent':
     case 'seq_running':
     case 'seq_waiting':
+    // Rate-limited is a live session needing attention — group it with active
+    case 'rate_limited':
       return 0;
     case 'idle':
     case 'new':

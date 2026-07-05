@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { pile, pileItemTitle, selectedPileItemId, type PileItem } from '$lib/stores/pile';
+  import {
+    pile,
+    pileItemTitle,
+    selectedPileItemId,
+    failedRetriableCount,
+    pileRetryingAll,
+    type PileItem,
+  } from '$lib/stores/pile';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { activeSessionId } from '$lib/stores/sessions';
   import { repos, findRepoById } from '$lib/stores/repos';
@@ -7,7 +14,10 @@
   import { createSessionQueue } from '$lib/utils/sessionLaunch';
   import {
     launchPileItem,
+    launchPileItemsTogether,
     preparePileItem,
+    preparePileItemsTogether,
+    resolvePileRepo,
     PILE_ACTIONS,
     type PileLaunchAction,
   } from '$lib/utils/pileActions';
@@ -18,6 +28,7 @@
   let pendingAction = $state<string | null>(null);
   let useWorktree = $state(false);
   let playwrightQa = $state(false);
+  let groupMode = $state<'separate' | 'together'>('separate');
   let confirmDeleteOpen = $state(false);
 
   const launchQueue = createSessionQueue();
@@ -27,15 +38,21 @@
   const items = $derived($pile);
   const selectedItems = $derived(items.filter((i) => selectedIds.has(i.id)));
 
-  // Live indicator: pile item id -> linked session activity
+  // Live indicator: pile item id -> linked session activity. Uses each item's
+  // linkedSessionIds so combined (together) sessions light up every item.
   const itemSessionMap = $derived.by(() => {
+    const sessionById = new Map($sdkSessions.map((s) => [s.id, s]));
     const map = new Map<string, { count: number; hasActive: boolean }>();
-    for (const s of $sdkSessions) {
-      if (!s.pileItem) continue;
-      const entry = map.get(s.pileItem.id) || { count: 0, hasActive: false };
-      entry.count++;
-      if (s.status === 'querying' || s.status === 'initializing') entry.hasActive = true;
-      map.set(s.pileItem.id, entry);
+    for (const item of items) {
+      let count = 0;
+      let hasActive = false;
+      for (const sid of item.linkedSessionIds || []) {
+        const s = sessionById.get(sid);
+        if (!s) continue;
+        count++;
+        if (s.status === 'querying' || s.status === 'initializing') hasActive = true;
+      }
+      if (count > 0) map.set(item.id, { count, hasActive });
     }
     return map;
   });
@@ -73,6 +90,7 @@
     pendingAction = action;
     useWorktree = false;
     playwrightQa = false;
+    groupMode = 'separate';
   }
 
   function confirmAction() {
@@ -83,14 +101,30 @@
     );
     const worktree = useWorktree;
     const qa = playwrightQa;
+    const together = groupMode === 'together' && itemsSnapshot.length > 1;
     selectedIds = new Set();
     pendingAction = null;
 
     if (action === 'prepare') {
       // Prepared sessions are cheap to create — no queue/stagger needed
-      for (const item of itemsSnapshot) {
-        preparePileItem(item, itemsSnapshot.length === 1);
+      if (together) {
+        preparePileItemsTogether(itemsSnapshot);
+      } else {
+        for (const item of itemsSnapshot) {
+          preparePileItem(item, itemsSnapshot.length === 1);
+        }
       }
+      return;
+    }
+
+    if (together) {
+      launchQueue.enqueue([
+        () =>
+          launchPileItemsTogether(itemsSnapshot, action as PileLaunchAction, {
+            useWorktree: worktree,
+            playwrightQa: qa,
+          }).then(() => {}),
+      ]);
       return;
     }
 
@@ -114,6 +148,10 @@
       if ($selectedPileItemId === id) selectedPileItemId.set(null);
       await pile.removeItem(id);
     }
+  }
+
+  async function retryAll() {
+    await pile.retryAllFailed();
   }
 </script>
 
@@ -241,6 +279,22 @@
     </div>
   {/if}
 
+  {#if $failedRetriableCount > 0}
+    <div class="flex items-center gap-2 px-3 py-1.5 border-t border-border bg-surface-elevated/50">
+      <span class="text-[11px] text-text-muted flex-1">
+        {$failedRetriableCount} failed transcription{$failedRetriableCount === 1 ? '' : 's'}
+      </span>
+      <button
+        class="px-2.5 py-1 rounded text-[11px] font-medium bg-amber-600 hover:bg-amber-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        onclick={retryAll}
+        disabled={$pileRetryingAll}
+        title="Re-transcribe every failed recording that still has audio"
+      >
+        {$pileRetryingAll ? 'Retrying…' : `Retry all failed (${$failedRetriableCount})`}
+      </button>
+    </div>
+  {/if}
+
   {#if selectedItems.length > 0}
     <div class="border-t border-border bg-surface-elevated p-2 space-y-2">
       <div class="flex items-center justify-between">
@@ -254,6 +308,31 @@
       </div>
       {#if pendingAction}
         {@const actionLabel = PILE_ACTIONS.find((a) => a.id === pendingAction)?.label}
+        {#if selectedItems.length > 1}
+          {@const togetherRepo = resolvePileRepo(selectedItems[0])?.name}
+          <div class="flex items-center gap-1">
+            <button
+              class="px-2 py-1 rounded text-[11px] transition-colors {groupMode === 'separate'
+                ? 'bg-accent/20 text-text-primary font-medium'
+                : 'bg-surface text-text-secondary hover:bg-background'}"
+              title="One session per item"
+              onclick={() => (groupMode = 'separate')}
+            >
+              Separately ({selectedItems.length} sessions)
+            </button>
+            <button
+              class="px-2 py-1 rounded text-[11px] transition-colors {groupMode === 'together'
+                ? 'bg-accent/20 text-text-primary font-medium'
+                : 'bg-surface text-text-secondary hover:bg-background'}"
+              title="One combined session handling all items{togetherRepo
+                ? ` (in ${togetherRepo})`
+                : ''}"
+              onclick={() => (groupMode = 'together')}
+            >
+              Together (1 session)
+            </button>
+          </div>
+        {/if}
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-[11px] font-medium text-text-primary">{actionLabel}:</span>
           {#if pendingAction !== 'prepare'}

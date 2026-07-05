@@ -44,6 +44,20 @@
     onclose,
   }: Props = $props();
 
+  // Live countdown to an epoch-ms target, driven by the `now` prop so it stays
+  // fresh. Mirrors the formatting of `formatTimeRemaining` in rateLimits.ts.
+  function formatMsRemaining(target: number | undefined | null, ref: number): string {
+    if (target == null) return "";
+    const diff = target - ref;
+    if (diff <= 0) return "now";
+    const days = Math.floor(diff / 86_400_000);
+    const hours = Math.floor((diff % 86_400_000) / 3_600_000);
+    const minutes = Math.floor((diff % 3_600_000) / 60_000);
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+  }
+
   function getDisplayedDuration(): string | null {
     if (session.type === "sdk" || session.type === "sequence") {
       return getElapsedTime(
@@ -204,6 +218,74 @@
             />
           </svg>
           Prepared
+        </span>
+      {:else if session.status === "queued"}
+        <!-- Queued badge (Smart Queue: parked until reset / scheduled window) -->
+        {@const qi = session.queueInfo}
+        {@const qWindow = qi?.window === "7d" ? "7d" : "5h"}
+        {@const qCountdown = formatMsRemaining(qi?.targetStartAt, now)}
+        <span
+          class="px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/20 text-sky-400 rounded flex items-center gap-1"
+          title={qi?.reason === "scheduled"
+            ? `Scheduled launch for the next ${qWindow} reset`
+            : "Queued - waiting for the rate limit to reset"}
+        >
+          <svg
+            class="w-2.5 h-2.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+          {qi?.reason === "scheduled" ? "Scheduled" : "Queued"}
+          {#if qCountdown}
+            <span class="opacity-70 font-normal">
+              · {qi?.reason === "scheduled"
+                ? `next ${qWindow} reset · in ${qCountdown}`
+                : `rate limited · resets in ${qCountdown}`}
+            </span>
+          {/if}
+        </span>
+      {:else if session.status === "rate_limited"}
+        <!-- Rate-limited badge (Smart Queue: live session with a pending turn) -->
+        {@const rl = session.rateLimited}
+        {@const rlCountdown = formatMsRemaining(
+          rl?.targetStartAt ?? rl?.resetsAt,
+          now,
+        )}
+        <span
+          class="px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/20 text-amber-400 rounded flex items-center gap-1"
+          title={rl?.reason === "scheduled"
+            ? "Scheduled to send on the next window reset"
+            : "Rate limit reached - will continue when the window resets"}
+        >
+          <svg
+            class="w-2.5 h-2.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+          {rl?.reason === "scheduled" ? "Scheduled send" : "Rate limited"}
+          {#if rlCountdown}
+            <span class="opacity-70 font-normal">
+              · {rl?.reason === "scheduled"
+                ? `in ${rlCountdown}`
+                : `resets in ${rlCountdown}`}
+            </span>
+          {/if}
         </span>
       {:else if session.type === "sequence"}
         <!-- Sequence badge -->

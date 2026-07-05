@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use uuid::Uuid;
 
 // Minimum and maximum PTY dimensions for validation
@@ -74,10 +74,7 @@ impl TerminalManager {
             repo_path: repo_path.clone(),
             prompt: prompt.clone(),
             status: SessionStatus::Starting,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: crate::util::now_secs(),
         };
 
         self.sessions.lock().insert(id.clone(), session.clone());
@@ -215,7 +212,11 @@ impl TerminalManager {
                     Ok(0) => break, // EOF - process exited normally
                     Ok(n) => {
                         let data = String::from_utf8_lossy(&buffer[..n]).to_string();
-                        let _ = app_clone.emit(&format!("terminal-output-{}", session_id), &data);
+                        crate::util::emit_or_log(
+                            &app_clone,
+                            &format!("terminal-output-{}", session_id),
+                            data,
+                        );
                     }
                     Err(e) => {
                         // Log error for debugging (only if not due to shutdown)
@@ -231,10 +232,10 @@ impl TerminalManager {
             if let Some(s) = sessions.get_mut(&session_id) {
                 s.status = SessionStatus::Completed;
             }
-            let _ = app_clone.emit(&format!("terminal-closed-{}", session_id), ());
+            crate::util::emit_or_log(&app_clone, &format!("terminal-closed-{}", session_id), ());
         });
 
-        let _ = app.emit("session-created", &session);
+        crate::util::emit_or_log(&app, "session-created", session.clone());
 
         Ok(id)
     }

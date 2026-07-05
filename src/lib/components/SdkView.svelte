@@ -28,6 +28,9 @@
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import PlanModeBanner from "./sdk/PlanModeBanner.svelte";
   import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
+  import RateLimitBanner from "./sdk/RateLimitBanner.svelte";
+  import { nextWindowResetAt, type QueueWindow } from "$lib/stores/queueDetection";
+  import { rateLimitData, codexRateLimitData } from "$lib/stores/rateLimits";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import LaunchBar from "./sdk/LaunchBar.svelte";
   import { launchStore, getLaunchRuntime, queuedLaunch } from "$lib/stores/launchProfiles";
@@ -67,9 +70,9 @@
 
   // Persist across SdkView component remounts (session switches can recreate component instances).
   type SessionScrollState = { scrollTop: number; stickToBottom: boolean };
-  const SCROLL_STATE_KEY = "__claudeWhispererSdkViewScrollStates__";
+  const SCROLL_STATE_KEY = "__openWhispererSdkViewScrollStates__";
   type GlobalWithSdkScrollStates = typeof globalThis & {
-    __claudeWhispererSdkViewScrollStates__?: Map<string, SessionScrollState>;
+    __openWhispererSdkViewScrollStates__?: Map<string, SessionScrollState>;
   };
   const scrollStates =
     (globalThis as GlobalWithSdkScrollStates)[SCROLL_STATE_KEY] ??
@@ -82,6 +85,29 @@
     buildRenderItems(processedMessages, $settings.tool_display_mode === "grid"),
   );
 
+  // --- Render windowing -----------------------------------------------------
+  // Long-running sessions accumulate thousands of messages (observed 2400+).
+  // Mounting every message component at once on session switch (this view is
+  // rebuilt via {#key sessionId}) runs markdown + syntax highlighting for each
+  // synchronously and blocks the WebView main thread long enough to freeze the
+  // whole UI. Render only the most recent window; older items are revealed on
+  // demand. Reset happens for free because {#key sessionId} recreates this view.
+  const RENDER_WINDOW_INITIAL = 200;
+  const RENDER_WINDOW_STEP = 300;
+  let renderWindow = $state(RENDER_WINDOW_INITIAL);
+  let hiddenItemCount = $derived.by(() => {
+    let hidden = Math.max(0, renderItems.length - renderWindow);
+    // Never hide the plan-approval anchor (lives near the tail, but guard anyway)
+    // or its inline dialog would vanish while awaiting approval.
+    if (planApprovalAnchorIndex >= 0 && hidden > planApprovalAnchorIndex) {
+      hidden = planApprovalAnchorIndex;
+    }
+    return hidden;
+  });
+  let visibleRenderItems = $derived(
+    hiddenItemCount > 0 ? renderItems.slice(hiddenItemCount) : renderItems,
+  );
+
   let status = $derived(session?.status ?? "idle");
   let isQuerying = $derived(status === "querying");
   let isPendingRepo = $derived(status === "pending_repo");
@@ -90,6 +116,7 @@
   let isPendingApproval = $derived(status === "pending_approval");
   let isPrepared = $derived(status === "prepared");
   let preparedPrompt = $derived(session?.preparedPrompt ?? "");
+  let preparedChips = $derived(session?.preparedChips);
   let preparedRepoRecommendation = $derived(
     session?.preparedRepoRecommendation,
   );
@@ -114,6 +141,13 @@
   let sessionOutcome = $derived(session?.aiMetadata?.outcome);
   let sessionCategory = $derived(session?.aiMetadata?.category);
   let isNewChat = $derived(messages.length === 0 && status === "idle");
+  // Semi-stop state: the main agent's turn ended (sdk-done) but background subagents are still
+  // running, so completion was deferred. Background tasks (bg bash etc.) don't block completion
+  // and can linger past a Done/idle status — surface both so the UI never reads as fully finished
+  // while real work continues. See SdkSession.liveSubagentIds / liveBackgroundTaskIds.
+  let completionDeferred = $derived(session?.completionDeferred ?? false);
+  let liveSubagentCount = $derived(session?.liveSubagentIds?.length ?? 0);
+  let liveBackgroundTaskCount = $derived(session?.liveBackgroundTaskIds?.length ?? 0);
   let autoModelRequested = $derived(session?.autoModelRequested ?? false);
   let sessionEffortLevel = $derived(session?.effortLevel ?? null);
   let forkSourceLabel = $derived(session?.forkedFromSessionLabel ?? "");
@@ -433,6 +467,10 @@
           found?.autocompactEnabled !== session?.autocompactEnabled;
         const contextOverflowChanged =
           !!found?.contextOverflow !== !!session?.contextOverflow;
+        const failedRecordingChanged =
+          found?.failedRecording?.audioId !==
+            session?.failedRecording?.audioId ||
+          found?.failedRecording?.error !== session?.failedRecording?.error;
 
         if (
           !session ||
@@ -448,7 +486,8 @@
           draftChanged ||
           planApprovalChanged ||
           autocompactChanged ||
-          contextOverflowChanged
+          contextOverflowChanged ||
+          failedRecordingChanged
         ) {
           if (planApprovalChanged) {
             console.log(`[SdkView] pendingPlanApproval changed (session: ${sessionId}, was: ${!!session?.pendingPlanApproval}, now: ${!!found?.pendingPlanApproval})`);
@@ -559,6 +598,11 @@
     }
 
     if (status === "querying") {
+      // Deferred completion: the main turn is done, we're just waiting on background subagents.
+      if (completionDeferred && liveSubagentCount > 0) {
+        return { status: "subagents", detail: String(liveSubagentCount) };
+      }
+
       // Check if we have any response content yet
       const hasAnyResponse = msgs.some(
         (m) => m.type === "text" || m.type === "tool_start",
@@ -615,6 +659,10 @@
         return "Responding...";
       case "waiting_llm":
         return "Waiting for response...";
+      case "subagents":
+        return smartStatus.detail === "1"
+          ? "Finishing 1 background agent..."
+          : `Finishing ${smartStatus.detail} background agents...`;
       case "initializing":
         return "Starting session...";
       default:
@@ -877,7 +925,23 @@
     // Capture Vosk transcript before stopping (for dual-source cleanup)
     const capturedVoskTranscript = get(recording).realtimeTranscript;
 
-    const whisperTranscript = await recording.stopRecording(true);
+    let whisperTranscript: string | null;
+    try {
+      whisperTranscript = await recording.stopRecording(true);
+    } catch (error) {
+      // Transcription failed — keep the recording attached to THIS session (it was
+      // meant for this conversation, not the pile) as a durable, retriable failed
+      // recording rather than throwing and losing the audio.
+      overlay.clearInlineSessionInfo();
+      overlay.hide();
+      isRecordingForCurrentSession = false;
+      await salvageInSessionRecording(
+        "send",
+        capturedVoskTranscript,
+        error instanceof Error ? error.message : "Transcription failed",
+      );
+      return;
+    }
 
     // Hide overlay and clear inline session info
     overlay.clearInlineSessionInfo();
@@ -984,7 +1048,19 @@
     isInlineTranscribing = true;
 
     try {
-      const whisperTranscript = await recording.stopRecording(true);
+      let whisperTranscript: string | null;
+      try {
+        whisperTranscript = await recording.stopRecording(true);
+      } catch (error) {
+        // Transcription failed — keep the recording attached to THIS session as a
+        // durable, retriable failed recording (it was meant for this conversation).
+        await salvageInSessionRecording(
+          "append",
+          capturedVoskTranscript,
+          error instanceof Error ? error.message : "Transcription failed",
+        );
+        return;
+      }
 
       if (!whisperTranscript) return;
 
@@ -1027,6 +1103,107 @@
       isInlineTranscribing = false;
       recording.clearTranscript();
     }
+  }
+
+  // --- Failed follow-up recordings (transcription failed for a live session) ---
+  // Kept attached to this session and retriable in place, instead of being sent to
+  // the pile — the recording was intended for this conversation.
+  let isRetryingFailedRecording = $state(false);
+
+  /**
+   * Persist a follow-up recording whose transcription failed to durable storage and
+   * attach it to this session so it can be retried in place. Uses the in-memory audio
+   * from the recording store; no-op if there is no audio.
+   */
+  async function salvageInSessionRecording(
+    mode: "send" | "append",
+    voskTranscript: string | undefined,
+    error: string,
+  ) {
+    const audioData = get(recording).audioData;
+    if (!audioData) return;
+    const audioId = crypto.randomUUID();
+    try {
+      await invoke("save_pile_audio", {
+        id: audioId,
+        audioData: Array.from(audioData),
+      });
+      sdkSessions.setFailedRecording(sessionId, {
+        audioId,
+        mode,
+        voskTranscript,
+        error,
+        createdAt: Date.now(),
+      });
+    } catch (e) {
+      console.error("[SdkView] Failed to store failed-recording audio:", e);
+    }
+  }
+
+  async function handleRetryFailedRecording() {
+    const fr = session?.failedRecording;
+    if (!fr || isRetryingFailedRecording) return;
+    isRetryingFailedRecording = true;
+    try {
+      const audioData = await invoke<number[]>("read_pile_audio", {
+        id: fr.audioId,
+      });
+      const transcript = await invoke<string>("transcribe_audio", { audioData });
+
+      if (!transcript || !transcript.trim()) {
+        sdkSessions.setFailedRecording(sessionId, {
+          ...fr,
+          error: "No transcription returned",
+        });
+        return;
+      }
+
+      // Apply LLM transcription cleanup (same as the live recording flow)
+      let finalTranscript = transcript;
+      if (isTranscriptionCleanupEnabled()) {
+        const currentRepo =
+          cwd && cwd !== "." ? $repos.list.find((r) => r.path === cwd) : null;
+        const repoContext = currentRepo
+          ? buildSingleRepoContext(currentRepo)
+          : undefined;
+        try {
+          const cleanupResult = await cleanupTranscript(
+            transcript,
+            fr.voskTranscript,
+            repoContext,
+          );
+          finalTranscript = cleanupResult.text;
+        } catch (e) {
+          console.error("[SdkView] Retry cleanup failed, using original:", e);
+        }
+      }
+
+      // Transcription succeeded — dispatch the transcript, THEN clean up the durable
+      // audio (only once it has been consumed, so a send failure stays retriable).
+      if (fr.mode === "send") {
+        promptInputRef?.clearInput();
+        await sdkSessions.sendPrompt(sessionId, finalTranscript);
+      } else {
+        promptInputRef?.appendToPrompt(finalTranscript);
+      }
+      invoke("delete_pile_audio", { id: fr.audioId }).catch(() => {});
+      sdkSessions.clearFailedRecording(sessionId);
+    } catch (error) {
+      // Still failing (service down) — keep it retriable, refresh the error.
+      sdkSessions.setFailedRecording(sessionId, {
+        ...fr,
+        error: error instanceof Error ? error.message : "Transcription failed",
+      });
+    } finally {
+      isRetryingFailedRecording = false;
+    }
+  }
+
+  async function handleDiscardFailedRecording() {
+    const fr = session?.failedRecording;
+    if (!fr) return;
+    invoke("delete_pile_audio", { id: fr.audioId }).catch(() => {});
+    sdkSessions.clearFailedRecording(sessionId);
   }
 
   // Handlers for pending transcription sessions
@@ -1077,6 +1254,93 @@
     sdkSessions.cancelPrepared(sessionId);
   }
 
+  // --- Smart Queue: scheduling + queued state ---
+  let isQueued = $derived(status === "queued");
+  let queueInfo = $derived(session?.queueInfo);
+  let sessionProvider = $derived(session?.provider ?? "claude");
+  let scheduleMenuOpen = $state(false);
+
+  // Live countdown tick for queue/schedule labels (only runs while a countdown is shown).
+  let nowTick = $state(Date.now());
+  $effect(() => {
+    if (!isPrepared && !isQueued) return;
+    nowTick = Date.now();
+    const t = setInterval(() => {
+      nowTick = Date.now();
+    }, 1000);
+    return () => clearInterval(t);
+  });
+
+  // Re-read reset times when the provider's rate-limit store updates (or provider changes).
+  let providerRateData = $derived(
+    sessionProvider === "openai" ? $codexRateLimitData : $rateLimitData,
+  );
+  let reset5hMs = $derived.by(() => {
+    void providerRateData;
+    return nextWindowResetAt(sessionProvider, "5h");
+  });
+  let reset7dMs = $derived.by(() => {
+    void providerRateData;
+    return nextWindowResetAt(sessionProvider, "7d");
+  });
+
+  function formatCountdown(ms: number | undefined | null): string {
+    if (ms == null) return "";
+    const diff = ms - nowTick;
+    if (diff <= 0) return "now";
+    const days = Math.floor(diff / 86_400_000);
+    const hours = Math.floor((diff % 86_400_000) / 3_600_000);
+    const minutes = Math.floor((diff % 3_600_000) / 60_000);
+    const seconds = Math.floor((diff % 60_000) / 1000);
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
+  }
+
+  let countdown5h = $derived(formatCountdown(reset5hMs));
+  let countdown7d = $derived(formatCountdown(reset7dMs));
+
+  // Queued-panel labels.
+  let queueWindowLabel = $derived(
+    queueInfo?.window === "7d"
+      ? "weekly (7d)"
+      : queueInfo?.window === "5h"
+        ? "5-hour"
+        : "",
+  );
+  let queueCountdown = $derived(formatCountdown(queueInfo?.targetStartAt));
+  let queuedReasonLabel = $derived(
+    queueInfo?.reason === "scheduled" ? "Scheduled" : "Queued — rate limited",
+  );
+
+  // Only offer "send on next reset" for a live/active session that can take a
+  // follow-up turn (has history and isn't querying).
+  let canScheduleSend = $derived(
+    (status === "idle" || status === "done") && messages.length > 0,
+  );
+
+  function handleScheduleForWindow(window: QueueWindow) {
+    scheduleMenuOpen = false;
+    sdkSessions.scheduleForWindow(sessionId, window);
+  }
+
+  function handleRunQueuedNow() {
+    sdkSessions.launchPrepared(sessionId);
+  }
+
+  function handleUnschedule() {
+    sdkSessions.unschedule(sessionId);
+  }
+
+  async function handleScheduleSend(
+    window: QueueWindow,
+    prompt: string,
+    images?: SdkImageContent[],
+  ) {
+    await sdkSessions.queueTurnForWindow(sessionId, prompt, images, window);
+  }
+
   function handleSelectPreparedRepo(repoCwd: string) {
     sdkSessions.updatePreparedRepo(sessionId, repoCwd);
   }
@@ -1113,7 +1377,8 @@
         pending?.recordingDurationMs ??
         (pending?.recordingStartedAt ? Date.now() - pending.recordingStartedAt : undefined),
       audioVisualizationHistory: pending?.audioVisualizationHistory,
-      screenshot: pending?.screenshot,
+      // Pile items store a single screenshot; recordings only ever capture one
+      screenshot: pending?.screenshots?.[0],
       repoId: repo?.id,
       repoConfidence: pending?.repoRecommendation?.confidence,
       repoReasoning: pending?.repoRecommendation?.reasoning,
@@ -1220,6 +1485,10 @@
     <ContextOverflowBanner session={session} />
   {/if}
 
+  {#if session?.rateLimited}
+    <RateLimitBanner session={session} />
+  {/if}
+
   {#if isPlanMode && planMode}
     <PlanModeBanner {planMode} />
   {/if}
@@ -1269,11 +1538,54 @@
 
       <!-- Prepared session UI -->
       {#if isPrepared && pendingTranscription}
+        {#snippet scheduleAction()}
+          <div class="schedule-split">
+            <button
+              class="schedule-toggle"
+              onclick={() => (scheduleMenuOpen = !scheduleMenuOpen)}
+              aria-haspopup="menu"
+              aria-expanded={scheduleMenuOpen}
+              title="Fire-and-forget: schedule this launch for the next 5h or 7d reset"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" class="schedule-icon">
+                <path
+                  fill-rule="evenodd"
+                  d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
+                  clip-rule="evenodd"
+                />
+              </svg>
+              <span>Schedule for later</span>
+              <svg viewBox="0 0 20 20" fill="currentColor" class="schedule-caret">
+                <path
+                  fill-rule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                  clip-rule="evenodd"
+                />
+              </svg>
+            </button>
+            {#if scheduleMenuOpen}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="schedule-menu-backdrop" onclick={() => (scheduleMenuOpen = false)}></div>
+              <div class="schedule-menu" role="menu">
+                <button class="schedule-menu-item" role="menuitem" onclick={() => handleScheduleForWindow("5h")}>
+                  <span>Next 5h reset</span>
+                  {#if countdown5h}<span class="schedule-menu-countdown">in {countdown5h}</span>{/if}
+                </button>
+                <button class="schedule-menu-item" role="menuitem" onclick={() => handleScheduleForWindow("7d")}>
+                  <span>Next 7d reset</span>
+                  {#if countdown7d}<span class="schedule-menu-countdown">in {countdown7d}</span>{/if}
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/snippet}
         <SessionRecordingHeader
           {pendingTranscription}
           {sessionId}
           showPrepared={true}
           {preparedPrompt}
+          {preparedChips}
           onLaunch={handleLaunchPrepared}
           onCancelPrepared={handleCancelPrepared}
           onDemoteToPile={handleDemoteToPile}
@@ -1282,7 +1594,41 @@
           selectedRepoCwd={cwd}
           onSelectRepo={handleSelectPreparedRepo}
           autoModelEffort={$settings.llm?.features?.auto_model_effort}
+          {scheduleAction}
         />
+      {/if}
+
+      <!-- Queued session UI (rate-limited first launch or a scheduled launch) -->
+      {#if isQueued}
+        <div class="queued-panel" class:scheduled={queueInfo?.reason === "scheduled"}>
+          <div class="queued-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+          </div>
+          <div class="queued-body">
+            <div class="queued-title">{queuedReasonLabel}</div>
+            <div class="queued-sub">
+              {#if queueInfo?.reason === "scheduled"}
+                Will launch at the next{queueWindowLabel ? ` ${queueWindowLabel}` : ""} reset{queueCountdown ? ` — in ${queueCountdown}` : ""}.
+              {:else}
+                Waiting for the{queueWindowLabel ? ` ${queueWindowLabel}` : ""} usage window to reset{queueCountdown ? ` — in ${queueCountdown}` : ""}.
+              {/if}
+            </div>
+            {#if session?.preparedPrompt}
+              <div class="queued-prompt">{session.preparedPrompt}</div>
+            {/if}
+            <div class="queued-actions">
+              <button class="queued-btn primary" onclick={handleRunQueuedNow} title="Launch this session immediately">
+                Run now
+              </button>
+              <button class="queued-btn" onclick={handleUnschedule} title="Take this session out of the queue">
+                Remove from queue
+              </button>
+            </div>
+          </div>
+        </div>
       {/if}
 
       <!-- Completed recording context shown at the top of active sessions -->
@@ -1304,7 +1650,18 @@
         </div>
       {/if}
 
-      {#each renderItems as item, index (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || index}` : `tool-group-${index}`)}
+      {#if hiddenItemCount > 0}
+        <button
+          class="load-earlier-btn"
+          onclick={() => (renderWindow += RENDER_WINDOW_STEP)}
+          title="Older messages are hidden to keep switching into this session fast"
+        >
+          Show earlier messages ({hiddenItemCount} hidden)
+        </button>
+      {/if}
+
+      {#each visibleRenderItems as item, visibleIndex (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || (visibleIndex + hiddenItemCount)}` : `tool-group-${visibleIndex + hiddenItemCount}`)}
+        {@const index = visibleIndex + hiddenItemCount}
         {@const isForked = isForkedContextItem(item)}
         {@const showForkDivider = !isForked && forkedMessageCount > 0 && index > 0 && (() => { const prevItem = renderItems[index - 1]; return prevItem ? isForkedContextItem(prevItem) : false; })()}
         {#if showForkDivider}
@@ -1376,6 +1733,18 @@
 
       {#if isLoading}
         <SdkLoadingIndicator {statusMessage} />
+      {/if}
+
+      <!-- Background tasks (e.g. run_in_background bash) don't block completion, so the session
+           can be idle/Done while they keep running. Surface a persistent indicator so it's clear
+           work is still happening in the background. -->
+      {#if liveBackgroundTaskCount > 0 && !completionDeferred}
+        <div class="background-tasks-indicator">
+          <span class="background-tasks-dot"></span>
+          {liveBackgroundTaskCount === 1
+            ? "1 background task running"
+            : `${liveBackgroundTaskCount} background tasks running`}
+        </div>
       {/if}
 
       {#if showQuickActions && sessionOutcome}
@@ -1478,7 +1847,54 @@
     />
   {/if}
 
-  {#if !isPrepared}
+  {#if !isPrepared && !isQueued}
+    {#if session?.failedRecording}
+      <div
+        class="flex items-center gap-2 mx-3 mb-2 px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/10"
+      >
+        <svg
+          class="w-4 h-4 text-amber-500 shrink-0"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            fill-rule="evenodd"
+            d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+            clip-rule="evenodd"
+          />
+        </svg>
+        <div class="flex flex-col min-w-0 flex-1">
+          <span class="text-xs text-text-primary"
+            >Transcription failed — recording kept for this session</span
+          >
+          {#if session.failedRecording.error}
+            <span class="text-[10px] text-text-muted truncate"
+              >{session.failedRecording.error}</span
+            >
+          {/if}
+        </div>
+        <button
+          class="text-xs px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          onclick={handleRetryFailedRecording}
+          disabled={isRetryingFailedRecording}
+          title="Re-transcribe this recording and {session.failedRecording.mode ===
+          'send'
+            ? 'send it to this session'
+            : 'append it to the prompt'}"
+        >
+          {isRetryingFailedRecording ? "Retrying…" : "Retry"}
+        </button>
+        <button
+          class="text-xs px-2 py-1 rounded bg-surface hover:bg-background text-text-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          onclick={handleDiscardFailedRecording}
+          disabled={isRetryingFailedRecording}
+          title="Discard this recording"
+        >
+          Discard
+        </button>
+      </div>
+    {/if}
     <SdkPromptInput
       bind:this={promptInputRef}
       {sessionId}
@@ -1490,7 +1906,10 @@
       {isInlineTranscribing}
       {draftPrompt}
       {draftImages}
+      provider={sessionProvider}
+      showScheduleSend={canScheduleSend}
       onSendPrompt={handleSendPrompt}
+      onScheduleSend={handleScheduleSend}
       onStopQuery={handleStopQuery}
       onStartRecording={handleStartRecording}
       onStopRecording={handleStopRecording}
@@ -1611,6 +2030,38 @@
     color: var(--color-text-secondary);
   }
 
+  .background-tasks-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.625rem;
+    margin-top: 0.5rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    width: fit-content;
+  }
+
+  .background-tasks-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-warning, #f59e0b);
+    animation: background-tasks-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes background-tasks-pulse {
+    0%,
+    100% {
+      opacity: 0.4;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
   /* Forked session context - inherited messages shown dimmed */
   .forked-context {
     opacity: 0.5;
@@ -1642,6 +2093,25 @@
   }
 
   /* Fork divider between inherited and new messages */
+  .load-earlier-btn {
+    display: block;
+    margin: 0.5rem auto 0.75rem;
+    padding: 0.375rem 0.875rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 9999px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .load-earlier-btn:hover {
+    background: var(--color-surface-hover, var(--color-surface));
+    color: var(--color-text);
+  }
+
   .fork-divider {
     display: flex;
     align-items: center;
@@ -1671,5 +2141,195 @@
   .fork-divider-icon {
     width: 12px;
     height: 12px;
+  }
+
+  /* Prepared-session schedule button (lives in the prepared action group) */
+  .schedule-split {
+    position: relative;
+  }
+
+  .schedule-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .schedule-toggle:hover {
+    background: var(--color-border);
+  }
+
+  .schedule-icon {
+    width: 15px;
+    height: 15px;
+    color: var(--color-text-secondary);
+  }
+
+  .schedule-caret {
+    width: 14px;
+    height: 14px;
+    color: var(--color-text-muted);
+  }
+
+  .schedule-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: transparent;
+  }
+
+  .schedule-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 21;
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+    padding: 0.25rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  }
+
+  .schedule-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--color-text-primary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .schedule-menu-item:hover {
+    background: var(--color-border);
+  }
+
+  .schedule-menu-countdown {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+
+  /* Queued session panel */
+  .queued-panel {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    margin: 0.5rem 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--color-warning, #f59e0b) 40%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-warning, #f59e0b) 10%, transparent);
+    color: var(--color-text-primary);
+  }
+
+  .queued-panel.scheduled {
+    border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  }
+
+  .queued-icon {
+    flex-shrink: 0;
+    color: var(--color-warning, #f59e0b);
+    margin-top: 0.125rem;
+  }
+
+  .queued-panel.scheduled .queued-icon {
+    color: var(--color-accent);
+  }
+
+  .queued-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .queued-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .queued-title {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--color-warning, #f59e0b);
+  }
+
+  .queued-panel.scheduled .queued-title {
+    color: var(--color-accent);
+  }
+
+  .queued-sub {
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+    line-height: 1.4;
+  }
+
+  .queued-prompt {
+    font-size: 0.8125rem;
+    color: var(--color-text-primary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 0.5rem 0.625rem;
+    max-height: 6rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .queued-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    flex-wrap: wrap;
+  }
+
+  .queued-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    border-radius: 4px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .queued-btn:hover {
+    background: var(--color-border);
+  }
+
+  .queued-btn.primary {
+    border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  }
+
+  .queued-btn.primary:hover {
+    background: color-mix(in srgb, var(--color-accent) 28%, transparent);
   }
 </style>

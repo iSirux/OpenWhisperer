@@ -162,7 +162,7 @@ function createRecordingFlowStore() {
     if (!get(settings).audio.capture_screenshot_on_record) return;
     captureRecordingScreenshot().then((screenshot) => {
       if (screenshot) {
-        sdkSessions.updatePendingTranscription(sessionId, { screenshot });
+        sdkSessions.updatePendingTranscription(sessionId, { screenshots: [screenshot] });
       }
     });
   }
@@ -218,10 +218,16 @@ function createRecordingFlowStore() {
               isNoteMode
             );
           }
-        } else if (sessionIdToProcess) {
-          sdkSessions.updatePendingTranscription(sessionIdToProcess, {
-            transcriptionError: 'No transcription returned',
-          });
+        } else {
+          // No transcription returned — salvage the recording to the pile (audio is
+          // preserved, retriable) regardless of the intended destination, instead of
+          // leaving a stuck session.
+          await handlePileTranscriptReady(
+            '',
+            sessionIdToProcess,
+            capturedVoskTranscript,
+            'No transcription returned'
+          );
         }
 
         if (pendingTranscriptionSessionId === sessionIdToProcess) {
@@ -229,22 +235,14 @@ function createRecordingFlowStore() {
         }
       })
       .catch(async (error) => {
-        if (shouldPileOnStop) {
-          await handlePileTranscriptReady(
-            '',
-            sessionIdToProcess,
-            capturedVoskTranscript,
-            error?.message || 'Transcription failed'
-          );
-        } else if (sessionIdToProcess) {
-          const audioData = get(recording).audioData;
-          if (audioData) {
-            sdkSessions.storeAudioData(sessionIdToProcess, audioData);
-          }
-          sdkSessions.updatePendingTranscription(sessionIdToProcess, {
-            transcriptionError: error?.message || 'Transcription failed',
-          });
-        }
+        // Transcription failed (service down/network/5xx) — salvage the recording to
+        // the pile so it survives and can be retried, regardless of intended destination.
+        await handlePileTranscriptReady(
+          '',
+          sessionIdToProcess,
+          capturedVoskTranscript,
+          error?.message || 'Transcription failed'
+        );
         if (pendingTranscriptionSessionId === sessionIdToProcess) {
           pendingTranscriptionSessionId = null;
         }
@@ -430,10 +428,22 @@ function createRecordingFlowStore() {
     await recording.startRecording();
   }
 
-  /** Stop recording for session setup view. Returns the transcript. */
+  /** Stop recording for session setup view. Returns the transcript (null on failure). */
   async function stopRecordingForSetup(): Promise<string | null> {
     update((s) => ({ ...s, isRecordingForSetup: false }));
-    return await recording.stopRecording();
+    const capturedVoskTranscript = get(recording).realtimeTranscript;
+    try {
+      return await recording.stopRecording();
+    } catch (error) {
+      // Transcription failed — salvage the recording to the pile so it isn't lost.
+      await handlePileTranscriptReady(
+        '',
+        null,
+        capturedVoskTranscript,
+        error instanceof Error ? error.message : 'Transcription failed'
+      );
+      return null;
+    }
   }
 
   /** Handle transcribe-to-input hotkey. */
@@ -454,11 +464,25 @@ function createRecordingFlowStore() {
       isRecordingForNoteMode: false,
     }));
 
-    recording.stopRecording(true).then(async (transcript) => {
-      if (transcript) {
-        await invoke('paste_text', { text: transcript });
-      }
-    });
+    recording
+      .stopRecording(true)
+      .then(async (transcript) => {
+        if (transcript) {
+          await invoke('paste_text', { text: transcript });
+        } else {
+          // Nothing transcribed — keep the recording in the pile so it isn't lost.
+          await handlePileTranscriptReady('', null, undefined, 'No transcription returned');
+        }
+      })
+      .catch(async (error) => {
+        // Transcription failed — salvage the recording to the pile for retry.
+        await handlePileTranscriptReady(
+          '',
+          null,
+          undefined,
+          error?.message || 'Transcription failed'
+        );
+      });
   }
 
   /** Start recording for note-taking mode. */

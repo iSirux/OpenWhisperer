@@ -28,9 +28,7 @@ pub fn create_sdk_session(
     autocompact_pct: Option<u32>, // Claude-only: 0=DISABLE_AUTO_COMPACT, 1..=99=PCT_OVERRIDE, None/100=default
     disable_hooks: Option<bool>,  // Skip project/local settings to disable filesystem hooks
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started. Call start_sidecar first.".to_string());
-    }
+    // Started/alive guard is folded into `SidecarManager::send` (I3).
     sidecar.send(OutboundMessage::Create {
         id,
         cwd,
@@ -58,17 +56,11 @@ pub fn send_sdk_prompt(
     prompt: String,
     images: Option<Vec<ImageData>>,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::Query { id, prompt, images })
 }
 
 #[tauri::command]
 pub fn stop_sdk_query(sidecar: State<Arc<SidecarManager>>, id: String) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::Stop { id })
 }
 
@@ -78,9 +70,6 @@ pub fn update_sdk_model(
     id: String,
     model: String,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::UpdateModel { id, model })
 }
 
@@ -90,9 +79,6 @@ pub fn update_sdk_effort(
     id: String,
     effort_level: Option<String>,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::UpdateEffort { id, effort_level })
 }
 
@@ -102,9 +88,6 @@ pub fn update_sdk_autocompact_pct(
     id: String,
     pct: Option<u32>,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::UpdateAutocompactPct { id, pct })
 }
 
@@ -114,17 +97,11 @@ pub fn update_sdk_disable_hooks(
     id: String,
     disable: bool,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::UpdateDisableHooks { id, disable })
 }
 
 #[tauri::command]
 pub fn close_sdk_session(sidecar: State<Arc<SidecarManager>>, id: String) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::Close { id })
 }
 
@@ -136,9 +113,6 @@ pub fn answer_ask_user_question(
     id: String,
     answers: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::AnswerAskUserQuestion { id, answers })
 }
 
@@ -151,9 +125,6 @@ pub fn answer_plan_approval(
     action: String,
     feedback: Option<String>,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        return Err("Sidecar not started".to_string());
-    }
     sidecar.send(OutboundMessage::AnswerPlanApproval {
         id,
         action,
@@ -173,16 +144,14 @@ pub fn generate_repo_description_with_claude(
     repo_path: String,
     repo_name: String,
 ) -> Result<(), String> {
-    // Start sidecar if not already running
-    if !sidecar.is_started() {
-        sidecar.start(app)?;
-    }
-
-    sidecar.send(OutboundMessage::GenerateRepoDescription {
-        id,
-        repo_path,
-        repo_name,
-    })
+    sidecar.send_or_start(
+        app,
+        OutboundMessage::GenerateRepoDescription {
+            id,
+            repo_path,
+            repo_name,
+        },
+    )
 }
 
 /// Generate repository description using Codex SDK
@@ -197,16 +166,14 @@ pub fn generate_repo_description_with_codex(
     repo_path: String,
     repo_name: String,
 ) -> Result<(), String> {
-    // Start sidecar if not already running
-    if !sidecar.is_started() {
-        sidecar.start(app)?;
-    }
-
-    sidecar.send(OutboundMessage::GenerateRepoDescriptionWithCodex {
-        id,
-        repo_path,
-        repo_name,
-    })
+    sidecar.send_or_start(
+        app,
+        OutboundMessage::GenerateRepoDescriptionWithCodex {
+            id,
+            repo_path,
+            repo_name,
+        },
+    )
 }
 
 /// Generate launch profile (commands + profiles) using Claude SDK.
@@ -221,15 +188,14 @@ pub fn generate_launch_profile_with_claude(
     repo_path: String,
     repo_name: String,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        sidecar.start(app)?;
-    }
-
-    sidecar.send(OutboundMessage::GenerateLaunchProfile {
-        id,
-        repo_path,
-        repo_name,
-    })
+    sidecar.send_or_start(
+        app,
+        OutboundMessage::GenerateLaunchProfile {
+            id,
+            repo_path,
+            repo_name,
+        },
+    )
 }
 
 /// Generate launch profile (commands + profiles) using Codex SDK.
@@ -243,15 +209,14 @@ pub fn generate_launch_profile_with_codex(
     repo_path: String,
     repo_name: String,
 ) -> Result<(), String> {
-    if !sidecar.is_started() {
-        sidecar.start(app)?;
-    }
-
-    sidecar.send(OutboundMessage::GenerateLaunchProfileWithCodex {
-        id,
-        repo_path,
-        repo_name,
-    })
+    sidecar.send_or_start(
+        app,
+        OutboundMessage::GenerateLaunchProfileWithCodex {
+            id,
+            repo_path,
+            repo_name,
+        },
+    )
 }
 
 /// Check if OpenAI Codex authentication is available
@@ -296,7 +261,7 @@ pub async fn run_codex_login() -> Result<bool, String> {
 pub fn save_openai_api_key(app: tauri::AppHandle, api_key: String) -> Result<(), String> {
     use tauri_plugin_keyring::KeyringExt;
     app.keyring()
-        .set_password("claude-whisperer", "openai-api-key", &api_key)
+        .set_password("open-whisperer", "openai-api-key", &api_key)
         .map_err(|e| format!("Failed to save API key: {}", e))
 }
 
@@ -306,7 +271,7 @@ pub fn has_openai_api_key(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_keyring::KeyringExt;
     match app
         .keyring()
-        .get_password("claude-whisperer", "openai-api-key")
+        .get_password("open-whisperer", "openai-api-key")
     {
         Ok(Some(_)) => Ok(true),
         _ => Ok(false),
@@ -318,7 +283,7 @@ pub fn has_openai_api_key(app: tauri::AppHandle) -> Result<bool, String> {
 pub fn delete_openai_api_key(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_keyring::KeyringExt;
     app.keyring()
-        .delete_password("claude-whisperer", "openai-api-key")
+        .delete_password("open-whisperer", "openai-api-key")
         .map_err(|e| format!("Failed to delete API key: {}", e))
 }
 
@@ -338,7 +303,7 @@ pub fn check_claude_auth(app: tauri::AppHandle) -> Result<serde_json::Value, Str
         use tauri_plugin_keyring::KeyringExt;
         matches!(
             app.keyring()
-                .get_password("claude-whisperer", "anthropic-api-key"),
+                .get_password("open-whisperer", "anthropic-api-key"),
             Ok(Some(_))
         )
     };
@@ -356,7 +321,7 @@ pub fn check_claude_auth(app: tauri::AppHandle) -> Result<serde_json::Value, Str
 pub fn save_claude_api_key(app: tauri::AppHandle, api_key: String) -> Result<(), String> {
     use tauri_plugin_keyring::KeyringExt;
     app.keyring()
-        .set_password("claude-whisperer", "anthropic-api-key", &api_key)
+        .set_password("open-whisperer", "anthropic-api-key", &api_key)
         .map_err(|e| format!("Failed to save API key: {}", e))
 }
 
@@ -366,7 +331,7 @@ pub fn has_claude_api_key(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_keyring::KeyringExt;
     match app
         .keyring()
-        .get_password("claude-whisperer", "anthropic-api-key")
+        .get_password("open-whisperer", "anthropic-api-key")
     {
         Ok(Some(_)) => Ok(true),
         _ => Ok(false),
@@ -378,7 +343,7 @@ pub fn has_claude_api_key(app: tauri::AppHandle) -> Result<bool, String> {
 pub fn delete_claude_api_key(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_keyring::KeyringExt;
     app.keyring()
-        .delete_password("claude-whisperer", "anthropic-api-key")
+        .delete_password("open-whisperer", "anthropic-api-key")
         .map_err(|e| format!("Failed to delete API key: {}", e))
 }
 
@@ -405,70 +370,93 @@ pub struct ClaudeRateLimits {
     pub extra_usage: ExtraUsage,
 }
 
+/// Read an OAuth credentials file and extract a bearer token from it (I7).
+/// `missing_msg` is returned when the file doesn't exist; `extract` pulls the
+/// token out of the parsed JSON.
+fn read_bearer_token(
+    path: &std::path::Path,
+    missing_msg: &str,
+    extract: impl Fn(&serde_json::Value) -> Option<String>,
+) -> Result<String, String> {
+    if !path.exists() {
+        return Err(missing_msg.to_string());
+    }
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read credentials: {}", e))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse credentials: {}", e))?;
+    extract(&value).ok_or_else(|| "OAuth access token not found in credentials".to_string())
+}
+
+/// Perform an authenticated GET returning parsed JSON, with network-error
+/// classification shared between Claude and Codex (I7).
+async fn authed_get_json(
+    url: &str,
+    token: &str,
+    extra_headers: &[(&str, &str)],
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let mut request = client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", token));
+    for (k, v) in extra_headers {
+        request = request.header(*k, *v);
+    }
+    let response = request.send().await.map_err(|e| {
+        let cause = if e.is_timeout() {
+            "request timed out"
+        } else if e.is_connect() {
+            "connection failed (check internet connectivity)"
+        } else if e.is_request() {
+            "failed to build request"
+        } else {
+            "unknown network error"
+        };
+        format!("Failed to fetch from {}: {} ({})", url, cause, e)
+    })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("API error ({}) from {}: {}", status, url, body));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))
+}
+
 /// Fetch Claude Code rate limit usage from Anthropic OAuth API
 #[tauri::command]
 pub async fn fetch_claude_rate_limits() -> Result<ClaudeRateLimits, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let credentials_path = home.join(".claude").join(".credentials.json");
 
-    if !credentials_path.exists() {
-        return Err(
-            "Claude OAuth credentials not found. Please log in via Claude CLI.".to_string(),
-        );
-    }
+    let token = read_bearer_token(
+        &credentials_path,
+        "Claude OAuth credentials not found. Please log in via Claude CLI.",
+        |creds| {
+            creds
+                .get("claudeAiOauth")
+                .and_then(|o| o.get("accessToken"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        },
+    )?;
 
-    let creds_content = std::fs::read_to_string(&credentials_path)
-        .map_err(|e| format!("Failed to read credentials: {}", e))?;
-    let creds: serde_json::Value = serde_json::from_str(&creds_content)
-        .map_err(|e| format!("Failed to parse credentials: {}", e))?;
-
-    let token = creds
-        .get("claudeAiOauth")
-        .and_then(|o| o.get("accessToken"))
-        .and_then(|t| t.as_str())
-        .ok_or("OAuth access token not found in credentials")?;
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-    let url = "https://api.anthropic.com/api/oauth/usage";
-    let response = client
-        .get(url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .header("User-Agent", "claude-code/2.0.32")
-        .send()
-        .await
-        .map_err(|e| {
-            let cause = if e.is_timeout() {
-                "request timed out"
-            } else if e.is_connect() {
-                "connection failed (check internet connectivity)"
-            } else if e.is_request() {
-                "failed to build request"
-            } else {
-                "unknown network error"
-            };
-            format!(
-                "Failed to fetch rate limits from {}: {} ({})",
-                url, cause, e
-            )
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "Rate limits API error ({}) from {}: {}",
-            status, url, body
-        ));
-    }
-
-    let data: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
+    let data = authed_get_json(
+        "https://api.anthropic.com/api/oauth/usage",
+        &token,
+        &[
+            ("anthropic-beta", "oauth-2025-04-20"),
+            ("User-Agent", "claude-code/2.0.32"),
+        ],
+    )
+    .await?;
 
     Ok(ClaudeRateLimits {
         five_hour: RateLimitWindow {
@@ -513,46 +501,28 @@ pub async fn fetch_codex_rate_limits() -> Result<ClaudeRateLimits, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let auth_path = home.join(".codex").join("auth.json");
 
-    if !auth_path.exists() {
-        return Err("Codex OAuth credentials not found. Please run `codex login`.".to_string());
-    }
-
-    let auth_content = std::fs::read_to_string(&auth_path)
-        .map_err(|e| format!("Failed to read Codex auth: {}", e))?;
-    let auth: serde_json::Value = serde_json::from_str(&auth_content)
-        .map_err(|e| format!("Failed to parse Codex auth: {}", e))?;
-
     // Try common token locations: tokens.access_token (codex login), or top-level fields
-    let token = auth
-        .get("tokens")
-        .and_then(|t| t.get("access_token"))
-        .or_else(|| auth.get("token"))
-        .or_else(|| auth.get("access_token"))
-        .or_else(|| auth.get("accessToken"))
-        .and_then(|t| t.as_str())
-        .ok_or("OAuth token not found in ~/.codex/auth.json")?;
+    let token = read_bearer_token(
+        &auth_path,
+        "Codex OAuth credentials not found. Please run `codex login`.",
+        |auth| {
+            auth.get("tokens")
+                .and_then(|t| t.get("access_token"))
+                .or_else(|| auth.get("token"))
+                .or_else(|| auth.get("access_token"))
+                .or_else(|| auth.get("accessToken"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        },
+    )?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-    let response = client
-        .get("https://chatgpt.com/backend-api/wham/usage")
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch Codex rate limits: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("Codex API error ({}): {}", status, body));
-    }
-
-    let data: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Codex response: {}", e))?;
+    // Codex gets the same network-error classification as Claude (I7).
+    let data = authed_get_json(
+        "https://chatgpt.com/backend-api/wham/usage",
+        &token,
+        &[],
+    )
+    .await?;
 
     // Normalize Codex response to the same shape as Claude
     // Codex: rate_limit.primary_window / secondary_window with used_percent + reset_at (epoch)

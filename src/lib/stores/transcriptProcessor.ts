@@ -495,7 +495,7 @@ export async function handlePileTranscriptReady(
     const session = get(sdkSessions).find((s) => s.id === pendingSessionId);
     const pending = session?.pendingTranscription;
     audioVisualizationHistory = pending?.audioVisualizationHistory;
-    screenshot = pending?.screenshot;
+    screenshot = pending?.screenshots?.[0];
     recordingDurationMs =
       pending?.recordingDurationMs ??
       (pending?.recordingStartedAt ? Date.now() - pending.recordingStartedAt : undefined);
@@ -525,7 +525,7 @@ export async function handlePileTranscriptReady(
 /**
  * Handle "Send Selection" hotkey:
  * 1. Copy selected text from focused app
- * 2. Show/focus ClaudeWhisperer window
+ * 2. Show/focus OpenWhisperer window
  * 3. Run auto-model/repo recommendations
  * 4. Create session and send immediately
  */
@@ -598,7 +598,7 @@ export async function handleSendSelection() {
 /**
  * Handle "Prepare Selection" hotkey:
  * 1. Copy selected text from focused app
- * 2. Show/focus ClaudeWhisperer window
+ * 2. Show/focus OpenWhisperer window
  * 3. Run auto-model/repo recommendations
  * 4. Create prepared session for user review
  */
@@ -733,15 +733,29 @@ export async function handleVoiceCommand(
       clearPendingSessionId();
     }
 
-    recording.stopRecording(true).then(async (whisperTranscript) => {
-      const transcriptToUse = whisperTranscript
-        ? processVoiceCommand(whisperTranscript).cleanedTranscript
-        : cleanedTranscript;
+    recording
+      .stopRecording(true)
+      .then(async (whisperTranscript) => {
+        const transcriptToUse = whisperTranscript
+          ? processVoiceCommand(whisperTranscript).cleanedTranscript
+          : cleanedTranscript;
 
-      if (transcriptToUse) {
-        await invoke('paste_text', { text: transcriptToUse });
-      }
-    });
+        if (transcriptToUse) {
+          await invoke('paste_text', { text: transcriptToUse });
+        } else {
+          // Nothing to paste — keep the recording in the pile so it isn't lost.
+          await handlePileTranscriptReady('', null, cleanedTranscript, 'No transcription returned');
+        }
+      })
+      .catch(async (error) => {
+        // Transcription failed — salvage the recording to the pile for retry.
+        await handlePileTranscriptReady(
+          '',
+          null,
+          cleanedTranscript,
+          error?.message || 'Transcription failed'
+        );
+      });
     return;
   }
 
@@ -781,17 +795,24 @@ export async function handleVoiceCommand(
         if (finalTranscript) {
           await handleTranscriptReady(finalTranscript, noteSessionId, cleanedTranscript, true);
         } else {
-          sdkSessions.updatePendingTranscription(noteSessionId, {
-            transcriptionError: 'No transcription available',
-          });
+          // No usable transcript — salvage the recording to the pile for retry.
+          await handlePileTranscriptReady(
+            '',
+            noteSessionId,
+            cleanedTranscript,
+            'No transcription available'
+          );
         }
 
         clearPendingSessionId();
       })
-      .catch((error) => {
-        sdkSessions.updatePendingTranscription(noteSessionId, {
-          transcriptionError: error?.message || 'Recording stop failed',
-        });
+      .catch(async (error) => {
+        await handlePileTranscriptReady(
+          '',
+          noteSessionId,
+          cleanedTranscript,
+          error?.message || 'Transcription failed'
+        );
         clearPendingSessionId();
       });
     return;
@@ -852,17 +873,24 @@ export async function handleVoiceCommand(
         if (finalTranscript) {
           await handlePrepareTranscriptReady(finalTranscript, prepareSessionId, cleanedTranscript);
         } else {
-          sdkSessions.updatePendingTranscription(prepareSessionId, {
-            transcriptionError: 'No transcription available',
-          });
+          // No usable transcript — salvage the recording to the pile for retry.
+          await handlePileTranscriptReady(
+            '',
+            prepareSessionId,
+            cleanedTranscript,
+            'No transcription available'
+          );
         }
 
         clearPendingSessionId();
       })
-      .catch((error) => {
-        sdkSessions.updatePendingTranscription(prepareSessionId, {
-          transcriptionError: error?.message || 'Recording stop failed',
-        });
+      .catch(async (error) => {
+        await handlePileTranscriptReady(
+          '',
+          prepareSessionId,
+          cleanedTranscript,
+          error?.message || 'Transcription failed'
+        );
         clearPendingSessionId();
       });
     return;
@@ -889,20 +917,25 @@ export async function handleVoiceCommand(
 
       if (finalTranscript) {
         await handleTranscriptReady(finalTranscript, pendingSessionId, cleanedTranscript);
-      } else if (pendingSessionId) {
-        sdkSessions.updatePendingTranscription(pendingSessionId, {
-          transcriptionError: 'No transcription available',
-        });
+      } else {
+        // No usable transcript — salvage the recording to the pile for retry.
+        await handlePileTranscriptReady(
+          '',
+          pendingSessionId,
+          cleanedTranscript,
+          'No transcription available'
+        );
       }
 
       clearPendingSessionId();
     })
-    .catch((error) => {
-      if (pendingSessionId) {
-        sdkSessions.updatePendingTranscription(pendingSessionId, {
-          transcriptionError: error?.message || 'Recording stop failed',
-        });
-      }
+    .catch(async (error) => {
+      await handlePileTranscriptReady(
+        '',
+        pendingSessionId,
+        cleanedTranscript,
+        error?.message || 'Transcription failed'
+      );
       clearPendingSessionId();
     });
 }

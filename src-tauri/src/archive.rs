@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::config::AppConfig;
 use crate::session_persistence::{atomic_write, PersistedSdkSession, PersistedTerminalSession};
+use crate::util::truncate_chars;
 
 /// Lightweight metadata for an archived session, stored in the index
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,10 +50,7 @@ pub struct ArchiveIndex {
 }
 
 fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
+    crate::util::now_ms()
 }
 
 impl ArchiveIndex {
@@ -354,13 +352,7 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession) -> ArchiveEntry {
         .iter()
         .find(|m| m.msg_type == "user")
         .and_then(|m| m.content.as_ref())
-        .map(|c| {
-            if c.len() > 200 {
-                format!("{}...", &c[..200])
-            } else {
-                c.clone()
-            }
-        });
+        .map(|c| truncate_chars(c, 200));
 
     let message_count = session.messages.len() as u32;
 
@@ -387,12 +379,10 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession) -> ArchiveEntry {
 
 /// Extract metadata from a terminal session for the archive index
 fn terminal_session_to_archive_entry(session: &PersistedTerminalSession) -> ArchiveEntry {
-    let prompt = if session.prompt.len() > 200 {
-        Some(format!("{}...", &session.prompt[..200]))
-    } else if session.prompt.is_empty() {
+    let prompt = if session.prompt.is_empty() {
         None
     } else {
-        Some(session.prompt.clone())
+        Some(truncate_chars(&session.prompt, 200))
     };
 
     ArchiveEntry {

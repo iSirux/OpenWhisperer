@@ -1,6 +1,6 @@
 // Shared session types used across SessionList and SessionCard components
 
-import type { SessionAiMetadata, PlanModeState, NoteModeState } from '$lib/stores/sdkSessions';
+import type { SessionAiMetadata, PlanModeState, NoteModeState, QueueInfo, RateLimitedState } from '$lib/stores/sdkSessions';
 import type { SdkProvider } from '$lib/utils/models';
 import type { ExecutionStatus } from '$lib/types/sequence';
 
@@ -76,4 +76,11 @@ export interface DisplaySession {
 
   // Pile item this session was launched from
   pileItem?: { id: string; title: string };
+
+  // Smart Queue: a never-launched session parked until its provider's usage
+  // window resets or a scheduled window boundary (status === 'queued').
+  queueInfo?: QueueInfo | null;
+  // Smart Queue: a live session with a pending turn waiting to be re-sent
+  // (rate-limit reset or scheduled send; surfaces as status 'rate_limited').
+  rateLimited?: RateLimitedState | null;
 }

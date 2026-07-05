@@ -13,7 +13,10 @@ interface QueuedRecording {
   status: 'pending' | 'transcribing' | 'done' | 'error';
   transcript?: string;
   error?: string;
+  // Id of the on-disk capture (crash insurance); deleted once transcription settles.
+  captureId?: string;
   onComplete?: (transcript: string) => void;
+  onError?: (error: Error) => void;
 }
 
 interface RecordingStore {
@@ -427,6 +430,13 @@ function createRecordingStore() {
       // Track transcription
       usageStats.trackTranscription();
 
+      // Transcription settled successfully: the transcript is durable, drop the capture.
+      if (pendingRecording.captureId) {
+        invoke('delete_capture', { id: pendingRecording.captureId }).catch((e) =>
+          console.warn('[recording] Failed to delete capture after success:', e)
+        );
+      }
+
       // Update the queue item as done
       update((s) => ({
         ...s,
@@ -448,6 +458,14 @@ function createRecordingStore() {
       console.error('Failed to transcribe queued recording:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to transcribe';
 
+      // The app is alive, so the caller's failure handler will salvage the in-memory
+      // audio to the pile; the on-disk capture is only crash insurance — drop it now.
+      if (pendingRecording.captureId) {
+        invoke('delete_capture', { id: pendingRecording.captureId }).catch((e) =>
+          console.warn('[recording] Failed to delete capture after error:', e)
+        );
+      }
+
       update((s) => ({
         ...s,
         transcribingCount: s.transcribingCount - 1,
@@ -458,6 +476,12 @@ function createRecordingStore() {
 
       // Emit error event
       emit('transcription-error', { id: pendingRecording.id, error: errorMessage });
+
+      // Settle the caller's stopRecording(true) promise so the failure is handled
+      // (routed to the pile) instead of silently hanging forever.
+      if (pendingRecording.onError) {
+        pendingRecording.onError(error instanceof Error ? error : new Error(errorMessage));
+      }
     }
 
     queueProcessing = false;
@@ -584,7 +608,22 @@ function createRecordingStore() {
               // Queue the transcription instead of blocking
               const recordingId = generateId();
 
-              // Add to queue with a callback that will resolve the promise
+              // Capture-first durability: stage the audio to disk BEFORE attempting
+              // transcription so an app crash mid-transcribe can't lose the recording.
+              // Best-effort — if staging fails we still transcribe (in-memory audio +
+              // the pile salvage path keep it durable while the app is alive).
+              let captureId: string | undefined = recordingId;
+              try {
+                await invoke('save_capture', {
+                  id: recordingId,
+                  audioData: Array.from(audioData),
+                });
+              } catch (captureError) {
+                console.warn('[recording] Failed to stage recording capture:', captureError);
+                captureId = undefined;
+              }
+
+              // Add to queue with callbacks that settle the promise
               update((s) => ({
                 ...s,
                 state: 'idle', // Go back to idle so new recordings can start
@@ -595,11 +634,15 @@ function createRecordingStore() {
                   {
                     id: recordingId,
                     audioData,
+                    captureId,
                     status: 'pending',
                     onComplete: (transcript: string) => {
                       // Update the store with the transcript when done
                       update((s2) => ({ ...s2, transcript }));
                       resolve(transcript);
+                    },
+                    onError: (transcriptionError: Error) => {
+                      reject(transcriptionError);
                     },
                   },
                 ],

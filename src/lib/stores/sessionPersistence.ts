@@ -30,6 +30,11 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
     'currentWorkStartedAt', // Runtime-only timer, accumulated time is persisted instead
     'pendingSystemNotifications', // Transient parallel agent notifications - cleared after first query
     'overflowRecovery', // Transient compact-and-retry state for context overflow recovery
+    'liveSubagentIds', // Runtime-only: subagents in flight this turn — nothing is live after restart
+    'liveBackgroundTaskIds', // Runtime-only: background tasks in flight — nothing is live after restart
+    'completionDeferred', // Runtime-only: deferred-completion flag, meaningless after restart
+    'inFlightPrompt', // Smart Queue: transient capture of the current turn's prompt for mid-run recovery
+    'inFlightImages', // Smart Queue: transient capture of the current turn's images for mid-run recovery
   ]),
   // PendingTranscriptionInfo fields that shouldn't be persisted
   PendingTranscriptionInfo: new Set([
@@ -230,8 +235,8 @@ export interface PersistedPendingTranscriptionInfo {
     reasoning: string;
     confidence: string;
   };
-  /** Recording screenshot (base64 — already JSON-safe) */
-  screenshot?: { mediaType: string; base64Data: string; width?: number; height?: number; source?: 'screenshot' };
+  /** Recording screenshots (base64 — already JSON-safe) */
+  screenshots?: { mediaType: string; base64Data: string; width?: number; height?: number; source?: 'screenshot' }[];
 }
 
 /**

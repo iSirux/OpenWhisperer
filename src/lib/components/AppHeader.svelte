@@ -16,6 +16,7 @@
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import { DEFAULT_OPENAI_MODEL_ID, isAutoModel } from '$lib/utils/models';
   import RateLimitIndicator from './RateLimitIndicator.svelte';
+  import QueueIndicator from './QueueIndicator.svelte';
 
   // Derived state from stores
   let activeRepos = $derived($repos.list.filter((r) => r.active !== false));
@@ -158,7 +159,7 @@
       onclick={handleShowStart}
       title="Go to start page"
     >
-      Claude Whisperer
+      OpenWhisperer
     </button>
 
     <!-- Repo Selector Dropdown -->
@@ -328,6 +329,9 @@
   <div class="flex items-center gap-2 min-w-0">
     <!-- Rate Limit Indicator -->
     <RateLimitIndicator />
+
+    <!-- Smart Queue Indicator (queued count + next reset) -->
+    <QueueIndicator />
 
     <!-- Open Mic Marquee (shows live transcription when listening) -->
     <OpenMicMarquee />

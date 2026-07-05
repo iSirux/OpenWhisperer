@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Whisperer is a Tauri v2 desktop application that provides a voice-controlled interface for Claude Code. Users can record voice prompts via hotkeys, which are transcribed using a Whisper API endpoint, then sent to Claude Code either through embedded terminal sessions (PTY mode) or directly via the Claude Agent SDK (SDK mode). The app supports multimodal prompts (text + images), session persistence, usage tracking, thinking levels, voice commands, real-time transcription via Vosk, and LLM-powered intelligent features via Gemini or other providers.
+OpenWhisperer is a Tauri v2 desktop application that provides a voice-controlled interface for Claude Code. Users can record voice prompts via hotkeys, which are transcribed using a Whisper API endpoint, then sent to Claude Code either through embedded terminal sessions (PTY mode) or directly via the Claude Agent SDK (SDK mode). The app supports multimodal prompts (text + images), session persistence, usage tracking, thinking levels, voice commands, real-time transcription via Vosk, and LLM-powered intelligent features via Gemini or other providers.
 
-> **Log files:** `%APPDATA%\claude-whisperer\logs\` (Windows) / `~/Library/Application Support/claude-whisperer/logs/` (macOS) — named `backend[-dev]-YYYY-MM-DD.log` and `frontend[-dev]-YYYY-MM-DD.log`.
+> **Log files:** `%APPDATA%\open-whisperer\logs\` (Windows) / `~/Library/Application Support/open-whisperer/logs/` (macOS) — named `backend[-dev]-YYYY-MM-DD.log` and `frontend[-dev]-YYYY-MM-DD.log`.
 
 ## Development Commands
 
@@ -67,6 +67,8 @@ Core UI:
 - `SessionSidebarHeader.svelte` - Sidebar header with session controls
 - `EmptySessionPlaceholder.svelte` - Placeholder for empty session state
 - `SessionPendingView.svelte` - View for sessions in pending states (repo selection, transcription)
+- `SessionSetupView.svelte` - **The manual "New Session" form** (the fields-and-textarea view: Mode/Access/Provider/Model/Effort/Repository/Worktree/Browser + "Your prompt" + Record/Start Session). This is the typed/manual entry point, distinct from the voice-recording prepared/approval flow in `sdk/SessionRecordingHeader.svelte`. Its `onStart` config is the choke point where the final prompt is assembled.
+- `PromptChips.svelte` - Reusable toggleable prompt-chip row (chip set from `settings.prompt_chips`); selected chips are appended to the prompt on send. Used in `SessionSetupView`, `sdk/SessionRecordingHeader` (prepared + approval), and `PileDetailView`. See `src/lib/utils/promptChips.ts` (`appendChips`/`mergeChips`).
 - `Terminal.svelte` - xterm.js terminal with WebGL rendering for PTY sessions
 - `ModelSelector.svelte` - Button group for selecting Claude model (Opus/Sonnet/Haiku/Auto)
 - `ThinkingToggle.svelte` - Toggle button for enabling/disabling thinking mode
@@ -88,7 +90,7 @@ Core UI:
 - `SdkLoadingIndicator.svelte` - Animated loading indicator with status text
 - `SdkPromptInput.svelte` - Multi-line textarea with image paste/drop support, recording button, and auto-resize
 - `SdkUsageBar.svelte` - Token usage display with input/output/cache stats, cost, and context usage bar
-- `SessionRecordingHeader.svelte` - Completed recording display header with visualizations
+- `SessionRecordingHeader.svelte` - Header for a voice recording: shows completed-recording visualizations and drives the **prepared** (draft, ready to launch) and **approval** (review-before-send) UIs for voice-originated sessions. This is the post-recording flow — NOT the manual typed New Session form (that's `SessionSetupView.svelte`).
 
 **Settings Components (`src/lib/components/settings/`):**
 
@@ -240,7 +242,7 @@ Defined in `tauri.conf.json`:
 
 ## Configuration
 
-App config stored in system config directory (`claude-whisperer/config.json`):
+App config stored in system config directory (`open-whisperer/config.json`):
 
 - `terminal_mode` - Interactive | Prompt | Sdk
 - `theme` - Midnight | Slate | Snow | Sand
@@ -333,12 +335,16 @@ An inbox for voice recordings captured now and handled later. Three ways to pile
 
 - Items are persisted to `pile.json` in the config dir (opaque JSON, frontend owns the schema); audio is saved to `pile-audio/<id>.webm` so items can be replayed and re-transcribed (failed transcriptions still land in the pile as audio-only items)
 - Each item is LLM-processed in the background: transcription cleanup, repo recommendation (with confidence), model/effort recommendation, and auto-title (reuses session naming)
-- UI: Sessions | Pile tabs in the sidebar; pile items open in the main pane for editing (transcript, repo, model, effort, audio playback); multi-select in the list enables batch launch (Start / Prepare / Plan first / Discuss with worktree + Playwright toggles) through the shared session queue
+- UI: Sessions | Pile tabs in the sidebar; pile items open in the main pane for editing (transcript, repo, model, effort, audio playback); multi-select in the list enables batch launch (Start / Prepare / Plan first / Discuss with worktree + Playwright toggles) through the shared session queue, either separately (one session per item) or together (one combined multi-task session linked to every item)
 - Sessions launched from an item are tagged (`pileItem`) and shown as linked sessions with live indicators; items stay in the pile until deleted
+- **The pile is the durable transcription-failure sink for recordings not tied to a live conversation.** *Any* recording whose transcription fails, errors, returns empty, or hits an unavailable service is salvaged to the pile as a retriable `error` item (audio preserved) — for new-session, prepare, note, transcribe-to-input, voice-command, and setup-view recordings. This is centralized in `handlePileTranscriptReady` (`transcriptProcessor.ts`), which those stop paths call on failure; the `recording.ts` queue rejects `stopRecording(true)` on transcription error (fixed promise contract) so those paths actually run
+- **In-session follow-up recordings stay with their session.** A follow-up recorded for a LIVE session (the record/append buttons in `SdkView`) whose transcription fails is NOT sent to the pile — it was meant for that conversation. It's kept on the session as `SdkSession.failedRecording` (audio stored durably via `save_pile_audio`, keyed by `audioId`; survives restart), surfaced as a Retry/Discard banner above the prompt input. Retry re-transcribes and either sends it to the session or appends it to the prompt (per `mode`); the audio is cleaned up on retry-success, discard, or session close
+- **Capture-first durability:** every recording's audio is staged to disk (`recording-captures/<id>.webm`, via `save_capture`/`read_capture`/`delete_capture`/`list_captures` in `pile_cmds.rs`) the moment it stops, *before* transcription, and deleted once transcription settles. If the app crashes mid-transcription, `pile.load()` recovers leftover captures into audio-only `error` items on next launch
+- **Retry:** per-item "Retry transcription" (`PileDetailView`) plus "Retry all failed (N)" (`PileList`, `pile.retryAllFailed()`) which sequentially re-transcribes every failed item that still has audio
 
 ## Recording Screenshots
 
-Optional (`audio.capture_screenshot_on_record`, Settings → Audio → Recording): when a recording starts, the `capture_screenshot` Tauri command (xcap, monitor under the cursor) grabs the screen before the overlay appears. The screenshot is compressed via the shared image pipeline (`src/lib/utils/image.ts`) and rides on the pending session (`pendingTranscription.screenshot`) through prepare/approval/repo-selection; `sdkSessions.sendPrompt` attaches it to the first prompt as an image and appends `SCREENSHOT_PROMPT_NOTICE` (from `src/lib/utils/screenshot.ts`) at send time only — telling Claude the screenshot may be unrelated to the request, since the user may have been doing something off-topic while talking. Pile items store screenshots on disk (`pile-screenshots/<id>.img`) and attach them at launch. Thumbnails with remove buttons appear in the recording header (prepared/approval views) and the pile detail view; sent messages show the image with a "Screenshot" badge (`SdkImageContent.source === 'screenshot'`).
+Optional (`audio.capture_screenshot_on_record`, Settings → Audio → Recording): when a recording starts, the `capture_screenshot` Tauri command (xcap, monitor under the cursor) grabs the screen before the overlay appears. The screenshot is compressed via the shared image pipeline (`src/lib/utils/image.ts`) and rides on the pending session (`pendingTranscription.screenshots`, an array — combined "together" drafts from the pile carry one per item) through prepare/approval/repo-selection; `sdkSessions.sendPrompt` attaches them to the first prompt as images and appends `SCREENSHOT_PROMPT_NOTICE` (from `src/lib/utils/screenshot.ts`) at send time only — telling Claude the screenshot may be unrelated to the request, since the user may have been doing something off-topic while talking. Pile items store screenshots on disk (`pile-screenshots/<id>.img`) and attach them at launch. Thumbnails with remove buttons appear in the recording header (prepared/approval views) and the pile detail view; sent messages show the image with a "Screenshot" badge (`SdkImageContent.source === 'screenshot'`).
 
 ## Open Mic Mode
 

@@ -58,7 +58,7 @@ export function initLogger() {
 
   // Write a startup marker so it's easy to find session boundaries in the log
   const version = __APP_VERSION__ ?? "unknown";
-  sendToFile("info", [`=== Claude Whisperer ${version} frontend started ===`]);
+  sendToFile("info", [`=== OpenWhisperer ${version} frontend started ===`]);
 }
 
 // Vite injects this at build time via define in vite.config.ts

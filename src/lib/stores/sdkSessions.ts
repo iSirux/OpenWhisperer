@@ -10,6 +10,7 @@ import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, 
 import { clampEffortForModel, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
+import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
 
 // =============================================================================
 // Debounced Save
@@ -27,6 +28,16 @@ function normalizeSdkProvider(provider: unknown, model: string): SdkProvider {
     return modelProvider === 'claude' ? 'claude' : modelProvider;
   }
   return modelProvider;
+}
+
+/**
+ * Normalize an epoch timestamp to milliseconds. The mid-run rate-limit event's `resetsAt`
+ * may arrive in seconds or ms; reset times are in the near future (~1.7e12 ms / ~1.7e9 s),
+ * so anything below 1e12 is treated as seconds. Returns undefined for null/invalid input.
+ */
+function normalizeEpochMs(value: number | null | undefined): number | undefined {
+  if (value == null || !Number.isFinite(value)) return undefined;
+  return value < 1e12 ? value * 1000 : value;
 }
 
 function debouncedSave(): void {
@@ -285,8 +296,62 @@ export interface PendingTranscriptionInfo {
     reasoning: string;
     confidence: string;
   };
-  /** Screenshot captured when the recording started; attached to the first prompt on send. */
-  screenshot?: SdkImageContent;
+  /** Screenshots captured when the recording(s) started; attached to the first prompt on send. */
+  screenshots?: SdkImageContent[];
+}
+
+/**
+ * A follow-up recording made for a LIVE session whose transcription failed
+ * (service down/error). Kept attached to the session so it can be retried in place
+ * — the recording was intended for THIS conversation, not the pile. The audio is
+ * stored durably (via `save_pile_audio`, keyed by `audioId`) so retry survives an
+ * app restart; only string/number fields live here, so this auto-persists.
+ */
+export interface FailedRecording {
+  /** Durable audio stored via save_pile_audio, keyed by this id. */
+  audioId: string;
+  /** What to do with the transcript on a successful retry. */
+  mode: 'send' | 'append';
+  voskTranscript?: string;
+  error: string;
+  createdAt: number;
+}
+
+/** Why a session is sitting in the `queued` state. */
+export type QueueReason = 'rate_limit' | 'scheduled';
+
+/** Which usage window a queued/rate-limited session is waiting on. */
+export type QueueWindow = '5h' | '7d';
+
+/**
+ * Attached to a `status: 'queued'` session (a never-launched session parked
+ * until its provider's usage window resets or a scheduled window boundary).
+ * The prompt itself lives on the prepared fields so `launchPrepared` dispatches it.
+ */
+export interface QueueInfo {
+  reason: QueueReason;
+  provider: SdkProvider;
+  window?: QueueWindow;
+  queuedAt: number;
+  /** Snapshot of the target window's reset time (epoch ms), for display/scheduling. */
+  targetStartAt?: number;
+}
+
+/**
+ * A pending turn on a LIVE session that couldn't be sent right now. Either triggered by a
+ * rate limit (mid-run rejection or a deferred follow-up), or deliberately scheduled by the
+ * user to fire on the next window reset. Holds the exact prompt/images to re-send later.
+ */
+export interface RateLimitedState {
+  reason: QueueReason;
+  provider: SdkProvider;
+  window?: QueueWindow;
+  resetsAt?: number;
+  /** For a user-scheduled turn: snapshot of the target window's reset time (epoch ms). */
+  targetStartAt?: number;
+  prompt: string;
+  images?: SdkImageContent[];
+  queuedAt: number;
 }
 
 export interface SdkSession {
@@ -313,7 +378,7 @@ export interface SdkSession {
   /** @deprecated Use effortLevel */
   thinkingLevel?: EffortLevel;
   messages: SdkMessage[];
-  status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'prepared' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
+  status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'prepared' | 'queued' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
   lastActivityAt: number;
   startedAt?: number;
@@ -326,6 +391,8 @@ export interface SdkSession {
   pendingPrompt?: string;
   pendingApprovalPrompt?: string;
   pendingTranscription?: PendingTranscriptionInfo;
+  /** A follow-up recording for this live session whose transcription failed; retriable in place. */
+  failedRecording?: FailedRecording;
   planMode?: PlanModeState;
   noteMode?: NoteModeState;
   askUserQuestion?: AskUserQuestionState;
@@ -336,10 +403,20 @@ export interface SdkSession {
   sdkSessionId?: string;
   /** Prompt stored for a prepared session (ready to launch) */
   preparedPrompt?: string;
+  /** Pre-toggled prompt chips carried into a prepared session (e.g. from a pile item) */
+  preparedChips?: string[];
   /** System prompt stored for a prepared session */
   preparedSystemPrompt?: string;
   /** Repo recommendation stored for a prepared session (low-confidence case) */
   preparedRepoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string };
+  /** Smart Queue: set on a `status: 'queued'` session (rate-limited first-launch or a scheduled launch). Persisted. */
+  queueInfo?: QueueInfo | null;
+  /** Smart Queue: a pending turn on a live session waiting to be re-sent (mid-run rejection or deferred follow-up). Persisted. */
+  rateLimited?: RateLimitedState | null;
+  /** Smart Queue (transient, not persisted): the exact prompt of the turn currently in flight, so a mid-run rejection can recover it. */
+  inFlightPrompt?: string | null;
+  /** Smart Queue (transient, not persisted): the images of the turn currently in flight. */
+  inFlightImages?: SdkImageContent[] | null;
   /** Queued system notifications to prepend to the next query (e.g., parallel agent alerts) */
   pendingSystemNotifications?: string[];
   /** User requested stop for the active query; used to tag terminal state as stopped. */
@@ -372,6 +449,23 @@ export interface SdkSession {
    *  When true, no override is set; Claude's built-in default applies (~83.5% trigger with a
    *  33K-token reserved summarization buffer — that IS the optimum, and PCT_OVERRIDE is clamped to it). */
   autocompactEnabled?: boolean;
+  /** Runtime-only. agent_ids of subagents that started but haven't stopped yet.
+   *  Since Claude Code v2.1.198, subagents launch in the BACKGROUND by default, so the SDK emits
+   *  its `result` message (→ sdk-done) as soon as the MAIN agent finishes a turn with no tool
+   *  calls — while these subagents are still working. We track them here so a done that arrives
+   *  with subagents live is treated as a "semi-stop": real completion (Done status, completion
+   *  sound, unread marker, AI analysis) is DEFERRED until the last subagent_stop, otherwise the
+   *  session reads as "Done" and post-completion actions fire on a half-finished transcript.
+   *  Not persisted — nothing is live after an app restart. */
+  liveSubagentIds?: string[];
+  /** Runtime-only. task_ids of background tasks (e.g. `run_in_background` bash) still running.
+   *  Unlike subagents, these can run indefinitely (a dev server never "completes"), so by design
+   *  they do NOT block completion — they only drive a "background work running" indicator.
+   *  Not persisted. */
+  liveBackgroundTaskIds?: string[];
+  /** Runtime-only. Set when sdk-done arrived while subagents were still live and completion was
+   *  deferred; the final subagent_stop consumes this to run the real completion. Not persisted. */
+  completionDeferred?: boolean;
 }
 
 export type OverflowRecovery = {
@@ -702,6 +796,99 @@ function createSdkSessionsStore() {
   let sidecarStarted = false;
 
   // ---------------------------------------------------------------------------
+  // Completion
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Run the real end-of-turn completion: append the terminal marker, flip to idle,
+   * mark unread, clear progressive usage, play the completion sound, and kick off AI
+   * analysis of the (now complete) transcript.
+   *
+   * Called either directly from the sdk-done handler (no subagents in flight) or, when
+   * completion was DEFERRED because background subagents were still running, from the
+   * final subagent_stop once the live set drains. Deferring matters because the SDK emits
+   * its `result` (→ sdk-done) as soon as the main agent's turn ends — background subagents
+   * keep running past that point, and finalizing early would mark the session Done, play
+   * the sound, and analyze a half-finished transcript.
+   */
+  function finalizeCompletion(id: string, wasStoppedByUser: boolean): void {
+    const currentSettings = get(settings);
+    const now = Date.now();
+    let sessionMessages: SdkMessage[] = [];
+    let needsAiAnalysis = false;
+
+    update(sessions =>
+      sessions.map(s => {
+        if (s.id !== id) return s;
+
+        const workPeriod = calculateWorkPeriod(s);
+        const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
+        const terminalType = wasStoppedByUser ? 'stopped' as const : 'done' as const;
+        const updatedMessages = [...closedThinkingMessages, { type: terminalType, timestamp: now }];
+        sessionMessages = updatedMessages;
+        needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+
+        const isActiveSession = get(activeSdkSessionId) === id;
+        return {
+          ...s,
+          status: 'idle' as const,
+          stopRequestedAt: undefined,
+          // Clear semi-stop tracking: this turn is now truly finished.
+          completionDeferred: false,
+          liveSubagentIds: [],
+          ...workPeriod,
+          usage: clearProgressiveUsage(s.usage),
+          messages: updatedMessages,
+          unread: currentSettings.mark_sessions_unread && !isActiveSession ? true : s.unread,
+        };
+      })
+    );
+    debouncedSave();
+
+    if (!wasStoppedByUser && currentSettings.audio.play_sound_on_completion) {
+      playCompletionSound();
+    }
+
+    if (needsAiAnalysis && sessionMessages.length > 0) {
+      analyzeSessionCompletion(sessionMessages)
+        .then(aiMetadata => {
+          if (Object.keys(aiMetadata).length > 0) {
+            update(sessions =>
+              sessions.map(s => s.id === id ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } } : s)
+            );
+            debouncedSave();
+          }
+        })
+        .catch(err => console.error('[sdkSessions] Failed to analyze session completion:', err));
+    }
+  }
+
+  /**
+   * Catch-all safety net behind the subagent-deferral logic: if any fresh agent activity arrives
+   * AFTER a session was marked done, the "done" was wrong (the agent is still working) — so flip
+   * the status back to "querying" and strip the premature trailing 'done' marker. The next real
+   * sdk-done will re-finalize correctly.
+   *
+   * Only resurrects from a clean completion (trailing 'done' marker). A user-initiated stop
+   * ('stopped' marker / stopRequestedAt) and errors are intentional terminal states and are left
+   * alone. During a deferred completion the status is already 'querying', so this is a no-op there.
+   *
+   * Returns the (possibly reactivated) session; callers then append their new activity message.
+   */
+  function reactivateOnActivity(s: SdkSession, now: number): SdkSession {
+    if (s.status !== 'idle' && s.status !== 'done') return s;
+    if (s.stopRequestedAt) return s;
+    const last = s.messages[s.messages.length - 1];
+    if (last?.type !== 'done') return s;
+    return {
+      ...s,
+      status: 'querying' as const,
+      currentWorkStartedAt: s.currentWorkStartedAt || now,
+      messages: s.messages.slice(0, -1),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
   // Event Listener Setup (Single implementation, used by all initialization paths)
   // ---------------------------------------------------------------------------
 
@@ -713,16 +900,17 @@ function createSdkSessionsStore() {
       await listen<{ content: string; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-text-${id}`, (e) => {
         const { content, parentToolUseId, turnUuid } = e.payload;
         update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  startedAt: s.startedAt || Date.now(),
-                  currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
-                  messages: [...s.messages, { type: 'text' as const, content, parentToolUseId: parentToolUseId || undefined, turnUuid: turnUuid || undefined, timestamp: Date.now() }],
-                }
-              : s
-          )
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            const now = Date.now();
+            const base = reactivateOnActivity(s, now);
+            return {
+              ...base,
+              startedAt: base.startedAt || now,
+              currentWorkStartedAt: base.currentWorkStartedAt || now,
+              messages: [...base.messages, { type: 'text' as const, content, parentToolUseId: parentToolUseId || undefined, turnUuid: turnUuid || undefined, timestamp: now }],
+            };
+          })
         );
         debouncedSave();
       })
@@ -765,42 +953,43 @@ function createSdkSessionsStore() {
             : undefined;
 
           update(sessions =>
-            sessions.map(s =>
-              s.id === id
-                ? {
-                    ...s,
-                    startedAt: s.startedAt || Date.now(),
-                    currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
-                    messages: [
-                      ...s.messages,
-                      {
-                        type: 'tool_start' as const,
-                        tool: e.payload.tool,
-                        toolUseId: e.payload.toolUseId,
-                        input: e.payload.input,
-                        parentToolUseId: e.payload.parentToolUseId || undefined,
-                        turnUuid: e.payload.turnUuid || undefined,
-                        timestamp: Date.now(),
-                      },
-                    ],
-                    // Set pendingPlanApproval when ExitPlanMode or complete_planning is detected
-                    ...(isPlanApprovalTool ? {
-                      pendingPlanApproval: {
-                        allowedPrompts: exitPlanAllowedPrompts!,
-                        plan: exitPlanContent,
-                      },
-                    } : {}),
-                    // Set askUserQuestion when AskUserQuestion is detected
-                    ...(isAskUserQuestion && askQuestions && askQuestions.length > 0 ? {
-                      askUserQuestion: {
-                        questions: askQuestions,
-                        answers: [] as PlanningAnswer[],
-                        currentQuestionIndex: 0,
-                      },
-                    } : {}),
-                  }
-                : s
-            )
+            sessions.map(s => {
+              if (s.id !== id) return s;
+              const now = Date.now();
+              const base = reactivateOnActivity(s, now);
+              return {
+                ...base,
+                startedAt: base.startedAt || now,
+                currentWorkStartedAt: base.currentWorkStartedAt || now,
+                messages: [
+                  ...base.messages,
+                  {
+                    type: 'tool_start' as const,
+                    tool: e.payload.tool,
+                    toolUseId: e.payload.toolUseId,
+                    input: e.payload.input,
+                    parentToolUseId: e.payload.parentToolUseId || undefined,
+                    turnUuid: e.payload.turnUuid || undefined,
+                    timestamp: now,
+                  },
+                ],
+                // Set pendingPlanApproval when ExitPlanMode or complete_planning is detected
+                ...(isPlanApprovalTool ? {
+                  pendingPlanApproval: {
+                    allowedPrompts: exitPlanAllowedPrompts!,
+                    plan: exitPlanContent,
+                  },
+                } : {}),
+                // Set askUserQuestion when AskUserQuestion is detected
+                ...(isAskUserQuestion && askQuestions && askQuestions.length > 0 ? {
+                  askUserQuestion: {
+                    questions: askQuestions,
+                    answers: [] as PlanningAnswer[],
+                    currentQuestionIndex: 0,
+                  },
+                } : {}),
+              };
+            })
           );
           debouncedSave();
         }
@@ -821,24 +1010,26 @@ function createSdkSessionsStore() {
         }));
         update(sessions =>
           sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  messages: [
-                    ...s.messages,
-                    {
-                      type: 'tool_result' as const,
-                      tool: e.payload.tool,
-                      toolUseId: e.payload.toolUseId,
-                      output: e.payload.output,
-                      parentToolUseId: e.payload.parentToolUseId || undefined,
-                      turnUuid: e.payload.turnUuid || undefined,
-                      images: images && images.length > 0 ? images : undefined,
-                      timestamp: Date.now(),
-                    },
-                  ],
-                }
-              : s
+            s.id !== id ? s : (() => {
+              const now = Date.now();
+              const base = reactivateOnActivity(s, now);
+              return {
+                ...base,
+                messages: [
+                  ...base.messages,
+                  {
+                    type: 'tool_result' as const,
+                    tool: e.payload.tool,
+                    toolUseId: e.payload.toolUseId,
+                    output: e.payload.output,
+                    parentToolUseId: e.payload.parentToolUseId || undefined,
+                    turnUuid: e.payload.turnUuid || undefined,
+                    images: images && images.length > 0 ? images : undefined,
+                    timestamp: now,
+                  },
+                ],
+              };
+            })()
           )
         );
         debouncedSave();
@@ -849,17 +1040,17 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<{ content: string; timestamp: number; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-thinking-start-${id}`, (e) => {
         update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  messages: [
-                    ...s.messages,
-                    { type: 'thinking' as const, content: e.payload.content, parentToolUseId: e.payload.parentToolUseId || undefined, turnUuid: e.payload.turnUuid || undefined, timestamp: e.payload.timestamp },
-                  ],
-                }
-              : s
-          )
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            const base = reactivateOnActivity(s, Date.now());
+            return {
+              ...base,
+              messages: [
+                ...base.messages,
+                { type: 'thinking' as const, content: e.payload.content, parentToolUseId: e.payload.parentToolUseId || undefined, turnUuid: e.payload.turnUuid || undefined, timestamp: e.payload.timestamp },
+              ],
+            };
+          })
         );
       })
     );
@@ -891,71 +1082,32 @@ function createSdkSessionsStore() {
     // Done events
     unlisteners.push(
       await listen(`sdk-done-${id}`, async () => {
-        const currentSettings = get(settings);
-        let sessionMessages: SdkMessage[] = [];
-        let needsAiAnalysis = false;
-        let wasStoppedByUser = false;
-        const captured: { recovery: OverflowRecovery | null } = { recovery: null };
-        const now = Date.now();
+        // Peek current session state to branch on overflow-recovery / stop / live subagents.
+        let snapshot: SdkSession | undefined;
+        subscribe(ss => { snapshot = ss.find(s => s.id === id); })();
+        if (!snapshot) return;
 
-        update(sessions =>
-          sessions.map(s => {
-            if (s.id !== id) return s;
+        const wasStoppedByUser = !!snapshot.stopRequestedAt;
+        const recovery = snapshot.overflowRecovery ?? null;
 
-            const workPeriod = calculateWorkPeriod(s);
-            const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
-            wasStoppedByUser = !!s.stopRequestedAt;
-            captured.recovery = s.overflowRecovery ?? null;
-
-            // Mid-recovery: the intermediate /compact turn just finished. This isn't a real
-            // turn completion — don't append a 'done' marker or flip to idle (which would render
-            // the session as "Done"). Keep it "in progress" and advance to the resend phase,
-            // which is fired immediately after this update.
-            if (s.overflowRecovery?.phase === 'compacting' && !wasStoppedByUser) {
+        // --- Context-overflow auto-recovery state machine ---
+        // Mid-recovery: the intermediate /compact turn just finished. This isn't a real turn
+        // completion — keep the session "in progress" and resend the prompt that overflowed.
+        if (recovery?.phase === 'compacting' && !wasStoppedByUser) {
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+              const workPeriod = calculateWorkPeriod(s);
               return {
                 ...s,
                 status: 'querying' as const,
                 ...workPeriod,
                 usage: clearProgressiveUsage(s.usage),
-                overflowRecovery: { ...s.overflowRecovery, phase: 'resending' as const },
+                overflowRecovery: { ...recovery, phase: 'resending' as const },
               };
-            }
-
-            const terminalType = wasStoppedByUser ? 'stopped' as const : 'done' as const;
-            const updatedMessages = [...closedThinkingMessages, { type: terminalType, timestamp: now }];
-            sessionMessages = updatedMessages;
-            needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
-
-            const isActiveSession = get(activeSdkSessionId) === id;
-            if (s.pendingPlanApproval) {
-              console.log(`[sdkSessions] sdk-done fired while pendingPlanApproval is set (session: ${id}, wasStoppedByUser: ${wasStoppedByUser})`);
-            }
-            if (s.askUserQuestion) {
-              console.log(`[sdkSessions] sdk-done fired while askUserQuestion is set (session: ${id}, wasStoppedByUser: ${wasStoppedByUser})`);
-            }
-            return {
-              ...s,
-              status: 'idle' as const,
-              stopRequestedAt: undefined,
-              ...workPeriod,
-              usage: clearProgressiveUsage(s.usage),
-              messages: updatedMessages,
-              unread: currentSettings.mark_sessions_unread && !isActiveSession ? true : s.unread,
-            };
-          })
-        );
-        debouncedSave();
-
-        // Overflow auto-recovery state machine. The /compact turn just finished; resend the
-        // prompt that overflowed. When that resend finishes, recovery is complete.
-        const recovery = captured.recovery;
-        if (recovery && wasStoppedByUser) {
-          // User interrupted mid-recovery — abandon it.
-          update(sessions => sessions.map(s => (s.id === id ? { ...s, overflowRecovery: null } : s)));
+            })
+          );
           debouncedSave();
-        } else if (recovery?.phase === 'compacting') {
-          // The main update above already kept the session in 'querying' and advanced the
-          // recovery phase to 'resending'. Fire the resend of the prompt that overflowed.
           try {
             await storeApi.sendPrompt(id, recovery.pendingPrompt, recovery.pendingImages);
           } catch (err) {
@@ -967,28 +1119,56 @@ function createSdkSessionsStore() {
           }
           // The /compact turn isn't a real completion — skip sound and AI analysis.
           return;
+        }
+        if (recovery && wasStoppedByUser) {
+          // User interrupted mid-recovery — abandon it, then fall through to normal completion.
+          update(sessions => sessions.map(s => (s.id === id ? { ...s, overflowRecovery: null } : s)));
+          debouncedSave();
         } else if (recovery?.phase === 'resending') {
-          // The retried prompt completed successfully — recovery is done.
+          // The retried prompt completed successfully — recovery is done. Fall through to complete.
           update(sessions => sessions.map(s => (s.id === id ? { ...s, overflowRecovery: null } : s)));
           debouncedSave();
         }
 
-        if (!wasStoppedByUser && currentSettings.audio.play_sound_on_completion) {
-          playCompletionSound();
+        // --- Semi-stop detection ---
+        // The SDK fires `result` (→ this event) as soon as the MAIN agent produces a turn with no
+        // tool calls. Since Claude Code v2.1.198 subagents run in the BACKGROUND by default, so they
+        // can still be working at this point. If any are live, this is a "semi-stop": stay busy and
+        // DEFER real completion until the last subagent_stop, so we don't prematurely mark the
+        // session Done / play the completion sound / run AI analysis on a partial transcript.
+        //
+        // NOTE: background TASKS (e.g. `run_in_background` bash) are intentionally NOT waited on —
+        // they can run indefinitely (a dev server never "completes"), so they only drive the
+        // "background work running" indicator (liveBackgroundTaskIds) and never block completion.
+        const liveSubagents = snapshot.liveSubagentIds ?? [];
+        if (!wasStoppedByUser && liveSubagents.length > 0) {
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+              return {
+                ...s,
+                // Stay "querying": background subagents are still doing real work. Keep the work
+                // timer running (don't call calculateWorkPeriod) so the wait counts toward duration;
+                // finalizeCompletion closes it out when the last subagent stops.
+                status: 'querying' as const,
+                completionDeferred: true,
+                usage: clearProgressiveUsage(s.usage),
+              };
+            })
+          );
+          debouncedSave();
+          console.log(`[sdkSessions] sdk-done deferred: ${liveSubagents.length} subagent(s) still running (session: ${id})`);
+          return;
         }
 
-        if (needsAiAnalysis && sessionMessages.length > 0) {
-          analyzeSessionCompletion(sessionMessages)
-            .then(aiMetadata => {
-              if (Object.keys(aiMetadata).length > 0) {
-                update(sessions =>
-                  sessions.map(s => s.id === id ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } } : s)
-                );
-                debouncedSave();
-              }
-            })
-            .catch(err => console.error('[sdkSessions] Failed to analyze session completion:', err));
+        if (snapshot.pendingPlanApproval) {
+          console.log(`[sdkSessions] sdk-done fired while pendingPlanApproval is set (session: ${id}, wasStoppedByUser: ${wasStoppedByUser})`);
         }
+        if (snapshot.askUserQuestion) {
+          console.log(`[sdkSessions] sdk-done fired while askUserQuestion is set (session: ${id}, wasStoppedByUser: ${wasStoppedByUser})`);
+        }
+
+        finalizeCompletion(id, wasStoppedByUser);
       })
     );
 
@@ -1048,6 +1228,9 @@ function createSdkSessionsStore() {
             return {
               ...s,
               status: 'error' as const,
+              completionDeferred: false,
+              liveSubagentIds: [],
+              liveBackgroundTaskIds: [],
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: [...closedThinkingMessages, { type: 'error' as const, content: payload, timestamp: now }],
@@ -1072,6 +1255,53 @@ function createSdkSessionsStore() {
             debouncedSave();
           }
         }
+      })
+    );
+
+    // Mid-run rate-limit rejection events (Smart Queue). The SDK signalled that the
+    // provider's usage window is exhausted; instead of erroring, keep the session alive and
+    // stash the in-flight turn in `rateLimited` so it can be re-sent when the window resets.
+    unlisteners.push(
+      await listen<{ status: string; resetsAt: number | null; utilization: number | null }>(`sdk-rate-limit-${id}`, (e) => {
+        if (e.payload.status !== 'rejected') return;
+        const now = Date.now();
+        update(sessions =>
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            const provider = s.provider ?? getProviderForModel(s.model);
+            const exhaustion = providerExhaustion(provider);
+            // Prefer the explicit event reset time (normalized to ms); fall back to the store-derived one.
+            const eventReset = normalizeEpochMs(e.payload.resetsAt);
+            const resetsAt = eventReset ?? exhaustion.resetsAt;
+            // Recover the turn that was rejected: the stashed in-flight prompt, else the last user message.
+            const lastUserMsg = [...s.messages].reverse().find(m => m.type === 'user');
+            const workPeriod = calculateWorkPeriod(s);
+            const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
+            return {
+              ...s,
+              // The query is done (rejected) — settle to idle, DO NOT flag as error.
+              status: 'idle' as const,
+              completionDeferred: false,
+              liveSubagentIds: [],
+              liveBackgroundTaskIds: [],
+              ...workPeriod,
+              usage: clearProgressiveUsage(s.usage),
+              messages: closedThinkingMessages,
+              rateLimited: {
+                reason: 'rate_limit' as const,
+                provider,
+                window: exhaustion.window,
+                resetsAt: resetsAt ?? undefined,
+                prompt: s.inFlightPrompt ?? lastUserMsg?.content ?? '',
+                images: s.inFlightImages ?? undefined,
+                queuedAt: now,
+              },
+              inFlightPrompt: null,
+              inFlightImages: null,
+            };
+          })
+        );
+        debouncedSave();
       })
     );
 
@@ -1102,43 +1332,55 @@ function createSdkSessionsStore() {
       })
     );
 
-    // Subagent start events
+    // Subagent start events — track the agent as live so a subsequent sdk-done defers completion.
     unlisteners.push(
       await listen<{ agentId: string; agentType: string }>(`sdk-subagent-start-${id}`, (e) => {
         update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  messages: [
-                    ...s.messages,
-                    { type: 'subagent_start' as const, agentId: e.payload.agentId, agentType: e.payload.agentType, timestamp: Date.now() },
-                  ],
-                }
-              : s
-          )
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            const base = reactivateOnActivity(s, Date.now());
+            const live = base.liveSubagentIds ?? [];
+            return {
+              ...base,
+              liveSubagentIds: live.includes(e.payload.agentId) ? live : [...live, e.payload.agentId],
+              messages: [
+                ...base.messages,
+                { type: 'subagent_start' as const, agentId: e.payload.agentId, agentType: e.payload.agentType, timestamp: Date.now() },
+              ],
+            };
+          })
         );
         debouncedSave();
       })
     );
 
-    // Subagent stop events
+    // Subagent stop events — drop the agent from the live set. If completion was deferred waiting
+    // on subagents and this was the last one, run the real completion now (see finalizeCompletion).
     unlisteners.push(
       await listen<{ agentId: string; transcriptPath: string }>(`sdk-subagent-stop-${id}`, (e) => {
+        let shouldFinalize = false;
         update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  messages: [
-                    ...s.messages,
-                    { type: 'subagent_stop' as const, agentId: e.payload.agentId, transcriptPath: e.payload.transcriptPath, timestamp: Date.now() },
-                  ],
-                }
-              : s
-          )
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            const live = (s.liveSubagentIds ?? []).filter(aid => aid !== e.payload.agentId);
+            if (s.completionDeferred && live.length === 0 && !s.stopRequestedAt) {
+              shouldFinalize = true;
+            }
+            return {
+              ...s,
+              liveSubagentIds: live,
+              messages: [
+                ...s.messages,
+                { type: 'subagent_stop' as const, agentId: e.payload.agentId, transcriptPath: e.payload.transcriptPath, timestamp: Date.now() },
+              ],
+            };
+          })
         );
         debouncedSave();
+        if (shouldFinalize) {
+          console.log(`[sdkSessions] last subagent stopped — running deferred completion (session: ${id})`);
+          finalizeCompletion(id, false);
+        }
       })
     );
 
@@ -1146,24 +1388,28 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<{ taskId: string; toolUseId?: string; description: string; taskType?: string }>(`sdk-task-started-${id}`, (e) => {
         update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  messages: [
-                    ...s.messages,
-                    {
-                      type: 'task_started' as const,
-                      taskId: e.payload.taskId,
-                      toolUseId: e.payload.toolUseId,
-                      description: e.payload.description,
-                      taskType: e.payload.taskType,
-                      timestamp: Date.now(),
-                    },
-                  ],
-                }
-              : s
-          )
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            // Track as live for the "background work running" indicator only — background tasks
+            // do NOT block completion (they can run forever). See liveBackgroundTaskIds docs.
+            const base = reactivateOnActivity(s, Date.now());
+            const live = base.liveBackgroundTaskIds ?? [];
+            return {
+              ...base,
+              liveBackgroundTaskIds: live.includes(e.payload.taskId) ? live : [...live, e.payload.taskId],
+              messages: [
+                ...base.messages,
+                {
+                  type: 'task_started' as const,
+                  taskId: e.payload.taskId,
+                  toolUseId: e.payload.toolUseId,
+                  description: e.payload.description,
+                  taskType: e.payload.taskType,
+                  timestamp: Date.now(),
+                },
+              ],
+            };
+          })
         );
         debouncedSave();
       })
@@ -1173,25 +1419,25 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<{ taskId: string; toolUseId?: string; status: string; summary: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } }>(`sdk-task-completed-${id}`, (e) => {
         update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? {
-                  ...s,
-                  messages: [
-                    ...s.messages,
-                    {
-                      type: 'task_completed' as const,
-                      taskId: e.payload.taskId,
-                      toolUseId: e.payload.toolUseId,
-                      taskStatus: e.payload.status,
-                      summary: e.payload.summary,
-                      taskUsage: e.payload.usage,
-                      timestamp: Date.now(),
-                    },
-                  ],
-                }
-              : s
-          )
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            return {
+              ...s,
+              liveBackgroundTaskIds: (s.liveBackgroundTaskIds ?? []).filter(tid => tid !== e.payload.taskId),
+              messages: [
+                ...s.messages,
+                {
+                  type: 'task_completed' as const,
+                  taskId: e.payload.taskId,
+                  toolUseId: e.payload.toolUseId,
+                  taskStatus: e.payload.status,
+                  summary: e.payload.summary,
+                  taskUsage: e.payload.usage,
+                  timestamp: Date.now(),
+                },
+              ],
+            };
+          })
         );
         debouncedSave();
       })
@@ -1778,19 +2024,21 @@ function createSdkSessionsStore() {
       await this.ensureSessionLive(id);
 
       let sessionCwd: string | undefined;
+      let sessionProvider: SdkProvider = 'claude';
       let needsNameGeneration = false;
-      let recordingScreenshot: SdkImageContent | undefined;
+      let recordingScreenshots: SdkImageContent[] | undefined;
       subscribe(sessions => {
         const session = sessions.find(s => s.id === id);
         sessionCwd = session?.cwd;
+        sessionProvider = session?.provider ?? getProviderForModel(session?.model ?? '');
         const isFirstUserMessage = session?.messages.filter(m => m.type === 'user').length === 0;
         needsNameGeneration = !session?.aiMetadata?.name && isFirstUserMessage;
-        // A recording screenshot rides on the pending session until the first prompt goes out
-        if (isFirstUserMessage) recordingScreenshot = session?.pendingTranscription?.screenshot;
+        // Recording screenshots ride on the pending session until the first prompt goes out
+        if (isFirstUserMessage) recordingScreenshots = session?.pendingTranscription?.screenshots;
       })();
 
-      if (recordingScreenshot) {
-        images = [...(images ?? []), recordingScreenshot];
+      if (recordingScreenshots && recordingScreenshots.length > 0) {
+        images = [...(images ?? []), ...recordingScreenshots];
       }
 
       usageStats.trackPrompt(sessionCwd);
@@ -1804,11 +2052,16 @@ function createSdkSessionsStore() {
                 lastActivityAt: Date.now(),
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: Date.now() }],
                 aiMetadata: clearCompletionMetadata(s.aiMetadata),
+                // New turn supersedes any prior semi-stop: reset live-work tracking so a stale
+                // deferred completion (or a prior turn's subagent_stop) can't fire against it.
+                liveSubagentIds: [],
+                liveBackgroundTaskIds: [],
+                completionDeferred: false,
                 draftPrompt: undefined,
                 draftImages: undefined,
-                // Screenshot now lives in the message — clear it so later prompts don't re-attach
-                pendingTranscription: s.pendingTranscription?.screenshot
-                  ? { ...s.pendingTranscription, screenshot: undefined }
+                // Screenshots now live in the message — clear them so later prompts don't re-attach
+                pendingTranscription: s.pendingTranscription?.screenshots
+                  ? { ...s.pendingTranscription, screenshots: undefined }
                   : s.pendingTranscription,
               }
             : s
@@ -1846,13 +2099,46 @@ function createSdkSessionsStore() {
         finalPrompt = finalPrompt + '\n\n' + SCREENSHOT_PROMPT_NOTICE;
       }
 
+      // Smart Queue (follow-up gate): if the provider's usage window is exhausted, don't dispatch.
+      // The user message stays in the transcript so the queued turn is visible; the turn itself is
+      // parked in `rateLimited` and re-sent later by the driver (or manually via "Continue now").
+      if (shouldQueue(sessionProvider)) {
+        const { window: rlWindow, resetsAt } = providerExhaustion(sessionProvider);
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  status: 'idle' as const,
+                  rateLimited: {
+                    reason: 'rate_limit' as const,
+                    provider: sessionProvider,
+                    window: rlWindow,
+                    resetsAt,
+                    prompt: finalPrompt,
+                    images: images ?? undefined,
+                    queuedAt: Date.now(),
+                  },
+                }
+              : s
+          )
+        );
+        debouncedSave();
+        return;
+      }
+
+      // Stash the in-flight turn so a mid-run rate-limit rejection can recover and re-send it.
+      update(sessions =>
+        sessions.map(s => (s.id === id ? { ...s, inFlightPrompt: finalPrompt, inFlightImages: images ?? null } : s))
+      );
+
       try {
         await invoke('send_sdk_prompt', { id, prompt: finalPrompt, images: images ?? null });
       } catch (error) {
         update(sessions =>
           sessions.map(s =>
             s.id === id
-              ? { ...s, status: 'error' as const, messages: [...s.messages, { type: 'error' as const, content: String(error), timestamp: Date.now() }] }
+              ? { ...s, status: 'error' as const, inFlightPrompt: null, inFlightImages: null, messages: [...s.messages, { type: 'error' as const, content: String(error), timestamp: Date.now() }] }
               : s
           )
         );
@@ -1871,6 +2157,9 @@ function createSdkSessionsStore() {
             ...s,
             status: 'idle' as const,
             stopRequestedAt: undefined,
+            completionDeferred: false,
+            liveSubagentIds: [],
+            liveBackgroundTaskIds: [],
             ...workPeriod,
             usage: clearProgressiveUsage(s.usage),
             messages: [...closedThinkingMessages, { type: 'stopped' as const, timestamp: now }],
@@ -1892,6 +2181,11 @@ function createSdkSessionsStore() {
           ...s,
           status: 'idle' as const,
           stopRequestedAt: Date.now(),
+          // A stop is a real end-of-turn: drop semi-stop tracking so a late subagent_stop
+          // can't trigger a deferred completion after the user already stopped.
+          completionDeferred: false,
+          liveSubagentIds: [],
+          liveBackgroundTaskIds: [],
           // Clear stale blocking-UI state so dialogs don't persist after stop
           pendingPlanApproval: undefined,
           askUserQuestion: undefined,
@@ -1931,6 +2225,14 @@ function createSdkSessionsStore() {
       }
 
       liveSessions.delete(id);
+
+      // Clean up durable audio for a not-yet-retried failed follow-up recording.
+      if (sessionToArchive?.failedRecording) {
+        invoke('delete_pile_audio', {
+          id: sessionToArchive.failedRecording.audioId,
+        }).catch(() => {});
+      }
+
       update(sessions => sessions.filter(s => s.id !== id));
 
       // Archive the session (only if it has messages worth archiving)
@@ -2152,6 +2454,58 @@ function createSdkSessionsStore() {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
+      const gatedModel = config.noteMode ? 'claude-haiku-4-5-20251001' : config.model;
+      const gatedProvider = normalizeSdkProvider(config.provider, gatedModel);
+      const hasPrompt = config.prompt.trim().length > 0;
+
+      // Smart Queue (first-launch gate): if the provider's usage window is exhausted, park this
+      // session as `queued` (with its prompt on the prepared fields) instead of launching. The
+      // driver later dispatches it via launchPrepared once the window resets.
+      if (hasPrompt && shouldQueue(gatedProvider)) {
+        let finalSystemPrompt = config.systemPrompt;
+        if (config.noteMode) {
+          const { getNoteModeSystemPrompt } = await import('$lib/prompts/noteMode');
+          finalSystemPrompt = getNoteModeSystemPrompt();
+        } else if (config.planMode) {
+          const { getPlanModeSystemPrompt } = await import('$lib/prompts/planMode');
+          finalSystemPrompt = getPlanModeSystemPrompt();
+        }
+        const { window: rlWindow, resetsAt } = providerExhaustion(gatedProvider);
+        const queuedAt = Date.now();
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  cwd: config.cwd,
+                  repoId: config.repoId ?? resolveRepoId(config.cwd),
+                  model: gatedModel,
+                  effortLevel: config.noteMode ? null : config.effortLevel,
+                  readOnlyMode: config.noteMode ? false : (config.readOnlyMode ?? false),
+                  provider: gatedProvider,
+                  status: 'queued' as const,
+                  preparedPrompt: config.prompt,
+                  preparedSystemPrompt: finalSystemPrompt,
+                  draftPrompt: undefined,
+                  draftImages: undefined,
+                  setupRepoPath: undefined,
+                  setupWorktreeMode: undefined,
+                  setupWorktreePath: undefined,
+                  planMode: config.planMode ? { isActive: true, questions: [], answers: [], currentQuestionIndex: 0, isComplete: false } : undefined,
+                  noteMode: config.noteMode ? { isActive: true, noteCreated: false } : undefined,
+                  playwrightQa: config.playwrightQa || undefined,
+                  disableHooks: config.disableHooks || undefined,
+                  ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),
+                  queueInfo: { reason: 'rate_limit' as const, provider: gatedProvider, window: rlWindow, queuedAt, targetStartAt: resetsAt },
+                }
+              : s
+          )
+        );
+        void syncSessionBranchMetadata(id, config.cwd);
+        debouncedSave();
+        return;
+      }
+
       update(sessions =>
         sessions.map(s =>
           s.id === id
@@ -2352,6 +2706,20 @@ function createSdkSessionsStore() {
       );
     },
 
+    /** Attach a failed follow-up recording to a live session (retriable in place). */
+    setFailedRecording(id: string, info: FailedRecording): void {
+      update(sessions =>
+        sessions.map(s => (s.id === id ? { ...s, failedRecording: info } : s))
+      );
+    },
+
+    /** Clear a session's failed follow-up recording (after retry success or discard). */
+    clearFailedRecording(id: string): void {
+      update(sessions =>
+        sessions.map(s => (s.id === id ? { ...s, failedRecording: undefined } : s))
+      );
+    },
+
     async completePendingTranscription(id: string, cwd: string, transcript: string, systemPrompt?: string, pendingRepoSelection?: PendingRepoSelection): Promise<void> {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
@@ -2401,7 +2769,7 @@ function createSdkSessionsStore() {
       update(sessions => sessions.filter(s => s.id !== id));
     },
 
-    setPrepared(id: string, prompt: string, cwd: string, systemPrompt?: string, repoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string }): void {
+    setPrepared(id: string, prompt: string, cwd: string, systemPrompt?: string, repoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string }, chips?: string[]): void {
       update(sessions =>
         sessions.map(s => s.id === id ? {
           ...s,
@@ -2409,6 +2777,7 @@ function createSdkSessionsStore() {
           cwd,
           repoId: resolveRepoId(cwd),
           preparedPrompt: prompt,
+          preparedChips: chips && chips.length > 0 ? chips : undefined,
           preparedSystemPrompt: systemPrompt,
           preparedRepoRecommendation: repoRecommendation,
           pendingTranscription: s.pendingTranscription ? { ...s.pendingTranscription, status: 'processing' as PendingTranscriptionStatus } : s.pendingTranscription,
@@ -2430,7 +2799,9 @@ function createSdkSessionsStore() {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
 
-      if (!session || session.status !== 'prepared') return;
+      // Accept both a normal prepared session and a queued one (rate-limit or scheduled): the
+      // Smart Queue driver dispatches queued sessions through this same path.
+      if (!session || (session.status !== 'prepared' && session.status !== 'queued')) return;
 
       if (!session.cwd) throw new Error('No repository selected for prepared session');
 
@@ -2444,6 +2815,7 @@ function createSdkSessionsStore() {
           pendingPrompt: prompt,
           preparedPrompt: undefined,
           preparedRepoRecommendation: undefined,
+          queueInfo: null,
         } : s)
       );
 
@@ -2573,6 +2945,38 @@ function createSdkSessionsStore() {
     },
 
     async initializeSession(id: string, cwd: string, model: string, effortLevel: EffortLevel, systemPrompt?: string, pendingPrompt?: string, provider?: SdkProvider): Promise<void> {
+      const sessionProvider = provider ?? get({ subscribe }).find(s => s.id === id)?.provider ?? getProviderForModel(model);
+
+      // Smart Queue (first-launch gate): only a prompt-bearing launch consumes the rate limit, so
+      // only defer when there is a pending prompt. Park as `queued` (prompt on prepared fields) so
+      // launchPrepared can dispatch it later, then return before registering/sending.
+      if (pendingPrompt && pendingPrompt.trim().length > 0 && shouldQueue(sessionProvider)) {
+        const { window: rlWindow, resetsAt } = providerExhaustion(sessionProvider);
+        const queuedAt = Date.now();
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  cwd,
+                  repoId: resolveRepoId(cwd),
+                  model,
+                  effortLevel,
+                  provider: sessionProvider,
+                  status: 'queued' as const,
+                  preparedPrompt: pendingPrompt,
+                  preparedSystemPrompt: systemPrompt,
+                  pendingPrompt: undefined,
+                  queueInfo: { reason: 'rate_limit' as const, provider: sessionProvider, window: rlWindow, queuedAt, targetStartAt: resetsAt },
+                }
+              : s
+          )
+        );
+        void syncSessionBranchMetadata(id, cwd);
+        debouncedSave();
+        return;
+      }
+
       await this.ensureSidecarStarted();
 
       const unlisteners = await setupEventListeners(id);
@@ -2593,6 +2997,156 @@ function createSdkSessionsStore() {
       } else {
         update(sessions => sessions.map(s => s.id === id ? { ...s, status: 'idle' as const, pendingPrompt: undefined } : s));
       }
+    },
+
+    /**
+     * Smart Queue ("Send on next reset"): from a live/active session, queue a follow-up turn to
+     * fire on the next 5h/7d window reset instead of sending it now. Pushes the user message to the
+     * transcript (so the queued turn is visible, like a normal send) but does NOT invoke the backend;
+     * the turn is parked in `rateLimited` with reason 'scheduled'. The driver re-sends it at the
+     * window boundary via `continueRateLimited` (which is prompt-agnostic and handles it unchanged).
+     */
+    async queueTurnForWindow(id: string, prompt: string, images: SdkImageContent[] | undefined, window: QueueWindow): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
+      if (!session) return;
+
+      const provider = session.provider ?? getProviderForModel(session.model);
+      const targetStartAt = nextWindowResetAt(provider, window);
+      const now = Date.now();
+
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                // Keep the session out of an active/error state — the turn is deferred, not running.
+                status: s.status === 'querying' ? ('idle' as const) : s.status,
+                lastActivityAt: now,
+                messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: now }],
+                draftPrompt: undefined,
+                draftImages: undefined,
+                rateLimited: {
+                  reason: 'scheduled' as const,
+                  provider,
+                  window,
+                  targetStartAt,
+                  resetsAt: targetStartAt,
+                  prompt,
+                  images,
+                  queuedAt: now,
+                },
+              }
+            : s
+        )
+      );
+      debouncedSave();
+    },
+
+    /**
+     * Smart Queue: re-send a `rateLimited` pending turn WITHOUT duplicating the user message
+     * (it's already in the transcript). Used by the "Continue now" button and the drain driver.
+     * Re-stashes the in-flight turn so a fresh mid-run rejection can recover it. If the provider
+     * is still exhausted, the query will be rejected again and re-parked in `rateLimited`.
+     */
+    async continueRateLimited(id: string): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
+      if (!session || !session.rateLimited) return;
+      const rl = session.rateLimited;
+
+      await this.ensureSessionLive(id);
+
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                status: 'querying' as const,
+                lastActivityAt: Date.now(),
+                rateLimited: null,
+                inFlightPrompt: rl.prompt,
+                inFlightImages: rl.images ?? null,
+              }
+            : s
+        )
+      );
+
+      try {
+        await invoke('send_sdk_prompt', { id, prompt: rl.prompt, images: rl.images ?? null });
+      } catch (error) {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, status: 'error' as const, inFlightPrompt: null, inFlightImages: null, messages: [...s.messages, { type: 'error' as const, content: String(error), timestamp: Date.now() }] }
+              : s
+          )
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Smart Queue: cancel a parked `rateLimited` pending turn.
+     * - For a user-scheduled turn (`reason === 'scheduled'`, queued via queueTurnForWindow), the
+     *   user message was pushed but never sent — remove it, but ONLY when it's the trailing message
+     *   AND its text matches the cleared prompt (so a real turn is never deleted).
+     * - For a rate-limit turn (`reason === 'rate_limit'`, a real turn that got rejected mid-run),
+     *   leave the transcript untouched — just clear `rateLimited`.
+     */
+    clearRateLimited(id: string): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.rateLimited) return s;
+          const rl = s.rateLimited;
+          let messages = s.messages;
+          if (rl.reason === 'scheduled') {
+            const last = messages[messages.length - 1];
+            if (last && last.type === 'user' && last.content === rl.prompt) {
+              messages = messages.slice(0, -1);
+            }
+          }
+          return { ...s, rateLimited: null, messages };
+        })
+      );
+      debouncedSave();
+    },
+
+    /**
+     * Smart Queue (schedule): fire-and-forget a prepared session for the next 5h/7d window reset,
+     * even when not currently rate-limited. Keeps the prepared prompt/chips/systemPrompt so
+     * launchPrepared dispatches it; the driver fires it once `now > targetStartAt`.
+     */
+    scheduleForWindow(id: string, window: QueueWindow): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id) return s;
+          const provider = s.provider ?? getProviderForModel(s.model);
+          const targetStartAt = nextWindowResetAt(provider, window);
+          return {
+            ...s,
+            status: 'queued' as const,
+            queueInfo: { reason: 'scheduled' as const, provider, window, queuedAt: Date.now(), targetStartAt },
+          };
+        })
+      );
+      debouncedSave();
+    },
+
+    /**
+     * Smart Queue "Remove from queue": revert ANY `queued` session (scheduled OR rate-limit) back
+     * to `prepared`, clearing queueInfo. Prepared fields are left intact so the session still shows
+     * its Launch panel.
+     */
+    unschedule(id: string): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id && s.status === 'queued'
+            ? { ...s, status: 'prepared' as const, queueInfo: null }
+            : s
+        )
+      );
+      debouncedSave();
     },
 
     updateStatus(id: string, status: SdkSession['status']): void {

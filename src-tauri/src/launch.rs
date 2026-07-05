@@ -11,7 +11,7 @@ use std::os::windows::process::CommandExt;
 /// Tracks a spawned terminal process for a launch command
 struct RunningProcess {
     command_id: String,
-    _command_name: String,
+    command_name: String,
     child: Child,
 }
 
@@ -66,9 +66,10 @@ impl LaunchManager {
                 terminal,
             )?;
 
+            log::debug!("[launch] spawned '{}' for repo {}", cmd.name, repo_id);
             processes.push(RunningProcess {
                 command_id: cmd.id.clone(),
-                _command_name: cmd.name.clone(),
+                command_name: cmd.name.clone(),
                 child,
             });
         }
@@ -77,6 +78,7 @@ impl LaunchManager {
         // Stop any existing processes for this repo first
         if let Some(existing) = running.remove(repo_id) {
             for proc in existing {
+                log::debug!("[launch] replacing running '{}'", proc.command_name);
                 kill_process(proc.child);
             }
         }
@@ -90,6 +92,7 @@ impl LaunchManager {
         let mut running = self.running.lock();
         if let Some(processes) = running.remove(repo_id) {
             for proc in processes {
+                log::debug!("[launch] stopping '{}'", proc.command_name);
                 kill_process(proc.child);
             }
         }
@@ -130,11 +133,6 @@ impl LaunchManager {
         }
     }
 
-    /// Check if any processes are running for a given repo.
-    /// Prunes any processes that have exited.
-    pub fn is_running(&self, repo_id: &str) -> bool {
-        !self.get_running_command_ids(repo_id).is_empty()
-    }
 }
 
 /// Spawn a separate OS terminal window running the given command.

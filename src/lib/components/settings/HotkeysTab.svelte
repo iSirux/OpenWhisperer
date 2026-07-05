@@ -162,7 +162,7 @@
       />
     </div>
     <p class="text-xs text-text-muted mb-2">
-      While ClaudeWhisperer is focused, creates a new session.
+      While OpenWhisperer is focused, creates a new session.
     </p>
     <HotkeyInput
       bind:value={$settings.hotkeys.new_session}

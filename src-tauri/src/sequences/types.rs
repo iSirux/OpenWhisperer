@@ -83,17 +83,15 @@ pub struct InputValidation {
 
 // ─── Sequence Defaults ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SequenceDefaults {
+    /// Fallback model for prompt nodes that don't specify one.
     #[serde(default)]
     pub model: Option<String>,
+    /// Fallback effort/thinking level for prompt nodes that don't specify one.
     #[serde(default)]
     pub effort: Option<String>,
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub isolation: Option<bool>,
-    /// Default timeout in seconds
+    /// Default timeout in seconds, applied to nodes without their own timeout.
     #[serde(default)]
     pub timeout: Option<u64>,
     #[serde(default)]
@@ -180,27 +178,6 @@ pub struct PromptNode {
     /// Output format hint (e.g., "json")
     #[serde(default)]
     pub output_format: Option<String>,
-    /// Image paths to include in the prompt
-    #[serde(default)]
-    pub images: Vec<String>,
-    /// Restrict which tools Claude can use
-    #[serde(default)]
-    pub tools: Option<Vec<String>>,
-    /// MCP servers to enable for this prompt
-    #[serde(default)]
-    pub mcp_servers: Option<Vec<String>>,
-    #[serde(default)]
-    pub session: Option<SessionConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionConfig {
-    /// Session mode: new, continue, shared, note
-    #[serde(default)]
-    pub mode: Option<String>,
-    /// Session id for continue/shared modes
-    #[serde(default)]
-    pub id: Option<String>,
 }
 
 // ─── Route Node ──────────────────────────────────────────────────────────────
@@ -225,18 +202,6 @@ pub struct RouteNode {
     /// Default branch node id when no branch matches
     #[serde(default)]
     pub default: Option<String>,
-    /// Enable multi-select routing
-    #[serde(default)]
-    pub multi: Option<bool>,
-    /// Minimum selections for multi-select
-    #[serde(default)]
-    pub min: Option<usize>,
-    /// Maximum selections for multi-select
-    #[serde(default)]
-    pub max: Option<usize>,
-    /// Execution mode for multi-select: "sequential" or "parallel"
-    #[serde(default)]
-    pub execution: Option<String>,
 }
 
 /// Route branch can be either a short-form string (just the target node id)
@@ -440,23 +405,41 @@ pub struct GitHubPrNode {
 pub struct GitHubPrWaitNode {
     /// PR number or template expression
     pub pr: String,
-    /// What to wait for: "checks", "reviews", "merge"
-    pub wait_for: String,
+    /// What to wait for.
+    pub wait_for: WaitTarget,
     /// Poll interval in seconds
     #[serde(default)]
     pub poll_interval: Option<u64>,
+}
+
+/// Condition a `github_pr_wait` node polls for.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitTarget {
+    Checks,
+    Reviews,
+    Merge,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubPrMergeNode {
     /// PR number or template expression
     pub pr: String,
-    /// Merge method: "merge", "squash", "rebase"
+    /// Merge method (default: merge).
     #[serde(default)]
-    pub method: Option<String>,
+    pub method: Option<MergeMethod>,
     /// Delete branch after merge
     #[serde(default)]
     pub delete_branch: Option<bool>,
+}
+
+/// GitHub PR merge strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMethod {
+    Merge,
+    Squash,
+    Rebase,
 }
 
 // ─── Control Flow Nodes ──────────────────────────────────────────────────────
@@ -465,12 +448,48 @@ pub struct GitHubPrMergeNode {
 pub struct ApprovalNode {
     /// Message to display for approval request
     pub message: String,
-    /// Action on timeout (node id or "skip"/"fail")
+    /// Action on timeout ("skip"/"fail" or a node id to jump to)
     #[serde(default)]
-    pub on_timeout: Option<String>,
-    /// Notification channel to send approval request
-    #[serde(default)]
-    pub notify: Option<String>,
+    pub on_timeout: Option<TimeoutAction>,
+}
+
+/// What to do when an approval / wait node times out.
+///
+/// Accepts the bare keywords `skip` and `fail`, or any other string interpreted
+/// as a node id to jump to. Serialized back as the same plain string so on-disk
+/// YAML is unchanged (finding S5).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TimeoutAction {
+    Skip,
+    Fail,
+    Goto(String),
+}
+
+impl<'de> Deserialize<'de> for TimeoutAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "skip" => TimeoutAction::Skip,
+            "fail" => TimeoutAction::Fail,
+            _ => TimeoutAction::Goto(s),
+        })
+    }
+}
+
+impl Serialize for TimeoutAction {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            TimeoutAction::Skip => serializer.serialize_str("skip"),
+            TimeoutAction::Fail => serializer.serialize_str("fail"),
+            TimeoutAction::Goto(s) => serializer.serialize_str(s),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -486,21 +505,15 @@ pub struct WaitNode {
     /// Command to run for polling
     #[serde(default)]
     pub poll_command: Option<String>,
-    /// Action on timeout (node id or "skip"/"fail")
+    /// Action on timeout ("skip"/"fail" or a node id to jump to)
     #[serde(default)]
-    pub on_timeout: Option<String>,
-    /// Node to go to on success
-    #[serde(default)]
-    pub on_success: Option<String>,
-    /// Node to go to on failure
-    #[serde(default)]
-    pub on_failure: Option<String>,
+    pub on_timeout: Option<TimeoutAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
-    /// Operation: "read", "write", "copy", "append"
-    pub operation: String,
+    /// File operation to perform.
+    pub operation: FileOperation,
     #[serde(default)]
     pub path: Option<String>,
     /// Content template for write/append
@@ -512,6 +525,16 @@ pub struct FileNode {
     /// Destination path for copy
     #[serde(default)]
     pub destination: Option<String>,
+}
+
+/// Filesystem operation for a `file` node.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileOperation {
+    Read,
+    Write,
+    Append,
+    Copy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -541,24 +564,64 @@ pub struct LoopNode {
     #[serde(default)]
     pub delay: Option<String>,
     pub nodes: Vec<NodeDefinition>,
-    /// Action when max iterations reached
+    /// Action when max iterations reached (default: complete with a partial result).
     #[serde(default)]
-    pub on_max_iterations: Option<String>,
+    pub on_max_iterations: Option<MaxIterationsAction>,
     /// Action on explicit break
     #[serde(default)]
     pub on_break: Option<String>,
+}
+
+/// What to do when a loop hits its iteration cap.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaxIterationsAction {
+    /// Stop the loop and complete with a partial result (same as the default).
+    Stop,
+    /// Fail the node with an error.
+    Fail,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParallelNode {
     /// Named branches to execute in parallel
     pub branches: HashMap<String, Vec<NodeDefinition>>,
-    /// Wait strategy: "all", "first", "any", or a number for count-based waiting
+    /// Wait strategy: `all`/`first`/`any`, or a number for count-based waiting.
     #[serde(default)]
-    pub wait: Option<serde_json::Value>,
-    /// Error handling for individual branches: "ignore", "skip", "cancel_others", "fail"
+    pub wait: Option<WaitStrategy>,
+    /// Error handling for individual branches (default: fail).
     #[serde(default)]
-    pub on_branch_error: Option<String>,
+    pub on_branch_error: Option<BranchErrorPolicy>,
+    /// Max concurrent branches; unlimited when unset (finding S10).
+    #[serde(default)]
+    pub max_parallel: Option<u32>,
+}
+
+/// Wait strategy for a parallel node.  Accepts the strings `all`/`first`/`any`
+/// or a bare number (count of branches to wait for).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WaitStrategy {
+    Named(WaitStrategyKind),
+    Count(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitStrategyKind {
+    All,
+    First,
+    Any,
+}
+
+/// Per-branch error handling for a parallel node.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchErrorPolicy {
+    Ignore,
+    Skip,
+    CancelOthers,
+    Fail,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -568,16 +631,42 @@ pub struct ForEachNode {
     /// Variable name for the current item (default: "item")
     #[serde(default)]
     pub variable: Option<String>,
-    /// Execution mode: "sequential" or "parallel"
+    /// Execution mode (default: sequential).
     #[serde(default)]
-    pub mode: Option<String>,
-    /// Max concurrent items when mode is "parallel"
+    pub mode: Option<ExecutionMode>,
+    /// Max concurrent items when mode is "parallel" (unlimited when unset).
     #[serde(default)]
     pub max_parallel: Option<u32>,
-    /// Error handling for individual items
+    /// Error handling for individual items (default: stop).
     #[serde(default)]
-    pub on_item_error: Option<String>,
+    pub on_item_error: Option<ItemErrorPolicy>,
     pub nodes: Vec<NodeDefinition>,
+}
+
+/// Execution mode for a foreach node.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    Sequential,
+    Parallel,
+}
+
+/// Per-item error handling for a foreach node.  `skip`/`ignore`/`continue` all
+/// mean "record the failure and keep going"; `stop` propagates the error.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemErrorPolicy {
+    Skip,
+    Ignore,
+    Continue,
+    Stop,
+}
+
+impl ItemErrorPolicy {
+    /// Whether execution should continue past a failed item.
+    pub fn continues(&self) -> bool {
+        !matches!(self, ItemErrorPolicy::Stop)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -116,10 +116,10 @@
         const provider = (e.target as HTMLSelectElement).value;
         // Apply provider presets
         if (provider === "Gemini") {
-          $settings.llm.model = "gemini-2.5-flash-lite";
+          $settings.llm.model = "gemini-3.1-flash-lite";
           $settings.llm.endpoint = null;
         } else if (provider === "OpenAI") {
-          $settings.llm.model = "gpt-4o-mini";
+          $settings.llm.model = "gpt-5.4-mini";
           $settings.llm.endpoint = null;
         } else if (provider === "Groq") {
           $settings.llm.model = GROQ_DEFAULT_MODEL;
@@ -358,11 +358,11 @@
                   </div>
                   <p class="text-xs text-text-muted mt-2">
                     {#if $settings.llm.model_priority === "speed"}
-                      Prioritizes 2.5 Flash-Lite for faster responses, falls
-                      back to 2.5 Flash
+                      Prioritizes 3.1 Flash-Lite for faster responses, falls
+                      back to 3.5 Flash then 2.5 Flash-Lite
                     {:else}
-                      Prioritizes 2.5 Flash for better quality, falls back to
-                      2.5 Flash-Lite
+                      Prioritizes 3.5 Flash for better quality, falls back to
+                      3.1 Flash-Lite then 2.5 Flash
                     {/if}
                   </p>
                 </div>
@@ -373,13 +373,21 @@
                   bind:value={$settings.llm.model}
                   onchange={() => invoke("save_config", { newConfig: $settings })}
                 >
-                  <option value="gemini-2.5-flash-lite"
-                    >Gemini 2.5 Flash-Lite (Recommended)</option
+                  <option value="gemini-3.1-flash-lite"
+                    >Gemini 3.1 Flash-Lite (Recommended)</option
                   >
+                  <option value="gemini-3.5-flash"
+                    >Gemini 3.5 Flash (smartest)</option
+                  >
+                  <option value="gemini-3-flash">Gemini 3 Flash</option>
                   <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                  <option value="gemini-2.5-flash-lite"
+                    >Gemini 2.5 Flash-Lite</option
+                  >
                 </select>
                 <p class="text-xs text-text-muted mt-1">
-                  Both models limited to 20 requests/day on free tier
+                  Only 3.1 Flash-Lite has real free headroom (500/day); the Flash
+                  models are capped at 20/day
                 </p>
               {/if}
             {:else if $settings.llm.provider === "OpenAI"}
@@ -388,10 +396,10 @@
                 bind:value={$settings.llm.model}
                 onchange={() => invoke("save_config", { newConfig: $settings })}
               >
-                <option value="gpt-4o-mini">GPT-4o Mini (Recommended)</option>
-                <option value="gpt-4o">GPT-4o</option>
-                <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                <option value="gpt-5.4-mini">GPT-5.4 Mini (Recommended)</option>
+                <option value="gpt-5.4-nano">GPT-5.4 Nano (cheapest)</option>
+                <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
+                <option value="gpt-4.1-nano">GPT-4.1 Nano</option>
               </select>
             {:else if $settings.llm.provider === "Groq"}
               <select
@@ -399,19 +407,11 @@
                 bind:value={$settings.llm.model}
                 onchange={() => invoke("save_config", { newConfig: $settings })}
               >
-                <option value="moonshotai/kimi-k2-instruct-0905"
-                  >Kimi K2 (262K context, agentic)</option
-                >
                 <option value={GROQ_DEFAULT_MODEL}>GPT-OSS 120B (Recommended)</option>
-                <option value="llama-3.3-70b-versatile">Llama 3.3 70B</option>
-                <option value="qwen/qwen3-32b">Qwen3 32B</option>
-                <option value="meta-llama/llama-4-scout-17b-16e-instruct"
-                  >Llama 4 Scout 17B</option
+                <option value="qwen/qwen3.6-27b"
+                  >Qwen3.6 27B (262K context, agentic)</option
                 >
-                <option value="openai/gpt-oss-20b">GPT-OSS 20B</option>
-                <option value="llama-3.1-8b-instant"
-                  >Llama 3.1 8B Instant (fast)</option
-                >
+                <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
               </select>
             {:else}
               <input
@@ -1152,17 +1152,24 @@
       </h3>
       <div class="text-xs text-text-muted space-y-1">
         <p>
-          <strong>Gemini 2.5 Flash:</strong> 20 requests/day
+          <strong>Gemini 3.1 Flash-Lite:</strong> 15 RPM / 500 requests/day
         </p>
         <p>
-          <strong>Gemini 2.5 Flash-Lite:</strong> 20 requests/day
+          <strong>Gemini 3.5 Flash:</strong> 5 RPM / 20 requests/day
+        </p>
+        <p>
+          <strong>Gemini 3 Flash / 2.5 Flash:</strong> 5 RPM / 20 requests/day
+        </p>
+        <p>
+          <strong>Gemini 2.5 Flash-Lite:</strong> 10 RPM / 20 requests/day
         </p>
         <p class="mt-2 text-warning">
-          ⚠️ Free tier was severely reduced in Dec 2025(previously 250-1,500
-          RPD). Consider using Groq for higher limits.
+          ⚠️ Only 3.1 Flash-Lite has real free headroom (500/day). Every Flash
+          model is capped at 20/day — consider Groq for higher limits.
         </p>
         <p class="mt-2 text-text-muted">
-          Limits reset at midnight Pacific Time. No credit card required.
+          Pro models require billing. Limits reset at midnight Pacific Time. No
+          credit card required.
         </p>
       </div>
     </div>
@@ -1172,13 +1179,11 @@
         Free Tier Limits
       </h3>
       <div class="text-xs text-text-muted space-y-1">
-        <p><strong>Kimi K2:</strong> 1K RPD - 262K context, agentic/tool use</p>
-        <p><strong>GPT-OSS 120B:</strong> 1K RPD - Recommended replacement</p>
-        <p><strong>Llama 3.3 70B:</strong> 1K RPD - Proven reliable</p>
-        <p><strong>Qwen3 32B:</strong> 1K RPD - Strong reasoning</p>
-        <p><strong>Llama 3.1 8B:</strong> 14.4K RPD - Fast, simple tasks</p>
+        <p><strong>GPT-OSS 120B:</strong> 1K RPD - Recommended, strong reasoning</p>
+        <p><strong>Qwen3.6 27B:</strong> 1K RPD - 262K context, agentic/tool use</p>
+        <p><strong>GPT-OSS 20B:</strong> 1K RPD - Fast, simple tasks</p>
         <p class="mt-2 text-text-muted">
-          Free tier with no credit card required.
+          30 RPM / 1K RPD per model. Free tier with no credit card required.
         </p>
       </div>
     </div>

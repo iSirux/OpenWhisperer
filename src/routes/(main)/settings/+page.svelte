@@ -21,6 +21,7 @@
     McpTab,
     VoiceCommandsTab,
     SequencesTab,
+    QueueTab,
     AboutTab,
   } from "$lib/components/settings";
 
@@ -120,6 +121,7 @@
     { id: "whisper", label: "Transcription (Whisper)" },
     { id: "vosk", label: "Real-time Transcription" },
     { id: "llm", label: "LLM" },
+    { id: "queue", label: "Smart Queue" },
     { id: "mcp", label: "MCP Servers" },
     { id: "hotkeys", label: "Hotkeys" },
     { id: "overlay", label: "Overlay" },
@@ -170,6 +172,8 @@
         <VoskTab />
       {:else if activeTab === "llm"}
         <LlmTab />
+      {:else if activeTab === "queue"}
+        <QueueTab />
       {:else if activeTab === "mcp"}
         <McpTab />
       {:else if activeTab === "hotkeys"}

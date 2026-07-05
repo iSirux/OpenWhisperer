@@ -360,8 +360,8 @@ export type LlmProvider = "Gemini" | "OpenAI" | "Groq" | "Local" | "Custom";
 export type GeminiProvider = LlmProvider;
 
 // Model selection priority for LLM provider
-// Speed: prioritizes 2.5 Flash-Lite -> 2.5 Flash -> 2.0 Flash
-// Accuracy: prioritizes 2.5 Flash -> 2.5 Flash-Lite -> 2.0 Flash
+// Speed: prioritizes 3.1 Flash-Lite -> 3.5 Flash -> 2.5 Flash-Lite
+// Accuracy: prioritizes 3.5 Flash -> 3.1 Flash-Lite -> 2.5 Flash
 export type LlmModelPriority = "speed" | "accuracy";
 // Alias for backwards compatibility
 export type GeminiModelPriority = LlmModelPriority;
@@ -457,6 +457,24 @@ export interface SequenceConfig {
   default_provider_rpm: number;
 }
 
+/** Smart Queue configuration for deferring launches when the usage window is exhausted */
+export interface QueueConfig {
+  /** Whether the smart queue feature is enabled */
+  enabled: boolean;
+  /** Wait a random amount before launching the first queued session after a reset */
+  fuzzy_delay_after_reset: boolean;
+  /** Minimum seconds to wait after a reset before the first dispatch */
+  fuzzy_delay_after_reset_min_secs: number;
+  /** Maximum seconds to wait after a reset before the first dispatch */
+  fuzzy_delay_after_reset_max_secs: number;
+  /** Insert a random gap between successive queued launches */
+  fuzzy_delay_between_runs: boolean;
+  /** Minimum seconds to wait between successive queued launches */
+  fuzzy_delay_between_runs_min_secs: number;
+  /** Maximum seconds to wait between successive queued launches */
+  fuzzy_delay_between_runs_max_secs: number;
+}
+
 export interface AppConfig {
   whisper: WhisperConfig;
   vosk: VoskConfig;
@@ -512,10 +530,14 @@ export interface AppConfig {
   mcp: McpConfig;
   /** Sequence automation configuration */
   sequences: SequenceConfig;
+  /** Smart queue configuration */
+  queue: QueueConfig;
   /** Inject a system message notifying agents that other agents may be working in parallel */
   notify_parallel_agents: boolean;
   /** User-defined quick action prompts shown in SDK sessions */
   quick_actions: string[];
+  /** User-defined toggleable prompt chips appended to prompts before sending */
+  prompt_chips: string[];
 }
 
 const defaultConfig: AppConfig = {
@@ -539,7 +561,7 @@ const defaultConfig: AppConfig = {
     docker: {
       compute_type: "CPU",
       auto_restart: false,
-      container_name: "claude-whisperer-vosk",
+      container_name: "open-whisperer-vosk",
     },
     show_realtime_transcript: true,
     accumulate_transcript: false,
@@ -552,7 +574,7 @@ const defaultConfig: AppConfig = {
       docker: {
         compute_type: "CPU",
         auto_restart: false,
-        container_name: "claude-whisperer-voicestreamai",
+        container_name: "open-whisperer-voicestreamai",
       },
     },
     sherpa_onnx: {
@@ -561,7 +583,7 @@ const defaultConfig: AppConfig = {
       docker: {
         compute_type: "CPU",
         auto_restart: false,
-        container_name: "claude-whisperer-sherpa-onnx",
+        container_name: "open-whisperer-sherpa-onnx",
       },
     },
     speaches: {
@@ -572,7 +594,7 @@ const defaultConfig: AppConfig = {
       docker: {
         compute_type: "CPU",
         auto_restart: false,
-        container_name: "claude-whisperer-speaches",
+        container_name: "open-whisperer-speaches",
       },
     },
   },
@@ -696,7 +718,7 @@ const defaultConfig: AppConfig = {
   llm: {
     enabled: false,
     provider: "Gemini",
-    model: "gemini-2.0-flash",
+    model: "gemini-3.1-flash-lite",
     endpoint: null,
     auto_model: true,
     model_priority: "speed",
@@ -725,11 +747,25 @@ const defaultConfig: AppConfig = {
     max_concurrent_prompts: 3,
     default_provider_rpm: 50,
   },
+  queue: {
+    enabled: true,
+    fuzzy_delay_after_reset: true,
+    fuzzy_delay_after_reset_min_secs: 120,
+    fuzzy_delay_after_reset_max_secs: 240,
+    fuzzy_delay_between_runs: true,
+    fuzzy_delay_between_runs_min_secs: 10,
+    fuzzy_delay_between_runs_max_secs: 45,
+  },
   notify_parallel_agents: true,
   quick_actions: [
     "Implement this",
     "Fix the issues",
     "Keep going",
+  ],
+  prompt_chips: [
+    "search web",
+    "scan codebase",
+    "brainstorm",
   ],
 };
 

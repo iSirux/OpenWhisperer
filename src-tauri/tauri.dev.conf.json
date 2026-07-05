@@ -1,12 +1,12 @@
 {
     "$schema": "https://schema.tauri.app/config/2",
-    "productName": "Claude Whisperer (Dev)",
-    "identifier": "com.isirux.claude-whisperer-dev",
+    "productName": "OpenWhisperer (Dev)",
+    "identifier": "com.isirux.open-whisperer-dev",
     "app": {
         "windows": [
             {
                 "label": "main",
-                "title": "Claude Whisperer (Dev)"
+                "title": "OpenWhisperer (Dev)"
             }
         ]
     }

@@ -10,6 +10,7 @@
   import { repos } from '$lib/stores/repos';
   import { sessions } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
+  import { startSmartQueue } from '$lib/stores/smartQueue';
   import { activeSessionId } from '$lib/stores/sessions';
   import { isRecording } from '$lib/stores/recording';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
@@ -62,6 +63,7 @@
   // Cleanup handlers
   let cleanupAutoSave: (() => void) | null = null;
   let cleanupPeriodicSave: (() => void) | null = null;
+  let cleanupSmartQueue: (() => void) | null = null;
 
   // Wire the recording flow store to the hotkey manager
   recordingFlow.setHotkeyCallbacks({
@@ -161,6 +163,10 @@
     cleanupAutoSave = setupAutoSave();
     cleanupPeriodicSave = setupPeriodicAutoSave();
 
+    // Start the Smart Queue drain driver (after sessions are restored from disk so
+    // any queued/rate-limited sessions whose window already reset dispatch promptly).
+    cleanupSmartQueue = startSmartQueue();
+
     // If there are existing sessions, show sessions view
     if (($sessions.length > 0 || $sdkSessions.length > 0) && $navigation.mainView === 'start') {
       navigation.setView('sessions');
@@ -242,6 +248,7 @@
 
     if (cleanupAutoSave) cleanupAutoSave();
     if (cleanupPeriodicSave) cleanupPeriodicSave();
+    if (cleanupSmartQueue) cleanupSmartQueue();
     cleanupSequenceExecutionListeners();
 
     saveSessionsToDisk();

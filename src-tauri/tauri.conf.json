@@ -1,8 +1,8 @@
 {
     "$schema": "https://schema.tauri.app/config/2",
-    "productName": "Claude Whisperer",
+    "productName": "OpenWhisperer",
     "version": "0.14.0",
-    "identifier": "com.isirux.claude-whisperer",
+    "identifier": "com.isirux.open-whisperer",
     "build": {
         "beforeDevCommand": "npm run dev",
         "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
         "windows": [
             {
                 "label": "main",
-                "title": "Claude Whisperer",
+                "title": "OpenWhisperer",
                 "width": 1200,
                 "height": 800,
                 "minWidth": 800,

@@ -49,6 +49,51 @@ export function playCompletionSound(): void {
 }
 
 /**
+ * Plays a distinct "resume" chime when the usage window resets and the smart
+ * queue dispatches its first deferred session.
+ * Creates a bright three-note ascending arpeggio (perfect-fourth climb) so it's
+ * clearly different from the completion / repo / open-mic sounds.
+ * Side-effect safe: no-op under SSR or when AudioContext is unavailable.
+ */
+export function playQueueResume(): void {
+  try {
+    if (typeof AudioContext === 'undefined') return;
+
+    const ctx = getAudioContext();
+    const now = ctx.currentTime;
+
+    // Ascending arpeggio: G4 -> C5 -> F5 (stacked fourths, "unlock/resume" feel)
+    const frequencies = [392.0, 523.25, 698.46];
+    const duration = 0.13;
+    const gap = 0.06;
+
+    frequencies.forEach((freq, i) => {
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      // Triangle wave for a softer, distinct timbre
+      oscillator.type = 'triangle';
+      oscillator.frequency.setValueAtTime(freq, now);
+
+      const startTime = now + i * (duration + gap);
+
+      // Gentle attack, smooth decay
+      gainNode.gain.setValueAtTime(0, startTime);
+      gainNode.gain.linearRampToValueAtTime(0.25, startTime + 0.01);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
+
+      oscillator.start(startTime);
+      oscillator.stop(startTime + duration);
+    });
+  } catch (error) {
+    console.warn('Failed to play queue resume sound:', error);
+  }
+}
+
+/**
  * Plays a quick confirmation sound when a repo is selected
  * Creates a short ascending two-note "boop-beep" sound
  */

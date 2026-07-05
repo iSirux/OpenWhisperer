@@ -13,6 +13,7 @@
   } from '$lib/utils/pileActions';
   import { getShortModelName } from '$lib/utils/modelColors';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import PromptChips from './PromptChips.svelte';
 
   interface Props {
     item: PileItem;
@@ -435,6 +436,10 @@
 
     <!-- Launch actions -->
     <div class="p-3 bg-surface-elevated rounded border border-border space-y-2">
+      <PromptChips
+        selected={item.selectedChips ?? []}
+        onchange={(next) => pile.updateItem(item.id, { selectedChips: next.length ? next : undefined })}
+      />
       <div class="flex items-center gap-3">
         <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
           <input type="checkbox" bind:checked={useWorktree} class="accent-accent" />

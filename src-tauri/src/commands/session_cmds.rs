@@ -22,10 +22,7 @@ pub fn save_persisted_sessions(
     max_sessions: usize,
 ) -> Result<SaveSessionsResult, String> {
     let mut sessions = sessions;
-    sessions.saved_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    sessions.saved_at = crate::util::now_secs();
 
     let mut index = SessionIndex::load();
 

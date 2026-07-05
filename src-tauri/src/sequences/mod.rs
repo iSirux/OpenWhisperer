@@ -1,4 +1,6 @@
 pub mod ai_generation;
+pub mod duration;
+pub mod error;
 pub mod event_triggers;
 pub mod executor;
 pub mod notifications;
@@ -19,7 +21,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use self::event_triggers::EventTriggerManager;
-use self::executor::SequenceExecutor;
+pub use self::executor::SequenceExecutor;
 use self::rate_limiter::SequenceRateLimiter;
 use self::state::{ExecutionStatus, ExecutionSummary, SequenceExecution};
 use self::types::SequenceDefinition;
@@ -32,8 +34,6 @@ use crate::sidecar::SidecarManager;
 /// Tauri managed state so Tauri commands can access it.
 pub struct SequenceManager {
     definitions: Mutex<Vec<SequenceDefinition>>,
-    #[allow(dead_code)]
-    executions: Mutex<HashMap<String, SequenceExecution>>,
     executor_handles: Mutex<HashMap<String, JoinHandle<()>>>,
     pause_signals: Mutex<HashMap<String, Arc<Notify>>>,
     cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
@@ -53,7 +53,6 @@ impl SequenceManager {
     ) -> Self {
         Self {
             definitions: Mutex::new(Vec::new()),
-            executions: Mutex::new(HashMap::new()),
             executor_handles: Mutex::new(HashMap::new()),
             pause_signals: Mutex::new(HashMap::new()),
             cancel_flags: Mutex::new(HashMap::new()),
@@ -324,8 +323,7 @@ impl SequenceManager {
 
     /// Delete an execution snapshot from disk (dismiss from history).
     pub fn dismiss_execution(&self, exec_id: &str) -> Result<(), String> {
-        // Also clean up any in-memory state for this execution
-        self.executions.lock().remove(exec_id);
+        // Also clean up any in-memory coordination state for this execution.
         self.executor_handles.lock().remove(exec_id);
         self.pause_signals.lock().remove(exec_id);
         self.cancel_flags.lock().remove(exec_id);

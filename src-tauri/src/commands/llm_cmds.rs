@@ -1,16 +1,21 @@
 use crate::commands::usage_cmds::UsageStatsState;
-use crate::config::{AppConfig, LlmProvider};
+use crate::config::AppConfig;
+use crate::llm::{
+    client_from_config, get_api_key, legacy_secrets_path, GenerationResult, KEYRING_LLM_KEY,
+    KEYRING_SERVICE,
+};
 use crate::llm::{
     ConnectionTestResult, InteractionAnalysis, LlmClient, ModelRecommendation, QuickActionsResult,
     RepoRecommendation, SessionNameResult, SessionOutcomeResult, TranscriptionCleanupResult,
 };
 use parking_lot::Mutex;
 use std::fs;
-use std::path::PathBuf;
 use tauri::{AppHandle, State};
 use tauri_plugin_keyring::KeyringExt;
 
-/// Helper to track LLM usage in the stats
+type ConfigState = Mutex<AppConfig>;
+
+/// Track LLM usage in the stats and persist.
 fn track_usage(
     stats: &State<UsageStatsState>,
     feature: &str,
@@ -22,94 +27,35 @@ fn track_usage(
     let _ = s.save();
 }
 
-/// Service name for keyring storage
-const KEYRING_SERVICE: &str = "claude-whisperer";
-/// User/account name for the LLM API key
-const KEYRING_LLM_KEY: &str = "llm-api-key";
-
-// --- Legacy obfuscation for migration purposes only ---
-
-fn legacy_deobfuscate(data: &[u8], key: &[u8]) -> Vec<u8> {
-    data.iter()
-        .enumerate()
-        .map(|(i, b)| b ^ key[i % key.len()])
-        .collect()
-}
-
-const LEGACY_OBFUSCATION_KEY: &[u8] = b"claude-whisperer-gemini-key-protection";
-
-fn get_legacy_secrets_path() -> PathBuf {
-    AppConfig::config_dir().join("gemini_key.dat")
-}
-
-/// Migrate legacy XOR-obfuscated key to secure keyring storage
-/// Returns Ok(true) if migration happened, Ok(false) if no migration needed
-fn migrate_legacy_key(app: &AppHandle) -> Result<bool, String> {
-    let legacy_path = get_legacy_secrets_path();
-
-    if !legacy_path.exists() {
-        return Ok(false);
+/// Lock the config, verify LLM is enabled and (optionally) that a feature flag
+/// is set, then build a client. The `feature_check` closure returns the exact
+/// error string the frontend expects when the feature is disabled.
+fn prepare_client<F>(
+    app: &AppHandle,
+    config: &State<'_, ConfigState>,
+    feature_check: F,
+) -> Result<(AppConfig, LlmClient), String>
+where
+    F: FnOnce(&AppConfig) -> Result<(), String>,
+{
+    let cfg = config.lock().clone();
+    if !cfg.llm.enabled {
+        return Err("LLM integration is not enabled".to_string());
     }
-
-    // Read and decode the legacy key
-    let encrypted =
-        fs::read(&legacy_path).map_err(|e| format!("Failed to read legacy API key file: {}", e))?;
-
-    let decrypted = legacy_deobfuscate(&encrypted, LEGACY_OBFUSCATION_KEY);
-
-    let api_key = String::from_utf8(decrypted)
-        .map_err(|e| format!("Failed to decode legacy API key: {}", e))?;
-
-    // Store in keyring
-    app.keyring()
-        .set_password(KEYRING_SERVICE, KEYRING_LLM_KEY, &api_key)
-        .map_err(|e| format!("Failed to migrate API key to keyring: {}", e))?;
-
-    // Delete the legacy file
-    if let Err(e) = fs::remove_file(&legacy_path) {
-        log::error!("[keyring] Warning: Failed to delete legacy key file: {}", e);
-        // Don't fail migration just because we couldn't delete the old file
-    } else {
-        log::error!(
-            "[keyring] Successfully migrated API key from legacy storage to system keyring"
-        );
-    }
-
-    Ok(true)
+    feature_check(&cfg)?;
+    let client = client_from_config(app, &cfg)?;
+    Ok((cfg, client))
 }
 
-/// Helper to get the API key from keyring
-fn get_api_key_internal(app: &AppHandle) -> Result<String, String> {
-    // First, try to migrate legacy key if it exists
-    let _ = migrate_legacy_key(app);
-
-    // Get from keyring
-    match app.keyring().get_password(KEYRING_SERVICE, KEYRING_LLM_KEY) {
-        Ok(Some(key)) => Ok(key),
-        Ok(None) => Err("API key not set".to_string()),
-        Err(e) => Err(format!("Failed to get API key from keyring: {}", e)),
-    }
-}
-
-/// Helper to create an LlmClient with proper configuration
-fn create_client(app: &AppHandle, config: &AppConfig) -> Result<LlmClient, String> {
-    let llm_config = &config.llm;
-
-    // For local provider, API key is optional
-    let api_key = if matches!(llm_config.provider, LlmProvider::Local) {
-        get_api_key_internal(app).unwrap_or_default()
-    } else {
-        get_api_key_internal(app)?
-    };
-
-    Ok(LlmClient::new(
-        api_key,
-        llm_config.model.clone(),
-        llm_config.provider.clone(),
-        llm_config.endpoint.clone(),
-        llm_config.auto_model,
-        llm_config.model_priority.clone(),
-    ))
+/// Track usage from a generation result and unwrap its data payload.
+fn finish<T>(stats: &State<UsageStatsState>, feature: &str, result: GenerationResult<T>) -> T {
+    track_usage(
+        stats,
+        feature,
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    );
+    result.data
 }
 
 /// Save the API key to the system keyring
@@ -120,7 +66,7 @@ pub async fn save_gemini_api_key(app: AppHandle, api_key: String) -> Result<(), 
         .map_err(|e| format!("Failed to save API key to keyring: {}", e))?;
 
     // Clean up any legacy file if it exists
-    let legacy_path = get_legacy_secrets_path();
+    let legacy_path = legacy_secrets_path();
     if legacy_path.exists() {
         let _ = fs::remove_file(&legacy_path);
     }
@@ -137,12 +83,12 @@ pub async fn has_llm_api_key(
     let llm_config = config.lock().llm.clone();
 
     // Local provider doesn't require an API key
-    if matches!(llm_config.provider, LlmProvider::Local) {
+    if matches!(llm_config.provider, crate::config::LlmProvider::Local) {
         return Ok(true);
     }
 
     // Check if key exists in keyring (this will also trigger migration if needed)
-    Ok(get_api_key_internal(&app).is_ok())
+    Ok(get_api_key(&app).is_ok())
 }
 
 // Alias for backwards compatibility
@@ -173,7 +119,7 @@ pub async fn delete_gemini_api_key(app: AppHandle) -> Result<(), String> {
     }
 
     // Also clean up any legacy file
-    let legacy_path = get_legacy_secrets_path();
+    let legacy_path = legacy_secrets_path();
     if legacy_path.exists() {
         let _ = fs::remove_file(&legacy_path);
     }
@@ -188,7 +134,7 @@ pub async fn test_gemini_connection(
     config: State<'_, Mutex<AppConfig>>,
 ) -> Result<ConnectionTestResult, String> {
     let cfg = config.lock().clone();
-    let client = create_client(&app, &cfg)?;
+    let client = client_from_config(&app, &cfg)?;
     client.test_connection().await
 }
 
@@ -200,26 +146,11 @@ pub async fn generate_session_name(
     stats: State<'_, UsageStatsState>,
     user_prompt: String,
 ) -> Result<SessionNameResult, String> {
-    let cfg = config.lock().clone();
-
-    if !cfg.llm.enabled {
-        return Err("LLM integration is not enabled".to_string());
-    }
-
-    let client = create_client(&app, &cfg)?;
+    let (_cfg, client) = prepare_client(&app, &config, |_| Ok(()))?;
     let result = client
         .generate_session_name_with_usage(&user_prompt)
         .await?;
-
-    // Track usage
-    track_usage(
-        &stats,
-        "session_naming",
-        result.usage.input_tokens,
-        result.usage.output_tokens,
-    );
-
-    Ok(result.data)
+    Ok(finish(&stats, "session_naming", result))
 }
 
 /// Generate a session outcome after the session completes
@@ -231,26 +162,11 @@ pub async fn generate_session_outcome(
     user_prompt: String,
     assistant_messages: String,
 ) -> Result<SessionOutcomeResult, String> {
-    let cfg = config.lock().clone();
-
-    if !cfg.llm.enabled {
-        return Err("LLM integration is not enabled".to_string());
-    }
-
-    let client = create_client(&app, &cfg)?;
+    let (_cfg, client) = prepare_client(&app, &config, |_| Ok(()))?;
     let result = client
         .generate_session_outcome_with_usage(&user_prompt, &assistant_messages)
         .await?;
-
-    // Track usage
-    track_usage(
-        &stats,
-        "session_outcome",
-        result.usage.input_tokens,
-        result.usage.output_tokens,
-    );
-
-    Ok(result.data)
+    Ok(finish(&stats, "session_outcome", result))
 }
 
 /// Analyze if the last message needs human interaction
@@ -261,26 +177,11 @@ pub async fn analyze_interaction_needed(
     stats: State<'_, UsageStatsState>,
     last_message: String,
 ) -> Result<InteractionAnalysis, String> {
-    let cfg = config.lock().clone();
-
-    if !cfg.llm.enabled {
-        return Err("LLM integration is not enabled".to_string());
-    }
-
-    let client = create_client(&app, &cfg)?;
+    let (_cfg, client) = prepare_client(&app, &config, |_| Ok(()))?;
     let result = client
         .analyze_interaction_needed_with_usage(&last_message)
         .await?;
-
-    // Track usage
-    track_usage(
-        &stats,
-        "interaction_analysis",
-        result.usage.input_tokens,
-        result.usage.output_tokens,
-    );
-
-    Ok(result.data)
+    Ok(finish(&stats, "interaction_analysis", result))
 }
 
 /// Clean up a voice transcription
@@ -295,17 +196,13 @@ pub async fn clean_transcription(
     vosk_transcription: Option<String>,
     repo_context: Option<String>,
 ) -> Result<TranscriptionCleanupResult, String> {
-    let cfg = config.lock().clone();
-
-    if !cfg.llm.enabled {
-        return Err("LLM integration is not enabled".to_string());
-    }
-
-    if !cfg.llm.features.clean_transcription {
-        return Err("Transcription cleanup feature is not enabled".to_string());
-    }
-
-    let client = create_client(&app, &cfg)?;
+    let (cfg, client) = prepare_client(&app, &config, |c| {
+        if c.llm.features.clean_transcription {
+            Ok(())
+        } else {
+            Err("Transcription cleanup feature is not enabled".to_string())
+        }
+    })?;
 
     // Only use dual transcription if the feature is enabled and Vosk transcription is provided
     let vosk = if cfg.llm.features.use_dual_transcription && cfg.vosk.enabled {
@@ -317,16 +214,7 @@ pub async fn clean_transcription(
     let result = client
         .clean_transcription_with_usage(&raw_transcription, vosk, repo_context.as_deref())
         .await?;
-
-    // Track usage
-    track_usage(
-        &stats,
-        "transcription_cleanup",
-        result.usage.input_tokens,
-        result.usage.output_tokens,
-    );
-
-    Ok(result.data)
+    Ok(finish(&stats, "transcription_cleanup", result))
 }
 
 /// Recommend the best model for a prompt
@@ -338,33 +226,20 @@ pub async fn recommend_model(
     prompt: String,
     enabled_models: Option<Vec<String>>,
 ) -> Result<ModelRecommendation, String> {
-    let cfg = config.lock().clone();
-
-    if !cfg.llm.enabled {
-        return Err("LLM integration is not enabled".to_string());
-    }
-
-    if !cfg.llm.features.recommend_model {
-        return Err("Model recommendation feature is not enabled".to_string());
-    }
-
-    let client = create_client(&app, &cfg)?;
+    let (cfg, client) = prepare_client(&app, &config, |c| {
+        if c.llm.features.recommend_model {
+            Ok(())
+        } else {
+            Err("Model recommendation feature is not enabled".to_string())
+        }
+    })?;
 
     // Use provided enabled_models or fall back to config
     let models_to_consider = enabled_models.as_ref().unwrap_or(&cfg.enabled_models);
     let result = client
         .recommend_model_with_usage(&prompt, models_to_consider)
         .await?;
-
-    // Track usage
-    track_usage(
-        &stats,
-        "model_recommendation",
-        result.usage.input_tokens,
-        result.usage.output_tokens,
-    );
-
-    Ok(result.data)
+    Ok(finish(&stats, "model_recommendation", result))
 }
 
 /// Recommend the best repository for a given prompt
@@ -376,17 +251,13 @@ pub async fn recommend_repo(
     prompt: String,
     is_transcribed: Option<bool>,
 ) -> Result<RepoRecommendation, String> {
-    let cfg = config.lock().clone();
-
-    if !cfg.llm.enabled {
-        return Err("LLM integration is not enabled".to_string());
-    }
-
-    if !cfg.llm.features.auto_select_repo {
-        return Err("Auto-select repository feature is not enabled".to_string());
-    }
-
-    let client = create_client(&app, &cfg)?;
+    let (cfg, client) = prepare_client(&app, &config, |c| {
+        if c.llm.features.auto_select_repo {
+            Ok(())
+        } else {
+            Err("Auto-select repository feature is not enabled".to_string())
+        }
+    })?;
 
     // Build repos list with descriptions, keywords, and vocabulary (only active repos)
     let active_repos_with_indices: Vec<(usize, &crate::config::RepoConfig)> = cfg
@@ -420,21 +291,16 @@ pub async fn recommend_repo(
         .await?;
 
     // Track usage (only if we actually made an LLM call - not for empty repos)
-    if !repos.is_empty() {
-        track_usage(
-            &stats,
-            "repo_recommendation",
-            result.usage.input_tokens,
-            result.usage.output_tokens,
-        );
-    }
+    let mut data = if repos.is_empty() {
+        result.data
+    } else {
+        finish(&stats, "repo_recommendation", result)
+    };
 
-    // Remap the returned index back to the original repos array index
-    let mut data = result.data;
-    if data.recommended_index >= 0 {
-        let active_idx = data.recommended_index as usize;
-        if active_idx < active_repos_with_indices.len() {
-            data.recommended_index = active_repos_with_indices[active_idx].0 as i64;
+    // Remap the returned (active-list) index back to the original repos array index.
+    if let Some(active_idx) = data.get_index() {
+        if let Some((orig_idx, _)) = active_repos_with_indices.get(active_idx) {
+            data.recommended_index = *orig_idx as i64;
         }
     }
 
@@ -450,28 +316,15 @@ pub async fn generate_quick_actions(
     user_prompt: String,
     last_message: String,
 ) -> Result<QuickActionsResult, String> {
-    let cfg = config.lock().clone();
-
-    if !cfg.llm.enabled {
-        return Err("LLM integration is not enabled".to_string());
-    }
-
-    if !cfg.llm.features.generate_quick_actions {
-        return Err("Quick actions generation feature is not enabled".to_string());
-    }
-
-    let client = create_client(&app, &cfg)?;
+    let (_cfg, client) = prepare_client(&app, &config, |c| {
+        if c.llm.features.generate_quick_actions {
+            Ok(())
+        } else {
+            Err("Quick actions generation feature is not enabled".to_string())
+        }
+    })?;
     let result = client
         .generate_quick_actions_with_usage(&user_prompt, &last_message)
         .await?;
-
-    // Track usage
-    track_usage(
-        &stats,
-        "quick_actions",
-        result.usage.input_tokens,
-        result.usage.output_tokens,
-    );
-
-    Ok(result.data)
+    Ok(finish(&stats, "quick_actions", result))
 }

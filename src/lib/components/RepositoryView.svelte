@@ -40,11 +40,12 @@
   let isLoadingWorktrees = $state(false);
   let claudeAvailable = $state(false);
   let codexAvailable = $state(false);
-  let generatingClaude = $state(false);
-  let generatingCodex = $state(false);
+  // Track generation per-repo-id so exploring one repo doesn't lock the others.
+  let generatingClaudeRepos = $state<Set<string>>(new Set());
+  let generatingCodexRepos = $state<Set<string>>(new Set());
   let scanningLaunch = $state(false);
-  let generatingLaunchClaude = $state(false);
-  let generatingLaunchCodex = $state(false);
+  let generatingLaunchClaudeRepos = $state<Set<string>>(new Set());
+  let generatingLaunchCodexRepos = $state<Set<string>>(new Set());
   let newCmdName = $state('');
   let newCmdCommand = $state('');
   let newCmdWorkingDir = $state('');
@@ -55,6 +56,10 @@
   const noteModeAvailable = $derived(isNoteModeAvailable());
   const selectedRepo = $derived(repoId ? $repos.list.find((repo) => repo.id === repoId) ?? null : null);
   const selectedRepoIndex = $derived(selectedRepo ? $repos.list.findIndex((repo) => repo.id === selectedRepo.id) : -1);
+  const generatingClaude = $derived(!!repoId && generatingClaudeRepos.has(repoId));
+  const generatingCodex = $derived(!!repoId && generatingCodexRepos.has(repoId));
+  const generatingLaunchClaude = $derived(!!repoId && generatingLaunchClaudeRepos.has(repoId));
+  const generatingLaunchCodex = $derived(!!repoId && generatingLaunchCodexRepos.has(repoId));
   const launchCwd = $derived(
     selectedRepo
       ? worktreeMode === 'existing' && selectedWorktreePath
@@ -102,6 +107,31 @@
   function updateRepo(updates: Partial<RepoConfig>) {
     if (selectedRepoIndex < 0) return;
     void repos.updateRepo(selectedRepoIndex, updates);
+  }
+
+  /** Update a repo by id, regardless of which repo is currently selected. */
+  function updateRepoById(id: string, updates: Partial<RepoConfig>) {
+    const index = $repos.list.findIndex((repo) => repo.id === id);
+    if (index < 0) return;
+    void repos.updateRepo(index, updates);
+  }
+
+  function setRepoGenerating(provider: 'claude' | 'codex', id: string, active: boolean) {
+    const target = provider === 'claude' ? generatingClaudeRepos : generatingCodexRepos;
+    const next = new Set(target);
+    if (active) next.add(id);
+    else next.delete(id);
+    if (provider === 'claude') generatingClaudeRepos = next;
+    else generatingCodexRepos = next;
+  }
+
+  function setRepoGeneratingLaunch(provider: 'claude' | 'codex', id: string, active: boolean) {
+    const target = provider === 'claude' ? generatingLaunchClaudeRepos : generatingLaunchCodexRepos;
+    const next = new Set(target);
+    if (active) next.add(id);
+    else next.delete(id);
+    if (provider === 'claude') generatingLaunchClaudeRepos = next;
+    else generatingLaunchCodexRepos = next;
   }
 
   function replaceRepo(mutator: (repo: RepoConfig) => RepoConfig) {
@@ -165,35 +195,38 @@
     }
   }
 
-  async function setupDescriptionListeners(requestId: string) {
+  async function setupDescriptionListeners(
+    requestId: string,
+    provider: 'claude' | 'codex',
+    targetRepoId: string
+  ) {
     const resultListener = await listen<RepoDescriptionResult>(`repo-description-result-${requestId}`, (event) => {
-      updateRepo({
+      const targetRepo = $repos.list.find((repo) => repo.id === targetRepoId) ?? null;
+      updateRepoById(targetRepoId, {
         description: event.payload.description,
         keywords: event.payload.keywords,
         vocabulary: event.payload.vocabulary,
-        icon: event.payload.icon || selectedRepo?.icon,
-        color: event.payload.color || selectedRepo?.color,
+        icon: event.payload.icon || targetRepo?.icon,
+        color: event.payload.color || targetRepo?.color,
       });
-      generatingClaude = false;
-      generatingCodex = false;
+      setRepoGenerating(provider, targetRepoId, false);
       resultListener();
       errorListener();
     });
 
     const errorListener = await listen<string>(`repo-description-error-${requestId}`, () => {
-      generatingClaude = false;
-      generatingCodex = false;
+      setRepoGenerating(provider, targetRepoId, false);
       resultListener();
       errorListener();
     });
   }
 
   async function generateDescription(provider: 'claude' | 'codex') {
-    if (!selectedRepo) return;
-    const requestId = `${provider}-repo-${selectedRepo.id}-${Date.now()}`;
-    if (provider === 'claude') generatingClaude = true;
-    if (provider === 'codex') generatingCodex = true;
-    await setupDescriptionListeners(requestId);
+    if (!selectedRepo?.id) return;
+    const targetRepoId = selectedRepo.id;
+    const requestId = `${provider}-repo-${targetRepoId}-${Date.now()}`;
+    setRepoGenerating(provider, targetRepoId, true);
+    await setupDescriptionListeners(requestId, provider, targetRepoId);
 
     try {
       await invoke(
@@ -207,12 +240,11 @@
         }
       );
     } catch {
-      generatingClaude = false;
-      generatingCodex = false;
+      setRepoGenerating(provider, targetRepoId, false);
     }
   }
 
-  function applyLaunchProfileResult(payload: LaunchGenerationResult) {
+  function applyLaunchProfileResult(payload: LaunchGenerationResult, targetRepoId: string) {
     const commands: LaunchCommand[] = payload.commands.map((command) => ({
       id: crypto.randomUUID(),
       name: command.name,
@@ -229,26 +261,24 @@
         .filter((id): id is string => !!id),
     }));
 
-    updateRepo({ launch_commands: commands, launch_profiles: profiles });
+    updateRepoById(targetRepoId, { launch_commands: commands, launch_profiles: profiles });
   }
 
   async function generateLaunch(provider: 'claude' | 'codex') {
-    if (!selectedRepo) return;
-    const requestId = `${provider}-launch-${selectedRepo.id}-${Date.now()}`;
-    if (provider === 'claude') generatingLaunchClaude = true;
-    if (provider === 'codex') generatingLaunchCodex = true;
+    if (!selectedRepo?.id) return;
+    const targetRepoId = selectedRepo.id;
+    const requestId = `${provider}-launch-${targetRepoId}-${Date.now()}`;
+    setRepoGeneratingLaunch(provider, targetRepoId, true);
 
     const resultListener = await listen<LaunchGenerationResult>(`launch-profile-result-${requestId}`, (event) => {
-      applyLaunchProfileResult(event.payload);
-      generatingLaunchClaude = false;
-      generatingLaunchCodex = false;
+      applyLaunchProfileResult(event.payload, targetRepoId);
+      setRepoGeneratingLaunch(provider, targetRepoId, false);
       resultListener();
       errorListener();
     });
 
     const errorListener = await listen<string>(`launch-profile-error-${requestId}`, () => {
-      generatingLaunchClaude = false;
-      generatingLaunchCodex = false;
+      setRepoGeneratingLaunch(provider, targetRepoId, false);
       resultListener();
       errorListener();
     });
@@ -263,8 +293,7 @@
         }
       );
     } catch {
-      generatingLaunchClaude = false;
-      generatingLaunchCodex = false;
+      setRepoGeneratingLaunch(provider, targetRepoId, false);
     }
   }
 

@@ -1,16 +1,10 @@
 use crate::commands::usage_cmds::UsageStatsState;
-use crate::config::{AppConfig, LlmProvider};
+use crate::config::AppConfig;
 use crate::git::{GitManager, WorktreeCreationResult, WorktreeInfo, WorktreeSetupStepResult};
-use crate::llm::LlmClient;
 use parking_lot::Mutex;
 use tauri::{AppHandle, State};
-use tauri_plugin_keyring::KeyringExt;
 
 type ConfigState = Mutex<AppConfig>;
-
-/// Keyring constants (shared with llm_cmds)
-const KEYRING_SERVICE: &str = "claude-whisperer";
-const KEYRING_LLM_KEY: &str = "llm-api-key";
 
 /// List all worktrees for a repository
 #[tauri::command]
@@ -92,41 +86,16 @@ pub async fn generate_worktree_branch_name(
     // Get existing branches to avoid conflicts
     let existing_branches = GitManager::list_branches(&repo_path).unwrap_or_default();
 
-    // Try LLM-generated name first
+    // Try LLM-generated name first. `client_from_config` errors for non-local
+    // providers with no key (falls through to the fallback), and allows an empty
+    // key for the Local provider.
     if cfg.llm.enabled {
-        // For local provider, API key is optional
-        let api_key = if matches!(cfg.llm.provider, LlmProvider::Local) {
-            app.keyring()
-                .get_password(KEYRING_SERVICE, KEYRING_LLM_KEY)
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-        } else {
-            match app.keyring().get_password(KEYRING_SERVICE, KEYRING_LLM_KEY) {
-                Ok(Some(key)) => key,
-                Ok(None) | Err(_) => String::new(),
-            }
-        };
-
-        if !api_key.is_empty() || matches!(cfg.llm.provider, LlmProvider::Local) {
-            let client = LlmClient::new(
-                api_key,
-                cfg.llm.model.clone(),
-                cfg.llm.provider.clone(),
-                cfg.llm.endpoint.clone(),
-                cfg.llm.auto_model,
-                cfg.llm.model_priority.clone(),
-            );
-
-            // Truncate prompt to 10k chars for branch naming
-            let truncated_prompt = if prompt.len() > 10000 {
-                &prompt[..10000]
-            } else {
-                &prompt
-            };
+        if let Ok(client) = crate::llm::client_from_config(&app, &cfg) {
+            // Truncate prompt to 10k chars (char-safe) for branch naming.
+            let truncated_prompt = crate::util::truncate_chars(&prompt, 10000);
 
             match client
-                .generate_branch_name_with_usage(truncated_prompt, &existing_branches)
+                .generate_branch_name_with_usage(&truncated_prompt, &existing_branches)
                 .await
             {
                 Ok(result) => {

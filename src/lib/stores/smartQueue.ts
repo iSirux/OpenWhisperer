@@ -1,0 +1,343 @@
+// =============================================================================
+// Smart Queue — drain driver
+// =============================================================================
+//
+// A single global driver that dispatches deferred work once a provider's usage
+// window resets (rate-limit queueing) or a user-scheduled window boundary passes
+// (fire-and-forget scheduling). It owns detection + draining for both providers.
+//
+// Two waiting shapes, one driver:
+//   - `status: 'queued'`  → a never-launched session, dispatched via `launchPrepared`.
+//   - `rateLimited != null` → a live session with a pending turn to re-send, dispatched
+//                              via `continueRateLimited` (covers mid-run rejection,
+//                              deferred follow-ups, and scheduled turns).
+//
+// This module imports `sdkSessions` (unlike `queueDetection.ts`, which deliberately
+// does not) and reads exhaustion state from `queueDetection.ts` to avoid a circular
+// import between the gates and the driver.
+//
+// App-runtime code, so `Date.now()` / `Math.random()` / timers are all fair game.
+// =============================================================================
+
+import { derived, get, writable } from 'svelte/store';
+import { sdkSessions, type QueueReason, type SdkSession } from './sdkSessions';
+import { rateLimitData, codexRateLimitData, type ProviderRateLimits } from './rateLimits';
+import { providerExhaustion } from './queueDetection';
+import { settings } from './settings';
+import { playQueueResume } from '$lib/utils/sound';
+import type { SdkProvider } from '$lib/utils/models';
+
+/** Providers the queue drives. Codex (OpenAI) waits on its own limits independently. */
+const PROVIDERS: SdkProvider[] = ['claude', 'openai'];
+
+/** Time-based tick so scheduled items fire without needing a rate-limit change. */
+const TICK_MS = 30_000;
+
+/** A session waiting to be dispatched, normalized from its `queued`/`rateLimited` shape. */
+interface PendingItem {
+  id: string;
+  provider: SdkProvider;
+  reason: QueueReason;
+  kind: 'queued' | 'rateLimited';
+  /** FIFO ordering key. */
+  queuedAt: number;
+  /** For scheduled items: the target window-boundary time (epoch ms). */
+  targetStartAt?: number;
+}
+
+// -----------------------------------------------------------------------------
+// Internal draining state (powers the `isDraining` derived store)
+// -----------------------------------------------------------------------------
+
+const draining: Record<SdkProvider, boolean> = { claude: false, openai: false };
+const drainingStore = writable<boolean>(false);
+
+function refreshDrainingStore(): void {
+  drainingStore.set(PROVIDERS.some((p) => draining[p]));
+}
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Random delay in `[minSecs, maxSecs]` expressed in ms (order-tolerant, clamped ≥ 0). */
+function randomDelayMs(minSecs: number, maxSecs: number): number {
+  const lo = Math.max(0, Math.min(minSecs, maxSecs));
+  const hi = Math.max(0, Math.max(minSecs, maxSecs));
+  const secs = lo + Math.random() * (hi - lo);
+  return Math.round(secs * 1000);
+}
+
+/** The provider a session belongs to (defaulting to Claude when unset). */
+function providerOf(session: SdkSession): SdkProvider {
+  return (session.provider ?? 'claude') as SdkProvider;
+}
+
+/** Direct read of a provider's rate-limit snapshot — null means "not yet fetched". */
+function rateLimitStoreValue(provider: SdkProvider): ProviderRateLimits | null {
+  return provider === 'openai' ? get(codexRateLimitData) : get(rateLimitData);
+}
+
+/** Normalize a session into a pending item, or null if it isn't waiting. */
+function toPendingItem(session: SdkSession): PendingItem | null {
+  const provider = providerOf(session);
+  if (session.status === 'queued' && session.queueInfo) {
+    return {
+      id: session.id,
+      provider,
+      reason: session.queueInfo.reason,
+      kind: 'queued',
+      queuedAt: session.queueInfo.queuedAt ?? session.createdAt ?? 0,
+      targetStartAt: session.queueInfo.targetStartAt,
+    };
+  }
+  if (session.rateLimited) {
+    return {
+      id: session.id,
+      provider,
+      reason: session.rateLimited.reason,
+      kind: 'rateLimited',
+      queuedAt: session.rateLimited.queuedAt ?? session.lastActivityAt ?? 0,
+      targetStartAt: session.rateLimited.targetStartAt ?? session.rateLimited.resetsAt,
+    };
+  }
+  return null;
+}
+
+/** All pending items belonging to `provider`, unordered. */
+function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider): PendingItem[] {
+  const items: PendingItem[] = [];
+  for (const session of sessions) {
+    const item = toPendingItem(session);
+    if (item && item.provider === provider) items.push(item);
+  }
+  return items;
+}
+
+/**
+ * Is this item ready to dispatch *right now*?
+ *
+ * - `rate_limit`: ready ONLY IF the provider's rate-limit store is non-null (we
+ *   actually know the limit state) AND the provider is no longer exhausted. When
+ *   the store is still null (e.g. right after app startup, before the first
+ *   rate-limit fetch) we deliberately hold — otherwise every queued session would
+ *   false-drain immediately on launch.
+ * - `scheduled`: ready IF `now` has passed the snapshot target time AND the
+ *   provider isn't exhausted. When the store is null we treat the provider as
+ *   not-exhausted (`providerExhaustion` already returns `exhausted: false` for a
+ *   null store), honoring the time the user explicitly scheduled.
+ */
+function isReady(item: PendingItem, now: number): boolean {
+  const exhausted = providerExhaustion(item.provider).exhausted;
+
+  if (item.reason === 'rate_limit') {
+    if (rateLimitStoreValue(item.provider) == null) return false; // limit state unknown yet
+    return !exhausted;
+  }
+
+  // reason === 'scheduled'
+  if (item.targetStartAt == null) return false; // nothing to fire against
+  if (now <= item.targetStartAt) return false; // not time yet
+  return !exhausted; // if exhausted at the scheduled moment, hold and roll forward
+}
+
+// -----------------------------------------------------------------------------
+// Drain loop
+// -----------------------------------------------------------------------------
+
+/**
+ * Dispatch every ready item for `provider`, FIFO by `queuedAt`, honoring the
+ * configured fuzzy delays. Guarded per provider so overlapping triggers coalesce.
+ */
+async function drain(provider: SdkProvider): Promise<void> {
+  // Re-entrancy guard (synchronous up to the first await, so this is race-free).
+  if (draining[provider]) return;
+
+  const readyNow = pendingItemsForProvider(get(sdkSessions), provider).filter((item) =>
+    isReady(item, Date.now())
+  );
+  if (readyNow.length === 0) return; // nothing to do — don't flip the draining flag
+
+  draining[provider] = true;
+  refreshDrainingStore();
+
+  try {
+    const cfg = get(settings).queue;
+    const ordered = [...readyNow].sort((a, b) => a.queuedAt - b.queuedAt);
+    const dispatched = new Set<string>();
+    let dispatchedCount = 0;
+
+    // "After reset" fuzzy delay — applied once, before the first dispatch.
+    if (cfg.fuzzy_delay_after_reset) {
+      await sleep(
+        randomDelayMs(cfg.fuzzy_delay_after_reset_min_secs, cfg.fuzzy_delay_after_reset_max_secs)
+      );
+    }
+
+    for (const item of ordered) {
+      if (dispatched.has(item.id)) continue;
+
+      // "Between runs" fuzzy delay — before every dispatch after the first.
+      if (dispatchedCount > 0 && cfg.fuzzy_delay_between_runs) {
+        await sleep(
+          randomDelayMs(
+            cfg.fuzzy_delay_between_runs_min_secs,
+            cfg.fuzzy_delay_between_runs_max_secs
+          )
+        );
+      }
+
+      // Re-read the session — it may have been removed, launched, or re-exhausted
+      // while we were waiting (this is the graceful roll-forward on re-rejection).
+      const current = get(sdkSessions).find((s) => s.id === item.id);
+      if (!current) continue;
+      const fresh = toPendingItem(current);
+      if (!fresh || fresh.provider !== provider) continue;
+      if (!isReady(fresh, Date.now())) continue;
+
+      // Reset sound on the first *actual* dispatch of this cycle.
+      if (dispatchedCount === 0) {
+        try {
+          playQueueResume();
+        } catch {
+          /* sound is best-effort */
+        }
+      }
+
+      dispatched.add(item.id);
+      dispatchedCount++;
+
+      try {
+        if (fresh.kind === 'queued') {
+          await sdkSessions.launchPrepared(item.id);
+        } else {
+          await sdkSessions.continueRateLimited(item.id);
+        }
+      } catch (err) {
+        // One bad dispatch must not abort the rest of the drain.
+        console.error(`[SmartQueue] Failed to dispatch ${fresh.kind} session ${item.id}:`, err);
+      }
+    }
+  } finally {
+    draining[provider] = false;
+    refreshDrainingStore();
+  }
+}
+
+/** Respect the master toggle; only ever auto-dispatch when the queue is enabled. */
+function evaluate(provider: SdkProvider): void {
+  if (!get(settings).queue.enabled) return;
+  void drain(provider);
+}
+
+// -----------------------------------------------------------------------------
+// Lifecycle
+// -----------------------------------------------------------------------------
+
+let started = false;
+let currentTeardown: (() => void) | null = null;
+
+/**
+ * Start the driver: subscribe to both rate-limit stores, the sessions store, and
+ * a periodic tick, then return a teardown function. Idempotent — a second call
+ * while running is a no-op that returns the same teardown.
+ */
+export function startSmartQueue(): () => void {
+  if (started && currentTeardown) return currentTeardown;
+  started = true;
+
+  // Rate-limit changes (auto-poll ~every 3 min) → re-evaluate the matching provider.
+  const unsubClaude = rateLimitData.subscribe(() => evaluate('claude'));
+  const unsubCodex = codexRateLimitData.subscribe(() => evaluate('openai'));
+
+  // Newly-queued items should be considered promptly. Coalesce the flood of store
+  // updates during streaming into a single evaluation per microtask.
+  let sessionsEvalScheduled = false;
+  const unsubSessions = sdkSessions.subscribe(() => {
+    if (sessionsEvalScheduled) return;
+    sessionsEvalScheduled = true;
+    queueMicrotask(() => {
+      sessionsEvalScheduled = false;
+      for (const p of PROVIDERS) evaluate(p);
+    });
+  });
+
+  // Time-based tick so `scheduled` items fire without a rate-limit change.
+  let intervalId: ReturnType<typeof setInterval> | null = null;
+  if (typeof window !== 'undefined') {
+    intervalId = setInterval(() => {
+      for (const p of PROVIDERS) evaluate(p);
+    }, TICK_MS);
+  }
+
+  currentTeardown = () => {
+    if (!started) return;
+    started = false;
+    currentTeardown = null;
+    try {
+      unsubClaude();
+    } catch {
+      /* ignore */
+    }
+    try {
+      unsubCodex();
+    } catch {
+      /* ignore */
+    }
+    try {
+      unsubSessions();
+    } catch {
+      /* ignore */
+    }
+    if (intervalId != null) clearInterval(intervalId);
+  };
+
+  return currentTeardown;
+}
+
+// -----------------------------------------------------------------------------
+// Derived stores for the UI
+// -----------------------------------------------------------------------------
+
+/** Number of sessions currently waiting (queued first-launches + rate-limited turns). */
+export const queuedCount = derived(sdkSessions, ($sessions) =>
+  $sessions.reduce(
+    (count, s) => count + (s.status === 'queued' || s.rateLimited != null ? 1 : 0),
+    0
+  )
+);
+
+/**
+ * The earliest upcoming reset/target time (epoch ms) among pending items, or
+ * undefined when nothing is waiting. Prefers future boundaries but falls back to
+ * the soonest boundary overall (which the UI renders as "now").
+ */
+export const nextQueueResetAt = derived(sdkSessions, ($sessions) => {
+  const now = Date.now();
+  let earliestFuture: number | undefined;
+  let earliestAny: number | undefined;
+
+  for (const s of $sessions) {
+    let target: number | undefined;
+    if (s.status === 'queued' && s.queueInfo) {
+      target = s.queueInfo.targetStartAt;
+    } else if (s.rateLimited) {
+      target = s.rateLimited.resetsAt ?? s.rateLimited.targetStartAt;
+    }
+    if (target == null) continue;
+
+    if (earliestAny == null || target < earliestAny) earliestAny = target;
+    if (target >= now && (earliestFuture == null || target < earliestFuture)) {
+      earliestFuture = target;
+    }
+  }
+
+  return earliestFuture ?? earliestAny;
+});
+
+/** True while any provider's drain loop is running. */
+export const isDraining = derived(drainingStore, ($d) => $d);

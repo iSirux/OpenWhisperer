@@ -1,6 +1,6 @@
-# ClaudeWhisperer
+# OpenWhisperer
 
-A desktop tool for voice-controlled Claude Code and Codex interactions. Speak your prompts, and ClaudeWhisperer transcribes, interprets, and spawns coding-agent sessions with a desktop UI on top.
+A desktop tool for voice-controlled Claude Code and Codex interactions. Speak your prompts, and OpenWhisperer transcribes, interprets, and spawns coding-agent sessions with a desktop UI on top.
 
 ## Features
 
@@ -46,8 +46,8 @@ docker run -d --gpus all -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggi
 
 ```bash
 # Clone the repository
-git clone https://github.com/iSirux/ClaudeWhisperer.git
-cd ClaudeWhisperer
+git clone https://github.com/iSirux/OpenWhisperer.git
+cd OpenWhisperer
 
 # Install frontend dependencies
 pnpm install
@@ -63,7 +63,7 @@ pnpm tauri build
 
 ### Quick Start
 
-1. Launch ClaudeWhisperer
+1. Launch OpenWhisperer
 2. Select your target repository from the dropdown
 3. Press the record hotkey (default: `Cmd+Shift+V` / `Ctrl+Shift+V`) or enable open mic
 4. Speak your prompt
@@ -122,7 +122,7 @@ Access settings via the gear icon or `Cmd/Ctrl + ,`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        ClaudeWhisperer                              │
+│                        OpenWhisperer                              │
 ├──────────────────────┬──────────────────────────────────────────┤
 │      Frontend        │              Rust Backend                 │
 │  ┌────────────────┐  │  ┌─────────────┐    ┌─────────────────┐  │
@@ -160,7 +160,7 @@ pnpm format
 ### Project Structure
 
 ```
-ClaudeWhisperer/
+OpenWhisperer/
 ├── src-tauri/           # Rust backend
 │   ├── src/
 │   │   ├── main.rs      # Entry point

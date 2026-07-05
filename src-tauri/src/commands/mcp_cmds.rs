@@ -7,7 +7,7 @@ use tauri::AppHandle;
 use tauri_plugin_keyring::KeyringExt;
 
 /// Service name for keyring storage
-const KEYRING_SERVICE: &str = "claude-whisperer";
+const KEYRING_SERVICE: &str = "open-whisperer";
 
 #[derive(Debug, Serialize)]
 pub struct McpTestResult {
@@ -68,17 +68,79 @@ fn get_bearer_token_key(server_id: &str) -> String {
     format!("mcp-bearer-{}", server_id)
 }
 
-/// Test an MCP server connection (for HTTP/SSE servers)
-#[tauri::command]
-pub async fn test_mcp_server(server_id: String) -> Result<McpTestResult, String> {
-    let (config, _) = AppConfig::load();
-
-    let server = config
+/// Look up an MCP server by id, or return a stable "not found" error.
+fn find_server<'a>(
+    config: &'a AppConfig,
+    server_id: &str,
+) -> Result<&'a crate::config::McpServerConfig, String> {
+    config
         .mcp
         .servers
         .iter()
         .find(|s| s.id == server_id)
-        .ok_or_else(|| format!("Server not found: {}", server_id))?;
+        .ok_or_else(|| format!("Server not found: {}", server_id))
+}
+
+/// Persist an OAuth token response to the keyring. `fallback_refresh` is used
+/// when the response omits a refresh token (e.g. a refresh grant that only
+/// returns a new access token) so the existing refresh token is retained.
+fn store_tokens(
+    app: &AppHandle,
+    server_id: &str,
+    resp: TokenResponse,
+    fallback_refresh: Option<String>,
+) -> Result<(), String> {
+    let expires_at = resp
+        .expires_in
+        .map(|expires_in| crate::util::now_secs() + expires_in);
+
+    let tokens = McpOAuthTokens {
+        access_token: resp.access_token,
+        refresh_token: resp.refresh_token.or(fallback_refresh),
+        expires_at,
+        token_type: resp.token_type,
+    };
+
+    let tokens_json =
+        serde_json::to_string(&tokens).map_err(|e| format!("Failed to serialize tokens: {}", e))?;
+
+    app.keyring()
+        .set_password(KEYRING_SERVICE, &get_token_key(server_id), &tokens_json)
+        .map_err(|e| format!("Failed to save OAuth tokens: {}", e))?;
+
+    Ok(())
+}
+
+/// Load stored OAuth tokens, returning `None` when absent OR expired (with a
+/// 60s buffer). Centralizing the expiry check keeps `get_mcp_oauth_tokens` and
+/// `get_mcp_auth_header` consistent.
+fn load_tokens(app: &AppHandle, server_id: &str) -> Result<Option<McpOAuthTokens>, String> {
+    let tokens_json = match app
+        .keyring()
+        .get_password(KEYRING_SERVICE, &get_token_key(server_id))
+    {
+        Ok(Some(json)) => json,
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(format!("Failed to get OAuth tokens: {}", e)),
+    };
+
+    let tokens: McpOAuthTokens = serde_json::from_str(&tokens_json)
+        .map_err(|e| format!("Failed to parse tokens: {}", e))?;
+
+    if let Some(expires_at) = tokens.expires_at {
+        if crate::util::now_secs() + 60 >= expires_at {
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(tokens))
+}
+
+/// Test an MCP server connection (for HTTP/SSE servers)
+#[tauri::command]
+pub async fn test_mcp_server(server_id: String) -> Result<McpTestResult, String> {
+    let (config, _) = AppConfig::load();
+    let server = find_server(&config, &server_id)?;
 
     // Only HTTP/SSE servers can be tested
     match server.server_type {
@@ -168,12 +230,7 @@ pub async fn delete_mcp_bearer_token(app: AppHandle, server_id: String) -> Resul
 #[tauri::command]
 pub async fn has_mcp_token(app: AppHandle, server_id: String) -> Result<bool, String> {
     let (config, _) = AppConfig::load();
-    let server = config
-        .mcp
-        .servers
-        .iter()
-        .find(|s| s.id == server_id)
-        .ok_or_else(|| format!("Server not found: {}", server_id))?;
+    let server = find_server(&config, &server_id)?;
 
     match server.auth_type {
         McpAuthType::None => Ok(false),
@@ -204,12 +261,7 @@ pub async fn has_mcp_token(app: AppHandle, server_id: String) -> Result<bool, St
 #[tauri::command]
 pub async fn start_mcp_oauth_flow(server_id: String) -> Result<OAuthFlowResult, String> {
     let (config, _) = AppConfig::load();
-    let server = config
-        .mcp
-        .servers
-        .iter()
-        .find(|s| s.id == server_id)
-        .ok_or_else(|| format!("Server not found: {}", server_id))?;
+    let server = find_server(&config, &server_id)?;
 
     let oauth = server
         .oauth
@@ -272,12 +324,7 @@ pub async fn exchange_mcp_oauth_code(
     code_verifier: String,
 ) -> Result<(), String> {
     let (config, _) = AppConfig::load();
-    let server = config
-        .mcp
-        .servers
-        .iter()
-        .find(|s| s.id == server_id)
-        .ok_or_else(|| format!("Server not found: {}", server_id))?;
+    let server = find_server(&config, &server_id)?;
 
     let oauth = server
         .oauth
@@ -329,43 +376,14 @@ pub async fn exchange_mcp_oauth_code(
         .await
         .map_err(|e| format!("Failed to parse token response: {}", e))?;
 
-    // Calculate expiration time
-    let expires_at = token_response.expires_in.map(|expires_in| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + expires_in
-    });
-
-    // Store tokens in keyring
-    let tokens = McpOAuthTokens {
-        access_token: token_response.access_token,
-        refresh_token: token_response.refresh_token,
-        expires_at,
-        token_type: token_response.token_type,
-    };
-
-    let tokens_json =
-        serde_json::to_string(&tokens).map_err(|e| format!("Failed to serialize tokens: {}", e))?;
-
-    app.keyring()
-        .set_password(KEYRING_SERVICE, &get_token_key(&server_id), &tokens_json)
-        .map_err(|e| format!("Failed to save OAuth tokens: {}", e))?;
-
-    Ok(())
+    store_tokens(&app, &server_id, token_response, None)
 }
 
 /// Refresh OAuth tokens for an MCP server
 #[tauri::command]
 pub async fn refresh_mcp_oauth_tokens(app: AppHandle, server_id: String) -> Result<(), String> {
     let (config, _) = AppConfig::load();
-    let server = config
-        .mcp
-        .servers
-        .iter()
-        .find(|s| s.id == server_id)
-        .ok_or_else(|| format!("Server not found: {}", server_id))?;
+    let server = find_server(&config, &server_id)?;
 
     let oauth = server
         .oauth
@@ -382,7 +400,8 @@ pub async fn refresh_mcp_oauth_tokens(app: AppHandle, server_id: String) -> Resu
         .as_ref()
         .ok_or_else(|| "OAuth token_url not configured".to_string())?;
 
-    // Get current tokens
+    // Get current tokens (raw read: we need the refresh token even if the
+    // access token is expired, so this bypasses `load_tokens`' expiry check).
     let tokens_json = app
         .keyring()
         .get_password(KEYRING_SERVICE, &get_token_key(&server_id))
@@ -423,31 +442,8 @@ pub async fn refresh_mcp_oauth_tokens(app: AppHandle, server_id: String) -> Resu
         .await
         .map_err(|e| format!("Failed to parse token response: {}", e))?;
 
-    // Calculate new expiration time
-    let expires_at = token_response.expires_in.map(|expires_in| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + expires_in
-    });
-
-    // Store updated tokens
-    let tokens = McpOAuthTokens {
-        access_token: token_response.access_token,
-        refresh_token: token_response.refresh_token.or(Some(refresh_token)),
-        expires_at,
-        token_type: token_response.token_type,
-    };
-
-    let tokens_json =
-        serde_json::to_string(&tokens).map_err(|e| format!("Failed to serialize tokens: {}", e))?;
-
-    app.keyring()
-        .set_password(KEYRING_SERVICE, &get_token_key(&server_id), &tokens_json)
-        .map_err(|e| format!("Failed to save refreshed tokens: {}", e))?;
-
-    Ok(())
+    // Retain the existing refresh token if the response omits a new one.
+    store_tokens(&app, &server_id, token_response, Some(refresh_token))
 }
 
 /// Get OAuth tokens for an MCP server (returns None if not authenticated or expired)
@@ -456,18 +452,9 @@ pub async fn get_mcp_oauth_tokens(
     app: AppHandle,
     server_id: String,
 ) -> Result<Option<McpOAuthTokens>, String> {
-    match app
-        .keyring()
-        .get_password(KEYRING_SERVICE, &get_token_key(&server_id))
-    {
-        Ok(Some(tokens_json)) => {
-            let tokens: McpOAuthTokens = serde_json::from_str(&tokens_json)
-                .map_err(|e| format!("Failed to parse tokens: {}", e))?;
-            Ok(Some(tokens))
-        }
-        Ok(None) => Ok(None),
-        Err(e) => Err(format!("Failed to get OAuth tokens: {}", e)),
-    }
+    // Applies the shared expiry check (matches this command's documented
+    // "returns None if ... expired" contract).
+    load_tokens(&app, &server_id)
 }
 
 /// Delete OAuth tokens for an MCP server (logout)
@@ -490,12 +477,7 @@ pub async fn get_mcp_auth_header(
     server_id: String,
 ) -> Result<Option<String>, String> {
     let (config, _) = AppConfig::load();
-    let server = config
-        .mcp
-        .servers
-        .iter()
-        .find(|s| s.id == server_id)
-        .ok_or_else(|| format!("Server not found: {}", server_id))?;
+    let server = find_server(&config, &server_id)?;
 
     match server.auth_type {
         McpAuthType::None => Ok(None),
@@ -509,36 +491,12 @@ pub async fn get_mcp_auth_header(
                 Err(e) => Err(format!("Failed to get bearer token: {}", e)),
             }
         }
-        McpAuthType::OAuth => {
-            match app
-                .keyring()
-                .get_password(KEYRING_SERVICE, &get_token_key(&server_id))
-            {
-                Ok(Some(tokens_json)) => {
-                    let tokens: McpOAuthTokens = serde_json::from_str(&tokens_json)
-                        .map_err(|e| format!("Failed to parse tokens: {}", e))?;
-
-                    // Check if token is expired (with 60 second buffer)
-                    if let Some(expires_at) = tokens.expires_at {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-
-                        if now + 60 >= expires_at {
-                            // Token is expired or about to expire
-                            return Ok(None);
-                        }
-                    }
-
-                    Ok(Some(format!(
-                        "{} {}",
-                        tokens.token_type, tokens.access_token
-                    )))
-                }
-                Ok(None) => Ok(None),
-                Err(e) => Err(format!("Failed to get OAuth tokens: {}", e)),
-            }
-        }
+        McpAuthType::OAuth => match load_tokens(&app, &server_id)? {
+            Some(tokens) => Ok(Some(format!(
+                "{} {}",
+                tokens.token_type, tokens.access_token
+            ))),
+            None => Ok(None),
+        },
     }
 }

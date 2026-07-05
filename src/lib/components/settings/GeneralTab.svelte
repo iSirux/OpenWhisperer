@@ -5,6 +5,9 @@
   let newAction = $state("");
   let actionError = $state("");
 
+  let newChip = $state("");
+  let chipError = $state("");
+
   function addQuickAction() {
     const trimmed = newAction.trim();
     if (!trimmed) {
@@ -31,6 +34,33 @@
 
   function removeQuickAction(index: number) {
     $settings.quick_actions = ($settings.quick_actions ?? []).filter((_, i) => i !== index);
+  }
+
+  function addChip() {
+    const trimmed = newChip.trim();
+    if (!trimmed) {
+      chipError = "";
+      return;
+    }
+
+    if (trimmed.length > 40) {
+      chipError = "Chip must be 40 characters or fewer";
+      return;
+    }
+
+    const existing = ($settings.prompt_chips ?? []).map((c) => c.toLowerCase());
+    if (existing.includes(trimmed.toLowerCase())) {
+      chipError = "Chip already exists";
+      return;
+    }
+
+    $settings.prompt_chips = [...($settings.prompt_chips ?? []), trimmed];
+    newChip = "";
+    chipError = "";
+  }
+
+  function removeChip(index: number) {
+    $settings.prompt_chips = ($settings.prompt_chips ?? []).filter((_, i) => i !== index);
   }
 </script>
 
@@ -241,6 +271,71 @@
     {#if ($settings.quick_actions ?? []).length === 0}
       <p class="text-xs text-text-muted mt-2 italic">
         No quick actions configured. Only AI-suggested actions will appear (if LLM is enabled).
+      </p>
+    {/if}
+  </div>
+
+  <!-- Prompt Chips -->
+  <div class="border-t border-border pt-4 mt-4">
+    <h3 class="text-sm font-medium text-text-primary mb-1">Prompt Chips</h3>
+    <p class="text-xs text-text-muted mb-3">
+      Toggleable tags shown when preparing a new session or a pile item. The ones you
+      enable are appended to the prompt on a new line, comma-separated, when it's sent.
+    </p>
+
+    <!-- Existing chips as removable pills -->
+    {#if ($settings.prompt_chips ?? []).length > 0}
+      <div class="flex flex-wrap gap-2 mb-3">
+        {#each $settings.prompt_chips ?? [] as chip, i}
+          <div
+            class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-surface border border-border text-text-secondary"
+          >
+            <span>{chip}</span>
+            <button
+              type="button"
+              class="ml-1 hover:text-red-400 rounded-full p-0.5 transition-colors"
+              onclick={() => removeChip(i)}
+              title="Remove chip"
+            >
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Add new chip -->
+    <div class="flex gap-2">
+      <input
+        type="text"
+        placeholder="Add chip (e.g. search web)..."
+        class="flex-1 px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+        bind:value={newChip}
+        onkeydown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            addChip();
+          }
+        }}
+      />
+      <button
+        type="button"
+        class="px-3 py-1.5 bg-accent text-white rounded text-sm hover:bg-accent/90 transition-colors disabled:opacity-50"
+        onclick={addChip}
+        disabled={!newChip.trim()}
+      >
+        Add
+      </button>
+    </div>
+    {#if chipError}
+      <p class="text-xs text-red-500 mt-1">{chipError}</p>
+    {/if}
+
+    {#if ($settings.prompt_chips ?? []).length === 0}
+      <p class="text-xs text-text-muted mt-2 italic">
+        No prompt chips configured.
       </p>
     {/if}
   </div>

@@ -5,11 +5,15 @@ mod git;
 mod launch;
 mod llm;
 mod notion;
+mod persist;
+mod proc;
 mod realtime;
 mod sequences;
 mod session_persistence;
 mod sidecar;
 mod terminal;
+mod usage_stats;
+mod util;
 mod whisper;
 
 use commands::{
@@ -77,8 +81,160 @@ fn toggle_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> 
     }
 }
 
+/// One-time migration: move stored API keys from the pre-rename keyring service name
+/// ("claude-whisperer") to the current one ("open-whisperer") so users keep their saved
+/// Anthropic/OpenAI/LLM keys after the app was renamed. Best-effort; never blocks startup.
+fn migrate_legacy_keyring(app: &tauri::AppHandle) {
+    use tauri_plugin_keyring::KeyringExt;
+    const OLD_SERVICE: &str = "claude-whisperer";
+    const NEW_SERVICE: &str = "open-whisperer";
+    const ACCOUNTS: [&str; 3] = ["anthropic-api-key", "openai-api-key", "llm-api-key"];
+
+    let keyring = app.keyring();
+    for account in ACCOUNTS {
+        // Don't overwrite a key already stored under the new service.
+        if matches!(keyring.get_password(NEW_SERVICE, account), Ok(Some(_))) {
+            continue;
+        }
+        if let Ok(Some(secret)) = keyring.get_password(OLD_SERVICE, account) {
+            if keyring.set_password(NEW_SERVICE, account, &secret).is_ok() {
+                let _ = keyring.delete_password(OLD_SERVICE, account);
+                log::info!("[migration] Moved keyring entry '{}' to new service name", account);
+            }
+        }
+    }
+}
+
+/// Build the backend file-logging plugin (date-stamped, size-capped, rolling).
+fn build_log_plugin(
+    log_dir: std::path::PathBuf,
+    file_name: String,
+) -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri_plugin_log::Builder::new()
+        .level(log::LevelFilter::Info)
+        .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Folder {
+                path: log_dir,
+                file_name: Some(file_name),
+            },
+        ))
+        // Size cap per-file just in case the app runs for many days without a restart
+        .max_file_size(50_000_000)
+        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+        .build()
+}
+
+/// Build the system tray icon + menu and wire up its event handlers.
+fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let show_item = MenuItemBuilder::new("Show").id("show").build(app)?;
+    let quit_item = MenuItemBuilder::new("Quit").id("quit").build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&show_item)
+        .separator()
+        .item(&quit_item)
+        .build()?;
+
+    // Load tray icon from embedded bytes
+    let icon = Image::from_bytes(include_bytes!("../icons/icon.ico"))
+        .or_else(|_| Image::from_bytes(include_bytes!("../icons/32x32.png")))
+        .map_err(|e| format!("Failed to load tray icon: {}", e))?;
+
+    let _tray = TrayIconBuilder::with_id("main-tray")
+        .icon(icon)
+        .menu(&menu)
+        .tooltip("OpenWhisperer")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "quit" => shutdown_app(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
+                if button == tauri::tray::MouseButton::Left {
+                    let app = tray.app_handle();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+/// Initialize the sequence manager, scheduler, and event-trigger listeners.
+fn init_sequences(app: &tauri::App) {
+    let sidecar_for_seq: tauri::State<Arc<SidecarManager>> = app.state();
+    let (max_prompts, provider_rpm) = {
+        let cfg: tauri::State<Mutex<AppConfig>> = app.state();
+        let c = cfg.lock();
+        (
+            c.sequences.max_concurrent_prompts,
+            c.sequences.default_provider_rpm,
+        )
+    };
+    let sequence_manager = Arc::new(SequenceManager::new(
+        app.handle().clone(),
+        sidecar_for_seq.inner().clone(),
+        max_prompts,
+        provider_rpm,
+    ));
+    if let Err(e) = sequence_manager.load_definitions() {
+        log::error!("[sequences] Failed to load definitions: {}", e);
+    }
+    let sequence_manager_for_scheduler = sequence_manager.clone();
+    let sequence_manager_for_triggers = sequence_manager.clone();
+    app.manage(sequence_manager);
+
+    // Initialize sequence scheduler
+    let scheduler = Arc::new(sequences::scheduler::SequenceScheduler::new());
+    scheduler.start(sequence_manager_for_scheduler);
+    // Start event trigger listeners
+    sequence_manager_for_triggers
+        .event_trigger_manager
+        .start(app.handle(), sequence_manager_for_triggers.clone());
+    app.manage(scheduler);
+}
+
+/// Single shutdown path shared by the tray "Quit" handler and the window
+/// CloseRequested handler, so the two can never drift: flush usage stats,
+/// stop the sidecar and launch processes, hide the tray icon, then exit.
+fn shutdown_app(app: &tauri::AppHandle) {
+    // Flush usage stats — debounced track_* saves may have skipped recent mutations.
+    let stats_state: tauri::State<Mutex<UsageStats>> = app.state();
+    let snapshot = {
+        let mut s = stats_state.lock();
+        s.snapshot_now()
+    };
+    if let Err(e) = snapshot.save() {
+        log::error!("[shutdown] Failed to flush usage stats: {}", e);
+    }
+
+    let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
+    sidecar.shutdown();
+    let launch_mgr: tauri::State<Arc<launch::LaunchManager>> = app.state();
+    launch_mgr.stop_all_repos();
+    // Remove tray icon before exit to prevent orphaned icon on Windows
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_visible(false);
+    }
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Rename the pre-rename ("Claude Whisperer") data directory to the current one before
+    // anything reads config or creates the new dir, so existing installs keep their data.
+    AppConfig::migrate_legacy_data_dir();
+
     let (config, config_loaded_ok) = AppConfig::load();
     let usage_stats = UsageStats::load();
     let start_minimized = config.system.start_minimized;
@@ -104,20 +260,7 @@ pub fn run() {
     let builder = tauri::Builder::default();
 
     // Register the log plugin first so all subsequent plugin/setup logs are captured
-    let builder = builder.plugin(
-        tauri_plugin_log::Builder::new()
-            .level(log::LevelFilter::Info)
-            .target(tauri_plugin_log::Target::new(
-                tauri_plugin_log::TargetKind::Folder {
-                    path: log_dir,
-                    file_name: Some(backend_log_name),
-                },
-            ))
-            // Size cap per-file just in case the app runs for many days without a restart
-            .max_file_size(50_000_000)
-            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-            .build(),
-    );
+    let builder = builder.plugin(build_log_plugin(log_dir, backend_log_name));
 
     // Only enforce single instance in release builds - allows running debug and release simultaneously
     #[cfg(not(debug_assertions))]
@@ -165,6 +308,9 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             set_windows_app_user_model_id(&app.config().identifier);
 
+            // Move stored API keys from the pre-rename keyring service name.
+            migrate_legacy_keyring(app.handle());
+
             // Explicitly set the main window icon so the taskbar icon survives
             // icon-cache invalidation, explorer.exe restarts, and dev rebuilds.
             if let Some(main_window) = app.get_webview_window("main") {
@@ -175,61 +321,8 @@ pub fn run() {
                 }
             }
 
-            // Build tray menu
-            let show_item = MenuItemBuilder::new("Show").id("show").build(app)?;
-            let quit_item = MenuItemBuilder::new("Quit").id("quit").build(app)?;
-
-            let menu = MenuBuilder::new(app)
-                .item(&show_item)
-                .separator()
-                .item(&quit_item)
-                .build()?;
-
-            // Load tray icon from embedded bytes
-            let icon = Image::from_bytes(include_bytes!("../icons/icon.ico"))
-                .or_else(|_| Image::from_bytes(include_bytes!("../icons/32x32.png")))
-                .map_err(|e| format!("Failed to load tray icon: {}", e))?;
-
-            // Create tray icon with ID for cleanup
-            let _tray = TrayIconBuilder::with_id("main-tray")
-                .icon(icon)
-                .menu(&menu)
-                .tooltip("Claude Whisperer")
-                .on_menu_event(|app, event| {
-                    match event.id().as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                        "quit" => {
-                            // Properly shutdown before quitting
-                            let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
-                            sidecar.shutdown();
-                            let launch_mgr: tauri::State<Arc<launch::LaunchManager>> = app.state();
-                            launch_mgr.stop_all_repos();
-                            // Remove tray icon before exit to prevent orphaned icon on Windows
-                            if let Some(tray) = app.tray_by_id("main-tray") {
-                                let _ = tray.set_visible(false);
-                            }
-                            app.exit(0);
-                        }
-                        _ => {}
-                    }
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
-                        if button == tauri::tray::MouseButton::Left {
-                            let app = tray.app_handle();
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                    }
-                })
-                .build(app)?;
+            // Build tray menu + icon and wire up its handlers
+            setup_tray(app)?;
 
             // Start minimized only when launched via autostart (--minimized flag)
             let args: Vec<String> = std::env::args().collect();
@@ -241,38 +334,8 @@ pub fn run() {
                 }
             }
 
-            // Initialize sequence manager
-            let sidecar_for_seq: tauri::State<Arc<SidecarManager>> = app.state();
-            let (max_prompts, provider_rpm) = {
-                let cfg: tauri::State<parking_lot::Mutex<AppConfig>> = app.state();
-                let c = cfg.lock();
-                (
-                    c.sequences.max_concurrent_prompts,
-                    c.sequences.default_provider_rpm,
-                )
-            };
-            let sequence_manager = Arc::new(SequenceManager::new(
-                app.handle().clone(),
-                sidecar_for_seq.inner().clone(),
-                max_prompts,
-                provider_rpm,
-            ));
-            // Load sequence definitions
-            if let Err(e) = sequence_manager.load_definitions() {
-                log::error!("[sequences] Failed to load definitions: {}", e);
-            }
-            let sequence_manager_for_scheduler = sequence_manager.clone();
-            let sequence_manager_for_triggers = sequence_manager.clone();
-            app.manage(sequence_manager);
-
-            // Initialize sequence scheduler
-            let scheduler = Arc::new(sequences::scheduler::SequenceScheduler::new());
-            scheduler.start(sequence_manager_for_scheduler);
-            // Start event trigger listeners
-            sequence_manager_for_triggers
-                .event_trigger_manager
-                .start(app.handle(), sequence_manager_for_triggers.clone());
-            app.manage(scheduler);
+            // Initialize sequence manager, scheduler, and event-trigger listeners
+            init_sequences(app);
 
             Ok(())
         })
@@ -288,21 +351,15 @@ pub fn run() {
                         api.prevent_close();
                         let _ = window.hide();
                     } else {
-                        // Actually quit the app when closing and not minimizing to tray
-                        let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
-                        sidecar.shutdown();
-                        let launch_mgr: tauri::State<Arc<launch::LaunchManager>> = app.state();
-                        launch_mgr.stop_all_repos();
-                        // Remove tray icon before exit to prevent orphaned icon on Windows
-                        if let Some(tray) = app.tray_by_id("main-tray") {
-                            let _ = tray.set_visible(false);
-                        }
-                        app.exit(0);
+                        // Actually quit the app when closing and not minimizing to tray.
+                        // Shared path with the tray "Quit" handler.
+                        shutdown_app(app);
                     }
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
+            // --- Settings & repositories ---
             settings_cmds::get_config,
             settings_cmds::get_config_load_status,
             settings_cmds::get_config_paths,
@@ -317,6 +374,7 @@ pub fn run() {
             settings_cmds::get_active_repo,
             settings_cmds::get_git_branch,
             settings_cmds::run_in_terminal,
+            // --- Git & worktrees ---
             git_cmds::list_git_worktrees,
             git_cmds::create_git_worktree_with_setup,
             git_cmds::create_git_worktree_only,
@@ -325,6 +383,7 @@ pub fn run() {
             git_cmds::open_in_vscode,
             git_cmds::open_in_terminal,
             git_cmds::open_in_explorer,
+            // --- Terminal (PTY) sessions ---
             terminal_cmds::create_terminal_session,
             terminal_cmds::create_interactive_session,
             terminal_cmds::write_to_terminal,
@@ -332,8 +391,10 @@ pub fn run() {
             terminal_cmds::close_terminal,
             terminal_cmds::get_terminal_sessions,
             terminal_cmds::get_terminal_session,
+            // --- Audio & transcription ---
             audio_cmds::transcribe_audio,
             audio_cmds::test_whisper_connection,
+            // --- SDK sessions & providers ---
             sdk_cmds::start_sidecar,
             sdk_cmds::create_sdk_session,
             sdk_cmds::send_sdk_prompt,
@@ -360,9 +421,11 @@ pub fn run() {
             sdk_cmds::delete_claude_api_key,
             sdk_cmds::fetch_claude_rate_limits,
             sdk_cmds::fetch_codex_rate_limits,
+            // --- Session persistence ---
             session_cmds::get_persisted_sessions,
             session_cmds::save_persisted_sessions,
             session_cmds::clear_persisted_sessions,
+            // --- Pile & captures ---
             pile_cmds::get_pile_items,
             pile_cmds::save_pile_items,
             pile_cmds::save_pile_audio,
@@ -371,7 +434,12 @@ pub fn run() {
             pile_cmds::save_pile_screenshot,
             pile_cmds::read_pile_screenshot,
             pile_cmds::delete_pile_screenshot,
+            pile_cmds::save_capture,
+            pile_cmds::read_capture,
+            pile_cmds::delete_capture,
+            pile_cmds::list_captures,
             screenshot_cmds::capture_screenshot,
+            // --- Archive ---
             archive_cmds::get_archive_entries,
             archive_cmds::get_archive_entry_data,
             archive_cmds::archive_sdk_session,
@@ -382,6 +450,7 @@ pub fn run() {
             archive_cmds::clear_archive,
             archive_cmds::trim_archive,
             archive_cmds::get_archive_count,
+            // --- Usage statistics ---
             usage_cmds::get_usage_stats,
             usage_cmds::track_session,
             usage_cmds::track_prompt,
@@ -391,10 +460,12 @@ pub fn run() {
             usage_cmds::track_token_usage,
             usage_cmds::track_llm_token_usage,
             usage_cmds::reset_usage_stats,
+            // --- System / autostart / input ---
             get_autostart_enabled,
             toggle_autostart,
             input_cmds::paste_text,
             input_cmds::copy_selection,
+            // --- LLM integration ---
             llm_cmds::test_gemini_connection,
             llm_cmds::generate_session_name,
             llm_cmds::generate_session_outcome,
@@ -406,16 +477,20 @@ pub fn run() {
             llm_cmds::delete_gemini_api_key,
             llm_cmds::recommend_repo,
             llm_cmds::generate_quick_actions,
+            // --- Realtime transcription ---
             realtime_cmds::test_realtime_connection,
             realtime_cmds::start_realtime_session,
             realtime_cmds::send_realtime_audio,
             realtime_cmds::stop_realtime_session,
+            // --- Launch commands/profiles ---
             launch_cmds::scan_repo_launch_commands,
             launch_cmds::launch_profile,
             launch_cmds::launch_commands,
             launch_cmds::stop_launch_profile,
             launch_cmds::get_launch_status,
+            // --- Notion ---
             notion_cmds::fetch_notion_cards,
+            // --- MCP servers ---
             mcp_cmds::test_mcp_server,
             mcp_cmds::save_mcp_bearer_token,
             mcp_cmds::get_mcp_bearer_token,
@@ -427,6 +502,7 @@ pub fn run() {
             mcp_cmds::get_mcp_oauth_tokens,
             mcp_cmds::delete_mcp_oauth_tokens,
             mcp_cmds::get_mcp_auth_header,
+            // --- Sequences ---
             sequence_cmds::list_sequences,
             sequence_cmds::get_sequence,
             sequence_cmds::save_sequence,
@@ -450,6 +526,7 @@ pub fn run() {
             sequence_cmds::list_event_triggers,
             sequence_cmds::generate_sequence_yaml,
             sequence_cmds::generate_node_config,
+            // --- Logging ---
             log_cmds::write_frontend_log,
         ])
         .run(tauri::generate_context!())

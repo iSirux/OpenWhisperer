@@ -6,9 +6,9 @@ use crate::config::AppConfig;
 use crate::sequences::state::{ExecutionSummary, SequenceExecution};
 use crate::sequences::types::SequenceDefinition;
 
-const SEQUENCES_DIR_ENV: &str = "CLAUDE_WHISPERER_SEQUENCES_DIR";
-const SEQUENCES_DIR_ENV_DEV: &str = "CLAUDE_WHISPERER_SEQUENCES_DIR_DEV";
-const SEQUENCES_DIR_ENV_PROD: &str = "CLAUDE_WHISPERER_SEQUENCES_DIR_PROD";
+const SEQUENCES_DIR_ENV: &str = "OPEN_WHISPERER_SEQUENCES_DIR";
+const SEQUENCES_DIR_ENV_DEV: &str = "OPEN_WHISPERER_SEQUENCES_DIR_DEV";
+const SEQUENCES_DIR_ENV_PROD: &str = "OPEN_WHISPERER_SEQUENCES_DIR_PROD";
 
 static SEQUENCES_DIR_OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
 

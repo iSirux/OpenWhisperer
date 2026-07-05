@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
-use crate::config::{AppConfig, LlmProvider};
+use crate::config::AppConfig;
 use crate::llm::LlmClient;
 use crate::sequences::scheduler::{ScheduleInfo, SequenceScheduler};
 use crate::sequences::state::{ExecutionSummary, SequenceExecution};
@@ -175,7 +175,7 @@ pub async fn test_notification_channel(
         .send(
             &channel,
             "Test Notification",
-            "This is a test message from Claude Whisperer.",
+            "This is a test message from OpenWhisperer.",
             None,
         )
         .await?;
@@ -214,32 +214,9 @@ pub fn list_event_triggers(
 
 // ─── AI Generation ─────────────────────────────────────────────────────────
 
-fn get_llm_api_key(app: &tauri::AppHandle) -> Result<String, String> {
-    use tauri_plugin_keyring::KeyringExt;
-    const KEYRING_SERVICE: &str = "claude-whisperer";
-    const KEYRING_LLM_KEY: &str = "llm-api-key";
-    match app.keyring().get_password(KEYRING_SERVICE, KEYRING_LLM_KEY) {
-        Ok(Some(key)) => Ok(key),
-        Ok(None) => Err("LLM API key not set".to_string()),
-        Err(e) => Err(format!("Failed to get API key: {}", e)),
-    }
-}
-
+/// Shared LLM client factory (T5) — see `crate::llm::client_from_config`.
 fn create_llm_client(app: &tauri::AppHandle, config: &AppConfig) -> Result<LlmClient, String> {
-    let llm_config = &config.llm;
-    let api_key = if matches!(llm_config.provider, LlmProvider::Local) {
-        get_llm_api_key(app).unwrap_or_default()
-    } else {
-        get_llm_api_key(app)?
-    };
-    Ok(LlmClient::new(
-        api_key,
-        llm_config.model.clone(),
-        llm_config.provider.clone(),
-        llm_config.endpoint.clone(),
-        llm_config.auto_model,
-        llm_config.model_priority.clone(),
-    ))
+    crate::llm::client_from_config(app, config)
 }
 
 #[tauri::command]

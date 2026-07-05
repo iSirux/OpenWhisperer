@@ -1,12 +1,35 @@
 //! LLM feature methods (session naming, transcription cleanup, model recommendations, etc.)
 
+use serde::de::DeserializeOwned;
+
 use super::api_types::LlmUsage;
 use super::providers::GenerationResult;
 use super::types::*;
 use super::utils::truncate_text;
 use super::LlmClient;
 
+/// The single JSON-output instruction shared by every feature prompt.
+const JSON_ONLY_INSTRUCTION: &str = "Respond with ONLY a JSON object in this exact format:";
+
 impl LlmClient {
+    /// Build the shared "respond with only a JSON object" prompt trailer for a
+    /// given `example` instance. The example is kept next to its feature's schema
+    /// so the two stay in sync.
+    fn json_only(example: &str) -> String {
+        format!("\n\n{}\n{}", JSON_ONLY_INSTRUCTION, example)
+    }
+
+    /// One generic entry point for every feature: run a structured generation
+    /// with its schema and return the typed result plus usage.
+    async fn run_feature<T: DeserializeOwned>(
+        &self,
+        prompt: String,
+        schema: serde_json::Value,
+    ) -> Result<GenerationResult<T>, String> {
+        self.generate_structured_with_usage(&prompt, Some(schema))
+            .await
+    }
+
     /// Generate a session name from the user's prompt (called immediately when prompt is sent)
     pub async fn generate_session_name_with_usage(
         &self,
@@ -20,11 +43,11 @@ IMPORTANT: The prompt may contain operational/tool instructions like "read card"
 - If the prompt is a batch operation (e.g. "classify all unclassified cards..." or "triage cards in New status..."), name it after the operation: "Classify Backlog Cards" or "Triage New Cards"
 
 User's request:
-{}
-
-Respond with ONLY a JSON object in this exact format:
-{{"name": "3-6 word concise name describing the task", "category": "feature|bugfix|refactor|research|question|other"}}"#,
-            truncate_text(user_prompt, 500)
+{}{}"#,
+            truncate_text(user_prompt, 500),
+            Self::json_only(
+                r#"{"name": "3-6 word concise name describing the task", "category": "feature|bugfix|refactor|research|question|other"}"#
+            )
         );
 
         let schema = serde_json::json!({
@@ -43,8 +66,7 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["name", "category"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema))
-            .await
+        self.run_feature(prompt, schema).await
     }
 
     /// Generate session outcome with usage tracking
@@ -82,12 +104,10 @@ User's original request:
 {}
 
 Assistant's work (truncated):
-{}
-
-Respond with ONLY a JSON object in this exact format:
-{{"outcome": "the specific result or answer"}}"#,
+{}{}"#,
             truncate_text(user_prompt, 500),
-            truncate_text(assistant_messages, 2000)
+            truncate_text(assistant_messages, 2000),
+            Self::json_only(r#"{"outcome": "the specific result or answer"}"#)
         );
 
         let schema = serde_json::json!({
@@ -101,8 +121,7 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["outcome"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema))
-            .await
+        self.run_feature(prompt, schema).await
     }
 
     /// Analyze interaction needed with usage tracking
@@ -132,11 +151,11 @@ DO flag as needing interaction:
 - Ambiguous requirements where proceeding would be risky
 
 Message to analyze:
-{}
-
-Respond with ONLY a JSON object in this exact format:
-{{"needs_interaction": true/false, "reason": "why or null", "urgency": "low|medium|high", "waiting_for": "approval|clarification|input|review|decision|null"}}"#,
-            truncate_text(last_message, 2000)
+{}{}"#,
+            truncate_text(last_message, 2000),
+            Self::json_only(
+                r#"{"needs_interaction": true/false, "reason": "why or null", "urgency": "low|medium|high", "waiting_for": "approval|clarification|input|review|decision|null"}"#
+            )
         );
 
         let schema = serde_json::json!({
@@ -164,8 +183,7 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["needs_interaction", "urgency"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema))
-            .await
+        self.run_feature(prompt, schema).await
     }
 
     /// Clean transcription with usage tracking
@@ -220,11 +238,12 @@ Compare both transcriptions and produce the best combined result. Use Whisper as
 {}
 Keep the original meaning and intent. Only fix clear errors, don't rewrite the content.
 
-{}
-
-Respond with ONLY a JSON object in this exact format:
-{{"cleaned_text": "the corrected text", "corrections_made": ["correction 1", "correction 2"]}}"#,
-            context_section, transcription_section
+{}{}"#,
+            context_section,
+            transcription_section,
+            Self::json_only(
+                r#"{"cleaned_text": "the corrected text", "corrections_made": ["correction 1", "correction 2"]}"#
+            )
         );
 
         let schema = serde_json::json!({
@@ -243,8 +262,7 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["cleaned_text", "corrections_made"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema))
-            .await
+        self.run_feature(prompt, schema).await
     }
 
     /// Recommend model with usage tracking
@@ -305,17 +323,17 @@ Available models (only recommend from these): {}
 Prompt to analyze:
 {}
 
-Choose the most cost-effective model that can handle this task well. Prefer cheaper models when the task is simple.
-
-Respond with ONLY a JSON object in this exact format:
-{{"recommended_model": "{}", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_effort": "null|low|medium|high|xhigh|max"}}"#,
+Choose the most cost-effective model that can handle this task well. Prefer cheaper models when the task is simple.{}"#,
             available_models
                 .iter()
                 .map(|m| format!("**{}**", m))
                 .collect::<Vec<_>>()
                 .join(", "),
             truncate_text(prompt, 1500),
-            model_list
+            Self::json_only(&format!(
+                r#"{{"recommended_model": "{}", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_effort": "null|low|medium|high|xhigh|max"}}"#,
+                model_list
+            ))
         );
 
         let schema = serde_json::json!({
@@ -344,8 +362,7 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["recommended_model", "reasoning", "confidence", "suggested_effort"]
         });
 
-        self.generate_structured_with_usage(&prompt_text, Some(schema))
-            .await
+        self.run_feature(prompt_text, schema).await
     }
 
     /// Recommend repo with usage tracking
@@ -420,15 +437,15 @@ Analyze the prompt and determine which repository best matches. Consider:
 
 For voice-transcribed prompts: The vocabulary is especially important because speech-to-text might transcribe project-specific terms incorrectly. Look for words that sound similar to vocabulary items.
 
-IMPORTANT: If the prompt doesn't contain enough information to make a meaningful recommendation (e.g., generic requests like "help me with this" or "fix the bug"), return -1 for recommended_index and empty string for recommended_name. Only recommend a repository if you have actual evidence from the prompt to support the choice.
-
-Respond with ONLY a JSON object in this exact format:
-{{"recommended_index": 0, "recommended_name": "repo name", "confidence": "low|medium|high", "reasoning": "brief explanation"}}
+IMPORTANT: If the prompt doesn't contain enough information to make a meaningful recommendation (e.g., generic requests like "help me with this" or "fix the bug"), return -1 for recommended_index and empty string for recommended_name. Only recommend a repository if you have actual evidence from the prompt to support the choice.{}"#,
+            repos_list,
+            truncate_text(prompt, 1500),
+            Self::json_only(
+                r#"{"recommended_index": 0, "recommended_name": "repo name", "confidence": "low|medium|high", "reasoning": "brief explanation"}
 
 Or if no clear match:
-{{"recommended_index": -1, "recommended_name": "", "confidence": "low", "reasoning": "Not enough information to determine repository"}}"#,
-            repos_list,
-            truncate_text(prompt, 1500)
+{"recommended_index": -1, "recommended_name": "", "confidence": "low", "reasoning": "Not enough information to determine repository"}"#
+            )
         );
 
         let schema = serde_json::json!({
@@ -455,8 +472,7 @@ Or if no clear match:
             "required": ["recommended_index", "recommended_name", "confidence", "reasoning"]
         });
 
-        self.generate_structured_with_usage(&prompt_text, Some(schema))
-            .await
+        self.run_feature(prompt_text, schema).await
     }
 
     /// Generate quick actions with usage tracking
@@ -489,12 +505,10 @@ Examples of GOOD quick actions (specific to context):
 
 Examples of BAD quick actions (too generic or too long):
 - "Help me", "Continue", "Do more"
-- "Please run the test suite and show me the results" (too long)
-
-Respond with ONLY a JSON object in this exact format:
-{{"actions": [{{"prompt": "Run the tests"}}]}}"#,
+- "Please run the test suite and show me the results" (too long){}"#,
             truncate_text(user_prompt, 500),
-            truncate_text(last_message, 1500)
+            truncate_text(last_message, 1500),
+            Self::json_only(r#"{"actions": [{"prompt": "Run the tests"}]}"#)
         );
 
         let schema = serde_json::json!({
@@ -520,8 +534,7 @@ Respond with ONLY a JSON object in this exact format:
             "required": ["actions"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema))
-            .await
+        self.run_feature(prompt, schema).await
     }
 
     /// Generate a descriptive git branch name from a user prompt
@@ -558,12 +571,10 @@ Rules:
 - Be descriptive of the task, not generic
 - Do NOT use any prefix like "claude/", "feature/", "fix/", etc.
 - Do NOT include timestamps or random suffixes
-- Must not conflict with existing branch names listed above
-
-Respond with ONLY a JSON object:
-{{"branch_name": "descriptive-branch-name"}}"#,
+- Must not conflict with existing branch names listed above{}"#,
             truncate_text(user_prompt, 2000),
-            existing_list
+            existing_list,
+            Self::json_only(r#"{"branch_name": "descriptive-branch-name"}"#)
         );
 
         let schema = serde_json::json!({
@@ -577,7 +588,6 @@ Respond with ONLY a JSON object:
             "required": ["branch_name"]
         });
 
-        self.generate_structured_with_usage(&prompt, Some(schema))
-            .await
+        self.run_feature(prompt, schema).await
     }
 }

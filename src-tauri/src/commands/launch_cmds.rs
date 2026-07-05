@@ -1,7 +1,6 @@
 use crate::config::{AppConfig, LaunchCommand};
 use crate::launch::LaunchManager;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

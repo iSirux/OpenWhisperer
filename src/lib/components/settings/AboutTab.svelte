@@ -51,7 +51,7 @@
 
   async function openGitHub() {
     try {
-      await openUrl("https://github.com/iSirux/ClaudeWhisperer");
+      await openUrl("https://github.com/iSirux/OpenWhisperer");
     } catch (e) {
       console.error("Failed to open GitHub:", e);
     }
@@ -74,11 +74,11 @@
     <div class="flex items-center gap-4 mb-4">
       <img
         src="/icon.png"
-        alt="Claude Whisperer"
+        alt="OpenWhisperer"
         class="w-14 h-14 rounded-xl"
       />
       <div>
-        <h2 class="text-xl font-semibold text-text">Claude Whisperer</h2>
+        <h2 class="text-xl font-semibold text-text">OpenWhisperer</h2>
         <p class="text-sm text-text-muted">Version {appVersion}</p>
       </div>
     </div>
@@ -111,7 +111,7 @@
             GitHub Repository
           </p>
           <p class="text-xs text-text-muted">
-            github.com/iSirux/ClaudeWhisperer
+            github.com/iSirux/OpenWhisperer
           </p>
         </div>
         <svg

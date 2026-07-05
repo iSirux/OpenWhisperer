@@ -9,6 +9,9 @@
     formatFileSize,
     type ImageData,
   } from "$lib/utils/image";
+  import { nextWindowResetAt, type QueueWindow } from "$lib/stores/queueDetection";
+  import { rateLimitData, codexRateLimitData } from "$lib/stores/rateLimits";
+  import type { SdkProvider } from "$lib/utils/models";
 
   let {
     sessionId,
@@ -20,7 +23,10 @@
     isInlineTranscribing = false,
     draftPrompt = "",
     draftImages = [],
+    provider = "claude",
+    showScheduleSend = false,
     onSendPrompt,
+    onScheduleSend,
     onStopQuery,
     onStartRecording,
     onStopRecording,
@@ -37,7 +43,17 @@
     isInlineTranscribing?: boolean;
     draftPrompt?: string;
     draftImages?: SdkImageContent[];
+    /** Provider of the current session, used to label the "send on next reset" countdowns. */
+    provider?: SdkProvider;
+    /** Whether to expose the "send on next reset" dropdown (only for live/active sessions). */
+    showScheduleSend?: boolean;
     onSendPrompt: (prompt: string, images?: SdkImageContent[]) => void;
+    /** Defer this turn to the next window boundary instead of sending it now. */
+    onScheduleSend?: (
+      window: QueueWindow,
+      prompt: string,
+      images?: SdkImageContent[],
+    ) => void;
     onStopQuery: () => void;
     onStartRecording: () => void;
     onStopRecording: () => void;
@@ -239,6 +255,96 @@
     // Clear draft in parent store
     emitDraftChange(prevSessionId, "", []);
     onSendPrompt(currentPrompt, imageContent);
+  }
+
+  // --- Send on next reset (Smart Queue) ---
+  let scheduleMenuOpen = $state(false);
+
+  // Live countdown tick — only runs while the schedule menu is open.
+  let nowTick = $state(Date.now());
+  $effect(() => {
+    if (!scheduleMenuOpen) return;
+    nowTick = Date.now();
+    const t = setInterval(() => {
+      nowTick = Date.now();
+    }, 1000);
+    return () => clearInterval(t);
+  });
+
+  let scheduleProvider = $derived(provider ?? "claude");
+  // Re-read the reset times whenever the provider's rate-limit store updates.
+  let providerRateData = $derived(
+    scheduleProvider === "openai" ? $codexRateLimitData : $rateLimitData,
+  );
+  let reset5hMs = $derived.by(() => {
+    void providerRateData;
+    return nextWindowResetAt(scheduleProvider, "5h");
+  });
+  let reset7dMs = $derived.by(() => {
+    void providerRateData;
+    return nextWindowResetAt(scheduleProvider, "7d");
+  });
+
+  function formatCountdown(ms: number | undefined): string {
+    if (ms == null) return "";
+    const diff = ms - nowTick;
+    if (diff <= 0) return "now";
+    const days = Math.floor(diff / 86_400_000);
+    const hours = Math.floor((diff % 86_400_000) / 3_600_000);
+    const minutes = Math.floor((diff % 3_600_000) / 60_000);
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+  }
+
+  let countdown5h = $derived(formatCountdown(reset5hMs));
+  let countdown7d = $derived(formatCountdown(reset7dMs));
+
+  let hasDraft = $derived(prompt.trim().length > 0 || pendingImages.length > 0);
+  // The dropdown is only meaningful for a live session that can take a follow-up
+  // turn: not while querying/recording, and only when there's something to send.
+  let canScheduleSend = $derived(
+    showScheduleSend &&
+      !!onScheduleSend &&
+      !isQuerying &&
+      !isRecording &&
+      !isTranscribing &&
+      hasDraft,
+  );
+
+  $effect(() => {
+    // Auto-close the menu if it can no longer be shown (e.g. draft cleared).
+    if (scheduleMenuOpen && !canScheduleSend) scheduleMenuOpen = false;
+  });
+
+  function handleScheduleSend(window: QueueWindow) {
+    scheduleMenuOpen = false;
+    if (!onScheduleSend) return;
+    if (!prompt.trim() && pendingImages.length === 0) return;
+
+    const currentPrompt = prompt;
+    const currentImages =
+      pendingImages.length > 0 ? [...pendingImages] : undefined;
+    const imageContent: SdkImageContent[] | undefined = currentImages?.map(
+      (img) => ({
+        mediaType: img.mediaType,
+        base64Data: img.base64Data,
+        width: img.width,
+        height: img.height,
+      }),
+    );
+
+    // Clear the draft exactly like a normal send.
+    if (draftChangeTimeout) {
+      clearTimeout(draftChangeTimeout);
+      draftChangeTimeout = null;
+    }
+    prompt = "";
+    pendingImages = [];
+    prevDraftPrompt = "";
+    prevDraftImagesKey = "[]";
+    emitDraftChange(prevSessionId, "", []);
+    onScheduleSend(window, currentPrompt, imageContent);
   }
 
   async function handlePaste(e: ClipboardEvent) {
@@ -449,13 +555,50 @@
         </svg>
       </button>
     {/if}
-    <button
-      onclick={handleSendPrompt}
-      disabled={!prompt.trim() && pendingImages.length === 0}
-      title={isQuerying ? "Send and interrupt" : "Send"}
-    >
-      Send
-    </button>
+    <div class="send-split">
+      <button
+        class="send-main"
+        class:has-caret={canScheduleSend}
+        onclick={handleSendPrompt}
+        disabled={!prompt.trim() && pendingImages.length === 0}
+        title={isQuerying ? "Send and interrupt" : "Send"}
+      >
+        Send
+      </button>
+      {#if canScheduleSend}
+        <button
+          class="send-caret"
+          onclick={() => (scheduleMenuOpen = !scheduleMenuOpen)}
+          title="Send on next usage-window reset"
+          aria-label="Send options"
+          aria-haspopup="menu"
+          aria-expanded={scheduleMenuOpen}
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" class="caret-icon">
+            <path
+              fill-rule="evenodd"
+              d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+              clip-rule="evenodd"
+            />
+          </svg>
+        </button>
+      {/if}
+      {#if scheduleMenuOpen}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="send-menu-backdrop" onclick={() => (scheduleMenuOpen = false)}></div>
+        <div class="send-menu" role="menu">
+          <button class="send-menu-item" role="menuitem" onclick={() => handleScheduleSend("5h")}>
+            <span class="menu-item-label">Send on next 5h reset</span>
+            {#if countdown5h}<span class="menu-item-countdown">in {countdown5h}</span>{/if}
+          </button>
+          <button class="send-menu-item" role="menuitem" onclick={() => handleScheduleSend("7d")}>
+            <span class="menu-item-label">Send on next 7d reset</span>
+            {#if countdown7d}<span class="menu-item-countdown">in {countdown7d}</span>{/if}
+          </button>
+        </div>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -543,6 +686,81 @@
   button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  /* Send split-button (Send + schedule caret) */
+  .send-split {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+  }
+
+  .send-main.has-caret {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .send-caret {
+    min-width: unset;
+    padding: 0 0.4rem;
+    border-radius: 0 6px 6px 0;
+    border-left: 1px solid color-mix(in srgb, var(--color-background) 30%, transparent);
+  }
+
+  .caret-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .send-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: transparent;
+  }
+
+  .send-menu {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    z-index: 21;
+    min-width: 220px;
+    display: flex;
+    flex-direction: column;
+    padding: 0.25rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  }
+
+  .send-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    min-width: unset;
+    padding: 0.5rem 0.625rem;
+    background: transparent;
+    color: var(--color-text-primary);
+    border-radius: 6px;
+    font-size: 0.8125rem;
+    font-weight: 500;
+  }
+
+  .send-menu-item:hover:not(:disabled) {
+    background: var(--color-border);
+  }
+
+  .menu-item-label {
+    white-space: nowrap;
+  }
+
+  .menu-item-countdown {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    white-space: nowrap;
   }
 
   .stop-button {

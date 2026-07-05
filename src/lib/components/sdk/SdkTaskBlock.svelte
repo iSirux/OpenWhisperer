@@ -46,6 +46,16 @@
   let isFailed = $derived(taskCompleted?.taskStatus === 'failed');
   let isStopped = $derived(taskCompleted?.taskStatus === 'stopped');
 
+  // Lazy-mount subagent transcripts. Task children (a whole subagent run) mount
+  // eagerly even inside a closed <details> — the browser only visually hides
+  // them, Svelte still builds every child component. On session switch that's a
+  // hidden cost for subagent-heavy sessions. Start completed tasks collapsed and
+  // only mount their children when expanded; keep running tasks open so live
+  // progress still streams. Initialized once from the mount-time running state,
+  // so a task that completes while you're watching stays open.
+  // svelte-ignore state_referenced_locally -- intentional one-time capture of the mount-time running state
+  let expanded = $state(isRunning);
+
   let statusText = $derived(
     isRunning ? 'Running' :
     isCompleted ? 'Completed' :
@@ -177,7 +187,7 @@
 </script>
 
 <div class="task-block" class:task-running={isRunning} class:task-completed={isCompleted} class:task-failed={isFailed} class:task-stopped={isStopped}>
-  <details open>
+  <details open={expanded} ontoggle={(e) => (expanded = (e.currentTarget as HTMLDetailsElement).open)}>
     <summary class="task-header">
       <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
         <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
@@ -210,7 +220,7 @@
     </summary>
 
     <div class="task-body" bind:this={taskBodyEl}>
-      {#if childRenderItems().length > 0}
+      {#if expanded && childRenderItems().length > 0}
         <div class="task-children">
           {#each childRenderItems() as item, index (item.type === 'tool_group' ? `tool-group-${index}` : item.message.timestamp)}
             {#if item.type === 'tool_group'}

@@ -811,7 +811,7 @@ For rich clients, the practical pattern is:
 2. Scope subsequent child messages and tool calls using the item's thread/task relationship metadata when available.
 3. Treat `item/completed` for the same `collabToolCall` as task completion, using `status` and `agentStatus` for the final state.
 
-ClaudeWhisperer follows this pattern and maps `collabToolCall` into the same task/subagent UI used for Claude task delegation so Codex child work renders as grouped task blocks instead of a flat tool stream.
+OpenWhisperer follows this pattern and maps `collabToolCall` into the same task/subagent UI used for Claude task delegation so Codex child work renders as grouped task blocks instead of a flat tool stream.
 
 ### Item deltas
 

@@ -413,10 +413,10 @@ fn extract_json_block(s: &str) -> Option<String> {
 /// Truncate a string for use in error messages.
 fn truncate_for_error(s: &str) -> String {
     const MAX_LEN: usize = 100;
-    if s.len() <= MAX_LEN {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..MAX_LEN])
+    // Count chars, not bytes — byte-slicing arbitrary text panics mid-UTF-8-char.
+    match s.char_indices().nth(MAX_LEN) {
+        Some((idx, _)) => format!("{}...", &s[..idx]),
+        None => s.to_string(),
     }
 }
 

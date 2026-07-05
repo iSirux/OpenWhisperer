@@ -1,7 +1,7 @@
 # Feature: MCP Server Support
 
 ## Overview
-Add support for external MCP (Model Context Protocol) servers to Claude Whisperer, allowing users to extend Claude's capabilities with custom tools from stdio-based processes and remote HTTP/SSE servers. MCP servers can be configured globally or associated with specific repositories, and are started on-demand when sessions need them.
+Add support for external MCP (Model Context Protocol) servers to OpenWhisperer, allowing users to extend Claude's capabilities with custom tools from stdio-based processes and remote HTTP/SSE servers. MCP servers can be configured globally or associated with specific repositories, and are started on-demand when sessions need them.
 
 ## Requirements
 Based on user preferences:

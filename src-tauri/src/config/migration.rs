@@ -1,0 +1,242 @@
+//! Versioned, linear config migrations run against the raw `serde_json::Value`
+//! at load time. Each entry brings the config up by exactly one version; the
+//! current schema version is derived from the length of the table so it can
+//! never fall out of sync.
+//!
+//! Legacy field fix-ups (`fix_known_fields`) and deprecated-model remapping are
+//! folded into the v0 -> v1 migration body.
+
+use serde_json::Value;
+
+use super::default_openai_model;
+use super::ui::Theme;
+
+/// A migration mutates the raw config JSON in place.
+type Migration = fn(&mut Value);
+
+/// Ordered migration table. Index `i` upgrades a config from version `i` to `i + 1`.
+const MIGRATIONS: &[Migration] = &[migrate_v0_to_v1];
+
+/// The schema version the current build writes. Derived from the table length so
+/// it always matches the number of available migrations.
+pub const CURRENT_CONFIG_VERSION: u32 = MIGRATIONS.len() as u32;
+
+/// Run every migration whose source version is `>= from_version`, in order.
+/// Returns true if at least one migration ran (i.e. the config should be re-saved).
+pub fn run_migrations(value: &mut Value, from_version: u32) -> bool {
+    let mut ran = false;
+    for (i, migration) in MIGRATIONS.iter().enumerate() {
+        if (i as u32) >= from_version {
+            migration(value);
+            ran = true;
+        }
+    }
+    ran
+}
+
+// ============================================================================
+// Centralized model-ID alias map (single source of truth for all remaps)
+// ============================================================================
+
+/// Map a deprecated/removed OpenAI (Codex) model ID to its current replacement.
+pub fn openai_model_alias(model: &str) -> Option<&'static str> {
+    match model {
+        "codex-mini-latest" | "gpt-5.4-codex" => Some("gpt-5.4"),
+        "gpt-5-mini" | "gpt-5.1-codex-mini" => Some("gpt-5.4-mini"),
+        _ => None,
+    }
+}
+
+/// Map a retired Groq chat model ID to its current production replacement.
+pub fn groq_model_alias(model: &str) -> Option<&'static str> {
+    match model {
+        "meta-llama/llama-4-maverick-17b-128e-instruct"
+        | "meta-llama/llama-4-scout-17b-16e-instruct"
+        | "moonshotai/kimi-k2-instruct-0905"
+        | "qwen/qwen3-32b"
+        | "llama-3.3-70b-versatile" => Some("openai/gpt-oss-120b"),
+        "llama-3.1-8b-instant" => Some("openai/gpt-oss-20b"),
+        _ => None,
+    }
+}
+
+/// Map a retired Gemini model ID to its current replacement.
+pub fn gemini_model_alias(model: &str) -> Option<&'static str> {
+    match model {
+        "gemini-2.0-flash" => Some("gemini-3.1-flash-lite"),
+        _ => None,
+    }
+}
+
+// ============================================================================
+// v0 -> v1: legacy field fix-ups + deprecated model remaps
+// ============================================================================
+
+fn migrate_v0_to_v1(value: &mut Value) {
+    fix_known_fields(value);
+    migrate_deprecated_llm_models(value);
+}
+
+/// Remap deprecated Groq/Gemini LLM model IDs on the raw config value.
+fn migrate_deprecated_llm_models(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    let Some(Value::Object(llm)) = obj.get_mut("llm") else {
+        return;
+    };
+
+    // Provider is lowercase-serialized? No: LlmProvider serializes as "Groq"/"Gemini".
+    let provider = llm.get("provider").and_then(|p| p.as_str()).map(String::from);
+    let model = llm.get("model").and_then(|m| m.as_str()).map(String::from);
+
+    let (Some(provider), Some(model)) = (provider, model) else {
+        return;
+    };
+
+    let replacement = match provider.as_str() {
+        "Groq" => groq_model_alias(&model),
+        "Gemini" => gemini_model_alias(&model),
+        _ => None,
+    };
+
+    if let Some(new_model) = replacement {
+        log::error!(
+            "[config.migrate] Migrating deprecated {} model '{}' -> '{}'",
+            provider,
+            model,
+            new_model
+        );
+        llm.insert("model".to_string(), Value::String(new_model.to_string()));
+    }
+}
+
+/// Fix known problematic fields in a parsed JSON Value.
+/// This handles fields that can't be fixed by custom deserializers alone
+/// (e.g., completely wrong types, removed enum variants).
+pub fn fix_known_fields(value: &mut Value) {
+    let Value::Object(obj) = value else {
+        return;
+    };
+
+    // Fix default_effort_level / default_thinking_level
+    if let Some(field) = obj
+        .get("default_effort_level")
+        .or(obj.get("default_thinking_level"))
+    {
+        if let Value::Bool(_) | Value::Number(_) = field {
+            log::error!("[config.fix] Fixing non-string default_effort_level");
+            obj.insert(
+                "default_effort_level".to_string(),
+                Value::String("high".to_string()),
+            );
+        }
+    }
+
+    // Fix llm.features.auto_model_effort / auto_model_thinking
+    if let Some(Value::Object(llm)) = obj.get_mut("llm") {
+        if let Some(Value::Object(features)) = llm.get_mut("features") {
+            for key in &["auto_model_effort", "auto_model_thinking"] {
+                if let Some(field) = features.get(*key) {
+                    if let Value::Bool(_) | Value::Number(_) = field {
+                        log::error!("[config.fix] Fixing non-string {}", key);
+                        features.insert(key.to_string(), Value::String("dynamic".to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Fix theme if it's a removed/unknown variant. The valid list is derived from
+    // the Theme enum itself, so it can never drift from the variants.
+    if let Some(Value::String(theme)) = obj.get("theme") {
+        let valid_themes = Theme::valid_names();
+        if !valid_themes.iter().any(|t| t == theme) {
+            log::error!("[config.fix] Fixing unknown theme '{}' → Midnight", theme);
+            obj.insert("theme".to_string(), Value::String("Midnight".to_string()));
+        }
+    }
+
+    // Migrate removed/aliased OpenAI model id
+    if let Some(Value::String(openai_model)) = obj.get("openai_model") {
+        if let Some(new_model) = openai_model_alias(openai_model) {
+            log::error!(
+                "[config.fix] Migrating openai_model '{}' → '{}'",
+                openai_model,
+                new_model
+            );
+            obj.insert(
+                "openai_model".to_string(),
+                Value::String(new_model.to_string()),
+            );
+        }
+    }
+
+    if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_openai_models") {
+        let mut migrated_any = false;
+        for model in enabled_models.iter_mut() {
+            if let Value::String(s) = model {
+                if let Some(new_model) = openai_model_alias(s) {
+                    *s = new_model.to_string();
+                    migrated_any = true;
+                }
+            }
+        }
+
+        // Deduplicate after alias migrations.
+        let mut seen = std::collections::HashSet::new();
+        enabled_models.retain(|v| match v {
+            Value::String(s) => seen.insert(s.clone()),
+            _ => true,
+        });
+
+        if migrated_any {
+            log::error!(
+                "[config.fix] Migrated deprecated model IDs in enabled_openai_models"
+            );
+        }
+        if enabled_models.is_empty() {
+            enabled_models.push(Value::String(default_openai_model()));
+            log::error!(
+                "[config.fix] enabled_openai_models was empty after migration; restored default"
+            );
+        }
+    }
+
+    // Migrate legacy shared terminal mode into Codex-specific mode.
+    if !obj.contains_key("codex_mode") && !obj.contains_key("openai_terminal_mode") {
+        if let Some(Value::String(mode)) = obj.get("terminal_mode") {
+            if mode == "CodexAppServer" {
+                log::error!(
+                    "[config.fix] Migrating legacy terminal_mode 'CodexAppServer' to codex_mode"
+                );
+                obj.insert(
+                    "codex_mode".to_string(),
+                    Value::String("AppServer".to_string()),
+                );
+                obj.insert(
+                    "terminal_mode".to_string(),
+                    Value::String("Interactive".to_string()),
+                );
+            }
+        }
+    }
+
+    // Migrate transitional field name openai_terminal_mode -> codex_mode
+    if !obj.contains_key("codex_mode") {
+        if let Some(Value::String(mode)) = obj.get("openai_terminal_mode") {
+            let migrated = if mode == "CodexAppServer" || mode == "AppServer" {
+                "AppServer"
+            } else {
+                "Sdk"
+            };
+            if mode == "CodexAppServer" || mode == "AppServer" {
+                log::error!(
+                    "[config.fix] Migrating openai_terminal_mode '{}' to codex_mode=AppServer",
+                    mode
+                );
+            }
+            obj.insert("codex_mode".to_string(), Value::String(migrated.to_string()));
+        }
+    }
+}

@@ -58,7 +58,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ inputs.version }}
-          releaseName: 'Claude Whisperer ${{ inputs.version }}'
+          releaseName: 'OpenWhisperer ${{ inputs.version }}'
           releaseBody: 'See the assets below to download and install.'
           releaseDraft: false
           prerelease: false

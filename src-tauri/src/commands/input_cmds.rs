@@ -3,6 +3,39 @@ use std::thread;
 use std::time::Duration;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
+/// Simulate the platform paste/copy chord — Cmd+`letter` on macOS, Ctrl+`letter`
+/// elsewhere (e.g. 'v' to paste, 'c' to copy). Runs on the calling (blocking)
+/// thread; the caller is responsible for the pre-delay.
+fn send_modified_key(letter: char) -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| format!("Failed to create Enigo instance: {}", e))?;
+
+    #[cfg(target_os = "macos")]
+    let modifier = Key::Meta;
+    #[cfg(not(target_os = "macos"))]
+    let modifier = Key::Control;
+
+    enigo
+        .key(modifier, Direction::Press)
+        .map_err(|e| format!("Failed to press modifier: {}", e))?;
+    enigo
+        .key(Key::Unicode(letter), Direction::Click)
+        .map_err(|e| format!("Failed to press {}: {}", letter, e))?;
+    enigo
+        .key(modifier, Direction::Release)
+        .map_err(|e| format!("Failed to release modifier: {}", e))?;
+    Ok(())
+}
+
+/// Restore previous clipboard text (or clear it if there was none), logging on
+/// failure instead of silently dropping the error.
+fn restore_clipboard(app: &tauri::AppHandle, original: Option<String>) {
+    let text = original.unwrap_or_default();
+    if let Err(e) = app.clipboard().write_text(&text) {
+        log::warn!("Failed to restore clipboard: {}", e);
+    }
+}
+
 /// Simulates pasting text into the currently focused application.
 /// This command:
 /// 1. Saves the current clipboard contents
@@ -24,38 +57,7 @@ pub async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), Strin
     tauri::async_runtime::spawn_blocking(move || {
         // Brief delay to ensure clipboard is ready
         thread::sleep(Duration::from_millis(100));
-
-        let mut enigo = Enigo::new(&Settings::default())
-            .map_err(|e| format!("Failed to create Enigo instance: {}", e))?;
-
-        // Simulate Ctrl+V (Windows/Linux) or Cmd+V (macOS)
-        #[cfg(target_os = "macos")]
-        {
-            enigo
-                .key(Key::Meta, Direction::Press)
-                .map_err(|e| format!("Failed to press Meta: {}", e))?;
-            enigo
-                .key(Key::Unicode('v'), Direction::Click)
-                .map_err(|e| format!("Failed to press V: {}", e))?;
-            enigo
-                .key(Key::Meta, Direction::Release)
-                .map_err(|e| format!("Failed to release Meta: {}", e))?;
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            enigo
-                .key(Key::Control, Direction::Press)
-                .map_err(|e| format!("Failed to press Ctrl: {}", e))?;
-            enigo
-                .key(Key::Unicode('v'), Direction::Click)
-                .map_err(|e| format!("Failed to press V: {}", e))?;
-            enigo
-                .key(Key::Control, Direction::Release)
-                .map_err(|e| format!("Failed to release Ctrl: {}", e))?;
-        }
-
-        Ok::<(), String>(())
+        send_modified_key('v')
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))??;
@@ -63,14 +65,8 @@ pub async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), Strin
     // Brief delay to ensure paste completes before restoring clipboard
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Restore the original clipboard contents
-    if let Some(original) = original_clipboard {
-        // Only restore if there was text content
-        let _ = app.clipboard().write_text(&original);
-    } else {
-        // Clear the clipboard if it was empty or non-text before
-        let _ = app.clipboard().write_text("");
-    }
+    // Restore the original clipboard contents (or clear it if there was none)
+    restore_clipboard(&app, original_clipboard);
 
     Ok(())
 }
@@ -98,37 +94,7 @@ pub async fn copy_selection(app: tauri::AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         // Brief delay to ensure clipboard is cleared and hotkey modifiers are released
         thread::sleep(Duration::from_millis(100));
-
-        let mut enigo = Enigo::new(&Settings::default())
-            .map_err(|e| format!("Failed to create Enigo instance: {}", e))?;
-
-        #[cfg(target_os = "macos")]
-        {
-            enigo
-                .key(Key::Meta, Direction::Press)
-                .map_err(|e| format!("Failed to press Meta: {}", e))?;
-            enigo
-                .key(Key::Unicode('c'), Direction::Click)
-                .map_err(|e| format!("Failed to press C: {}", e))?;
-            enigo
-                .key(Key::Meta, Direction::Release)
-                .map_err(|e| format!("Failed to release Meta: {}", e))?;
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            enigo
-                .key(Key::Control, Direction::Press)
-                .map_err(|e| format!("Failed to press Ctrl: {}", e))?;
-            enigo
-                .key(Key::Unicode('c'), Direction::Click)
-                .map_err(|e| format!("Failed to press C: {}", e))?;
-            enigo
-                .key(Key::Control, Direction::Release)
-                .map_err(|e| format!("Failed to release Ctrl: {}", e))?;
-        }
-
-        Ok::<(), String>(())
+        send_modified_key('c')
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))??;
@@ -140,11 +106,7 @@ pub async fn copy_selection(app: tauri::AppHandle) -> Result<String, String> {
     let copied_text = app.clipboard().read_text().unwrap_or_default();
 
     // Restore the original clipboard contents
-    if let Some(original) = original_clipboard {
-        let _ = app.clipboard().write_text(&original);
-    } else {
-        let _ = app.clipboard().write_text("");
-    }
+    restore_clipboard(&app, original_clipboard);
 
     Ok(copied_text)
 }

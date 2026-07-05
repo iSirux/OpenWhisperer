@@ -20,7 +20,7 @@ pub async fn generate_sequence(
     };
 
     let prompt = format!(
-        r#"Generate a YAML sequence definition for the Claude Whisperer automation system.
+        r#"Generate a YAML sequence definition for the OpenWhisperer automation system.
 
 Description of what the sequence should do:
 {description}

@@ -1,18 +1,19 @@
 [package]
-name = "claude-whisperer"
+name = "open-whisperer"
 version = "0.14.0"
 description = "Voice-controlled interface for Claude Code"
 authors = ["iSirux"]
 edition = "2021"
 
 [lib]
-name = "claude_whisperer_lib"
+name = "open_whisperer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+thiserror = "2"
 tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"

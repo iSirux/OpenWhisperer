@@ -480,7 +480,7 @@
                 },
               }));
             }}
-            placeholder="claude-whisperer-vosk"
+            placeholder="open-whisperer-vosk"
           />
         </div>
 
@@ -648,7 +648,7 @@
                 },
               }));
             }}
-            placeholder="claude-whisperer-voicestreamai"
+            placeholder="open-whisperer-voicestreamai"
           />
         </div>
 
@@ -879,7 +879,7 @@
                 },
               }));
             }}
-            placeholder="claude-whisperer-speaches"
+            placeholder="open-whisperer-speaches"
           />
         </div>
 
@@ -1167,7 +1167,7 @@
                 },
               }));
             }}
-            placeholder="claude-whisperer-sherpa-onnx"
+            placeholder="open-whisperer-sherpa-onnx"
           />
         </div>
 

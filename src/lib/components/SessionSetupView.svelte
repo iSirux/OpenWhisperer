@@ -4,6 +4,8 @@
   import { settings, isNoteModeAvailable } from '$lib/stores/settings';
   import { repos, type RepoConfig } from '$lib/stores/repos';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
+  import PromptChips from '$lib/components/PromptChips.svelte';
+  import { appendChips } from '$lib/utils/promptChips';
   import { findRepoByPath } from '$lib/utils/repoIcons';
   import { isRecording, isTranscribing } from '$lib/stores/recording';
   import {
@@ -111,6 +113,7 @@
   let planMode = $state(initialPlanMode);
   let noteMode = $state(initialNoteMode);
   let readOnlyMode = $state(initialReadOnlyMode);
+  let selectedChips = $state<string[]>([]);
   let pendingImages = $state<ImageData[]>(toImageData(initialDraftImages));
   let isProcessingImages = $state(false);
   let showRepoDropdown = $state(false);
@@ -177,6 +180,7 @@
       readOnlyMode = initialReadOnlyMode;
       prompt = initialDraftPrompt;
       pendingImages = toImageData(initialDraftImages);
+      selectedChips = [];
       prevSessionId = sessionId;
     }
   });
@@ -341,7 +345,7 @@
       }
 
       await onStart({
-        prompt: prompt.trim(),
+        prompt: appendChips(prompt.trim(), noteMode ? [] : selectedChips),
         images: imageContent,
         model,
         effortLevel,
@@ -952,6 +956,12 @@
       <div class="prompt-hint">
         Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to start, or use the button below
       </div>
+
+      {#if !noteMode}
+        <div class="chips-row">
+          <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
+        </div>
+      {/if}
     </div>
 
     <!-- Action Buttons -->
@@ -1418,6 +1428,10 @@
   .prompt-hint {
     font-size: 0.75rem;
     color: var(--color-text-muted);
+  }
+
+  .chips-row {
+    margin-top: 0.25rem;
   }
 
   .prompt-hint kbd {
