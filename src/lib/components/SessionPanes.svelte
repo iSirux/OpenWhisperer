@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
   import SdkView from "./SdkView.svelte";
@@ -6,6 +7,7 @@
     paneLayout,
     visibleSessionIds,
     panes,
+    setSessionPanesOnScreen,
     MAX_PANES,
   } from "$lib/stores/panes";
   import { sdkSessions } from "$lib/stores/sdkSessions";
@@ -34,6 +36,13 @@
   // Per-pane SdkView instance refs, keyed by pane id. bind:this clears entries to
   // undefined on unmount, so stale keys are harmless.
   let sdkViewRefs: Record<string, SdkViewInstance | undefined> = {};
+
+  // Tell the panes store when paned sessions are actually visible, so completion
+  // side-effects (unread markers) fire while the user is on settings/other routes.
+  onMount(() => {
+    setSessionPanesOnScreen(true);
+    return () => setSessionPanesOnScreen(false);
+  });
 
   const multi = $derived($paneLayout.panes.length > 1);
 

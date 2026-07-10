@@ -68,7 +68,8 @@
     isRecordingForSetup?: boolean;
     onStart: (config: SetupLaunchConfig) => void;
     /** Schedule the launch for a later usage window (fire-and-forget) instead of starting now. */
-    onSchedule?: (config: SetupLaunchConfig, window: QueueWindow) => void;
+    /** 'after_sessions' = start once every other session in the target repo/worktree is done. */
+    onSchedule?: (config: SetupLaunchConfig, window: QueueWindow | 'after_sessions') => void;
     /** Save this draft to the pile to handle later instead of starting a session. */
     onToPile?: (config: SetupLaunchConfig) => void;
     onDraftChange?: (
@@ -115,6 +116,11 @@
   let isProcessingImages = $state(false);
   let provider = $state<SdkProvider>(initialProvider ?? getProviderForModel(initialModel));
   let openaiAvailable = $state(false);
+  // The provider choice only renders when BOTH providers are enabled;
+  // a single-provider setup never shows a picker.
+  const showProviderChoice = $derived(
+    openaiAvailable && ($settings.enabled_providers?.claude ?? true)
+  );
   let isStarting = $state(false);
   let isAwaitingTranscript = $state(false);
   let textareaEl: HTMLTextAreaElement;
@@ -168,14 +174,19 @@
     }
   });
 
-  // Check if OpenAI Codex is available
+  // Check if OpenAI Codex is available (auth exists AND the provider is
+  // enabled — disabled providers are hidden app-wide per onboarding choice)
   $effect(() => {
+    const enabledProviders = $settings.enabled_providers ?? { claude: true, openai: true };
     invoke<{ authenticated: boolean }>('check_openai_codex_auth')
       .then(result => {
-        openaiAvailable = result.authenticated;
+        openaiAvailable = result.authenticated && enabledProviders.openai;
         if (!openaiAvailable && provider === 'openai') {
           provider = 'claude';
           model = $settings.default_model || DEFAULT_MODEL_ID;
+        } else if (!enabledProviders.claude && openaiAvailable && provider === 'claude') {
+          provider = 'openai';
+          model = $settings.openai_model || DEFAULT_OPENAI_MODEL_ID;
         }
       })
       .catch(() => {
@@ -334,7 +345,7 @@
     }
   }
 
-  async function handleSchedule(window: QueueWindow) {
+  async function handleSchedule(window: QueueWindow | 'after_sessions') {
     scheduleMenuOpen = false;
     if (!canStart || isStarting || !onSchedule) return;
     isStarting = true;
@@ -536,8 +547,8 @@
 
     <div class="options-grid">
       <div class="option-row option-row--wide">
-        <div class="session-control-row" class:session-control-row--triple={(openaiAvailable || providerLocked) && (modelSupportsEffort(model) || isAutoModel(model))} class:session-control-row--double={!(openaiAvailable || providerLocked) || !(modelSupportsEffort(model) || isAutoModel(model))}>
-          {#if openaiAvailable && !providerLocked}
+        <div class="session-control-row" class:session-control-row--triple={(showProviderChoice || providerLocked) && (modelSupportsEffort(model) || isAutoModel(model))} class:session-control-row--double={!(showProviderChoice || providerLocked) || !(modelSupportsEffort(model) || isAutoModel(model))}>
+          {#if showProviderChoice && !providerLocked}
             <div class="option-cell">
               <label class="option-label">Provider</label>
               <div class="mode-toggle">
@@ -808,7 +819,13 @@
         class="start-btn"
         class:loading={isStarting}
         disabled={!canStart || isStarting}
-        onclick={handleStart}
+        onclick={(e) =>
+          onSchedule && (e.ctrlKey || e.metaKey)
+            ? handleSchedule('after_sessions')
+            : handleStart()}
+        title={onSchedule
+          ? 'Start now — Ctrl+click: start when this repo/worktree is idle'
+          : undefined}
       >
         {#if isStarting}
           <div class="start-spinner"></div>
@@ -842,6 +859,9 @@
           </button>
           {#if scheduleMenuOpen}
             <div class="schedule-menu" role="menu">
+              <button class="schedule-menu-item" role="menuitem" onclick={() => handleSchedule('after_sessions')}>
+                When repo is idle
+              </button>
               <button class="schedule-menu-item" role="menuitem" onclick={() => handleSchedule('5h')}>
                 Next 5h reset
               </button>

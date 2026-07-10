@@ -54,21 +54,41 @@ jobs:
           echo "version=$next" >> "$GITHUB_OUTPUT"
           echo "Releasing $next (previous: ${current:-none})"
 
-  build-windows:
+  build:
     needs: version
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - arch: x64
+          - os: windows-latest
             rust-target: x86_64-pc-windows-msvc
-          - arch: arm64
+            args: --target x86_64-pc-windows-msvc
+          - os: windows-latest
             rust-target: aarch64-pc-windows-msvc
+            args: --target aarch64-pc-windows-msvc
+          - os: macos-latest
+            rust-target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - os: macos-latest
+            rust-target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          - os: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            args: ''
     permissions:
       contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf xdg-utils libxdo-dev \
+            libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -85,7 +105,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: ${{ matrix.arch }}
+          key: ${{ matrix.rust-target }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -113,13 +133,23 @@ jobs:
         with:
           tagName: ${{ needs.version.outputs.version }}
           releaseName: 'OpenWhisperer ${{ needs.version.outputs.version }}'
-          releaseBody: 'See the assets below to download and install.'
+          releaseBody: |
+            See the assets below to download and install.
+
+            **Windows**: `.msi` installer (x64 or arm64).
+            **macOS**: `.dmg` (aarch64 = Apple Silicon, x64 = Intel). The macOS build is **not signed or notarized** (no Apple Developer certificate), so Gatekeeper will report the app as damaged or unverified on first launch. To open it, clear the quarantine flag after copying it to Applications:
+
+            ```
+            xattr -cr /Applications/OpenWhisperer.app
+            ```
+
+            **Linux**: `.AppImage` (supports in-app updates), `.deb`, or `.rpm`.
           releaseDraft: false
           prerelease: false
-          args: --target ${{ matrix.rust-target }}
+          args: ${{ matrix.args }}
 
   commit-version-bump:
-    needs: [version, build-windows]
+    needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

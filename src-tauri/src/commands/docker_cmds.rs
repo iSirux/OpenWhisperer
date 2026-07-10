@@ -31,6 +31,10 @@ const MOONSHINE_CONTEXT: EmbeddedContext = &[
     ("server.py", include_str!("../../../docker/moonshine/server.py")),
 ];
 
+/// Whisper uses a public image (`fedirz/faster-whisper-server`) — no build
+/// context, the setup script just pulls and runs it.
+const WHISPER_CONTEXT: EmbeddedContext = &[];
+
 fn docker_contexts_dir() -> PathBuf {
     #[cfg(debug_assertions)]
     let dirname = "docker-contexts-dev";
@@ -40,11 +44,14 @@ fn docker_contexts_dir() -> PathBuf {
 }
 
 /// Write the embedded Docker build context for `provider` to disk and return
-/// its directory. Overwrites on every call so app updates propagate.
-fn write_context(provider: &str) -> Result<PathBuf, String> {
+/// its directory plus whether there is anything to build (an empty context
+/// means the provider runs a public image and the script skips `docker build`).
+/// Overwrites on every call so app updates propagate.
+fn write_context(provider: &str) -> Result<(PathBuf, bool), String> {
     let context: EmbeddedContext = match provider {
         "sherpa-onnx" => SHERPA_ONNX_CONTEXT,
         "moonshine" => MOONSHINE_CONTEXT,
+        "whisper" => WHISPER_CONTEXT,
         other => return Err(format!("Unknown docker context: {}", other)),
     };
 
@@ -57,7 +64,7 @@ fn write_context(provider: &str) -> Result<PathBuf, String> {
             .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
     }
 
-    Ok(dir)
+    Ok((dir, !context.is_empty()))
 }
 
 #[cfg(target_os = "windows")]
@@ -66,19 +73,32 @@ fn write_setup_script(
     image: &str,
     container_name: &str,
     run_command: &str,
+    build: bool,
 ) -> Result<PathBuf, String> {
     let rm_line = if container_name.is_empty() {
         String::new()
     } else {
         format!("docker rm -f {} >nul 2>nul\r\n", container_name)
     };
+    let build_lines = if build {
+        format!(
+            "echo === OpenWhisperer: building {image} ===\r\n\
+             docker build -t {image} \"{dir}\"\r\n\
+             if errorlevel 1 goto :fail\r\n\
+             echo.\r\n",
+            image = image,
+            dir = dir.display(),
+        )
+    } else {
+        format!(
+            "echo === OpenWhisperer: pulling {image} (first run may take a while) ===\r\n",
+            image = image,
+        )
+    };
     let script = format!(
         "@echo off\r\n\
-         echo === OpenWhisperer: building {image} ===\r\n\
+         {build_lines}\
          {rm_line}\
-         docker build -t {image} \"{dir}\"\r\n\
-         if errorlevel 1 goto :fail\r\n\
-         echo.\r\n\
          echo === Starting container ===\r\n\
          {run_command}\r\n\
          if errorlevel 1 goto :fail\r\n\
@@ -88,9 +108,8 @@ fn write_setup_script(
          :fail\r\n\
          echo.\r\n\
          echo *** FAILED - see the errors above (is Docker Desktop running?) ***\r\n",
-        image = image,
+        build_lines = build_lines,
         rm_line = rm_line,
-        dir = dir.display(),
         run_command = run_command,
     );
     let path = dir.join("setup.cmd");
@@ -104,26 +123,39 @@ fn write_setup_script(
     image: &str,
     container_name: &str,
     run_command: &str,
+    build: bool,
 ) -> Result<PathBuf, String> {
     let rm_line = if container_name.is_empty() {
         String::new()
     } else {
         format!("docker rm -f {} 2>/dev/null || true\n", container_name)
     };
+    let build_lines = if build {
+        format!(
+            "echo \"=== OpenWhisperer: building {image} ===\"\n\
+             set -e\n\
+             docker build -t {image} \"{dir}\"\n\
+             echo\n",
+            image = image,
+            dir = dir.display(),
+        )
+    } else {
+        format!(
+            "echo \"=== OpenWhisperer: pulling {image} (first run may take a while) ===\"\n\
+             set -e\n",
+            image = image,
+        )
+    };
     let script = format!(
         "#!/bin/sh\n\
-         echo \"=== OpenWhisperer: building {image} ===\"\n\
          {rm_line}\
-         set -e\n\
-         docker build -t {image} \"{dir}\"\n\
-         echo\n\
+         {build_lines}\
          echo \"=== Starting container ===\"\n\
          {run_command}\n\
          echo\n\
          echo \"=== Success! The container is running. You can close this window. ===\"\n",
-        image = image,
         rm_line = rm_line,
-        dir = dir.display(),
+        build_lines = build_lines,
         run_command = run_command,
     );
     let path = dir.join("setup.sh");
@@ -146,8 +178,8 @@ pub fn run_docker_setup(
     container_name: String,
     run_command: String,
 ) -> Result<(), String> {
-    let dir = write_context(&provider)?;
-    let script = write_setup_script(&dir, &image, &container_name, &run_command)?;
+    let (dir, build) = write_context(&provider)?;
+    let script = write_setup_script(&dir, &image, &container_name, &run_command, build)?;
     let script_str = script.to_string_lossy().to_string();
 
     #[cfg(target_os = "windows")]
@@ -166,4 +198,65 @@ pub fn run_docker_setup(
     }
 
     Ok(())
+}
+
+/// Docker availability probe result.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerStatus {
+    /// `docker` CLI is on PATH and responds
+    pub installed: bool,
+    /// Docker daemon is reachable (`docker info` succeeded)
+    pub running: bool,
+    pub error: Option<String>,
+}
+
+/// Probe whether Docker is installed and whether its daemon is running,
+/// without spawning any visible window.
+#[tauri::command]
+pub async fn check_docker() -> DockerStatus {
+    use crate::proc::run_command_async;
+
+    let client = run_command_async("docker", &["--version".to_string()], None, &[]).await;
+    let installed = matches!(&client, Ok(out) if out.success);
+    if !installed {
+        let error = match client {
+            Err(e) => Some(e),
+            Ok(out) => Some(out.stderr.trim().to_string()).filter(|s| !s.is_empty()),
+        };
+        return DockerStatus {
+            installed: false,
+            running: false,
+            error,
+        };
+    }
+
+    let info = run_command_async(
+        "docker",
+        &[
+            "info".to_string(),
+            "--format".to_string(),
+            "{{.ServerVersion}}".to_string(),
+        ],
+        None,
+        &[],
+    )
+    .await;
+    match info {
+        Ok(out) if out.success => DockerStatus {
+            installed: true,
+            running: true,
+            error: None,
+        },
+        Ok(out) => DockerStatus {
+            installed: true,
+            running: false,
+            error: Some(out.stderr.trim().to_string()).filter(|s| !s.is_empty()),
+        },
+        Err(e) => DockerStatus {
+            installed: true,
+            running: false,
+            error: Some(e),
+        },
+    }
 }

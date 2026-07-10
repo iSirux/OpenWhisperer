@@ -35,12 +35,16 @@ export interface LaunchRuntime {
   launchedFromCwd?: string;
 }
 
-/** A launch that's queued to execute after the current agent finishes */
+/** A launch that's queued to execute after the current agent finishes,
+ *  or (mode 'repo_idle') once every session in the repo/worktree is done */
 export interface QueuedLaunch {
   repoId: string;
   profileId: string;
   profileName: string;
-  sessionId: string;
-  /** The session cwd at queue time — may be a worktree path */
+  /** 'after_agent' (default) waits on one session; 'repo_idle' waits on the whole repo+worktree scope */
+  mode?: 'after_agent' | 'repo_idle';
+  /** The session being waited on (after_agent mode only) */
+  sessionId?: string;
+  /** The session cwd at queue time — may be a worktree path. For repo_idle mode this is the scope. */
   launchedFromCwd?: string;
 }

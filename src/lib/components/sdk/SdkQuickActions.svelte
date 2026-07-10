@@ -48,9 +48,10 @@
       {#each contextualActions as action}
         <button
           class="quick-action-button contextual"
+          title={action.label ? action.prompt : undefined}
           onclick={() => onSendPrompt(action.prompt)}
         >
-          {action.prompt}
+          {action.label ?? action.prompt}
         </button>
       {/each}
     </div>

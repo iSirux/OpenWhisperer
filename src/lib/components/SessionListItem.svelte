@@ -37,6 +37,9 @@
     responseRows: number;
     onselect: () => void;
     onclose: (event: MouseEvent) => void;
+    /** Toggle pin for this session (SDK sessions only; button/menu hidden when absent). */
+    ontogglepin?: () => void;
+    oncontextmenu?: (event: MouseEvent) => void;
   }
 
   let {
@@ -50,6 +53,8 @@
     responseRows,
     onselect,
     onclose,
+    ontogglepin = undefined,
+    oncontextmenu = undefined,
   }: Props = $props();
 
   // Live countdown to an epoch-ms target, driven by the `now` prop so it stays
@@ -132,6 +137,7 @@
     }
   }}
   onclick={onselect}
+  oncontextmenu={oncontextmenu}
 >
   {#if hotkeyNumber != null && $ctrlHeld}
     <span class="hotkey-number-badge" aria-hidden="true">{hotkeyNumber}</span>
@@ -246,6 +252,32 @@
         <span class="text-xs text-text-muted font-mono tabular-nums">
           {getDisplayedDuration()}
         </span>
+      {/if}
+      {#if ontogglepin}
+        <button
+          class="pin-button rounded p-0.5 transition-colors {session.pinned
+            ? 'pinned text-accent hover:bg-accent/10'
+            : 'text-text-muted hover:text-accent hover:bg-accent/10'}"
+          onclick={(e) => {
+            e.stopPropagation();
+            ontogglepin();
+          }}
+          title={session.pinned ? "Unpin session" : "Pin session"}
+        >
+          <svg
+            class="w-3.5 h-3.5"
+            fill={session.pinned ? "currentColor" : "none"}
+            stroke="currentColor"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"
+            />
+          </svg>
+        </button>
       {/if}
       <button
         class="text-text-muted hover:text-red-400 hover:bg-red-400/10 rounded p-0.5 transition-colors"

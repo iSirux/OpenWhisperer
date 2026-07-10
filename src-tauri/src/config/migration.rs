@@ -15,7 +15,7 @@ use super::ui::Theme;
 type Migration = fn(&mut Value);
 
 /// Ordered migration table. Index `i` upgrades a config from version `i` to `i + 1`.
-const MIGRATIONS: &[Migration] = &[migrate_v0_to_v1, migrate_v1_to_v2];
+const MIGRATIONS: &[Migration] = &[migrate_v0_to_v1, migrate_v1_to_v2, migrate_v2_to_v3];
 
 /// The schema version the current build writes. Derived from the table length so
 /// it always matches the number of available migrations.
@@ -122,6 +122,17 @@ fn migrate_v1_to_v2(value: &mut Value) {
             Value::String(s) => seen.insert(s.clone()),
             _ => true,
         });
+    }
+}
+
+// ============================================================================
+// v2 -> v3: first-run onboarding wizard — any config already on disk belongs
+// to an existing user who must never see the wizard, so stamp it completed
+// ============================================================================
+
+fn migrate_v2_to_v3(value: &mut Value) {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("onboarding_completed".to_string(), Value::Bool(true));
     }
 }
 

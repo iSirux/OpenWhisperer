@@ -314,6 +314,8 @@ pub async fn generate_quick_actions(
     config: State<'_, Mutex<AppConfig>>,
     stats: State<'_, UsageStatsState>,
     user_prompt: String,
+    latest_prompt: Option<String>,
+    session_activity: Option<String>,
     last_message: String,
 ) -> Result<QuickActionsResult, String> {
     let (_cfg, client) = prepare_client(&app, &config, |c| {
@@ -324,7 +326,12 @@ pub async fn generate_quick_actions(
         }
     })?;
     let result = client
-        .generate_quick_actions_with_usage(&user_prompt, &last_message)
+        .generate_quick_actions_with_usage(
+            &user_prompt,
+            latest_prompt.as_deref(),
+            session_activity.as_deref(),
+            &last_message,
+        )
         .await?;
     Ok(finish(&stats, "quick_actions", result))
 }

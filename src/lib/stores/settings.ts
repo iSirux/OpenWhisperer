@@ -335,6 +335,13 @@ export type SdkProvider = "Claude" | "OpenAI";
 export type OpenAiAuthMethod = "OAuth" | "ApiKey";
 export type ClaudeAuthMethod = "OAuth" | "ApiKey";
 
+/** Which SDK providers are surfaced in the UI (chosen during onboarding).
+ *  When only one is enabled, provider pickers are hidden entirely. */
+export interface EnabledProviders {
+  claude: boolean;
+  openai: boolean;
+}
+
 export type ClaudeTerminalMode = "Interactive" | "Prompt" | "Sdk";
 export type CodexMode = "Sdk" | "AppServer";
 export type TerminalMode = ClaudeTerminalMode | CodexMode;
@@ -520,6 +527,10 @@ export interface AppConfig {
   codex_mode: CodexMode;
   /** SDK provider for the main coding agent (Claude or OpenAI Codex) */
   sdk_provider: SdkProvider;
+  /** Which SDK providers are surfaced in the UI (chosen during onboarding) */
+  enabled_providers: EnabledProviders;
+  /** Whether the first-run onboarding wizard has been completed (or skipped) */
+  onboarding_completed: boolean;
   /** Default OpenAI model for Codex SDK sessions */
   openai_model: string;
   /** Which OpenAI models are shown in the selector */
@@ -714,6 +725,8 @@ const defaultConfig: AppConfig = {
   terminal_mode: "Sdk",
   codex_mode: "AppServer",
   sdk_provider: "Claude",
+  enabled_providers: { claude: true, openai: true },
+  onboarding_completed: false,
   openai_model: "gpt-5.6-terra",
   enabled_openai_models: [
     "gpt-5.6-sol",

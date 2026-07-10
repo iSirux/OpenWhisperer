@@ -335,16 +335,27 @@ App config stored in system config directory (`open-whisperer/config.json`), ver
 - `queue` - Smart Queue settings (rate-limit queueing, stagger)
 - `sequences` - Sequence engine settings (notification channels)
 - `prompt_chips` / `pane_layout` / `sessions_view` - UI state
+- `enabled_providers` / `onboarding_completed` - Provider surfacing + first-run wizard flag (see Onboarding)
+
+## Onboarding
+
+First-run setup wizard at `src/routes/onboarding/+page.svelte` — deliberately **outside the `(main)` route group** (like the overlay) so it renders full-screen with no AppHeader/rail. Step components live in `src/lib/components/onboarding/` (`WelcomeStep`, `MicrophoneStep`, `TranscriptionStep`, `AgentStep`, `LlmStep`, `RepoStep`).
+
+- **Trigger:** `AppConfig.onboarding_completed` (default false). The `(main)` layout redirects to `/onboarding` right after settings load when it's false; finishing/skipping the wizard sets it and navigates back (remounting the layout runs the normal startup path). Migration v2→v3 stamps `true` on any config already on disk, so **only truly fresh installs see the wizard** (regression test in `config/mod.rs`).
+- **Flow:** Welcome (Voice vs Text — sets `system.voice_mode_disabled`; Text skips the mic/transcription steps) → Microphone (device + live level meter) → Transcription (Docker-only: `check_docker` probe with auto-polling, one-click Moonshine + Whisper container setup, "say hello hello" test via `transcribe_audio`) → Agent (choose Claude / Codex / Both) → LLM (Groq-first key + connection test) → Repository. Progress persists to config on every step change. "Run Setup Again" lives in Settings → System.
+- **Provider enablement:** `AppConfig.enabled_providers { claude, openai }` (chosen in the Agent step, editable in Settings → General). A disabled provider is hidden app-wide: AppHeader toggle, SessionSetupView picker, RepositoryView/ReposTab default-provider options, and its settings tab. Toggles keep `sdk_provider` inside the enabled set; at least one must stay enabled.
+- **Backend:** `check_docker` (`docker_cmds.rs`) probes `docker --version` + `docker info` windowlessly. `run_docker_setup` also accepts provider `"whisper"` — an empty embedded context means run-only (pull the public image, no `docker build`).
 
 ## App Updates
 
 In-app updates via the Tauri v2 updater plugin (`tauri-plugin-updater` + `tauri-plugin-process`, registered in `lib.rs`; permissions in `capabilities/default.json`).
 
-- **Endpoint:** static `latest.json` on the newest GitHub release (`https://github.com/iSirux/OpenWhisperer/releases/latest/download/latest.json`), generated automatically by `tauri-apps/tauri-action` in `.github/workflows/release.yml` (both matrix arches merge into one manifest). `bundle.createUpdaterArtifacts` is enabled in `tauri.conf.json`.
+- **Endpoint:** static `latest.json` on the newest GitHub release (`https://github.com/iSirux/OpenWhisperer/releases/latest/download/latest.json`), generated automatically by `tauri-apps/tauri-action` in `.github/workflows/release.yml` (all matrix platforms — Windows x64/arm64, macOS aarch64/x64, Linux x64 — merge into one manifest). `bundle.createUpdaterArtifacts` is enabled in `tauri.conf.json`.
 - **Signing:** updates are minisign-verified against the `pubkey` in `tauri.conf.json`. CI signs with the `TAURI_SIGNING_PRIVATE_KEY` repo secret (no password); the private key lives at `~/.tauri/openwhisperer.key` on the maintainer's machine. Losing it means existing installs can never update again.
 - **Versioning:** the release workflow auto-computes the next version from the latest `v*` git tag (bump type selectable at dispatch: minor default / patch / major, plus an explicit override input) and stamps it into `tauri.conf.json` before building — the updater compares against that version, so releases don't require a manual version bump in git. Git tags are the source of truth for computing the next version; after a successful release a final workflow job commits the new version back to `main` (`tauri.conf.json`, `package.json`, `package-lock.json`) so the checked-in manifests stay in sync.
 - **Frontend:** `stores/updater.ts` (check/download/install state machine); startup check in `(main)/+layout.svelte` per `system.update_check` (Off | Notify | Auto, default Notify; skipped in dev builds); header pill in `AppHeader` when an update is available (links to Settings → About); manual check + install UI in `AboutTab`; mode selector in `SystemTab`.
 - **Windows:** `installMode: "passive"` — the app exits while the installer runs, so post-install "restart" UI is only reachable on macOS/Linux.
+- **macOS:** builds are **not Apple-signed or notarized** (no Apple Developer certificate). First launch requires clearing quarantine (`xattr -cr /Applications/OpenWhisperer.app`) — documented in the README and the release body. Updater artifacts are still minisign-verified. Linux in-app updates work via the AppImage only (deb/rpm users update manually).
 
 ## Key Technologies
 
@@ -380,10 +391,12 @@ The session persistence layer (`src/lib/stores/sessionPersistence.ts`) uses an *
 
 ## Smart Queue
 
-A single global driver (`src/lib/stores/smartQueue.ts`, started in `(main)/+layout.svelte`) that dispatches deferred SDK work once a provider's usage window resets or a user-scheduled window boundary passes. Two waiting shapes, one driver:
+A single global driver (`src/lib/stores/smartQueue.ts`, started in `(main)/+layout.svelte`) that dispatches deferred SDK work once a provider's usage window resets, a user-scheduled window boundary passes, or a repo/worktree scope goes idle. Two waiting shapes, one driver:
 
 - `status: 'queued'` — a never-launched session, dispatched via `launchPrepared`
 - `rateLimited != null` — a live session with a pending turn to re-send, dispatched via `continueRateLimited` (mid-run rejection, deferred follow-ups, scheduled turns)
+
+Three `QueueReason` triggers: `rate_limit` (window exhausted), `scheduled` (user-picked 5h/7d boundary), and `after_sessions` — run once every session in the same repo+worktree (same `cwd`, via `hasBusySessionsInScope` in `sdkSessions.ts`) has finished. `after_sessions` is entered via Ctrl+click/Ctrl+Enter on Send (`queueTurnAfterSessions`; a parked follow-up also waits for its own session's running query), Ctrl+click on Start in the New Session view (`schedule: 'after_sessions'`), or the "when repo is idle" schedule-menu items; it dispatches even when the Smart Queue master toggle is off (explicit per-item user action). The launch-profile analog is Ctrl+click on a `LaunchBar` profile button → `launchStore.queueUntilRepoIdle` (waits on the whole scope, vs. `queueAfterAgent`'s single-session `sdk-done` listener).
 
 Exhaustion detection lives in `queueDetection.ts` (threshold ≥100% utilization of the 5h or 7d window, per provider — Claude and Codex both) which deliberately imports neither `sdkSessions` nor `smartQueue` to break the import cycle. Draining is FIFO per provider with configurable fuzzy stagger (`settings.queue`, Settings → Smart Queue). UI: `QueueIndicator` (header) and `RateLimitBanner` (session). Distinct from `createSessionQueue` in `sessionLaunch.ts`, which is just a sequential batch-launch stagger.
 

@@ -45,10 +45,11 @@
   const pendingCodexRequests = new Map<string, number>();
 
   onMount(async () => {
-    // Check which providers are available
+    // Check which providers are available (auth exists AND enabled per onboarding choice)
+    const enabledProviders = $settings.enabled_providers ?? { claude: true, openai: true };
     try {
       const claudeAuth = await invoke<{ hasEnvKey: boolean; hasOAuth: boolean; hasKeyringKey: boolean; authenticated: boolean }>('check_claude_auth');
-      claudeAvailable = claudeAuth.authenticated;
+      claudeAvailable = enabledProviders.claude && claudeAuth.authenticated;
     } catch {
       claudeAvailable = false;
     }
@@ -56,7 +57,7 @@
     try {
       const codexAuth = await invoke<{ hasAuthFile: boolean; hasCli: boolean; authenticated: boolean }>('check_openai_codex_auth');
       const hasApiKey = await invoke<boolean>('has_openai_api_key');
-      codexAvailable = codexAuth.authenticated || hasApiKey;
+      codexAvailable = enabledProviders.openai && (codexAuth.authenticated || hasApiKey);
     } catch {
       codexAvailable = false;
     }

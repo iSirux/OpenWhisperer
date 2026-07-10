@@ -33,6 +33,7 @@ export interface DisplaySession {
 
   // UI state
   unread?: boolean; // Whether the session completed and user hasn't viewed it yet
+  pinned?: boolean; // Pinned sessions sort to the top of the list (SDK sessions only)
   latestMessage?: string; // Latest assistant text message snippet for SDK sessions
 
   // AI-generated metadata (from Gemini)

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { LaunchCommand, LaunchProfile, LaunchRuntime, QueuedLaunch } from "$lib/types/launch";
 import { repos, findRepoById } from "./repos";
+import { sdkSessions, hasBusySessionsInScope } from "./sdkSessions";
 
 // ---- Store State ----
 
@@ -147,7 +148,40 @@ function createLaunchStore() {
 
       update((s) => ({
         ...s,
-        queued: { repoId, profileId, profileName, sessionId, launchedFromCwd },
+        queued: { repoId, profileId, profileName, mode: "after_agent", sessionId, launchedFromCwd },
+      }));
+    },
+
+    /**
+     * Ctrl+click on a profile: queue a launch to auto-trigger once EVERY session in the
+     * repo+worktree scope (`scopeCwd`) has finished — not just the current one. Launches
+     * immediately when the scope is already idle.
+     */
+    async queueUntilRepoIdle(repoId: string, profileId: string, profileName: string, scopeCwd: string): Promise<void> {
+      // Clean up any existing queue
+      this.cancelQueue();
+
+      if (!hasBusySessionsInScope(get(sdkSessions), scopeCwd)) {
+        await this.launchProfile(repoId, profileId, scopeCwd);
+        return;
+      }
+
+      let fired = false;
+      const unsubscribe = sdkSessions.subscribe((sessions) => {
+        // The first (synchronous) call sees the busy scope we just checked; later
+        // calls fire the launch exactly once when the scope goes idle.
+        if (fired || hasBusySessionsInScope(sessions, scopeCwd)) return;
+        fired = true;
+        console.log("[launch] Repo scope idle, launching queued profile");
+        this.cancelQueue();
+        void this.launchProfile(repoId, profileId, scopeCwd);
+      });
+
+      queueCleanup = unsubscribe;
+
+      update((s) => ({
+        ...s,
+        queued: { repoId, profileId, profileName, mode: "repo_idle", launchedFromCwd: scopeCwd },
       }));
     },
 

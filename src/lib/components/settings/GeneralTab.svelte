@@ -5,6 +5,22 @@
   let newAction = $state("");
   let actionError = $state("");
 
+  function toggleProvider(which: "claude" | "openai") {
+    settings.update((s) => {
+      const current = s.enabled_providers ?? { claude: true, openai: true };
+      const next = { ...current, [which]: !current[which] };
+      // At least one provider must stay enabled.
+      if (!next.claude && !next.openai) return s;
+      // Keep the default provider inside the enabled set.
+      const sdk_provider: SdkProvider = !next.claude
+        ? "OpenAI"
+        : !next.openai
+          ? "Claude"
+          : s.sdk_provider;
+      return { ...s, enabled_providers: next, sdk_provider };
+    });
+  }
+
   let newChip = $state("");
   let chipError = $state("");
 
@@ -95,18 +111,47 @@
   <!-- SDK Provider -->
   <div class="border-b border-border pb-4 mb-4">
     <h3 class="text-sm font-medium text-text-primary mb-3">SDK Provider</h3>
-    <div>
-      <label class="block text-sm font-medium text-text-secondary mb-1">Default Provider</label>
-      <select
-        class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-        bind:value={$settings.sdk_provider}
-      >
-        <option value="Claude">Claude (Anthropic)</option>
-        <option value="OpenAI">OpenAI (Codex)</option>
-      </select>
-      <p class="text-xs text-text-muted mt-1">
-        Default SDK provider for new sessions. Configure models in the Claude or Codex tabs.
-      </p>
+    <div class="space-y-3">
+      <div>
+        <label class="block text-sm font-medium text-text-secondary mb-1">Enabled Providers</label>
+        <div class="flex gap-2">
+          <button
+            class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors border-2 {($settings.enabled_providers?.claude ?? true)
+              ? 'border-accent bg-accent/10 text-text-primary'
+              : 'border-border bg-surface text-text-muted'}"
+            onclick={() => toggleProvider('claude')}
+          >
+            Claude (Anthropic)
+          </button>
+          <button
+            class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors border-2 {($settings.enabled_providers?.openai ?? true)
+              ? 'border-accent bg-accent/10 text-text-primary'
+              : 'border-border bg-surface text-text-muted'}"
+            onclick={() => toggleProvider('openai')}
+          >
+            OpenAI (Codex)
+          </button>
+        </div>
+        <p class="text-xs text-text-muted mt-1">
+          Disabled providers are hidden everywhere — header, session setup, and their settings tab.
+          At least one must stay enabled.
+        </p>
+      </div>
+      {#if ($settings.enabled_providers?.claude ?? true) && ($settings.enabled_providers?.openai ?? true)}
+        <div>
+          <label class="block text-sm font-medium text-text-secondary mb-1">Default Provider</label>
+          <select
+            class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+            bind:value={$settings.sdk_provider}
+          >
+            <option value="Claude">Claude (Anthropic)</option>
+            <option value="OpenAI">OpenAI (Codex)</option>
+          </select>
+          <p class="text-xs text-text-muted mt-1">
+            Default SDK provider for new sessions. Configure models in the Claude or Codex tabs.
+          </p>
+        </div>
+      {/if}
     </div>
   </div>
 

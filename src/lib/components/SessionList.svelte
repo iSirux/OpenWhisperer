@@ -210,6 +210,27 @@
   function cancelClose() {
     confirmDialog = { show: false, sessionId: '', sessionType: 'pty' };
   }
+
+  // Right-click context menu (pin/unpin; SDK sessions only)
+  let contextMenu = $state<{ x: number; y: number; session: DisplaySession } | null>(null);
+
+  function openContextMenu(session: DisplaySession, event: MouseEvent) {
+    if (session.type !== 'sdk') return;
+    event.preventDefault();
+    event.stopPropagation();
+    contextMenu = { x: event.clientX, y: event.clientY, session };
+  }
+
+  function togglePin(sessionId: string) {
+    sdkSessions.togglePin(sessionId);
+    contextMenu = null;
+  }
+
+  function handleContextMenuKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && contextMenu) {
+      contextMenu = null;
+    }
+  }
 </script>
 
 <div class="session-list-container h-full flex flex-col">
@@ -264,6 +285,8 @@
           responseRows={2}
           onselect={() => selectSession(session)}
           onclose={(e) => closeSession(session, e)}
+          ontogglepin={session.type === 'sdk' ? () => togglePin(session.id) : undefined}
+          oncontextmenu={(e) => openContextMenu(session, e)}
         />
       {/each}
     {/if}
@@ -284,6 +307,46 @@
   {/if}
 </div>
 
+<svelte:window onkeydown={handleContextMenuKeydown} />
+
+{#if contextMenu}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="context-overlay"
+    onclick={() => (contextMenu = null)}
+    oncontextmenu={(e) => {
+      e.preventDefault();
+      contextMenu = null;
+    }}
+  >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="context-menu"
+      style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <button class="context-item" onclick={() => togglePin(contextMenu!.session.id)}>
+        <svg
+          class="w-3.5 h-3.5"
+          fill={contextMenu.session.pinned ? "currentColor" : "none"}
+          stroke="currentColor"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"
+          />
+        </svg>
+        {contextMenu.session.pinned ? 'Unpin session' : 'Pin session'}
+      </button>
+    </div>
+  </div>
+{/if}
+
 <ConfirmDialog
   show={confirmDialog.show}
   title={confirmDialog.sessionType === 'sequence' ? 'Close running sequence?' : 'Close active session?'}
@@ -299,5 +362,38 @@
   .session-list {
     scrollbar-width: thin;
     scrollbar-color: var(--color-border) transparent;
+  }
+
+  .context-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+  }
+
+  .context-menu {
+    position: fixed;
+    min-width: 10rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    padding: 0.25rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .context-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.375rem 0.5rem;
+    border-radius: 0.375rem;
+    font-size: 0.8rem;
+    color: var(--color-text-primary);
+    text-align: left;
+    transition: background-color 0.1s;
+  }
+
+  .context-item:hover {
+    background: var(--color-border);
   }
 </style>

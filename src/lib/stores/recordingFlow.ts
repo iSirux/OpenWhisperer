@@ -296,6 +296,10 @@ function createRecordingFlowStore() {
     const openMicStopped = stopOpenMicInBackground();
     const { provider, model, effortLevel, repoPath } = prepareRecording();
     setOverlayRecordingInfo(repoPath, model);
+    // Show the overlay immediately — mic acquisition can take over a second,
+    // and the user needs instant feedback that the press registered. The
+    // overlay is event-driven and flips to the waveform on 'recording-state'.
+    const overlayShown = overlay.show();
 
     const currentSettings = get(settings);
     if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
@@ -307,10 +311,10 @@ function createRecordingFlowStore() {
 
     await Promise.all([
       openMicStopped,
+      overlayShown,
       recording.startRecording(currentSettings.audio.device_id || undefined),
     ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
-    await overlay.show();
   }
 
   /** Stop recording for a new session. */
@@ -345,6 +349,12 @@ function createRecordingFlowStore() {
     setOverlayRecordingInfo(repoPath, model);
 
     const currentSettings = get(settings);
+    // Show the overlay immediately (focus rules permitting) — don't make it
+    // wait behind mic acquisition and hotkey registration.
+    const overlayShown =
+      !wasAppFocusedOnRecordStart || currentSettings.overlay.show_when_focused
+        ? overlay.show()
+        : Promise.resolve();
     if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
       createPendingSession(model, effortLevel, provider);
       await setupAudioVisualizationListener();
@@ -352,17 +362,14 @@ function createRecordingFlowStore() {
 
     await Promise.all([
       openMicStopped,
+      overlayShown,
       recording.startRecording(currentSettings.audio.device_id || undefined),
     ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
-
-    if (!wasAppFocusedOnRecordStart || currentSettings.overlay.show_when_focused) {
-      await overlay.show();
-    }
   }
 
   /** Stop recording from hotkey (standard toggle). */
-  async function stopRecordingFromHotkey() {
+  async function stopRecordingFromHotkey(forceAction?: RecordAndSendAction) {
     await hotkeyCallbacks?.unregisterRecordingHotkeys();
     await overlay.hide();
     clearOverlayRecordingInfo();
@@ -374,7 +381,12 @@ function createRecordingFlowStore() {
     }
 
     const capturedVoskTranscript = get(recording).realtimeTranscript;
-    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript);
+    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript, forceAction);
+  }
+
+  /** Stop recording and always send (overlay Go button), regardless of the stop-mode setting. */
+  async function stopRecordingAndSend() {
+    await stopRecordingFromHotkey('send');
   }
 
   /** Stop the current recording and save it to the pile (hotkey / UI). */
@@ -412,6 +424,8 @@ function createRecordingFlowStore() {
 
     const { provider, model, effortLevel, repoPath } = prepareRecording();
     setOverlayRecordingInfo(repoPath, model);
+    // Show the overlay immediately — see startRecordingNewSession.
+    const overlayShown = overlay.show();
 
     const currentSettings = get(settings);
     if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
@@ -421,10 +435,10 @@ function createRecordingFlowStore() {
 
     await Promise.all([
       openMicStopped,
+      overlayShown,
       recording.startRecording(currentSettings.audio.device_id || undefined),
     ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
-    await overlay.show();
 
     console.log('[open-mic] Recording started via wake command');
   }
@@ -539,6 +553,7 @@ function createRecordingFlowStore() {
     stopRecordingNewSession,
     startRecordingFromHotkey,
     stopRecordingFromHotkey,
+    stopRecordingAndSend,
     stopRecordingToPile,
     startRecordingFromOpenMic,
     cancelRecording,

@@ -16,6 +16,30 @@ pub struct GenerationResult<T> {
     pub usage: LlmUsage,
 }
 
+/// Groq fallback models: Groq rate limits are PER-MODEL, so when the configured
+/// model's quota is exhausted a sibling model usually still has headroom.
+/// Mirrors the model list offered in Settings → LLM.
+const GROQ_FALLBACK_MODELS: &[&str] = &[
+    "openai/gpt-oss-120b",
+    "qwen/qwen3.6-27b",
+    "openai/gpt-oss-20b",
+];
+
+/// Errors worth retrying on a different model: quota/rate-limit hits, server-side
+/// failures, and models that no longer exist. Auth/parse errors are NOT retriable —
+/// they'd fail identically on every model.
+fn is_retriable_on_other_model(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    error.contains("(429")
+        || lower.contains("rate limit")
+        || lower.contains("rate_limit")
+        || error.contains("(500")
+        || error.contains("(502")
+        || error.contains("(503")
+        || lower.contains("model_decommissioned")
+        || lower.contains("model_not_found")
+}
+
 /// Common shape of a provider's JSON response body, so a single generic request
 /// pipeline can drive both Gemini and OpenAI-compatible providers.
 trait ProviderResponse {
@@ -249,9 +273,14 @@ impl LlmClient {
         self.try_gemini_model(&self.model, prompt, &schema).await
     }
 
-    async fn generate_openai_with_usage(&self, prompt: &str) -> Result<(String, LlmUsage), String> {
+    /// Try a single OpenAI-compatible model request, returns (text, usage)
+    async fn try_openai_model(
+        &self,
+        model: &str,
+        prompt: &str,
+    ) -> Result<(String, LlmUsage), String> {
         let request = OpenAIRequest {
-            model: self.model.clone(),
+            model: model.to_string(),
             messages: vec![
                 OpenAIMessage {
                     role: "system".to_string(),
@@ -270,5 +299,42 @@ impl LlmClient {
 
         self.send_and_parse::<_, OpenAIResponse>(&self.api_url(), &request)
             .await
+    }
+
+    async fn generate_openai_with_usage(&self, prompt: &str) -> Result<(String, LlmUsage), String> {
+        let first_error = match self.try_openai_model(&self.model, prompt).await {
+            Ok(result) => return Ok(result),
+            Err(e) => e,
+        };
+
+        // Model fallback (Groq only): quotas are per-model, so siblings from the
+        // settings list are tried before giving up. Other OpenAI-compatible
+        // providers keep single-model behavior — their model catalogs (and costs)
+        // aren't ours to pick from.
+        if !matches!(self.provider, LlmProvider::Groq) || !is_retriable_on_other_model(&first_error)
+        {
+            return Err(first_error);
+        }
+
+        let mut last_error = first_error;
+        for model in GROQ_FALLBACK_MODELS.iter().filter(|m| **m != self.model) {
+            log::warn!(
+                "[llm] Groq model failed ({}), falling back to {}",
+                last_error,
+                model
+            );
+            match self.try_openai_model(model, prompt).await {
+                Ok(result) => {
+                    log::info!("[llm] Groq fallback succeeded with model: {}", model);
+                    return Ok(result);
+                }
+                Err(e) => last_error = e,
+            }
+        }
+
+        Err(format!(
+            "All Groq models failed. Last error: {}",
+            last_error
+        ))
     }
 }

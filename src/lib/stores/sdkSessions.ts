@@ -12,7 +12,7 @@ import { clampEffortForModel, getMaxContextTokens, getProviderForModel, isAutoMo
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
-import { panes, focusedPaneSessionId, visibleSessionIds } from './panes';
+import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
 
 // =============================================================================
 // Debounced Save
@@ -357,7 +357,7 @@ export interface FailedRecording {
 }
 
 /** Why a session is sitting in the `queued` state. */
-export type QueueReason = 'rate_limit' | 'scheduled';
+export type QueueReason = 'rate_limit' | 'scheduled' | 'after_sessions';
 
 /** Which usage window a queued/rate-limited session is waiting on. */
 export type QueueWindow = '5h' | '7d';
@@ -391,6 +391,28 @@ export interface RateLimitedState {
   prompt: string;
   images?: SdkImageContent[];
   queuedAt: number;
+}
+
+/** Normalize a filesystem path for equality checks (Windows-tolerant: slashes + case). */
+export function normalizeScopePath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * "After sessions" scope check: is any session in the same repo+worktree (same cwd)
+ * still actively working? Used by the Smart Queue's `after_sessions` trigger and the
+ * launch-profile "queue until repo is idle" watcher.
+ */
+export function hasBusySessionsInScope(sessions: SdkSession[], cwd: string, excludeId?: string): boolean {
+  if (!cwd || cwd === '.') return false;
+  const scope = normalizeScopePath(cwd);
+  return sessions.some(
+    (s) =>
+      s.id !== excludeId &&
+      (s.status === 'querying' || s.status === 'initializing') &&
+      !!s.cwd &&
+      normalizeScopePath(s.cwd) === scope
+  );
 }
 
 export interface SdkSession {
@@ -427,6 +449,8 @@ export interface SdkSession {
   currentWorkStartedAt?: number;
   usage?: SdkSessionUsage;
   unread?: boolean;
+  /** Pinned sessions sort to the top of the session list. Persisted. */
+  pinned?: boolean;
   aiMetadata?: SessionAiMetadata;
   pendingRepoSelection?: PendingRepoSelection;
   pendingPrompt?: string;
@@ -892,7 +916,9 @@ function createSdkSessionsStore() {
         sessionMessages = updatedMessages;
         needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
-        const isActiveSession = get(visibleSessionIds).has(id);
+        // On-screen (not just pane-assigned): while on settings/usage/etc. the pane
+        // area is unmounted, so completions there must still mark the session unread.
+        const isActiveSession = get(onScreenSessionIds).has(id);
         return {
           ...s,
           status: 'idle' as const,
@@ -914,11 +940,20 @@ function createSdkSessionsStore() {
     }
 
     if (needsAiAnalysis && sessionMessages.length > 0) {
+      // Analysis can resolve minutes later (rate-limited LLM calls retry after the
+      // provider's suggested delay). If a newer turn started meanwhile, its sendPrompt
+      // cleared the completion metadata expecting a fresh analysis — don't clobber it
+      // with results for the old transcript.
+      const analyzedUserTurns = sessionMessages.filter(m => m.type === 'user').length;
       analyzeSessionCompletion(sessionMessages)
         .then(aiMetadata => {
           if (Object.keys(aiMetadata).length > 0) {
             update(sessions =>
-              sessions.map(s => s.id === id ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } } : s)
+              sessions.map(s =>
+                s.id === id && s.messages.filter(m => m.type === 'user').length === analyzedUserTurns
+                  ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } }
+                  : s
+              )
             );
             debouncedSave(id);
           }
@@ -1317,7 +1352,7 @@ function createSdkSessionsStore() {
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: [...closedThinkingMessages, { type: 'error' as const, content: payload, timestamp: now }],
-              unread: currentSettings.mark_sessions_unread && !get(visibleSessionIds).has(id) ? true : s.unread,
+              unread: currentSettings.mark_sessions_unread && !get(onScreenSessionIds).has(id) ? true : s.unread,
               contextOverflow: isContextOverflow ? true : s.contextOverflow,
               overflowRecovery: null,
             };
@@ -2461,6 +2496,10 @@ function createSdkSessionsStore() {
       update(sessions => sessions.map(s => s.id === id ? { ...s, unread: false } : s));
     },
 
+    togglePin(id: string): void {
+      update(sessions => sessions.map(s => s.id === id ? { ...s, pinned: !s.pinned } : s));
+    },
+
     /**
      * Sync setup-session config back to the store so the session list
      * (and any other store consumers) reflect changes made in SessionSetupView.
@@ -2545,7 +2584,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; schedule?: QueueWindow }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; schedule?: QueueWindow | 'after_sessions' }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -2562,11 +2601,20 @@ function createSdkSessionsStore() {
         const exhaustion = providerExhaustion(gatedProvider);
         const queuedAt = Date.now();
         // Scheduled launches target the user-chosen window boundary; rate-limit queueing targets
-        // the current exhausted window's reset time.
-        const queueWindow = config.schedule ?? exhaustion.window;
-        const targetStartAt = config.schedule
-          ? nextWindowResetAt(gatedProvider, config.schedule)
-          : exhaustion.resetsAt;
+        // the current exhausted window's reset time. 'after_sessions' has no time target — it
+        // fires when the repo+worktree scope goes idle.
+        const isAfterSessions = config.schedule === 'after_sessions';
+        const queueReason = isAfterSessions
+          ? ('after_sessions' as const)
+          : config.schedule
+            ? ('scheduled' as const)
+            : ('rate_limit' as const);
+        const queueWindow = isAfterSessions ? undefined : (config.schedule as QueueWindow | undefined) ?? exhaustion.window;
+        const targetStartAt = isAfterSessions
+          ? undefined
+          : config.schedule
+            ? nextWindowResetAt(gatedProvider, config.schedule as QueueWindow)
+            : exhaustion.resetsAt;
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -2587,7 +2635,7 @@ function createSdkSessionsStore() {
                   setupWorktreePath: undefined,
                   disableHooks: config.disableHooks || undefined,
                   ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),
-                  queueInfo: { reason: config.schedule ? 'scheduled' as const : 'rate_limit' as const, provider: gatedProvider, window: queueWindow, queuedAt, targetStartAt },
+                  queueInfo: { reason: queueReason, provider: gatedProvider, window: queueWindow, queuedAt, targetStartAt },
                 }
               : s
           )
@@ -3123,6 +3171,54 @@ function createSdkSessionsStore() {
     },
 
     /**
+     * Smart Queue ("Send when repo is idle"): from a live session, park a follow-up turn until
+     * every session in the same repo+worktree (same cwd) — including this one — has finished
+     * working. If the scope is already idle, this is just a normal send. Unlike
+     * queueTurnForWindow, the session's own status is left untouched: a still-running query on
+     * this session keeps the scope busy, so the parked turn fires right after it completes
+     * instead of interrupting it.
+     */
+    async queueTurnAfterSessions(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
+      const sessions = get({ subscribe });
+      const session = sessions.find(s => s.id === id);
+      if (!session) return;
+
+      // Nothing to wait for (own session included) — send immediately.
+      if (
+        !hasBusySessionsInScope(sessions, session.cwd, id) &&
+        session.status !== 'querying' &&
+        session.status !== 'initializing'
+      ) {
+        await this.sendPrompt(id, prompt, images);
+        return;
+      }
+
+      const provider = session.provider ?? getProviderForModel(session.model);
+      const now = Date.now();
+      update(list =>
+        list.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                lastActivityAt: now,
+                messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: now }],
+                draftPrompt: undefined,
+                draftImages: undefined,
+                rateLimited: {
+                  reason: 'after_sessions' as const,
+                  provider,
+                  prompt,
+                  images,
+                  queuedAt: now,
+                },
+              }
+            : s
+        )
+      );
+      debouncedSave();
+    },
+
+    /**
      * Smart Queue: re-send a `rateLimited` pending turn WITHOUT duplicating the user message
      * (it's already in the transcript). Used by the "Continue now" button and the drain driver.
      * Re-stashes the in-flight turn so a fresh mid-run rejection can recover it. If the provider
@@ -3167,8 +3263,8 @@ function createSdkSessionsStore() {
 
     /**
      * Smart Queue: cancel a parked `rateLimited` pending turn.
-     * - For a user-scheduled turn (`reason === 'scheduled'`, queued via queueTurnForWindow), the
-     *   user message was pushed but never sent — remove it, but ONLY when it's the trailing message
+     * - For a user-deferred turn (`reason === 'scheduled'` or `'after_sessions'`), the user
+     *   message was pushed but never sent — remove it, but ONLY when it's the trailing message
      *   AND its text matches the cleared prompt (so a real turn is never deleted).
      * - For a rate-limit turn (`reason === 'rate_limit'`, a real turn that got rejected mid-run),
      *   leave the transcript untouched — just clear `rateLimited`.
@@ -3179,7 +3275,7 @@ function createSdkSessionsStore() {
           if (s.id !== id || !s.rateLimited) return s;
           const rl = s.rateLimited;
           let messages = s.messages;
-          if (rl.reason === 'scheduled') {
+          if (rl.reason !== 'rate_limit') {
             const last = messages[messages.length - 1];
             if (last && last.type === 'user' && last.content === rl.prompt) {
               messages = messages.slice(0, -1);

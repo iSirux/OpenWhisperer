@@ -79,11 +79,57 @@ export interface RepoRecommendation {
 }
 
 export interface QuickAction {
+  /** Full instruction sent verbatim to the coding agent */
   prompt: string;
+  /** Short button text (2-4 words); falls back to `prompt` when absent */
+  label?: string;
 }
 
 export interface QuickActionsResult {
   actions: QuickAction[];
+}
+
+/**
+ * Parse the provider's suggested wait from a rate-limit error message,
+ * e.g. "Please try again in 2m16.944s" or "try again in 7.66s".
+ */
+function parseRetryDelayMs(message: string): number | null {
+  const match = message.match(/try again in (?:(\d+)m)?([\d.]+)s/i);
+  if (!match) return null;
+  const minutes = match[1] ? parseInt(match[1], 10) : 0;
+  const seconds = parseFloat(match[2]);
+  if (Number.isNaN(seconds)) return null;
+  return Math.ceil(minutes * 60_000 + seconds * 1000);
+}
+
+const RATE_LIMIT_MAX_RETRIES = 2;
+const RATE_LIMIT_MAX_WAIT_MS = 5 * 60_000;
+const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000;
+
+/**
+ * `invoke` with retry on provider rate limits (429). Token-per-minute/day windows
+ * refill continuously, so waiting the provider's suggested delay usually succeeds.
+ * ONLY for fire-and-forget background analysis (session naming, outcome, interaction,
+ * quick actions) — never for latency-sensitive calls like transcription cleanup,
+ * where the recording flow is waiting on the result.
+ */
+async function invokeWithRateLimitRetry<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await invoke<T>(cmd, args);
+    } catch (error) {
+      const message = String(error);
+      const isRateLimit = message.includes('429') || /rate.?limit/i.test(message);
+      if (!isRateLimit || attempt >= RATE_LIMIT_MAX_RETRIES) throw error;
+      // Small margin on top of the suggested delay so we don't re-hit the edge of the window.
+      const waitMs = Math.min(
+        (parseRetryDelayMs(message) ?? RATE_LIMIT_DEFAULT_WAIT_MS) + 2000,
+        RATE_LIMIT_MAX_WAIT_MS
+      );
+      console.warn(`[llm] ${cmd} rate-limited, retrying in ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES})`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+  }
 }
 
 /**
@@ -277,7 +323,7 @@ export async function generateSessionName(
   }
 
   try {
-    const result = await invoke<SessionNameResult>('generate_session_name', {
+    const result = await invokeWithRateLimitRetry<SessionNameResult>('generate_session_name', {
       userPrompt,
     });
     return result;
@@ -299,7 +345,7 @@ export async function generateSessionOutcome(
   }
 
   try {
-    const result = await invoke<SessionOutcomeResult>('generate_session_outcome', {
+    const result = await invokeWithRateLimitRetry<SessionOutcomeResult>('generate_session_outcome', {
       userPrompt,
       assistantMessages,
     });
@@ -321,7 +367,7 @@ export async function analyzeInteractionNeeded(
   }
 
   try {
-    const result = await invoke<InteractionAnalysis>('analyze_interaction_needed', {
+    const result = await invokeWithRateLimitRetry<InteractionAnalysis>('analyze_interaction_needed', {
       lastMessage,
     });
     return result;
@@ -508,16 +554,20 @@ export async function recommendRepo(
  */
 export async function generateQuickActions(
   userPrompt: string,
-  lastMessage: string
+  lastMessage: string,
+  latestPrompt?: string,
+  sessionActivity?: string
 ): Promise<QuickAction[] | null> {
   if (!isQuickActionsEnabled()) {
     return null;
   }
 
   try {
-    const result = await invoke<QuickActionsResult>('generate_quick_actions', {
+    const result = await invokeWithRateLimitRetry<QuickActionsResult>('generate_quick_actions', {
       userPrompt,
       lastMessage,
+      latestPrompt: latestPrompt ?? null,
+      sessionActivity: sessionActivity ?? null,
     });
     console.log('[llm] Quick actions generated:', result.actions);
     return result.actions;
@@ -555,6 +605,59 @@ export function extractFirstUserPrompt(messages: SdkMessage[]): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Extract the most recent user prompt from messages (the session's current focus
+ * in multi-turn sessions, as opposed to the original request)
+ */
+export function extractLatestUserPrompt(messages: SdkMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.type === 'user' && msg.content) {
+      return msg.content;
+    }
+  }
+  return null;
+}
+
+/**
+ * Build a compact digest of the tool calls a session performed, newest last,
+ * so the quick-actions LLM knows what already happened (tests run, commits
+ * made, files edited) and doesn't suggest repeating it.
+ */
+export function extractSessionActivity(messages: SdkMessage[], maxLength: number = 1500): string {
+  const lines: string[] = [];
+  for (const msg of messages) {
+    if (msg.type !== 'tool_start' || !msg.tool) continue;
+    // Skip subagent-internal tool calls; the top-level Agent/Task entry covers them
+    if (msg.parentToolUseId) continue;
+    const input = (msg.input ?? {}) as Record<string, unknown>;
+    let detail = '';
+    if (typeof input.command === 'string') {
+      detail = input.command;
+    } else if (typeof input.file_path === 'string') {
+      detail = input.file_path;
+    } else if (typeof input.description === 'string') {
+      detail = input.description;
+    } else if (typeof input.prompt === 'string') {
+      detail = input.prompt;
+    } else if (typeof input.pattern === 'string') {
+      detail = input.pattern;
+    }
+    detail = detail.replace(/\s+/g, ' ').trim();
+    lines.push(detail ? `${msg.tool}: ${detail.slice(0, 120)}` : msg.tool);
+  }
+
+  // Keep the newest entries within the length budget
+  let result = '';
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const candidate = result ? `${lines[i]}\n${result}` : lines[i];
+    if (candidate.length > maxLength) break;
+    result = candidate;
+  }
+  const dropped = lines.length - (result ? result.split('\n').length : 0);
+  return dropped > 0 ? `(${dropped} earlier tool calls omitted)\n${result}` : result;
 }
 
 /**
@@ -638,7 +741,9 @@ export async function analyzeSessionCompletion(messages: SdkMessage[]): Promise<
 
   // Generate contextual quick actions
   if (isQuickActionsEnabled() && userPrompt && lastMessage) {
-    const quickActions = await generateQuickActions(userPrompt, lastMessage);
+    const latestPrompt = extractLatestUserPrompt(messages) ?? undefined;
+    const sessionActivity = extractSessionActivity(messages) || undefined;
+    const quickActions = await generateQuickActions(userPrompt, lastMessage, latestPrompt, sessionActivity);
     if (quickActions && quickActions.length > 0) {
       metadata.quickActions = quickActions;
     }

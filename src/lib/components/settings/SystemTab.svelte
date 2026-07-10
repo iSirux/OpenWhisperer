@@ -5,9 +5,16 @@
     type UpdateCheckMode,
   } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
+  import { goto } from "$app/navigation";
+  import { get } from "svelte/store";
   import "./toggle.css";
 
   const isWindows = navigator.userAgent.includes("Windows");
+
+  async function rerunOnboarding() {
+    await settings.save({ ...get(settings), onboarding_completed: false });
+    goto("/onboarding");
+  }
 </script>
 
 <div class="space-y-4">
@@ -138,6 +145,23 @@
         class="toggle"
         bind:checked={$settings.system.voice_mode_disabled}
       />
+    </div>
+  </div>
+
+  <div class="border-t border-border pt-4 mt-4">
+    <div class="flex items-center justify-between">
+      <div>
+        <label class="text-sm font-medium text-text-secondary">Setup Wizard</label>
+        <p class="text-xs text-text-muted">
+          Re-run the first-launch setup (voice mode, transcription, agents, LLM)
+        </p>
+      </div>
+      <button
+        class="px-3 py-1.5 text-sm bg-surface hover:bg-border border border-border rounded transition-colors"
+        onclick={rerunOnboarding}
+      >
+        Run Setup Again
+      </button>
     </div>
   </div>
 

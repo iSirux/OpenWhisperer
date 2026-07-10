@@ -82,9 +82,16 @@ export function getSdkSmartStatus(session: SdkSession): {
 
   // Smart Queue: a live session with a pending turn waiting on a rate-limit
   // reset or a scheduled send surfaces as rate_limited (takes precedence over
-  // the message-derived querying/idle status below).
+  // the message-derived querying/idle status below). A turn parked until the
+  // repo/worktree goes idle isn't a rate-limit condition — it surfaces as queued,
+  // except while this session's own query is still running (stay querying).
   if (session.rateLimited != null) {
-    return { status: 'rate_limited' };
+    if (session.rateLimited.reason !== 'after_sessions') {
+      return { status: 'rate_limited' };
+    }
+    if (session.status !== 'querying' && session.status !== 'initializing') {
+      return { status: 'queued' };
+    }
   }
 
   // Handle initializing status
@@ -357,6 +364,7 @@ export function transformToDisplaySessions(
         currentWorkStartedAt: s.currentWorkStartedAt,
         isFinished: finished,
         unread: s.unread,
+        pinned: s.pinned,
         latestMessage: getLatestTextMessage(s.messages),
         aiMetadata: s.aiMetadata,
         pendingRepoSelection: s.pendingRepoSelection,
@@ -407,6 +415,9 @@ export function transformToDisplaySessions(
 
   // Sort sessions based on user preference
   return baseSessions.sort((a, b) => {
+    // Pinned sessions always float to the top
+    const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+    if (pinDiff !== 0) return pinDiff;
     if (sortOrder === 'StatusThenChronological') {
       const statusDiff = getStatusSortOrder(a.status) - getStatusSortOrder(b.status);
       if (statusDiff !== 0) return statusDiff;

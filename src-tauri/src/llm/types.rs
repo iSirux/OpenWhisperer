@@ -75,7 +75,9 @@ pub struct BranchNameResult {
 /// A single quick action suggestion
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuickAction {
-    pub prompt: String, // Short actionable prompt (2-6 words), displayed as button text and sent as-is
+    pub prompt: String, // Full instruction sent verbatim to the coding agent
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>, // Short button text (2-4 words); falls back to `prompt` when absent
 }
 
 /// Result for generating contextual quick actions based on session state

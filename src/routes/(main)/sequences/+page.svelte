@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { goto } from '$app/navigation';
+  import { settings } from '$lib/stores/settings';
   import { sequences, loadSequences, deleteSequence, saveSequence, exportSequence, listSchedules, toggleSchedule } from '$lib/stores/sequences';
   import type { SequenceDefinition, ScheduleInfo } from '$lib/types/sequence';
   import SequenceInputDialog from '$lib/components/sequences/SequenceInputDialog.svelte';
@@ -30,6 +32,11 @@
   );
 
   onMount(async () => {
+    // Sequences are gated entirely behind developer mode.
+    if (!get(settings).system.dev_mode) {
+      goto('/');
+      return;
+    }
     await loadSequences();
     schedules = await listSchedules();
   });

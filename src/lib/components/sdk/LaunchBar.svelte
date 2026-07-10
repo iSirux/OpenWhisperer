@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { LaunchCommand, LaunchProfile, LaunchRuntime, QueuedLaunch } from "$lib/types/launch";
   import { launchStore } from "$lib/stores/launchProfiles";
+  import { ctrlHeld } from "$lib/stores/ctrlHint";
 
   interface Props {
     repoId: string;
@@ -119,8 +120,18 @@
     }
   }
 
+  async function handleQueueRepoIdle(profileId: string) {
+    const profile = profiles.find((p) => p.id === profileId);
+    if (!profile) return;
+    await launchStore.queueUntilRepoIdle(repoId, profileId, profile.name, repoPath);
+  }
+
   function handleProfileClick(e: MouseEvent, profileId: string) {
-    if (isAgentRunning && !e.shiftKey) {
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl+click = queue until EVERY session in this repo/worktree has finished
+      // (launches immediately if the scope is already idle)
+      handleQueueRepoIdle(profileId);
+    } else if (isAgentRunning && !e.shiftKey) {
       // Agent running + normal click = queue after agent finishes
       handleQueueProfile(profileId);
     } else {
@@ -249,7 +260,9 @@
           <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/>
         </svg>
         <span class="queued-label">
-          "{queued.profileName}" queued after agent
+          "{queued.profileName}" {queued.mode === "repo_idle"
+            ? "queued until repo is idle"
+            : "queued after agent"}
         </span>
         <button class="start-now-btn" onclick={handleStartNow} title="Launch immediately without waiting">
           Start Now
@@ -266,10 +279,20 @@
             class="profile-btn"
             onclick={(e) => handleProfileClick(e, profile.id)}
             oncontextmenu={(e) => handleContextMenu(e, profile.id)}
-            title={isAgentRunning ? "Click to queue after agent, Shift+click to launch now" : `Launch ${profile.name}`}
+            title={(isAgentRunning
+              ? "Click to queue after agent, Shift+click to launch now"
+              : `Launch ${profile.name}`) + " — Ctrl+click: run when this repo/worktree is idle"}
           >
             {profile.name}
             <span class="profile-count">{profile.command_ids.length}</span>
+            {#if $ctrlHeld}
+              <span class="ctrl-hint-badge" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <polyline points="12 6 12 12 16 14" />
+                </svg>
+              </span>
+            {/if}
           </button>
         {/each}
       </div>
@@ -379,6 +402,7 @@
   }
 
   .profile-btn {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
@@ -415,6 +439,29 @@
   .profile-btn:hover .profile-count {
     background: rgba(255, 255, 255, 0.2);
     color: inherit;
+  }
+
+  /* Ctrl-held hint: Ctrl+click queues the launch until the repo/worktree is idle */
+  .ctrl-hint-badge {
+    position: absolute;
+    top: -0.45rem;
+    right: -0.45rem;
+    width: 1rem;
+    height: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    color: white;
+    border-radius: 0.25rem;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+
+  .ctrl-hint-badge svg {
+    width: 11px;
+    height: 11px;
   }
 
   /* Running state */

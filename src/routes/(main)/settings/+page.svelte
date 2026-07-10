@@ -144,8 +144,13 @@
       { id: "about", label: "About" },
     ].filter(
       (tab) =>
-        !$settings.system.voice_mode_disabled ||
-        !VOICE_ONLY_TABS.includes(tab.id)
+        (!$settings.system.voice_mode_disabled ||
+          !VOICE_ONLY_TABS.includes(tab.id)) &&
+        // Sequences are gated entirely behind developer mode.
+        (tab.id !== "sequences" || $settings.system.dev_mode) &&
+        // Disabled providers (onboarding choice) hide their settings tab.
+        (tab.id !== "claude" || ($settings.enabled_providers?.claude ?? true)) &&
+        (tab.id !== "codex" || ($settings.enabled_providers?.openai ?? true))
     )
   );
 

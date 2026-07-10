@@ -40,6 +40,13 @@
 
   let openaiAvailable = $state(false);
 
+  // Provider toggle only shows when BOTH providers are enabled (onboarding
+  // choice) and Codex auth actually exists; otherwise it's pure clutter.
+  const providersEnabled = $derived($settings.enabled_providers ?? { claude: true, openai: true });
+  const showProviderToggle = $derived(
+    providersEnabled.claude && providersEnabled.openai && openaiAvailable
+  );
+
   // Detect if we're on settings route
   let isOnSettings = $derived(currentPath.startsWith('/settings'));
 
@@ -166,7 +173,7 @@
     />
 
     <!-- Global Model Selector -->
-    {#if openaiAvailable}
+    {#if showProviderToggle}
       <div class="flex items-center gap-0.5 px-1.5 py-0.5 bg-surface-elevated rounded">
         <button
           class="rounded px-2 py-0.5 text-[10px] font-medium transition-all"

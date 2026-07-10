@@ -34,6 +34,22 @@ export const visibleSessionIds: Readable<Set<string>> = derived(store, ($state) 
   return ids;
 });
 
+// Whether the pane area is actually rendered right now. Pane ASSIGNMENTS persist
+// while the user is on other routes/views (settings, usage, repository…), so
+// `visibleSessionIds` alone still claims the paned sessions are "being viewed"
+// there. SessionPanes flips this on mount/destroy.
+const panesOnScreen = writable(false);
+
+export function setSessionPanesOnScreen(onScreen: boolean): void {
+  panesOnScreen.set(onScreen);
+}
+
+/** Sessions the user can actually SEE right now — empty while the pane area is unmounted. */
+export const onScreenSessionIds: Readable<Set<string>> = derived(
+  [visibleSessionIds, panesOnScreen],
+  ([$ids, $onScreen]) => ($onScreen ? $ids : new Set<string>())
+);
+
 export const focusedPaneSessionId: Readable<string | null> = derived(store, ($state) => {
   const pane = $state.panes.find(p => p.id === $state.focusedPaneId);
   return pane?.sessionId ?? null;

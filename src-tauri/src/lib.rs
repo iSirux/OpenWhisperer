@@ -500,6 +500,7 @@ pub fn run() {
             llm_cmds::generate_quick_actions,
             // --- Realtime transcription ---
             docker_cmds::run_docker_setup,
+            docker_cmds::check_docker,
             realtime_cmds::test_realtime_connection,
             realtime_cmds::start_realtime_session,
             realtime_cmds::send_realtime_audio,

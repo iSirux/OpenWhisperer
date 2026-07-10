@@ -1059,8 +1059,9 @@ export async function handleSetupSessionStart(
     worktreeRepoPath?: string;
     worktreeBranch?: string;
     worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
-    /** When set, defer the launch to the next usage-window reset (fire-and-forget) instead of starting now. */
-    schedule?: import('$lib/stores/queueDetection').QueueWindow;
+    /** When set, defer the launch (fire-and-forget) instead of starting now: to the next
+     *  usage-window reset, or — 'after_sessions' — until the target repo/worktree is idle. */
+    schedule?: import('$lib/stores/queueDetection').QueueWindow | 'after_sessions';
   }
 ) {
   const currentSettings = get(settings);

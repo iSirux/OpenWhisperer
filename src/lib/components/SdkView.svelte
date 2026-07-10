@@ -1302,7 +1302,11 @@
   );
   let queueCountdown = $derived(formatCountdown(queueInfo?.targetStartAt));
   let queuedReasonLabel = $derived(
-    queueInfo?.reason === "scheduled" ? "Scheduled" : "Queued — rate limited",
+    queueInfo?.reason === "scheduled"
+      ? "Scheduled"
+      : queueInfo?.reason === "after_sessions"
+        ? "Waiting for repo to go idle"
+        : "Queued — rate limited",
   );
 
   // Only offer "send on next reset" for a live/active session that can take a
@@ -1333,6 +1337,13 @@
     images?: SdkImageContent[],
   ) {
     await sdkSessions.queueTurnForWindow(sessionId, prompt, images, window);
+  }
+
+  // Ctrl+click Send / "Send when repo is idle": park the turn until every session
+  // in this repo+worktree (including this one) has finished; sends immediately if
+  // the scope is already idle.
+  async function handleSendAfterIdle(prompt: string, images?: SdkImageContent[]) {
+    await sdkSessions.queueTurnAfterSessions(sessionId, prompt, images);
   }
 
   /**
@@ -1504,7 +1515,7 @@
 
       <!-- Queued session UI (rate-limited first launch or a scheduled launch) -->
       {#if isQueued}
-        <div class="queued-panel" class:scheduled={queueInfo?.reason === "scheduled"}>
+        <div class="queued-panel" class:scheduled={queueInfo?.reason !== "rate_limit"}>
           <div class="queued-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10" />
@@ -1516,6 +1527,8 @@
             <div class="queued-sub">
               {#if queueInfo?.reason === "scheduled"}
                 Will launch at the next{queueWindowLabel ? ` ${queueWindowLabel}` : ""} reset{queueCountdown ? ` — in ${queueCountdown}` : ""}.
+              {:else if queueInfo?.reason === "after_sessions"}
+                Will launch once every other session in this repo/worktree has finished.
               {:else}
                 Waiting for the{queueWindowLabel ? ` ${queueWindowLabel}` : ""} usage window to reset{queueCountdown ? ` — in ${queueCountdown}` : ""}.
               {/if}
@@ -1825,6 +1838,7 @@
       showScheduleSend={canScheduleSend}
       onSendPrompt={handleSendPrompt}
       onScheduleSend={handleScheduleSend}
+      onSendAfterIdle={handleSendAfterIdle}
       onStopQuery={handleStopQuery}
       onStartRecording={handleStartRecording}
       onStopRecording={handleStopRecording}

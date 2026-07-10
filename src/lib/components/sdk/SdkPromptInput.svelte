@@ -14,6 +14,7 @@
   import { rateLimitData, codexRateLimitData } from "$lib/stores/rateLimits";
   import type { SdkProvider } from "$lib/utils/models";
   import { settings } from "$lib/stores/settings";
+  import { ctrlHeld } from "$lib/stores/ctrlHint";
   import { holdSpaceRecord } from "$lib/actions/holdSpaceRecord";
 
   let {
@@ -30,6 +31,7 @@
     showScheduleSend = false,
     onSendPrompt,
     onScheduleSend,
+    onSendAfterIdle,
     onStopQuery,
     onStartRecording,
     onStopRecording,
@@ -58,6 +60,8 @@
       prompt: string,
       images?: SdkImageContent[],
     ) => void;
+    /** Defer this turn until every session in this repo+worktree is done (Ctrl+click / Ctrl+Enter). */
+    onSendAfterIdle?: (prompt: string, images?: SdkImageContent[]) => void;
     onStopQuery: () => void;
     onStartRecording: () => void;
     onStopRecording: () => void;
@@ -239,7 +243,8 @@
     textareaEl?.focus();
   }
 
-  async function handleSendPrompt() {
+  /** Ctrl+click / Ctrl+Enter routes the send through onSendAfterIdle (wait for repo idle). */
+  async function handleSendPrompt(afterIdle = false) {
     if (!prompt.trim() && pendingImages.length === 0) return;
 
     const currentPrompt = prompt;
@@ -268,7 +273,11 @@
     prevDraftImagesKey = "[]";
     // Clear draft in parent store
     emitDraftChange(prevSessionId, "", []);
-    onSendPrompt(currentPrompt, imageContent);
+    if (afterIdle && onSendAfterIdle) {
+      onSendAfterIdle(currentPrompt, imageContent);
+    } else {
+      onSendPrompt(currentPrompt, imageContent);
+    }
   }
 
   // --- Send on next reset (Smart Queue) ---
@@ -417,7 +426,7 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSendPrompt();
+      handleSendPrompt(!!onSendAfterIdle && (e.ctrlKey || e.metaKey));
     }
   }
 
@@ -613,13 +622,22 @@
       <button
         class="send-main"
         class:has-caret={showScheduleCaret}
-        onclick={handleSendPrompt}
+        onclick={(e) => handleSendPrompt(!!onSendAfterIdle && (e.ctrlKey || e.metaKey))}
         disabled={(!prompt.trim() && pendingImages.length === 0) ||
           isRecording ||
           isTranscribing}
-        title={isQuerying ? "Send and interrupt" : "Send"}
+        title={(isQuerying ? "Send and interrupt" : "Send") +
+          (onSendAfterIdle ? " — Ctrl+click: send when this repo/worktree is idle" : "")}
       >
         Send
+        {#if $ctrlHeld && onSendAfterIdle && hasDraft}
+          <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+click: send when repo is idle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+          </span>
+        {/if}
       </button>
       {#if showScheduleCaret}
         <button
@@ -645,6 +663,19 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="send-menu-backdrop" onclick={() => (scheduleMenuOpen = false)}></div>
         <div class="send-menu" role="menu">
+          {#if onSendAfterIdle}
+            <button
+              class="send-menu-item"
+              role="menuitem"
+              onclick={() => {
+                scheduleMenuOpen = false;
+                handleSendPrompt(true);
+              }}
+            >
+              <span class="menu-item-label">Send when repo is idle</span>
+              <span class="menu-item-countdown">Ctrl+click Send</span>
+            </button>
+          {/if}
           <button class="send-menu-item" role="menuitem" onclick={() => handleScheduleSend("5h")}>
             <span class="menu-item-label">Send on next 5h reset</span>
             {#if countdown5h}<span class="menu-item-countdown">in {countdown5h}</span>{/if}
@@ -752,9 +783,36 @@
     align-items: stretch;
   }
 
+  .send-main {
+    position: relative;
+  }
+
   .send-main.has-caret {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+  }
+
+  /* Ctrl-held hint: Ctrl+click sends when the repo/worktree goes idle */
+  .ctrl-hint-badge {
+    position: absolute;
+    top: -0.45rem;
+    right: -0.45rem;
+    width: 1rem;
+    height: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    color: white;
+    border-radius: 0.25rem;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+
+  .ctrl-hint-badge svg {
+    width: 11px;
+    height: 11px;
   }
 
   .send-caret {

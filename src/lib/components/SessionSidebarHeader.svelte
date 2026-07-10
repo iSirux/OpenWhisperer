@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { settings } from '$lib/stores/settings';
   interface Session {
     id: string;
     status: string;
@@ -79,20 +80,22 @@
     </div>
   </button>
   <div class="flex items-center gap-1 overflow-hidden">
-    <button
-      class={`h-8 px-2.5 flex items-center gap-1.5 rounded text-[11px] font-medium border transition-colors ${
-        isOnSequences
-          ? 'bg-accent/15 border-accent/40 text-accent'
-          : 'bg-surface-elevated border-border text-text-secondary hover:bg-border'
-      }`}
-      onclick={toggleSequences}
-      title="Sequences"
-    >
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-      </svg>
-      <span>Sequences</span>
-    </button>
+    {#if $settings.system.dev_mode}
+      <button
+        class={`h-8 px-2.5 flex items-center gap-1.5 rounded text-[11px] font-medium border transition-colors ${
+          isOnSequences
+            ? 'bg-accent/15 border-accent/40 text-accent'
+            : 'bg-surface-elevated border-border text-text-secondary hover:bg-border'
+        }`}
+        onclick={toggleSequences}
+        title="Sequences"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        <span>Sequences</span>
+      </button>
+    {/if}
     <button
       class="h-8 w-8 flex items-center justify-center hover:bg-surface-elevated rounded transition-colors text-text-muted hover:text-text-primary"
       class:bg-surface-elevated={isOnUsage}

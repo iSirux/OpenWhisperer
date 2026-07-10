@@ -63,8 +63,11 @@
   const enabledMcpServers = $derived(($settings.mcp?.servers ?? []).filter((server) => server.enabled));
 
   onMount(async () => {
+    const enabledProviders = $settings.enabled_providers ?? { claude: true, openai: true };
     try {
-      claudeAvailable = (await invoke<{ authenticated: boolean }>('check_claude_auth')).authenticated;
+      claudeAvailable =
+        enabledProviders.claude &&
+        (await invoke<{ authenticated: boolean }>('check_claude_auth')).authenticated;
     } catch {
       claudeAvailable = false;
     }
@@ -72,7 +75,7 @@
     try {
       const codexAuth = await invoke<{ authenticated: boolean }>('check_openai_codex_auth');
       const hasApiKey = await invoke<boolean>('has_openai_api_key');
-      codexAvailable = codexAuth.authenticated || hasApiKey;
+      codexAvailable = enabledProviders.openai && (codexAuth.authenticated || hasApiKey);
     } catch {
       codexAvailable = false;
     }

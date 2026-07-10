@@ -187,6 +187,14 @@
     // Apply saved theme
     document.documentElement.setAttribute('data-theme', $settings.theme);
 
+    // First-run onboarding: bail out to the chromeless wizard before anything
+    // else initializes. Finishing the wizard navigates back to '/', which
+    // remounts this layout and runs the full startup path.
+    if (!$settings.onboarding_completed) {
+      goto('/onboarding');
+      return;
+    }
+
     // App update check per settings (fire-and-forget; skipped in dev builds)
     void updater.startupCheck($settings.system.update_check ?? 'Notify');
 
@@ -248,7 +256,7 @@
       },
       onSwitchToSession: handleSwitchToSession,
       onCancelRecording: recordingFlow.cancelRecording,
-      onSendRecording: recordingFlow.stopRecordingFromHotkey,
+      onSendRecording: recordingFlow.stopRecordingAndSend,
       onStartRecordingFromOpenMic: recordingFlow.startRecordingFromOpenMic,
       onVoiceCommand: (
         commandType: VoiceCommandType,

@@ -59,10 +59,12 @@
   let title = $derived(
     reason === 'scheduled'
       ? `Scheduled to send${countdown ? ` in ${countdown}` : ''}`
-      : `Rate limit reached${countdown ? ` — resets in ${countdown}` : ''}`,
+      : reason === 'after_sessions'
+        ? 'Waiting for repo to go idle'
+        : `Rate limit reached${countdown ? ` — resets in ${countdown}` : ''}`,
   );
 
-  let primaryLabel = $derived(reason === 'scheduled' ? 'Send now' : 'Continue now');
+  let primaryLabel = $derived(reason === 'rate_limit' ? 'Continue now' : 'Send now');
 
   async function handleContinue() {
     if (busy) return;
@@ -81,10 +83,10 @@
   // turn "Dismiss" only hides the banner locally — the driver still auto-continues
   // the rejected turn when the window resets, which is the desired behavior.
   function handleCancel() {
-    if (reason === 'scheduled') {
-      sdkSessions.clearRateLimited(session.id);
-    } else {
+    if (reason === 'rate_limit') {
       dismissed = true;
+    } else {
+      sdkSessions.clearRateLimited(session.id);
     }
   }
 
@@ -95,7 +97,7 @@
 </script>
 
 {#if rl && !dismissed}
-  <div class="rate-limit-banner" class:scheduled={reason === 'scheduled'}>
+  <div class="rate-limit-banner" class:scheduled={reason !== 'rate_limit'}>
     <div class="banner-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10" />
@@ -107,6 +109,8 @@
       <div class="banner-text">
         {#if reason === 'scheduled'}
           This turn is parked and will send automatically at the next{windowLabel ? ` ${windowLabel}` : ''} window reset.
+        {:else if reason === 'after_sessions'}
+          This turn is parked and will send automatically once every session in this repo/worktree has finished.
         {:else}
           {windowLabel ? `The ${windowLabel} usage window is exhausted. ` : ''}Your turn is saved and can be re-sent.
           {#if queueEnabled}
@@ -119,7 +123,7 @@
           class="banner-btn primary"
           onclick={handleContinue}
           disabled={busy}
-          title={reason === 'scheduled' ? 'Send this turn now' : 'Re-send this turn now'}
+          title={reason === 'rate_limit' ? 'Re-send this turn now' : 'Send this turn now'}
         >
           {primaryLabel}
         </button>
@@ -127,9 +131,9 @@
           class="banner-btn"
           onclick={handleCancel}
           disabled={busy}
-          title={reason === 'scheduled' ? 'Cancel this scheduled send' : 'Hide this banner'}
+          title={reason === 'rate_limit' ? 'Hide this banner' : 'Cancel this deferred send'}
         >
-          {reason === 'scheduled' ? 'Cancel' : 'Dismiss'}
+          {reason === 'rate_limit' ? 'Dismiss' : 'Cancel'}
         </button>
       </div>
     </div>

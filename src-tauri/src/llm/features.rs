@@ -477,40 +477,58 @@ Or if no clear match:
         self.run_feature(prompt_text, schema).await
     }
 
-    /// Generate quick actions with usage tracking
+    /// Generate quick actions with usage tracking.
+    ///
+    /// `latest_prompt` is the user's most recent turn (differs from `user_prompt`
+    /// in multi-turn sessions); `session_activity` is a compact digest of tool
+    /// calls the session already performed (commands run, files edited) so the
+    /// model never suggests work that already happened.
     pub async fn generate_quick_actions_with_usage(
         &self,
         user_prompt: &str,
+        latest_prompt: Option<&str>,
+        session_activity: Option<&str>,
         last_message: &str,
     ) -> Result<GenerationResult<QuickActionsResult>, String> {
+        let latest_section = match latest_prompt {
+            Some(latest) if latest != user_prompt => format!(
+                "\n\nUser's most recent request (the current focus — weigh this over the original):\n{}",
+                truncate_text(latest, 500)
+            ),
+            _ => String::new(),
+        };
+
+        let activity_section = match session_activity {
+            Some(activity) if !activity.is_empty() => format!(
+                "\n\nWhat the session has ALREADY DONE (tool calls, newest last — never suggest repeating these):\n{}",
+                truncate_text(activity, 1500)
+            ),
+            _ => String::new(),
+        };
+
         let prompt = format!(
-            r#"Based on this AI coding assistant's last message, generate 2-4 contextual quick action prompts that would be most helpful for the user's next step.
+            r#"You suggest follow-up prompts for a coding-agent session. Each suggestion becomes a button; clicking it sends the `prompt` text VERBATIM as the next prompt to the coding agent working in the user's repository. The agent can edit code, run shell commands, commit, and investigate — it canNOT click UI, review PRs for the user, or do anything on the user's behalf outside the repo.
 
 User's original request:
-{}
+{}{}
 
-Assistant's last message:
-{}
+Assistant's final message:
+{}{}
 
-Generate quick actions that are:
-1. Contextually relevant to what the assistant just said or did
-2. Common next steps the user might want to take
-3. Specific to the current situation (not generic)
-4. Short and direct (2-6 words) - these are displayed as button text AND sent as-is
+Rules — every suggestion must pass ALL of these:
+1. It must be an instruction the CODING AGENT can execute in the repo. Never suggest app-UI actions ("open X view", "show logs panel"), user-side actions ("copy the value", "review the PR", "mark the card done"), or interactions with a website/screenshot the assistant described.
+2. Never suggest something the session already did. If tests already ran, a commit was already made, or a PR was already opened, do not suggest them again.
+3. The BEST suggestions resolve loose ends the assistant itself stated: deferred items, untested paths, caveats ("worth testing X live", "the first run will tell us"), remaining errors, or an offered next step awaiting a yes. Prefer extracting those over inventing new work.
+4. Each `prompt` must be a specific, self-contained instruction (the agent sees only this text): "Commit the pane-layout fix" not "Commit changes"; "Run svelte-check and fix any errors it reports" not "Run checks".
+5. Quality over quantity: return 0-3 suggestions. If the session ended cleanly with no genuine next step, return an empty actions array — that is a correct answer, not a failure.
 
-Examples of GOOD quick actions (specific to context):
-- After explaining code: "Show example usage", "Add error handling"
-- After making changes: "Run the tests", "Show the diff", "Commit these changes"
-- After asking for clarification: "Yes, proceed", "No, try alternative"
-- After reporting an error: "Show stack trace", "Try a different approach"
-- After completing a task: "Add documentation", "Refactor this", "Add tests"
-
-Examples of BAD quick actions (too generic or too long):
-- "Help me", "Continue", "Do more"
-- "Please run the test suite and show me the results" (too long){}"#,
+For each action provide `label` (2-4 word button text) and `prompt` (the full one-sentence instruction sent to the agent)."#,
             truncate_text(user_prompt, 500),
-            truncate_text(last_message, 1500),
-            Self::json_only(r#"{"actions": [{"prompt": "Run the tests"}]}"#)
+            latest_section,
+            truncate_text(last_message, 2000),
+            activity_section,
+        ) + &Self::json_only(
+            r#"{"actions": [{"label": "Test live run", "prompt": "Run a real backgrounded command to verify the background-task tracking works end to end"}]}"#,
         );
 
         let schema = serde_json::json!({
@@ -521,16 +539,20 @@ Examples of BAD quick actions (too generic or too long):
                     "items": {
                         "type": "object",
                         "properties": {
+                            "label": {
+                                "type": "string",
+                                "description": "Short button text (2-4 words)"
+                            },
                             "prompt": {
                                 "type": "string",
-                                "description": "Short actionable prompt (2-6 words) displayed as button text and sent as-is"
+                                "description": "Full self-contained instruction sent verbatim to the coding agent (one sentence)"
                             }
                         },
-                        "required": ["prompt"]
+                        "required": ["label", "prompt"]
                     },
-                    "minItems": 2,
-                    "maxItems": 4,
-                    "description": "List of 2-4 contextual quick action prompts"
+                    "minItems": 0,
+                    "maxItems": 3,
+                    "description": "0-3 genuinely useful follow-up actions; empty when nothing useful remains"
                 }
             },
             "required": ["actions"]

@@ -3,8 +3,10 @@
 // =============================================================================
 //
 // A single global driver that dispatches deferred work once a provider's usage
-// window resets (rate-limit queueing) or a user-scheduled window boundary passes
-// (fire-and-forget scheduling). It owns detection + draining for both providers.
+// window resets (rate-limit queueing), a user-scheduled window boundary passes
+// (fire-and-forget scheduling), or every session in the same repo+worktree has
+// finished ('after_sessions', Ctrl+click). It owns detection + draining for both
+// providers.
 //
 // Two waiting shapes, one driver:
 //   - `status: 'queued'`  → a never-launched session, dispatched via `launchPrepared`.
@@ -20,7 +22,7 @@
 // =============================================================================
 
 import { derived, get, writable } from 'svelte/store';
-import { sdkSessions, type QueueReason, type SdkSession } from './sdkSessions';
+import { sdkSessions, hasBusySessionsInScope, type QueueReason, type SdkSession } from './sdkSessions';
 import { rateLimitData, codexRateLimitData, type ProviderRateLimits } from './rateLimits';
 import { providerExhaustion } from './queueDetection';
 import { settings } from './settings';
@@ -43,6 +45,8 @@ interface PendingItem {
   queuedAt: number;
   /** For scheduled items: the target window-boundary time (epoch ms). */
   targetStartAt?: number;
+  /** For after_sessions items: the repo/worktree scope to wait on (the session's cwd). */
+  cwd?: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -93,6 +97,7 @@ function toPendingItem(session: SdkSession): PendingItem | null {
       kind: 'queued',
       queuedAt: session.queueInfo.queuedAt ?? session.createdAt ?? 0,
       targetStartAt: session.queueInfo.targetStartAt,
+      cwd: session.cwd,
     };
   }
   if (session.rateLimited) {
@@ -103,6 +108,7 @@ function toPendingItem(session: SdkSession): PendingItem | null {
       kind: 'rateLimited',
       queuedAt: session.rateLimited.queuedAt ?? session.lastActivityAt ?? 0,
       targetStartAt: session.rateLimited.targetStartAt ?? session.rateLimited.resetsAt,
+      cwd: session.cwd,
     };
   }
   return null;
@@ -130,13 +136,23 @@ function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider):
  *   provider isn't exhausted. When the store is null we treat the provider as
  *   not-exhausted (`providerExhaustion` already returns `exhausted: false` for a
  *   null store), honoring the time the user explicitly scheduled.
+ * - `after_sessions`: ready once no session in the same repo+worktree (same cwd)
+ *   is actively working. A never-launched `queued` item excludes itself from the
+ *   scope check (it isn't running); a parked follow-up turn does NOT — its own
+ *   session may still be mid-query, and the turn should fire only after it finishes.
  */
-function isReady(item: PendingItem, now: number): boolean {
+function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolean {
   const exhausted = providerExhaustion(item.provider).exhausted;
 
   if (item.reason === 'rate_limit') {
     if (rateLimitStoreValue(item.provider) == null) return false; // limit state unknown yet
     return !exhausted;
+  }
+
+  if (item.reason === 'after_sessions') {
+    if (exhausted) return false; // it would only get re-rejected — hold and roll forward
+    const excludeId = item.kind === 'queued' ? item.id : undefined;
+    return !item.cwd || !hasBusySessionsInScope(sessions, item.cwd, excludeId);
   }
 
   // reason === 'scheduled'
@@ -157,8 +173,13 @@ async function drain(provider: SdkProvider): Promise<void> {
   // Re-entrancy guard (synchronous up to the first await, so this is race-free).
   if (draining[provider]) return;
 
-  const readyNow = pendingItemsForProvider(get(sdkSessions), provider).filter((item) =>
-    isReady(item, Date.now())
+  // The master toggle governs rate-limit/scheduled queueing. 'after_sessions' items are
+  // an explicit per-item user action (Ctrl+click) and dispatch even when the queue is off.
+  const queueEnabled = get(settings).queue.enabled;
+  const sessionsNow = get(sdkSessions);
+  const readyNow = pendingItemsForProvider(sessionsNow, provider).filter(
+    (item) =>
+      (queueEnabled || item.reason === 'after_sessions') && isReady(item, Date.now(), sessionsNow)
   );
   if (readyNow.length === 0) return; // nothing to do — don't flip the draining flag
 
@@ -193,11 +214,14 @@ async function drain(provider: SdkProvider): Promise<void> {
 
       // Re-read the session — it may have been removed, launched, or re-exhausted
       // while we were waiting (this is the graceful roll-forward on re-rejection).
-      const current = get(sdkSessions).find((s) => s.id === item.id);
+      // For after_sessions items this re-check also serializes same-scope items:
+      // dispatching one makes the scope busy, so the next waits for it to finish.
+      const freshSessions = get(sdkSessions);
+      const current = freshSessions.find((s) => s.id === item.id);
       if (!current) continue;
       const fresh = toPendingItem(current);
       if (!fresh || fresh.provider !== provider) continue;
-      if (!isReady(fresh, Date.now())) continue;
+      if (!isReady(fresh, Date.now(), freshSessions)) continue;
 
       // Reset sound on the first *actual* dispatch of this cycle.
       if (dispatchedCount === 0) {
@@ -228,9 +252,12 @@ async function drain(provider: SdkProvider): Promise<void> {
   }
 }
 
-/** Respect the master toggle; only ever auto-dispatch when the queue is enabled. */
+/**
+ * Kick a drain pass. The master toggle is applied per item inside `drain` —
+ * rate-limit/scheduled items require the queue to be enabled, while
+ * `after_sessions` items (explicit per-item user action) always dispatch.
+ */
 function evaluate(provider: SdkProvider): void {
-  if (!get(settings).queue.enabled) return;
   void drain(provider);
 }
 

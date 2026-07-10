@@ -108,6 +108,14 @@ pub struct AppConfig {
     /// SDK provider for the main coding agent (Claude or OpenAI Codex)
     #[serde(default)]
     pub sdk_provider: SdkProvider,
+    /// Which SDK providers are surfaced in the UI (chosen during onboarding)
+    #[serde(default)]
+    pub enabled_providers: EnabledProviders,
+    /// Whether the first-run onboarding wizard has been completed (or skipped).
+    /// Existing configs are stamped `true` by the v2→v3 migration so only truly
+    /// fresh installs see the wizard.
+    #[serde(default)]
+    pub onboarding_completed: bool,
     /// Default OpenAI model for Codex SDK sessions
     #[serde(default = "default_openai_model")]
     pub openai_model: String,
@@ -323,6 +331,8 @@ impl Default for AppConfig {
             terminal_mode: ClaudeTerminalMode::Sdk,
             codex_mode: CodexMode::default(),
             sdk_provider: SdkProvider::default(),
+            enabled_providers: EnabledProviders::default(),
+            onboarding_completed: false,
             openai_model: default_openai_model(),
             enabled_openai_models: default_enabled_openai_models(),
             openai_auth_method: OpenAiAuthMethod::default(),
@@ -668,6 +678,23 @@ mod tests {
         assert_eq!(config.theme, Theme::Midnight);
         // Deprecated Gemini model was remapped.
         assert_eq!(config.llm.model, "gemini-3.1-flash-lite");
+    }
+
+    #[test]
+    fn migration_marks_existing_configs_onboarded() {
+        // A config already on disk (any version < current) belongs to an
+        // existing user and must never see the onboarding wizard.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(2));
+        obj.remove("onboarding_completed");
+
+        migration::run_migrations(&mut value, 2);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert!(config.onboarding_completed);
+
+        // A fresh default (no file on disk) still starts un-onboarded.
+        assert!(!AppConfig::default().onboarding_completed);
     }
 
     #[test]

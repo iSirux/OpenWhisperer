@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
+  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { invoke } from '@tauri-apps/api/core';
+  import { settings } from '$lib/stores/settings';
   import type { SequenceDefinition } from '$lib/types/sequence';
   import SequenceEditor from '$lib/components/sequences/editor/SequenceEditor.svelte';
 
@@ -10,6 +13,11 @@
   let error = $state('');
 
   onMount(async () => {
+    // Sequences are gated entirely behind developer mode.
+    if (!get(settings).system.dev_mode) {
+      goto('/');
+      return;
+    }
     const id = $page.url.searchParams.get('id');
     if (id) {
       try {
