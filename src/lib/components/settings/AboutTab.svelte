@@ -3,6 +3,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { onMount } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { updater } from "$lib/stores/updater";
 
   let appVersion = $state("...");
   let configPath = $state("");
@@ -87,6 +88,94 @@
       via hotkeys, transcribe with Whisper, and send directly to Claude via PTY
       terminal or the Claude Agent SDK.
     </p>
+  </div>
+
+  <!-- Updates -->
+  <div class="border-b border-border pb-6">
+    <h3 class="text-sm font-medium text-text-secondary mb-3">Updates</h3>
+
+    {#if $updater.status === "available" || $updater.status === "downloading" || $updater.status === "installed"}
+      <div class="border border-accent/30 bg-accent/5 rounded p-3 mb-3">
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-text">
+              Version {$updater.version} is available
+            </p>
+            <p class="text-xs text-text-muted">Current version: {appVersion}</p>
+          </div>
+          {#if $updater.status === "available"}
+            <button
+              onclick={() => updater.downloadAndInstall()}
+              class="flex-shrink-0 px-3 py-2 bg-accent text-white rounded text-sm hover:bg-accent/90 transition-colors"
+            >
+              Install & Restart
+            </button>
+          {:else if $updater.status === "installed"}
+            <button
+              onclick={() => updater.restart()}
+              class="flex-shrink-0 px-3 py-2 bg-accent text-white rounded text-sm hover:bg-accent/90 transition-colors"
+            >
+              Restart Now
+            </button>
+          {/if}
+        </div>
+
+        {#if $updater.status === "downloading"}
+          <div class="mt-3">
+            <div class="h-1.5 bg-border rounded overflow-hidden">
+              <div
+                class="h-full bg-accent transition-all duration-200"
+                class:animate-pulse={$updater.progress == null}
+                style="width: {$updater.progress != null ? Math.round($updater.progress * 100) : 100}%"
+              ></div>
+            </div>
+            <p class="text-xs text-text-muted mt-1">
+              Downloading{$updater.progress != null ? ` ${Math.round($updater.progress * 100)}%` : ""}...
+              The app will restart to apply the update.
+            </p>
+          </div>
+        {/if}
+
+        {#if $updater.notes}
+          <div class="mt-3 pt-3 border-t border-accent/20">
+            <p class="text-xs font-medium text-text-secondary mb-1">Release notes</p>
+            <p class="text-xs text-text-muted whitespace-pre-wrap">{$updater.notes}</p>
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <div class="flex items-center gap-3">
+        <button
+          onclick={() => updater.checkForUpdate()}
+          disabled={$updater.status === "checking"}
+          class="flex items-center gap-2 px-3 py-2 bg-background border border-border rounded text-sm text-text-secondary hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
+        >
+          <svg
+            class="w-4 h-4"
+            class:animate-spin={$updater.status === "checking"}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+            />
+          </svg>
+          {$updater.status === "checking" ? "Checking..." : "Check for Updates"}
+        </button>
+
+        {#if $updater.status === "upToDate"}
+          <p class="text-xs text-success">You're on the latest version.</p>
+        {:else if $updater.status === "error"}
+          <p class="text-xs text-error truncate" title={$updater.error}>
+            Update check failed: {$updater.error}
+          </p>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <!-- Links -->

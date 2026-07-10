@@ -1,6 +1,7 @@
 mod archive;
 mod commands;
 mod config;
+mod docker;
 mod git;
 mod launch;
 mod llm;
@@ -233,6 +234,14 @@ fn shutdown_app(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+
+    // Windows requires the AppUserModelID to be set before the process shows any UI;
+    // setting it after the windows exist splits the app across two taskbar identities
+    // (duplicate taskbar icons).
+    #[cfg(target_os = "windows")]
+    set_windows_app_user_model_id(&context.config().identifier);
+
     // Rename the pre-rename ("Claude Whisperer") data directory to the current one before
     // anything reads config or creates the new dir, so existing installs keep their data.
     AppConfig::migrate_legacy_data_dir();
@@ -288,6 +297,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_keyring::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_denylist(&["overlay"])
@@ -309,9 +320,6 @@ pub fn run() {
         .manage(no_mistakes_manager)
         .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
-            #[cfg(target_os = "windows")]
-            set_windows_app_user_model_id(&app.config().identifier);
-
             // Move stored API keys from the pre-rename keyring service name.
             migrate_legacy_keyring(app.handle());
 
@@ -548,6 +556,6 @@ pub fn run() {
             // --- Logging ---
             log_cmds::write_frontend_log,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

@@ -11,6 +11,7 @@
   import { sessions } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { startSmartQueue } from '$lib/stores/smartQueue';
+  import { updater } from '$lib/stores/updater';
   import { activeSessionId } from '$lib/stores/sessions';
   import { isRecording } from '$lib/stores/recording';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
@@ -28,13 +29,17 @@
     cleanupAllListeners as cleanupSequenceExecutionListeners,
     loadExecutionHistory,
     runningCount as sequenceRunningCount,
+    executions as sequenceExecutions,
   } from '$lib/stores/sequenceExecutions';
   import { loadSequences } from '$lib/stores/sequences';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import { type VoiceCommandType } from '$lib/utils/voiceCommands';
   import { eventMatchesHotkey } from '$lib/utils/hotkeys';
   import { cycleModel, cycleRepo } from '$lib/utils/recordingCycles';
-  import { createAndActivateNewSession } from '$lib/utils/sessionCreation';
+  import { createAndActivateNewSession, createSessionInSameRepo } from '$lib/utils/sessionCreation';
+  import { selectDisplaySession } from '$lib/utils/sessionSelection';
+  import { transformToDisplaySessions } from '$lib/composables/useDisplaySessions.svelte';
+  import { ctrlHintKeydown, ctrlHintKeyup, ctrlHintReset } from '$lib/stores/ctrlHint';
 
   // Composables (now layout-level — survive route changes)
   import { useHotkeyManager } from '$lib/composables/useHotkeyManager.svelte';
@@ -132,12 +137,45 @@
   }
 
   function handleAppKeydown(event: KeyboardEvent): void {
+    ctrlHintKeydown(event);
     if (event.repeat) return;
-    if (!$settings.hotkeys_enabled.new_session) return;
-    if (!eventMatchesHotkey(event, $settings.hotkeys.new_session)) return;
 
-    event.preventDefault();
-    void createAndActivateNewSession();
+    // Ctrl+1..9 — jump to the Nth session in the sidebar. Uses the same transform
+    // (and therefore the same order) as SessionList, which renders the number badges.
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+      const digitMatch = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
+      if (digitMatch) {
+        const ordered = transformToDisplaySessions(
+          $sessions,
+          $sdkSessions,
+          $settings.session_sort_order,
+          $sequenceExecutions
+        );
+        const target = ordered[Number(digitMatch[1]) - 1];
+        if (target) {
+          event.preventDefault();
+          selectDisplaySession(target);
+        }
+        return;
+      }
+    }
+
+    if (
+      $settings.hotkeys_enabled.new_session &&
+      eventMatchesHotkey(event, $settings.hotkeys.new_session)
+    ) {
+      event.preventDefault();
+      void createAndActivateNewSession();
+      return;
+    }
+
+    if (
+      $settings.hotkeys_enabled.new_session_same_repo &&
+      eventMatchesHotkey(event, $settings.hotkeys.new_session_same_repo)
+    ) {
+      event.preventDefault();
+      void createSessionInSameRepo();
+    }
   }
 
   onMount(async () => {
@@ -147,6 +185,9 @@
 
     // Apply saved theme
     document.documentElement.setAttribute('data-theme', $settings.theme);
+
+    // App update check per settings (fire-and-forget; skipped in dev builds)
+    void updater.startupCheck($settings.system.update_check ?? 'Notify');
 
     try {
       const [filePath, dirPath] = await invoke<[string, string]>('get_config_paths');
@@ -267,7 +308,7 @@
   });
 </script>
 
-<svelte:window onkeydown={handleAppKeydown} />
+<svelte:window onkeydown={handleAppKeydown} onkeyup={ctrlHintKeyup} onblur={ctrlHintReset} />
 
 <div class="app-container h-screen flex flex-col bg-background">
 

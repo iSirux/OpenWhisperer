@@ -1,4 +1,5 @@
 use crate::config::{AppConfig, RealtimeProvider};
+use crate::docker;
 use crate::realtime::{
     test_sherpa_connection, test_speaches_connection, test_vosk_connection, test_vsai_connection,
     RealtimeConnectionTestResult, RealtimeResponse, RealtimeSessionManager,
@@ -76,8 +77,8 @@ pub async fn start_realtime_session(
         }
     }
 
-    realtime_manager
-        .create_session(
+    let create = || {
+        realtime_manager.create_session(
             session_id.clone(),
             &cfg.vosk.provider,
             &cfg.vosk.endpoint,
@@ -87,7 +88,56 @@ pub async fn start_realtime_session(
             &cfg.vosk.speaches,
             &cfg.vosk.moonshine,
         )
-        .await?;
+    };
+
+    if let Err(first_error) = create().await {
+        // Local server unreachable: try starting its Docker container (start
+        // only, no build/config), then retry while it comes up. The recording
+        // flow doesn't await this command, so waiting here is safe.
+        let (endpoint, container_name) = match cfg.vosk.provider {
+            RealtimeProvider::Vosk => (&cfg.vosk.endpoint, &cfg.vosk.docker.container_name),
+            RealtimeProvider::VoiceStreamAI => (
+                &cfg.vosk.voice_stream_ai.endpoint,
+                &cfg.vosk.voice_stream_ai.docker.container_name,
+            ),
+            RealtimeProvider::SherpaOnnx => (
+                &cfg.vosk.sherpa_onnx.endpoint,
+                &cfg.vosk.sherpa_onnx.docker.container_name,
+            ),
+            RealtimeProvider::Speaches => (
+                &cfg.vosk.speaches.endpoint,
+                &cfg.vosk.speaches.docker.container_name,
+            ),
+            RealtimeProvider::Moonshine => (
+                &cfg.vosk.moonshine.endpoint,
+                &cfg.vosk.moonshine.docker.container_name,
+            ),
+        };
+
+        if !docker::is_local_endpoint(endpoint)
+            || docker::try_start_container(container_name).await.is_err()
+        {
+            return Err(first_error);
+        }
+
+        // The container may need a moment (model load) before it accepts
+        // connections.
+        let mut last_error = first_error;
+        let mut connected = false;
+        for _ in 0..20 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+            match create().await {
+                Ok(()) => {
+                    connected = true;
+                    break;
+                }
+                Err(e) => last_error = e,
+            }
+        }
+        if !connected {
+            return Err(last_error);
+        }
+    }
 
     // Cooperative cancellation for the polling loop; stop_realtime_session flips
     // this and awaits the loop's exit before finalizing (I6).

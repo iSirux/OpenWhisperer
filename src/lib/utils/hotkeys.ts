@@ -28,6 +28,13 @@ export function formatHotkeyForDisplay(hotkey: string): string {
   return hotkey.replace(/CommandOrControl/g, 'Ctrl').replace(/\+/g, ' + ');
 }
 
+/** The non-modifier key of a hotkey (e.g. "CommandOrControl+D" -> "D"), for compact hint badges. */
+export function getHotkeyKeyLabel(hotkey: string): string {
+  if (!hotkey) return '';
+  const parts = hotkey.split('+').map((part) => part.trim()).filter(Boolean);
+  return parts.find((part) => !['CommandOrControl', 'Control', 'Command', 'Ctrl', 'Alt', 'Shift'].includes(part)) ?? '';
+}
+
 export function eventMatchesHotkey(event: KeyboardEvent, hotkey: string): boolean {
   if (!hotkey) return false;
 

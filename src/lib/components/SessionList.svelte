@@ -7,6 +7,7 @@
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import { formatHotkeyForDisplay } from '$lib/utils/hotkeys';
   import { createAndActivateNewSession } from '$lib/utils/sessionCreation';
+  import { selectDisplaySession } from '$lib/utils/sessionSelection';
   import {
     transformToDisplaySessions,
     fetchBranchesForSessions,
@@ -128,25 +129,9 @@
     currentActiveExecutionId = $activeExecutionId;
   });
 
-  // Session selection
+  // Session selection (shared with the Ctrl+number hotkey in the layout)
   function selectSession(session: DisplaySession) {
-    if (session.type === 'sequence') {
-      activeExecutionId.set(session.id);
-      activeSessionId.set(null);
-      activeSdkSessionId.set(null);
-      navigation.showSequences();
-    } else {
-      activeExecutionId.set(null);
-      if (session.type === 'pty') {
-        activeSessionId.set(session.id);
-        activeSdkSessionId.set(null);
-      } else {
-        activeSdkSessionId.set(session.id);
-        activeSessionId.set(null);
-        sdkSessions.markAsRead(session.id);
-      }
-      window.dispatchEvent(new CustomEvent('switch-to-sessions'));
-    }
+    selectDisplaySession(session);
   }
 
   function isSessionActive(session: DisplaySession): boolean {
@@ -267,9 +252,10 @@
         No sessions yet
       </div>
     {:else}
-      {#each allSessions as session (session.id)}
+      {#each allSessions as session, index (session.id)}
         <SessionListItem
           {session}
+          hotkeyNumber={index < 9 ? index + 1 : undefined}
           isActive={isSessionActive(session)}
           {now}
           showLatestMessage={$settings.show_latest_message_preview}

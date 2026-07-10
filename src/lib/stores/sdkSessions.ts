@@ -1904,6 +1904,17 @@ function createSdkSessionsStore() {
       );
     },
 
+    /**
+     * Set the session's display name up front. A preset name also makes
+     * sendPrompt skip LLM auto-naming for the first prompt.
+     */
+    setSessionName(id: string, name: string): void {
+      update(sessions =>
+        sessions.map(s => (s.id === id ? { ...s, aiMetadata: { ...s.aiMetadata, name } } : s))
+      );
+      debouncedSave(id);
+    },
+
     dismissContextOverflow(id: string): void {
       update(sessions =>
         sessions.map(s => (s.id === id ? { ...s, contextOverflow: false } : s))

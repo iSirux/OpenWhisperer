@@ -52,10 +52,22 @@ jobs:
         run: npm install
         working-directory: src-tauri/sidecar
 
+      - name: Stamp version into tauri.conf.json
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}".TrimStart("v")
+          $confPath = "src-tauri/tauri.conf.json"
+          $conf = Get-Content $confPath -Raw | ConvertFrom-Json
+          $conf.version = $version
+          $conf | ConvertTo-Json -Depth 32 | Set-Content $confPath
+          Write-Host "Stamped version $version"
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
           tagName: ${{ inputs.version }}
           releaseName: 'OpenWhisperer ${{ inputs.version }}'

@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { settings, type LaunchTerminal } from "$lib/stores/settings";
+  import {
+    settings,
+    type LaunchTerminal,
+    type UpdateCheckMode,
+  } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
   import "./toggle.css";
 
@@ -92,6 +96,33 @@
         }
       }}
     />
+  </div>
+
+  <div class="flex items-center justify-between">
+    <div>
+      <label class="text-sm font-medium text-text-secondary"
+        >App Updates</label
+      >
+      <p class="text-xs text-text-muted">
+        How to handle new versions found on startup. Manual checks live in
+        About.
+      </p>
+    </div>
+    <select
+      class="bg-surface-elevated border border-border rounded px-2 py-1 text-sm text-text-primary"
+      value={$settings.system.update_check ?? "Notify"}
+      onchange={(e) => {
+        const val = (e.target as HTMLSelectElement).value as UpdateCheckMode;
+        settings.update((s) => ({
+          ...s,
+          system: { ...s.system, update_check: val },
+        }));
+      }}
+    >
+      <option value="Off">Don't check</option>
+      <option value="Notify">Notify me</option>
+      <option value="Auto">Install automatically</option>
+    </select>
   </div>
 
   <div class="border-t border-border pt-4 mt-4">

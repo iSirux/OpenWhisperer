@@ -16,6 +16,7 @@
   import { DEFAULT_OPENAI_MODEL_ID, isAutoModel } from '$lib/utils/models';
   import RateLimitIndicator from './RateLimitIndicator.svelte';
   import QueueIndicator from './QueueIndicator.svelte';
+  import { updater, updateAvailable } from '$lib/stores/updater';
 
   // Derived state from stores
   let currentActiveRepo = $derived($activeRepo);
@@ -210,6 +211,27 @@
   </div>
 
   <div class="flex items-center gap-2 min-w-0">
+    <!-- Update Available Indicator -->
+    {#if $updateAvailable}
+      <button
+        class="flex items-center gap-1.5 px-2 py-1 bg-accent/15 text-accent rounded text-xs hover:bg-accent/25 transition-colors"
+        onclick={() => goto('/settings?tab=about')}
+        title={$updater.status === 'downloading'
+          ? 'Downloading update...'
+          : `Update v${$updater.version} available — click to install`}
+      >
+        {#if $updater.status === 'downloading'}
+          <div class="w-2 h-2 bg-accent rounded-full animate-pulse"></div>
+          <span>Updating{$updater.progress != null ? ` ${Math.round($updater.progress * 100)}%` : '...'}</span>
+        {:else}
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0 0l-4-4m4 4l4-4" />
+          </svg>
+          <span>Update v{$updater.version}</span>
+        {/if}
+      </button>
+    {/if}
+
     <!-- Rate Limit Indicator -->
     <RateLimitIndicator />
 

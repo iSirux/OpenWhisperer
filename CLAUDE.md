@@ -64,11 +64,13 @@ Most routes live in the `(main)` route group, which shares `(main)/+layout.svelt
 - `pile.ts` - Recording pile: inbox of transcribed recordings saved for later (own persistence file, saved audio, background LLM processing for cleanup/repo/model/title)
 - `panes.ts` - Split-pane layout (up to 4 panes, each holding one SDK session); persists to `settings.pane_layout`
 - `navigation.ts` - Main page internal view state (`MainView`, selected repo, repository-add mode)
+- `ctrlHint.ts` - Whether Ctrl/Cmd is being held (with a short show delay); drives in-app hotkey hint overlays (session number badges in the sidebar, key badges on Ctrl-hotkey buttons)
 - `archive.ts` - Archived-session index (search, entries with cost/duration/message counts)
 - `launchProfiles.ts` - Launch profile runtimes per repo (running launches, queued launch waiting for an agent)
 - `sequences.ts` / `sequenceExecutions.ts` - Sequence definitions (YAML import/export) and live execution state (node results, logs, notifications)
 - `debugRecordings.ts` - Bounded rolling log (20 newest) of recordings with audio + all transcription stages; always on
 - `noMistakes.ts` - No Mistakes run store (see No Mistakes Integration)
+- `updater.ts` - App update check/download/install state via the Tauri updater plugin (see App Updates)
 
 **Components (`src/lib/components/`):**
 
@@ -129,7 +131,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 
 - `GeneralTab.svelte` - General settings (terminal mode, language)
 - `ClaudeTab.svelte` / `CodexTab.svelte` - Per-provider settings (auth method, models, execution mode)
-- `SystemTab.svelte` - System settings (tray behavior, autostart, single instance, dev mode)
+- `SystemTab.svelte` - System settings (tray behavior, autostart, single instance, dev mode, app update mode)
 - `ThemesTab.svelte` - Theme selection (Midnight, Slate, Snow, Sand)
 - `MicrophoneTab.svelte` / `AudioTab.svelte` - Microphone selection; recording behavior (stop action, screenshots, sounds, open mic)
 - `VoiceCommandsTab.svelte` - Voice command phrases
@@ -144,7 +146,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `SequencesTab.svelte` - Sequence engine settings (notification channels)
 - `RecordingsLogTab.svelte` - Playback of the recordings log (audio + each transcription stage)
 - `ReposTab.svelte` - Repository management (exported but repo management primarily lives in the repository rail/view)
-- `AboutTab.svelte` - Version/about info
+- `AboutTab.svelte` - Version/about info, manual "Check for Updates" with install progress (see App Updates)
 
 **Composables (`src/lib/composables/`) - Svelte 5 Runes:**
 
@@ -169,7 +171,8 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `llm.ts` - LLM integration utilities (session analysis, transcription cleanup, model/repo recommendations, feature gates)
 - `voiceCommands.ts` - Voice command detection and processing
 - `sessionLaunch.ts` - Shared session launch machinery: `launchSession` (setup session + optional worktree + tagging) and `createSessionQueue` (simple sequential batch-launch queue with optional stagger; used by NotionKanban and the pile — distinct from the Smart Queue)
-- `sessionCreation.ts` - Create-and-activate a new session from current settings (SDK or PTY)
+- `sessionCreation.ts` - Create-and-activate a new session from current settings (SDK or PTY); `createSessionInSameRepo` clones the active session's repo/worktree/model into a new setup session (session-header button + `new_session_same_repo` hotkey, default Ctrl+D)
+- `sessionSelection.ts` - Shared "activate this display session" logic used by the sidebar list and the fixed Ctrl+1–9 session-switching hotkey (handled in the main layout, ordered identically to the sidebar)
 - `pileActions.ts` - Turning pile items into sessions (`PILE_ACTIONS`: start / prepare / plan — "Plan first", a prompt-prefix instruction / discuss)
 - `promptChips.ts` - Prompt chip append/merge helpers
 - `inlineDictation.ts` - `makeInlineDictation()` hold-to-record dictation factory with LLM cleanup, for inputs without their own recording pipeline
@@ -324,12 +327,22 @@ App config stored in system config directory (`open-whisperer/config.json`), ver
 - `repos` - Repositories with paths, descriptions/keywords/vocabulary, icon/color, default models, MCP server and launch profile associations
 - `audio` - Recording device, stop action (`record_and_send_action`: send/prepare/pile), screenshot capture, sound settings
 - `voice_commands` / `open_mic` - Voice command and wake-word settings
-- `overlay` / `system` - Overlay position/visibility; tray, autostart, single instance, dev mode
+- `overlay` / `system` - Overlay position/visibility; tray, autostart, single instance, dev mode, `update_check` (Off | Notify | Auto)
 - `llm` - LLM integration settings (provider, model, API key, features, auto-model priority/effort)
 - `mcp` - MCP server configuration (global servers list, OAuth)
 - `queue` - Smart Queue settings (rate-limit queueing, stagger)
 - `sequences` - Sequence engine settings (notification channels)
 - `prompt_chips` / `pane_layout` / `sessions_view` - UI state
+
+## App Updates
+
+In-app updates via the Tauri v2 updater plugin (`tauri-plugin-updater` + `tauri-plugin-process`, registered in `lib.rs`; permissions in `capabilities/default.json`).
+
+- **Endpoint:** static `latest.json` on the newest GitHub release (`https://github.com/iSirux/OpenWhisperer/releases/latest/download/latest.json`), generated automatically by `tauri-apps/tauri-action` in `.github/workflows/release.yml` (both matrix arches merge into one manifest). `bundle.createUpdaterArtifacts` is enabled in `tauri.conf.json`.
+- **Signing:** updates are minisign-verified against the `pubkey` in `tauri.conf.json`. CI signs with the `TAURI_SIGNING_PRIVATE_KEY` repo secret (no password); the private key lives at `~/.tauri/openwhisperer.key` on the maintainer's machine. Losing it means existing installs can never update again.
+- **Versioning:** the release workflow stamps the `workflow_dispatch` version input into `tauri.conf.json` before building — the updater compares against that version, so releases don't require a manual version bump in git.
+- **Frontend:** `stores/updater.ts` (check/download/install state machine); startup check in `(main)/+layout.svelte` per `system.update_check` (Off | Notify | Auto, default Notify; skipped in dev builds); header pill in `AppHeader` when an update is available (links to Settings → About); manual check + install UI in `AboutTab`; mode selector in `SystemTab`.
+- **Windows:** `installMode: "passive"` — the app exits while the installer runs, so post-install "restart" UI is only reachable on macOS/Linux.
 
 ## Key Technologies
 

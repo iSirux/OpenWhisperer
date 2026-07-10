@@ -10,19 +10,12 @@
   import { repos, type RepoConfig } from '$lib/stores/repos';
   import { settings } from '$lib/stores/settings';
   import type { LaunchCommand, LaunchProfile } from '$lib/types/launch';
+  import { startRepoExploreSession } from '$lib/utils/repoExplore';
   import { REPO_ICON_NAMES, getDefaultRepoColor } from '$lib/utils/repoIcons';
 
   interface Props {
     repoId?: string | null;
     showAddForm?: boolean;
-  }
-
-  interface RepoDescriptionResult {
-    description: string;
-    keywords: string[];
-    vocabulary: string[];
-    icon?: string;
-    color?: string;
   }
 
   interface LaunchGenerationResult {
@@ -194,51 +187,18 @@
     }
   }
 
-  async function setupDescriptionListeners(
-    requestId: string,
-    provider: 'claude' | 'codex',
-    targetRepoId: string
-  ) {
-    const resultListener = await listen<RepoDescriptionResult>(`repo-description-result-${requestId}`, (event) => {
-      const targetRepo = $repos.list.find((repo) => repo.id === targetRepoId) ?? null;
-      updateRepoById(targetRepoId, {
-        description: event.payload.description,
-        keywords: event.payload.keywords,
-        vocabulary: event.payload.vocabulary,
-        icon: event.payload.icon || targetRepo?.icon,
-        color: event.payload.color || targetRepo?.color,
-      });
-      setRepoGenerating(provider, targetRepoId, false);
-      resultListener();
-      errorListener();
-    });
-
-    const errorListener = await listen<string>(`repo-description-error-${requestId}`, () => {
-      setRepoGenerating(provider, targetRepoId, false);
-      resultListener();
-      errorListener();
-    });
-  }
-
-  async function generateDescription(provider: 'claude' | 'codex') {
+  async function exploreRepo(provider: 'claude' | 'codex') {
     if (!selectedRepo?.id) return;
     const targetRepoId = selectedRepo.id;
-    const requestId = `${provider}-repo-${targetRepoId}-${Date.now()}`;
     setRepoGenerating(provider, targetRepoId, true);
-    await setupDescriptionListeners(requestId, provider, targetRepoId);
 
     try {
-      await invoke(
-        provider === 'claude'
-          ? 'generate_repo_description_with_claude'
-          : 'generate_repo_description_with_codex',
-        {
-          id: requestId,
-          repoPath: selectedRepo.path,
-          repoName: selectedRepo.name,
-        }
-      );
-    } catch {
+      // Runs as a real, visible SDK session; the repo metadata is applied
+      // automatically when the session's first turn completes.
+      await startRepoExploreSession(selectedRepo, provider === 'codex' ? 'openai' : 'claude');
+    } catch (error) {
+      console.error('Failed to start explore session:', error);
+    } finally {
       setRepoGenerating(provider, targetRepoId, false);
     }
   }
@@ -525,12 +485,12 @@
 
       <div class="button-row">
         {#if claudeAvailable}
-          <button class="btn btn-secondary" onclick={() => generateDescription('claude')} disabled={generatingClaude || generatingCodex}>
+          <button class="btn btn-secondary" onclick={() => exploreRepo('claude')} disabled={generatingClaude || generatingCodex}>
             {generatingClaude ? 'Exploring with Claude...' : 'Explore with Claude'}
           </button>
         {/if}
         {#if codexAvailable}
-          <button class="btn btn-secondary" onclick={() => generateDescription('codex')} disabled={generatingClaude || generatingCodex}>
+          <button class="btn btn-secondary" onclick={() => exploreRepo('codex')} disabled={generatingClaude || generatingCodex}>
             {generatingCodex ? 'Exploring with Codex...' : 'Explore with Codex'}
           </button>
         {/if}

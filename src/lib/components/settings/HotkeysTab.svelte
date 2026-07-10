@@ -169,6 +169,40 @@
     />
   </div>
 
+  <!-- New Session in Same Repo -->
+  <div>
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">New Session in Same Repo (In-App)</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.new_session_same_repo}
+      />
+    </div>
+    <p class="text-xs text-text-muted mb-2">
+      While OpenWhisperer is focused, creates a new session in the active session's
+      repository and worktree. Also available as a button in the session header.
+    </p>
+    <HotkeyInput
+      bind:value={$settings.hotkeys.new_session_same_repo}
+      enabled={$settings.hotkeys_enabled.new_session_same_repo}
+    />
+  </div>
+
+  <!-- Session switching (fixed Ctrl+number bindings, not configurable) -->
+  <div class="p-3 bg-surface-elevated rounded border border-border">
+    <p class="text-xs text-text-muted">
+      <strong class="text-text-secondary">Switch sessions:</strong> While
+      OpenWhisperer is focused, press <span class="font-mono text-text-secondary">Ctrl + 1–9</span>
+      to jump to a session in the sidebar list.
+    </p>
+    <p class="text-xs text-text-muted mt-1">
+      <strong class="text-text-secondary">Tip:</strong> Hold
+      <span class="font-mono text-text-secondary">Ctrl</span> to overlay the session
+      numbers on the list — along with hints for other Ctrl shortcuts.
+    </p>
+  </div>
+
   <!-- Send Selection -->
   <div class="border-t border-border pt-4">
     <div class="flex items-center justify-between mb-1">

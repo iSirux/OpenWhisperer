@@ -44,6 +44,7 @@
     "bundle": {
         "active": true,
         "targets": "all",
+        "createUpdaterArtifacts": true,
         "icon": [
             "icons/32x32.png",
             "icons/128x128.png",
@@ -65,6 +66,15 @@
     "plugins": {
         "shell": {
             "open": true
+        },
+        "updater": {
+            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ0MTY1QTIyRjY2RjJGOTIKUldTU0wyLzJJbG9XMUUvMHBkQi9zYk5lS05ZZ1BodW52Q2lPeTRIZnZZVngxTnN5OUdtcXlEelUK",
+            "endpoints": [
+                "https://github.com/iSirux/OpenWhisperer/releases/latest/download/latest.json"
+            ],
+            "windows": {
+                "installMode": "passive"
+            }
         }
     }
 }

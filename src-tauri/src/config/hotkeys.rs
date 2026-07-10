@@ -15,6 +15,9 @@ pub struct HotkeyConfig {
     /// In-app hotkey to create a new session while the app is focused
     #[serde(default = "default_new_session")]
     pub new_session: String,
+    /// In-app hotkey to create a new session in the active session's repo/worktree
+    #[serde(default = "default_new_session_same_repo")]
+    pub new_session_same_repo: String,
     /// Hotkey to copy selected text and immediately send as a new prompt
     #[serde(default = "default_send_selection")]
     pub send_selection: String,
@@ -46,6 +49,10 @@ fn default_new_session() -> String {
     "CommandOrControl+N".to_string()
 }
 
+fn default_new_session_same_repo() -> String {
+    "CommandOrControl+D".to_string()
+}
+
 fn default_send_selection() -> String {
     "CommandOrControl+Shift+E".to_string()
 }
@@ -68,6 +75,7 @@ impl Default for HotkeyConfig {
             cycle_repo: default_cycle_repo(),
             cycle_model: default_cycle_model(),
             new_session: default_new_session(),
+            new_session_same_repo: default_new_session_same_repo(),
             send_selection: default_send_selection(),
             prepare_selection: default_prepare_selection(),
             pile_recording: default_pile_recording(),
@@ -94,6 +102,8 @@ pub struct HotkeyEnabledConfig {
     #[serde(default = "default_hotkey_enabled")]
     pub new_session: bool,
     #[serde(default = "default_hotkey_enabled")]
+    pub new_session_same_repo: bool,
+    #[serde(default = "default_hotkey_enabled")]
     pub send_selection: bool,
     #[serde(default = "default_hotkey_enabled")]
     pub prepare_selection: bool,
@@ -109,6 +119,7 @@ impl Default for HotkeyEnabledConfig {
             cycle_repo: default_hotkey_enabled(),
             cycle_model: default_hotkey_enabled(),
             new_session: default_hotkey_enabled(),
+            new_session_same_repo: default_hotkey_enabled(),
             send_selection: default_hotkey_enabled(),
             prepare_selection: default_hotkey_enabled(),
             pile_recording: default_hotkey_enabled(),

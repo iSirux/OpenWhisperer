@@ -20,12 +20,15 @@
   import { findRepoByPath } from "$lib/utils/repoIcons";
   import { repos, findRepoById } from "$lib/stores/repos";
   import { visibleSessionIds, focusedPaneSessionId } from "$lib/stores/panes";
+  import { ctrlHeld } from "$lib/stores/ctrlHint";
 
   /** DnD payload type shared with SessionPanes (keep in sync). */
   const SESSION_DND_TYPE = "application/x-openwhisperer-session-id";
 
   interface Props {
     session: DisplaySession;
+    /** 1-9 for the first sessions in the list; shown as an overlay badge while Ctrl is held (Ctrl+number switches). */
+    hotkeyNumber?: number;
     isActive: boolean;
     now: number;
     showLatestMessage: boolean;
@@ -38,6 +41,7 @@
 
   let {
     session,
+    hotkeyNumber = undefined,
     isActive,
     now,
     showLatestMessage,
@@ -129,6 +133,9 @@
   }}
   onclick={onselect}
 >
+  {#if hotkeyNumber != null && $ctrlHeld}
+    <span class="hotkey-number-badge" aria-hidden="true">{hotkeyNumber}</span>
+  {/if}
   <!-- Header row: type badge, status dot, interaction indicator, time, close button -->
   <div class="flex items-center justify-between">
     <div class="flex items-center gap-2">
@@ -444,6 +451,28 @@
   .session-item {
     border-left: 3px solid transparent;
     position: relative;
+  }
+
+  /* Ctrl-held hint: the number to press (with Ctrl) to switch to this session */
+  .hotkey-number-badge {
+    position: absolute;
+    top: 50%;
+    right: 0.5rem;
+    transform: translateY(-50%);
+    width: 1.5rem;
+    height: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    color: white;
+    border-radius: 0.375rem;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    font-weight: 700;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   }
 
   /* Session is visible in a non-focused pane: understated accent bar + glyph,

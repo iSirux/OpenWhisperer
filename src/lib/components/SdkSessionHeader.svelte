@@ -10,6 +10,10 @@
   import { get } from 'svelte/store';
   import { nmRuns, noMistakes } from '$lib/stores/noMistakes';
   import { buildIntent } from '$lib/utils/noMistakesIntent';
+  import { settings } from '$lib/stores/settings';
+  import { ctrlHeld } from '$lib/stores/ctrlHint';
+  import { createSessionInSameRepo } from '$lib/utils/sessionCreation';
+  import { formatHotkeyForDisplay, getHotkeyKeyLabel } from '$lib/utils/hotkeys';
 
   interface Message {
     type: string;
@@ -372,6 +376,23 @@
           </span>
         </button>
       {/if}
+      {#if !isPending && sessionId && repoPath && repoPath !== '.'}
+        <button
+          class="action-icon-btn same-repo-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
+          onclick={() => createSessionInSameRepo(sessionId)}
+          title="New session in same repo/worktree ({formatHotkeyForDisplay($settings.hotkeys.new_session_same_repo)})"
+          aria-label="New session in same repo/worktree"
+        >
+          <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            <line x1="12" y1="11" x2="12" y2="17" />
+            <line x1="9" y1="14" x2="15" y2="14" />
+          </svg>
+          {#if $ctrlHeld && $settings.hotkeys_enabled.new_session_same_repo}
+            <span class="ctrl-hint-badge" aria-hidden="true">{getHotkeyKeyLabel($settings.hotkeys.new_session_same_repo)}</span>
+          {/if}
+        </button>
+      {/if}
       {#if !isPending && $paneLayout.panes.length < MAX_PANES}
         <button
           class="action-icon-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
@@ -598,5 +619,31 @@
   .hooks-off {
     color: var(--color-text-muted);
     opacity: 0.75;
+  }
+
+  .same-repo-btn {
+    position: relative;
+  }
+
+  /* Ctrl-held hint: the key to press (with Ctrl) to trigger this button */
+  .ctrl-hint-badge {
+    position: absolute;
+    top: -0.45rem;
+    right: -0.45rem;
+    min-width: 1rem;
+    height: 1rem;
+    padding: 0 0.15rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    color: white;
+    border-radius: 0.25rem;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   }
 </style>

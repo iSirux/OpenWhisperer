@@ -122,6 +122,8 @@ export interface HotkeyConfig {
   cycle_model: string;
   /** In-app hotkey to create a new session while the app is focused */
   new_session: string;
+  /** In-app hotkey to create a new session in the active session's repo/worktree */
+  new_session_same_repo: string;
   /** Hotkey to copy selected text and immediately send as a new SDK session prompt */
   send_selection: string;
   /** Hotkey to copy selected text and create a prepared session for review */
@@ -137,6 +139,7 @@ export interface HotkeyEnabledConfig {
   cycle_repo: boolean;
   cycle_model: boolean;
   new_session: boolean;
+  new_session_same_repo: boolean;
   send_selection: boolean;
   prepare_selection: boolean;
   pile_recording: boolean;
@@ -297,6 +300,9 @@ export interface AudioConfig {
 
 export type LaunchTerminal = "Cmd" | "PowerShell" | "WindowsTerminal";
 
+/** How the app handles application updates on startup */
+export type UpdateCheckMode = "Off" | "Notify" | "Auto";
+
 export interface SystemConfig {
   minimize_to_tray: boolean;
   start_minimized: boolean;
@@ -304,6 +310,8 @@ export interface SystemConfig {
   launch_terminal: LaunchTerminal;
   /** Developer mode: surfaces debug-only features such as the recordings log. */
   dev_mode: boolean;
+  /** Application update behavior on startup */
+  update_check: UpdateCheckMode;
 }
 
 export interface SessionPersistenceConfig {
@@ -633,6 +641,7 @@ const defaultConfig: AppConfig = {
     cycle_repo: "CommandOrControl+Shift+R",
     cycle_model: "CommandOrControl+Shift+M",
     new_session: "CommandOrControl+N",
+    new_session_same_repo: "CommandOrControl+D",
     send_selection: "CommandOrControl+Shift+E",
     prepare_selection: "CommandOrControl+Shift+J",
     pile_recording: "CommandOrControl+Shift+P",
@@ -643,6 +652,7 @@ const defaultConfig: AppConfig = {
     cycle_repo: true,
     cycle_model: true,
     new_session: true,
+    new_session_same_repo: true,
     send_selection: true,
     prepare_selection: true,
     pile_recording: true,
@@ -718,6 +728,7 @@ const defaultConfig: AppConfig = {
     autostart: false,
     launch_terminal: "Cmd",
     dev_mode: false,
+    update_check: "Notify",
   },
   show_branch_in_sessions: true,
   session_persistence: {

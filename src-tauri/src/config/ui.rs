@@ -44,8 +44,21 @@ pub enum LaunchTerminal {
     WindowsTerminal,
 }
 
-/// System/tray/autostart configuration. All fields default to Rust zero-values,
-/// so a single `#[derive(Default)]` is the sole source of truth.
+/// How the app handles application updates on startup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum UpdateCheckMode {
+    /// Never check automatically (manual check in Settings → About still works)
+    Off,
+    /// Check on startup and surface an "update available" indicator
+    #[default]
+    Notify,
+    /// Check on startup and install immediately (app restarts during install)
+    Auto,
+}
+
+/// System/tray/autostart configuration. All fields default to Rust zero-values
+/// (or the field type's own `Default`), so a single `#[derive(Default)]` is the
+/// sole source of truth.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SystemConfig {
@@ -56,6 +69,8 @@ pub struct SystemConfig {
     pub launch_terminal: LaunchTerminal,
     /// Developer mode: surfaces debug-only features such as the recordings log.
     pub dev_mode: bool,
+    /// Application update behavior on startup
+    pub update_check: UpdateCheckMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
