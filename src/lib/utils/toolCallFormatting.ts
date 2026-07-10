@@ -93,6 +93,8 @@ export function getToolCallSummary(
       return formatPath(input.file_path as string);
     case 'Edit':
       return formatPath(input.file_path as string);
+    case 'MultiEdit':
+      return formatPath(input.file_path as string);
     case 'Grep':
       return `"${truncate(String(input.pattern || ''), Math.max(1, maxLen - 2))}"`;
     case 'Glob':
@@ -101,13 +103,29 @@ export function getToolCallSummary(
       return truncate(String(input.url || ''), maxLen);
     case 'WebSearch':
       return `"${truncate(String(input.query || ''), Math.max(1, maxLen - 2))}"`;
+    case 'ToolSearch': {
+      const query = String(input.query || '').trim();
+      const selectMatch = query.match(/^select:(.+)$/i);
+      if (selectMatch) {
+        const names = selectMatch[1]
+          .split(',')
+          .map((name) => name.trim())
+          .filter(Boolean)
+          .join(', ');
+        return truncate(names, maxLen);
+      }
+      return truncate(query, maxLen);
+    }
     case 'Skill':
       return truncate(String(input.skill || ''), maxLen);
     case 'Task':
+    case 'Agent':
       return truncate(
         String(input.description || input.prompt || ''),
         maxLen
       );
+    case 'SlashCommand':
+      return truncate(String(input.command || ''), maxLen);
     case 'TodoWrite': {
       const todos = input.todos as Array<{ content: string }> | undefined;
       return todos?.length

@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, RepoConfig};
+use crate::config::{AppConfig, ConfigLoadReport, RepoConfig};
 use crate::git::GitManager;
 use crate::ConfigLoadStatus;
 use parking_lot::Mutex;
@@ -13,11 +13,32 @@ pub fn get_config(config: State<ConfigState>) -> AppConfig {
     config.lock().clone()
 }
 
-/// Returns whether the config was successfully loaded from disk.
-/// false means the config fell back to defaults due to a parse error.
+/// Returns how the config load from disk went: whether it succeeded, the
+/// fatal error when it fell back to defaults, and any non-fatal warnings
+/// (skipped repo entries, missing repo folders).
 #[tauri::command]
-pub fn get_config_load_status(status: State<ConfigLoadStatus>) -> bool {
-    *status.0.lock()
+pub fn get_config_load_status(status: State<ConfigLoadStatus>) -> ConfigLoadReport {
+    status.0.lock().clone()
+}
+
+/// Re-reads the config file from disk without restarting the app. On success
+/// the managed config is replaced and saves are unblocked; on failure the
+/// in-memory config is left untouched and the new failure report is returned.
+#[tauri::command]
+pub fn reload_config(
+    config: State<ConfigState>,
+    load_status: State<ConfigLoadStatus>,
+) -> ConfigLoadReport {
+    log::info!("[config.reload] Reloading config from disk");
+    let (new_config, report) = AppConfig::load();
+    if report.loaded_ok {
+        *config.lock() = new_config;
+        log::info!("[config.reload] Config reloaded successfully; saves unblocked");
+    } else if let Some(err) = &report.error {
+        log::error!("[config.reload] {}", err);
+    }
+    *load_status.0.lock() = report.clone();
+    report
 }
 
 /// Returns the path to the config file and its parent directory.
@@ -118,7 +139,7 @@ pub fn save_config(
     new_config: AppConfig,
 ) -> Result<(), String> {
     // Block saves if the config was loaded from defaults due to a parse error
-    let loaded_ok = *load_status.0.lock();
+    let loaded_ok = load_status.0.lock().loaded_ok;
     if !loaded_ok {
         return Err(
             "Config was loaded from defaults due to a parse error — refusing to overwrite. \
@@ -135,6 +156,40 @@ pub fn save_config(
         cfg.clone()
     };
     snapshot.save()
+}
+
+/// Replaces the config with built-in defaults and persists it. Repositories
+/// (list, active index, auto mode) are preserved — they're user data managed
+/// by dedicated commands, not settings. `redo_onboarding` controls whether the
+/// first-run wizard shows again. Writing a known-good default config also
+/// clears a failed-load state, unblocking saves.
+#[tauri::command]
+pub fn reset_config(
+    config: State<ConfigState>,
+    load_status: State<ConfigLoadStatus>,
+    redo_onboarding: bool,
+) -> Result<AppConfig, String> {
+    log::info!(
+        "[config.reset] Restoring default settings (redo_onboarding: {})",
+        redo_onboarding
+    );
+    let snapshot = {
+        let mut cfg = config.lock();
+        let mut fresh = AppConfig::default();
+        fresh.repos = std::mem::take(&mut cfg.repos);
+        fresh.active_repo_index = cfg.active_repo_index;
+        fresh.auto_repo_mode = cfg.auto_repo_mode;
+        fresh.onboarding_completed = !redo_onboarding;
+        *cfg = fresh;
+        cfg.clone()
+    };
+    snapshot.save()?;
+    *load_status.0.lock() = ConfigLoadReport {
+        loaded_ok: true,
+        error: None,
+        warnings: Vec::new(),
+    };
+    Ok(snapshot)
 }
 
 #[tauri::command]

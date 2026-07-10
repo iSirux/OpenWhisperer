@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { open } from '@tauri-apps/plugin-shell';
   import { goto } from '$app/navigation';
   import { get } from 'svelte/store';
   import AppHeader from '$lib/components/AppHeader.svelte';
-  import { settings, configLoadedOk, nextRecordStopMode } from '$lib/stores/settings';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import { settings, configLoadedOk, configLoadReport, nextRecordStopMode } from '$lib/stores/settings';
   import { pile } from '$lib/stores/pile';
   import { repos } from '$lib/stores/repos';
   import { sessions } from '$lib/stores/sessions';
@@ -38,7 +38,7 @@
   import { cycleModel, cycleRepo } from '$lib/utils/recordingCycles';
   import { createAndActivateNewSession, createSessionInSameRepo } from '$lib/utils/sessionCreation';
   import { selectDisplaySession } from '$lib/utils/sessionSelection';
-  import { transformToDisplaySessions } from '$lib/composables/useDisplaySessions.svelte';
+  import { transformToDisplaySessions, getSdkSmartStatus } from '$lib/composables/useDisplaySessions.svelte';
   import { ctrlHintKeydown, ctrlHintKeyup, ctrlHintReset } from '$lib/stores/ctrlHint';
 
   // Composables (now layout-level — survive route changes)
@@ -62,8 +62,22 @@
   const eventHandlers = useSessionEventHandlers();
   const openMicLifecycle = useOpenMicLifecycle();
 
-  let configFilePath = $state<string>('');
-  let configDirPath = $state<string>('');
+  let configReloading = $state(false);
+  let configWarningsDismissed = $state(false);
+
+  async function handleConfigReload() {
+    configReloading = true;
+    try {
+      const report = await settings.reloadConfig();
+      if (report?.loaded_ok) {
+        // Startup ran against defaults while the config was broken, so rebuild
+        // the whole frontend from the real config instead of patching stores.
+        window.location.reload();
+      }
+    } finally {
+      configReloading = false;
+    }
+  }
 
   // Cleanup handlers
   let cleanupAutoSave: (() => void) | null = null;
@@ -125,6 +139,32 @@
     overlay.setActivityInfo(activeSessions, activeSequences);
   });
 
+  // Ctrl+W close confirmation (only shown when the active session is working)
+  let closeConfirm = $state<{
+    show: boolean;
+    sessionId: string;
+    sessionType: 'pty' | 'sdk';
+  }>({ show: false, sessionId: '', sessionType: 'sdk' });
+
+  function performActiveClose(sessionId: string, sessionType: 'pty' | 'sdk') {
+    if (sessionType === 'sdk') {
+      void sdkSessions.closeSession(sessionId);
+      if (get(activeSdkSessionId) === sessionId) activeSdkSessionId.set(null);
+    } else {
+      void sessions.closeSession(sessionId);
+      if (get(activeSessionId) === sessionId) activeSessionId.set(null);
+    }
+  }
+
+  function confirmActiveClose() {
+    performActiveClose(closeConfirm.sessionId, closeConfirm.sessionType);
+    closeConfirm = { show: false, sessionId: '', sessionType: 'sdk' };
+  }
+
+  function cancelActiveClose() {
+    closeConfirm = { show: false, sessionId: '', sessionType: 'sdk' };
+  }
+
   // Helper: switch to a session by ID
   function handleSwitchToSession(sessionId: string) {
     activeSdkSessionId.set(sessionId);
@@ -156,6 +196,43 @@
         if (target) {
           event.preventDefault();
           selectDisplaySession(target);
+        }
+        return;
+      }
+    }
+
+    // Ctrl/Cmd+W — close the currently active session (SDK preferred, then PTY),
+    // mirroring the browser "close tab" convention. Fixed binding like Ctrl+1..9.
+    // Confirms first when the session is actively working (matches SessionList).
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.code === 'KeyW'
+    ) {
+      const sdkId = get(activeSdkSessionId);
+      const ptyId = get(activeSessionId);
+      if (sdkId) {
+        event.preventDefault();
+        const sdkSession = get(sdkSessions).find((s) => s.id === sdkId);
+        const working = sdkSession
+          ? isActivelyWorking(getSdkSmartStatus(sdkSession).status)
+          : false;
+        if (working) {
+          closeConfirm = { show: true, sessionId: sdkId, sessionType: 'sdk' };
+        } else {
+          performActiveClose(sdkId, 'sdk');
+        }
+        return;
+      }
+      if (ptyId) {
+        event.preventDefault();
+        const ptySession = get(sessions).find((s) => s.id === ptyId);
+        const working = ptySession ? isActivelyWorking(ptySession.status) : false;
+        if (working) {
+          closeConfirm = { show: true, sessionId: ptyId, sessionType: 'pty' };
+        } else {
+          performActiveClose(ptyId, 'pty');
         }
         return;
       }
@@ -197,12 +274,6 @@
 
     // App update check per settings (fire-and-forget; skipped in dev builds)
     void updater.startupCheck($settings.system.update_check ?? 'Notify');
-
-    try {
-      const [filePath, dirPath] = await invoke<[string, string]>('get_config_paths');
-      configFilePath = filePath;
-      configDirPath = dirPath;
-    } catch { /* non-critical */ }
 
     // Load sessions
     await sessions.load();
@@ -322,10 +393,16 @@
 <div class="app-container h-screen flex flex-col bg-background">
 
   {#if !$configLoadedOk}
-    <div class="config-warning bg-red-900/80 text-red-100 px-4 py-2 text-sm flex items-center gap-2 border-b border-red-700">
-      <span class="font-bold">Warning:</span>
-      <span>Config failed to parse and loaded defaults. Saves are blocked to protect your data. Fix or delete your config file to resume normal operation.</span>
-      {#if configFilePath}
+    <div class="config-warning bg-red-900/80 text-red-100 px-4 py-2 text-sm border-b border-red-700">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="font-bold">Warning:</span>
+        <span>Config failed to parse and loaded defaults. Saves are blocked to protect your data. Fix your config file, then reload it here.</span>
+        <button
+          class="underline hover:text-white cursor-pointer bg-transparent border-none text-red-200 text-sm p-0 disabled:opacity-50"
+          disabled={configReloading}
+          onclick={handleConfigReload}
+        >{configReloading ? 'Reloading…' : 'Reload config'}</button>
+        <span class="text-red-400">|</span>
         <button
           class="underline hover:text-white cursor-pointer bg-transparent border-none text-red-200 text-sm p-0"
           onclick={() => invoke('open_config_file')}
@@ -333,9 +410,27 @@
         <span class="text-red-400">|</span>
         <button
           class="underline hover:text-white cursor-pointer bg-transparent border-none text-red-200 text-sm p-0"
-          onclick={() => open(configDirPath)}
+          onclick={() => invoke('open_config_folder')}
         >Open folder</button>
+      </div>
+      {#if $configLoadReport.error}
+        <div class="mt-1 font-mono text-xs text-red-300 break-all">{$configLoadReport.error}</div>
       {/if}
+    </div>
+  {:else if $configLoadReport.warnings.length > 0 && !configWarningsDismissed}
+    <div class="config-warning bg-amber-900/70 text-amber-100 px-4 py-2 text-sm border-b border-amber-700">
+      <div class="flex items-start gap-2">
+        <span class="font-bold shrink-0">Config notice:</span>
+        <div class="flex-1 min-w-0">
+          {#each $configLoadReport.warnings as warning (warning)}
+            <div class="break-words">{warning}</div>
+          {/each}
+        </div>
+        <button
+          class="underline hover:text-white cursor-pointer bg-transparent border-none text-amber-200 text-sm p-0 shrink-0"
+          onclick={() => (configWarningsDismissed = true)}
+        >Dismiss</button>
+      </div>
     </div>
   {/if}
 
@@ -343,6 +438,17 @@
 
   <slot />
 </div>
+
+<ConfirmDialog
+  show={closeConfirm.show}
+  title="Close session?"
+  message="This session is still working. Closing it will stop the current work. Are you sure?"
+  confirmLabel="Close"
+  cancelLabel="Cancel"
+  variant="danger"
+  onconfirm={confirmActiveClose}
+  oncancel={cancelActiveClose}
+/>
 
 <style>
   .app-container {

@@ -364,6 +364,14 @@
     opacity: 1;
   }
 
+  /* While a code block (with its own copy button) is hovered, hide the
+     message-level actions so the two button sets never show together */
+  .text-message-container:has(:global(.code-block-wrapper:hover)) .text-message-actions,
+  .text-message-container:has(:global(.code-block-wrapper:hover)) .copy-message-button {
+    opacity: 0;
+    pointer-events: none;
+  }
+
   .message-actions {
     position: absolute;
     bottom: 0.5rem;
@@ -555,6 +563,12 @@
     border-radius: 0;
     font-size: 0.85em;
     line-height: 1.5;
+  }
+
+  /* The pre's margin collapses through the copy-button wrapper, so the
+     *:last-child rule above misses it when a code block ends the message */
+  .markdown-body :global(.code-block-wrapper:last-child pre) {
+    margin-bottom: 0;
   }
 
   .markdown-body :global(ul),

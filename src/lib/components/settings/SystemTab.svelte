@@ -15,6 +15,42 @@
     await settings.save({ ...get(settings), onboarding_completed: false });
     goto("/onboarding");
   }
+
+  let resetRedoOnboarding = $state(false);
+  let resetting = $state(false);
+
+  async function restoreDefaults() {
+    if (
+      !confirm(
+        "Restore all settings to their defaults? Your repositories are kept, " +
+          "but everything else (providers, transcription, hotkeys, LLM, theme, …) " +
+          "is reset. This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    resetting = true;
+    try {
+      const wasAutostart = get(settings).system.autostart;
+      await settings.resetToDefaults(resetRedoOnboarding);
+      // The config no longer says autostart, so drop the OS login entry too
+      if (wasAutostart) {
+        try {
+          await invoke("toggle_autostart", { enabled: false });
+        } catch (error) {
+          console.error("Failed to disable autostart during reset:", error);
+        }
+      }
+      if (resetRedoOnboarding) {
+        goto("/onboarding");
+      }
+    } catch (error) {
+      console.error("Failed to restore default settings:", error);
+      alert(`Failed to restore default settings: ${error}`);
+    } finally {
+      resetting = false;
+    }
+  }
 </script>
 
 <div class="space-y-4">
@@ -161,6 +197,36 @@
         onclick={rerunOnboarding}
       >
         Run Setup Again
+      </button>
+    </div>
+  </div>
+
+  <div class="border-t border-border pt-4 mt-4">
+    <div class="flex items-center justify-between">
+      <div>
+        <label class="text-sm font-medium text-text-secondary"
+          >Restore Default Settings</label
+        >
+        <p class="text-xs text-text-muted">
+          Reset all settings to their defaults. Your repositories are kept.
+        </p>
+        <label
+          class="flex items-center gap-2 mt-2 text-xs text-text-muted cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            class="accent-accent"
+            bind:checked={resetRedoOnboarding}
+          />
+          Also re-run the setup wizard afterwards
+        </label>
+      </div>
+      <button
+        class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors disabled:opacity-50"
+        disabled={resetting}
+        onclick={restoreDefaults}
+      >
+        {resetting ? "Restoring…" : "Restore Defaults"}
       </button>
     </div>
   </div>

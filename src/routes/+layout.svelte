@@ -46,9 +46,36 @@
 
     document.addEventListener('click', handleLinkClick);
 
+    // Global click handler for the copy buttons injected into markdown code
+    // blocks by renderMarkdown (they live in {@html} content, so no Svelte handlers)
+    const handleCodeCopyClick = async (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      const button = target.closest('.code-copy-button') as HTMLButtonElement | null;
+      if (!button) return;
+
+      const code = button.closest('.code-block-wrapper')?.querySelector('pre code');
+      if (!code) return;
+
+      try {
+        await navigator.clipboard.writeText((code.textContent ?? '').replace(/\n$/, ''));
+      } catch (err) {
+        console.error('Failed to copy code block:', err);
+        return;
+      }
+
+      button.classList.add('copied');
+      window.clearTimeout(Number(button.dataset.copiedTimeout));
+      button.dataset.copiedTimeout = String(
+        window.setTimeout(() => button.classList.remove('copied'), 2000)
+      );
+    };
+
+    document.addEventListener('click', handleCodeCopyClick);
+
     return () => {
       window.removeEventListener('popstate', handlePopState);
       document.removeEventListener('click', handleLinkClick);
+      document.removeEventListener('click', handleCodeCopyClick);
     };
   });
 

@@ -42,7 +42,11 @@
       "Bash(tail:)",
       "Bash(find:*)",
       "Bash(head:)",
-      "Bash(npm view:*)"
+      "Bash(npm view:*)",
+      "PowerShell(node -e \"const fs=require\\('fs'\\); try { JSON.parse\\(fs.readFileSync\\(String.raw`C:\\\\Users\\\\joels\\\\AppData\\\\Roaming\\\\open-whisperer\\\\config.json`,'utf8'\\)\\); console.log\\('VALID JSON'\\); } catch\\(e\\) { console.log\\('PARSE ERROR:', e.message\\); }\")",
+      "PowerShell(node -e \"const fs=require\\('fs'\\); try { JSON.parse\\(fs.readFileSync\\('C:/Users/joels/AppData/Roaming/open-whisperer/config.json','utf8'\\)\\); console.log\\('VALID JSON'\\); } catch\\(e\\) { console.log\\('PARSE ERROR:', e.message\\); }\")",
+      "PowerShell($dir=\"C:\\\\Users\\\\joels\\\\AppData\\\\Roaming\\\\open-whisperer\"; node -e \"const fs=require\\('fs'\\); const a=JSON.parse\\(fs.readFileSync\\(process.argv[1],'utf8'\\)\\); const b=JSON.parse\\(fs.readFileSync\\(process.argv[2],'utf8'\\)\\); const ka=Object.keys\\(a\\), kb=Object.keys\\(b\\); console.log\\('only in edited:', ka.filter\\(k=>!kb.includes\\(k\\)\\)\\); console.log\\('only in backup:', kb.filter\\(k=>!ka.includes\\(k\\)\\)\\); for \\(const k of ka\\) { if \\(kb.includes\\(k\\) && JSON.stringify\\(a[k]\\)!==JSON.stringify\\(b[k]\\)\\) console.log\\('differs:', k, JSON.stringify\\(a[k]\\).length, 'vs', JSON.stringify\\(b[k]\\).length\\); }\" \"$dir\\\\config.json\" \"$dir\\\\config.json.bak1\")",
+      "PowerShell($b = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\joels\\\\AppData\\\\Roaming\\\\open-whisperer\\\\config.json\"\\); \\($b[0..7] | ForEach-Object { $_.ToString\\('X2'\\) }\\) -join ' '; \"total bytes: $\\($b.Length\\)\"; try { [System.Text.Encoding]::GetEncoding\\('utf-8', [System.Text.EncoderFallback]::ExceptionFallback, [System.Text.DecoderFallback]::ExceptionFallback\\).GetString\\($b\\) | Out-Null; \"strict UTF-8: OK\" } catch { \"strict UTF-8 FAILED: $\\($_.Exception.Message\\)\" })"
     ],
     "deny": [],
     "ask": []

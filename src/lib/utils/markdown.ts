@@ -13,6 +13,31 @@ renderer.link = ({ href, title, text }) => {
   return `<a href="${href}"${titleAttr} data-external="true">${text}</a>`;
 };
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const CODE_COPY_BUTTON_HTML =
+  `<button type="button" class="code-copy-button" title="Copy code" aria-label="Copy code">` +
+  `<svg class="code-copy-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"/><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"/></svg>` +
+  `<svg class="code-copied-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>` +
+  `</button>`;
+
+// Wrap fenced code blocks so a copy button can sit fixed at the top-right,
+// outside the horizontally-scrolling <pre>. Clicks are handled by the global
+// delegated listener in the root layout (like data-external links).
+renderer.code = ({ text, lang, escaped }: { text: string; lang?: string; escaped?: boolean }) => {
+  const language = (lang || '').match(/^\S*/)?.[0] ?? '';
+  const classAttr = language ? ` class="hljs language-${escapeHtml(language)}"` : '';
+  const code = text.replace(/\n$/, '');
+  return `<div class="code-block-wrapper"><pre><code${classAttr}>${escaped ? code : escapeHtml(code)}\n</code></pre>${CODE_COPY_BUTTON_HTML}</div>`;
+};
+
 // Create a configured marked instance with highlight.js for syntax highlighting
 const marked = new Marked(
   markedHighlight({

@@ -44,6 +44,39 @@ pub use crate::usage_stats::{
 
 use migration::CURRENT_CONFIG_VERSION;
 
+/// Outcome of loading the config from disk.
+///
+/// `loaded_ok == false` means the app fell back to defaults and saves are
+/// blocked (see `save_config`). The messages exist because `AppConfig::load()`
+/// runs before the logger is initialized — the caller replays them into the
+/// log (and surfaces them in the UI) once it can.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigLoadReport {
+    pub loaded_ok: bool,
+    /// Fatal problem that forced the fallback to defaults.
+    pub error: Option<String>,
+    /// Non-fatal recovery notes (skipped repo entries, missing repo folders).
+    pub warnings: Vec<String>,
+}
+
+impl ConfigLoadReport {
+    fn ok() -> Self {
+        Self {
+            loaded_ok: true,
+            error: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn failed(error: String) -> Self {
+        Self {
+            loaded_ok: false,
+            error: Some(error),
+            warnings: Vec::new(),
+        }
+    }
+}
+
 /// Shared default helper used by many config structs.
 pub(crate) fn default_true() -> bool {
     true
@@ -527,8 +560,8 @@ impl AppConfig {
     }
 
     /// Finalize a freshly-loaded config: assign missing repo IDs, stamp the current
-    /// schema version, and persist if anything changed. Returns (config, true).
-    fn finalize(mut self, mut changed: bool) -> (Self, bool) {
+    /// schema version, and persist if anything changed.
+    fn finalize(mut self, mut changed: bool) -> Self {
         if self.ensure_repo_ids() {
             log::error!("[config.load] Assigned IDs to repos without IDs");
             changed = true;
@@ -540,27 +573,29 @@ impl AppConfig {
         if changed {
             let _ = self.save();
         }
-        (self, true)
+        self
     }
 
     /// Load config with graceful recovery.
-    /// Returns (config, loaded_successfully).
-    /// `loaded_successfully` is true if config was parsed from disk (even with field-level fixups),
-    /// false if we fell back to defaults entirely.
-    pub fn load() -> (Self, bool) {
+    /// Returns the config plus a report of what happened. When the report's
+    /// `loaded_ok` is false the config fell back to defaults entirely; individual
+    /// invalid repo entries are dropped (with a warning) rather than failing the
+    /// whole file.
+    pub fn load() -> (Self, ConfigLoadReport) {
         // Clean up any leftover atomic-write temp files in the config dir.
         crate::persist::cleanup_tmp_files(&Self::config_dir());
 
         let Some(load_path) = Self::resolve_load_path() else {
             log::info!("[config.load] No config file found, using defaults");
-            return (Self::default(), true);
+            return (Self::default(), ConfigLoadReport::ok());
         };
 
         let content = match std::fs::read_to_string(&load_path) {
             Ok(c) => c,
             Err(e) => {
-                log::error!("[config.load] Failed to read config: {}", e);
-                return (Self::default(), false);
+                let msg = format!("Failed to read config file {:?}: {}", load_path, e);
+                log::error!("[config.load] {}", msg);
+                return (Self::default(), ConfigLoadReport::failed(msg));
             }
         };
 
@@ -568,11 +603,9 @@ impl AppConfig {
         let mut value = match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(v) => v,
             Err(e) => {
-                log::error!(
-                    "[config.load] Config is not valid JSON: {}. Falling back to defaults.",
-                    e
-                );
-                return (Self::default(), false);
+                let msg = format!("Config is not valid JSON: {}", e);
+                log::error!("[config.load] {}. Falling back to defaults.", msg);
+                return (Self::default(), ConfigLoadReport::failed(msg));
             }
         };
 
@@ -582,21 +615,90 @@ impl AppConfig {
             .unwrap_or(0) as u32;
         let migrated = migration::run_migrations(&mut value, from_version);
 
+        let mut warnings = Vec::new();
+        let config = match serde_json::from_value::<AppConfig>(value.clone()) {
+            Ok(config) => config,
+            Err(e) => {
+                // A single malformed repo entry must not take the whole config
+                // down: drop invalid entries and retry before giving up.
+                match Self::recover_dropping_invalid_repos(value, &mut warnings) {
+                    Some(config) => config,
+                    None => {
+                        let msg =
+                            format!("Failed to deserialize config even after migrations: {}", e);
+                        log::error!("[config.load] {}. Falling back to defaults.", msg);
+                        return (Self::default(), ConfigLoadReport::failed(msg));
+                    }
+                }
+            }
+        };
+
+        // A repo folder that no longer exists (moved/renamed on disk) is not an
+        // error — surface it so the user can repoint the repo instead of hitting
+        // mysterious git failures later.
+        for repo in &config.repos {
+            if !std::path::Path::new(&repo.path).exists() {
+                warnings.push(format!(
+                    "Repository '{}' points to a missing folder: {} (was it moved or renamed?)",
+                    repo.name, repo.path
+                ));
+            }
+        }
+
+        log::info!(
+            "[config.load] Config loaded successfully ({} repos, {} warnings)",
+            config.repos.len(),
+            warnings.len()
+        );
+        let config = config.finalize(migrated);
+        (
+            config,
+            ConfigLoadReport {
+                loaded_ok: true,
+                error: None,
+                warnings,
+            },
+        )
+    }
+
+    /// Retry deserialization after removing repo entries that individually fail
+    /// to parse. Returns `None` when that still doesn't yield a valid config
+    /// (i.e. the problem wasn't the repos). Dropped entries are appended to
+    /// `warnings`; they are NOT saved back to disk here, so the on-disk file
+    /// stays untouched until the user's next explicit settings save.
+    fn recover_dropping_invalid_repos(
+        mut value: serde_json::Value,
+        warnings: &mut Vec<String>,
+    ) -> Option<Self> {
+        let repos = value.get_mut("repos")?.as_array_mut()?;
+        let mut dropped = Vec::new();
+        repos.retain(
+            |item| match serde_json::from_value::<RepoConfig>(item.clone()) {
+                Ok(_) => true,
+                Err(e) => {
+                    let label = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| item.get("path").and_then(|v| v.as_str()))
+                        .unwrap_or("<unnamed>");
+                    dropped.push(format!("Skipped invalid repository entry '{}': {}", label, e));
+                    false
+                }
+            },
+        );
+        if dropped.is_empty() {
+            return None;
+        }
+
         match serde_json::from_value::<AppConfig>(value) {
             Ok(config) => {
-                log::info!(
-                    "[config.load] Config loaded successfully ({} repos)",
-                    config.repos.len()
-                );
-                config.finalize(migrated)
+                for msg in &dropped {
+                    log::warn!("[config.load] {}", msg);
+                }
+                warnings.append(&mut dropped);
+                Some(config)
             }
-            Err(e) => {
-                log::error!(
-                    "[config.load] Failed to deserialize config even after migrations: {}. Falling back to defaults.",
-                    e
-                );
-                (Self::default(), false)
-            }
+            Err(_) => None,
         }
     }
 
@@ -695,6 +797,32 @@ mod tests {
 
         // A fresh default (no file on disk) still starts un-onboarded.
         assert!(!AppConfig::default().onboarding_completed);
+    }
+
+    #[test]
+    fn invalid_repo_entry_is_dropped_not_fatal() {
+        // One malformed repo entry (e.g. after a bad manual edit) must not
+        // take the whole config down — it is skipped with a warning instead.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().insert(
+            "repos".to_string(),
+            serde_json::json!([
+                { "path": "C:/somewhere/good", "name": "good" },
+                { "path": 12345, "name": "broken" }
+            ]),
+        );
+
+        // The full deserialize fails because of the broken entry...
+        assert!(serde_json::from_value::<AppConfig>(value.clone()).is_err());
+
+        // ...but recovery drops just that entry and keeps the rest.
+        let mut warnings = Vec::new();
+        let config = AppConfig::recover_dropping_invalid_repos(value, &mut warnings)
+            .expect("recovery should yield a valid config");
+        assert_eq!(config.repos.len(), 1);
+        assert_eq!(config.repos[0].name, "good");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("broken"), "warning should name the repo: {}", warnings[0]);
     }
 
     #[test]

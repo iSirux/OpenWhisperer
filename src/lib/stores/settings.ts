@@ -851,8 +851,24 @@ const defaultConfig: AppConfig = {
   ],
 };
 
+/** How the backend's config load from disk went (mirrors Rust's ConfigLoadReport) */
+export interface ConfigLoadReport {
+  loaded_ok: boolean;
+  /** Fatal problem that forced the fallback to defaults */
+  error: string | null;
+  /** Non-fatal recovery notes (skipped repo entries, missing repo folders) */
+  warnings: string[];
+}
+
 /** Whether the config was successfully loaded from disk (vs fell back to defaults) */
 export const configLoadedOk = writable<boolean>(true);
+
+/** Full load report incl. the parse error and non-fatal warnings */
+export const configLoadReport = writable<ConfigLoadReport>({
+  loaded_ok: true,
+  error: null,
+  warnings: [],
+});
 
 /** Whether settings have been loaded from disk at least once this session */
 export const settingsLoaded = writable<boolean>(false);
@@ -873,13 +889,17 @@ function createSettingsStore() {
 
         // Check if config was loaded successfully from disk
         try {
-          const loadStatus = await invoke<boolean>("get_config_load_status");
-          configLoadedOk.set(loadStatus);
-          if (!loadStatus) {
+          const report = await invoke<ConfigLoadReport>("get_config_load_status");
+          configLoadedOk.set(report.loaded_ok);
+          configLoadReport.set(report);
+          if (!report.loaded_ok) {
             console.warn(
-              "[settings] Config was loaded from defaults due to a parse error. " +
+              `[settings] Config failed to load (${report.error ?? "unknown error"}). ` +
               "Saves are blocked to prevent overwriting your config file."
             );
+          }
+          for (const warning of report.warnings) {
+            console.warn(`[settings] Config warning: ${warning}`);
           }
         } catch (e) {
           console.error("[settings] Failed to check config load status:", e);
@@ -887,6 +907,45 @@ function createSettingsStore() {
       } catch (error) {
         console.error("Failed to load config:", error);
       }
+    },
+
+    /**
+     * Ask the backend to re-read the config file from disk (e.g. after the
+     * user fixed a parse error) without restarting the app. On success the
+     * settings store is refreshed and saves are unblocked.
+     */
+    async reloadConfig(): Promise<ConfigLoadReport | null> {
+      try {
+        const report = await invoke<ConfigLoadReport>("reload_config");
+        configLoadedOk.set(report.loaded_ok);
+        configLoadReport.set(report);
+        if (report.loaded_ok) {
+          const config = await invoke<AppConfig>("get_config");
+          set(config);
+          settingsLoaded.set(true);
+          emit("settings-changed");
+        }
+        return report;
+      } catch (e) {
+        console.error("[settings] Failed to reload config:", e);
+        return null;
+      }
+    },
+
+    /**
+     * Restore built-in default settings (backend defaults are authoritative).
+     * Repositories are preserved; `redoOnboarding` marks the first-run wizard
+     * as not completed so it shows again. Also unblocks saves after a failed
+     * config load, since the reset writes a known-good file.
+     */
+    async resetToDefaults(redoOnboarding: boolean): Promise<AppConfig> {
+      const config = await invoke<AppConfig>("reset_config", { redoOnboarding });
+      set(config);
+      settingsLoaded.set(true);
+      configLoadedOk.set(true);
+      configLoadReport.set({ loaded_ok: true, error: null, warnings: [] });
+      emit("settings-changed");
+      return config;
     },
 
     async save(config: AppConfig) {

@@ -31,9 +31,10 @@ use sequences::SequenceManager;
 use sidecar::SidecarManager;
 use std::sync::Arc;
 
-/// Tracks whether config was successfully loaded from disk.
-/// When false, saves are blocked to prevent overwriting valid config with defaults.
-pub struct ConfigLoadStatus(pub Mutex<bool>);
+/// Tracks how the config load from disk went (see `ConfigLoadReport`).
+/// When `loaded_ok` is false, saves are blocked to prevent overwriting valid
+/// config with defaults. Updated in place by the `reload_config` command.
+pub struct ConfigLoadStatus(pub Mutex<config::ConfigLoadReport>);
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
@@ -246,7 +247,7 @@ pub fn run() {
     // anything reads config or creates the new dir, so existing installs keep their data.
     AppConfig::migrate_legacy_data_dir();
 
-    let (config, config_loaded_ok) = AppConfig::load();
+    let (config, config_load_report) = AppConfig::load();
     let usage_stats = UsageStats::load();
     let start_minimized = config.system.start_minimized;
     let terminal_manager = Arc::new(TerminalManager::new());
@@ -254,7 +255,7 @@ pub fn run() {
     let realtime_manager = Arc::new(RealtimeSessionManager::new());
     let launch_manager = Arc::new(launch::LaunchManager::new());
     let no_mistakes_manager = Arc::new(no_mistakes::NoMistakesManager::new());
-    let config_load_status = ConfigLoadStatus(Mutex::new(config_loaded_ok));
+    let config_load_status = ConfigLoadStatus(Mutex::new(config_load_report));
 
     // Set up backend file logging via tauri-plugin-log (date-stamped, 7-day rolling)
     let log_dir = commands::log_cmds::logs_dir();
@@ -320,6 +321,26 @@ pub fn run() {
         .manage(no_mistakes_manager)
         .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
+            // The config loads before the log plugin exists, so its outcome was
+            // never written anywhere. Replay it into the log now.
+            {
+                let status: tauri::State<ConfigLoadStatus> = app.state();
+                let report = status.0.lock().clone();
+                match &report.error {
+                    Some(err) => log::error!(
+                        "[config.load] {} — fell back to defaults; saves are blocked",
+                        err
+                    ),
+                    None => log::info!(
+                        "[config.load] Config loaded from disk ({} warnings)",
+                        report.warnings.len()
+                    ),
+                }
+                for warning in &report.warnings {
+                    log::warn!("[config.load] {}", warning);
+                }
+            }
+
             // Move stored API keys from the pre-rename keyring service name.
             migrate_legacy_keyring(app.handle());
 
@@ -374,10 +395,12 @@ pub fn run() {
             // --- Settings & repositories ---
             settings_cmds::get_config,
             settings_cmds::get_config_load_status,
+            settings_cmds::reload_config,
             settings_cmds::get_config_paths,
             settings_cmds::open_config_file,
             settings_cmds::open_config_folder,
             settings_cmds::save_config,
+            settings_cmds::reset_config,
             settings_cmds::add_repo,
             settings_cmds::remove_repo,
             settings_cmds::set_active_repo,

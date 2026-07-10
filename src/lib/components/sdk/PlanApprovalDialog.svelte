@@ -426,6 +426,11 @@
     font-size: 0.85em;
     line-height: 1.5;
   }
+  /* The pre's margin collapses through the copy-button wrapper, so the
+     *:last-child rule misses it when a code block ends the plan */
+  .markdown-body :global(.code-block-wrapper:last-child pre) {
+    margin-bottom: 0;
+  }
   .markdown-body :global(ul),
   .markdown-body :global(ol) {
     margin-top: 0;
