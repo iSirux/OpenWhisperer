@@ -24,6 +24,8 @@
     focusPromptInput: () => void;
     startInlineRecording: () => Promise<void>;
     stopInlineRecording: () => Promise<void>;
+    startSendRecording: () => Promise<void>;
+    stopSendRecording: () => Promise<void>;
   };
 
   /** DnD payload type shared with SessionListItem (keep in sync). */

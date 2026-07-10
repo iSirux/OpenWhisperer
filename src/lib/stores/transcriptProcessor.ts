@@ -1026,12 +1026,10 @@ export async function handleSetupSessionStart(
     model: string;
     effortLevel: EffortLevel;
     cwd: string;
-    readOnlyMode: boolean;
     provider?: import('$lib/utils/models').SdkProvider;
     worktreeRepoPath?: string;
     worktreeBranch?: string;
     worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
-    playwrightQa?: boolean;
     /** When set, defer the launch to the next usage-window reset (fire-and-forget) instead of starting now. */
     schedule?: import('$lib/stores/queueDetection').QueueWindow;
   }
@@ -1092,11 +1090,9 @@ export async function handleSetupSessionStart(
     repoId,
     model: finalModel,
     effortLevel: finalEffort,
-    readOnlyMode: config.readOnlyMode,
     provider: config.provider,
     createdBranch: config.worktreeBranch,
     worktreePostSetup: config.worktreePostSetup,
-    playwrightQa: config.playwrightQa,
     schedule: config.schedule,
   });
 }

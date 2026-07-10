@@ -115,7 +115,6 @@
             currentCwd={sessionCwd}
             currentModel={sessionModel}
             currentEffortLevel={sessionEffortLevel}
-            playwrightQa={session?.playwrightQa}
           />
         {/if}
         <button

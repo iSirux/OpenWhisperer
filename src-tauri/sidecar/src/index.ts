@@ -291,7 +291,6 @@ interface CreateMessage {
   messages?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED - use sdk_session_id instead)
   sdk_session_id?: string; // SDK session ID for proper resume (preferred over messages)
   options?: Partial<Options>;
-  read_only_mode?: boolean; // Whether this session should use read-only tools + web search
   mcp_servers?: McpServerConfig[]; // External MCP servers to register
   fork_from_sdk_session_id?: string; // SDK session ID to fork from
   fork_at_message_uuid?: string; // Message UUID to fork at (resumeSessionAt)
@@ -494,7 +493,6 @@ interface Session {
   conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions (DEPRECATED)
   effortLevel?: string; // UI effort level: null/undefined = off, 'low', 'medium', 'high', 'xhigh', 'max'
   currentQueryId?: string; // Unique ID for the current query (to detect stale done events)
-  readOnlyMode?: boolean; // Whether this session should run in read-only mode
   // OpenAI Codex-specific fields
   codexThread?: Thread; // Active Codex thread instance
   codexModel?: string; // OpenAI model to use
@@ -1904,13 +1902,6 @@ async function handleCodexAppServerQuery(
 
   try {
     const appServer = await ensureCodexAppServer(msg.id, session);
-    const appServerReadonlyParams = session.readOnlyMode
-      ? {
-          sandboxMode: "read-only",
-          webSearchEnabled: true,
-          networkAccessEnabled: true,
-        }
-      : {};
     send({
       type: "debug",
       id: msg.id,
@@ -1932,7 +1923,6 @@ async function handleCodexAppServerQuery(
         {
           threadId,
           ...(session.codexModel ? { model: session.codexModel } : {}),
-          ...appServerReadonlyParams,
         },
         abortController.signal
       );
@@ -1949,7 +1939,6 @@ async function handleCodexAppServerQuery(
           ...(session.codexModel ? { model: session.codexModel } : {}),
           cwd: session.cwd,
           approvalPolicy: "never",
-          ...appServerReadonlyParams,
         },
         abortController.signal
       )) as Record<string, unknown>;
@@ -2424,13 +2413,6 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
             }
           : {}),
         approvalPolicy: "never",
-        ...(session.readOnlyMode
-          ? {
-              sandboxMode: "read-only" as const,
-              webSearchEnabled: true,
-              networkAccessEnabled: true,
-            }
-          : {}),
       };
 
       if (resumeId) {
@@ -3237,15 +3219,6 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     options.tools = { type: "preset", preset: "claude_code" };
   }
 
-  if (msg.read_only_mode) {
-    send({
-      type: "debug",
-      id: msg.id,
-      message: "Read-only mode: restricting to Read/Glob/Grep + WebSearch",
-    });
-    options.allowedTools = ["Read", "Glob", "Grep", "WebSearch"];
-  }
-
   // Register external MCP servers if provided
   // Also add a wildcard pattern to allowedTools to permit all tools from registered MCP servers
   if (msg.mcp_servers && msg.mcp_servers.length > 0) {
@@ -3384,7 +3357,6 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     options,
     passedSdkSessionId: msg.sdk_session_id, // SDK session ID for proper resume
     conversationHistory: msg.messages, // Store conversation history for restored sessions (DEPRECATED)
-    readOnlyMode: msg.read_only_mode,
     codexModel: provider === "openai" ? msg.model : undefined,
     codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
     claudeQueue: [],
@@ -3412,14 +3384,6 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       type: "debug",
       id: msg.id,
       message: `Session created with ${msg.messages.length} history messages (DEPRECATED - use sdk_session_id)`,
-    });
-  }
-
-  if (msg.read_only_mode) {
-    send({
-      type: "debug",
-      id: msg.id,
-      message: "Session created in READ-ONLY MODE - Read/Glob/Grep + WebSearch",
     });
   }
 

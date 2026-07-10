@@ -30,7 +30,6 @@
   let lastItemId = $state('');
   let showRaw = $state(false);
   let useWorktree = $state(false);
-  let playwrightQa = $state(false);
   let confirmDeleteOpen = $state(false);
   let launching = $state(false);
   let audioUrl = $state<string | null>(null);
@@ -174,7 +173,6 @@
     try {
       const sessionId = await launchPileItem(pile.getItem(item.id)!, action, {
         useWorktree,
-        playwrightQa,
       });
       if (sessionId) {
         selectedPileItemId.set(null);
@@ -374,7 +372,7 @@
             if (s === 'idle') saveTranscript();
           },
         }}
-        placeholder="Transcript..."
+        placeholder={`Transcript...${$settings.audio.hold_space_to_record_inline ? ' (hold Space to dictate)' : ''}`}
       ></textarea>
       {#if showRaw && item.rawTranscript}
         <div class="mt-2 p-3 bg-surface rounded border border-border/50 text-xs text-text-muted whitespace-pre-wrap">
@@ -467,10 +465,6 @@
         <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
           <input type="checkbox" bind:checked={useWorktree} class="accent-accent" />
           Worktree
-        </label>
-        <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
-          <input type="checkbox" bind:checked={playwrightQa} class="accent-purple-500" />
-          Playwright QA
         </label>
       </div>
       <div class="flex items-center gap-2 flex-wrap">

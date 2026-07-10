@@ -27,7 +27,6 @@
   let selectedIds = $state<Set<string>>(new Set());
   let pendingAction = $state<string | null>(null);
   let useWorktree = $state(false);
-  let playwrightQa = $state(false);
   let groupMode = $state<'separate' | 'together'>('separate');
   let confirmDeleteOpen = $state(false);
 
@@ -89,7 +88,6 @@
   function selectAction(action: string) {
     pendingAction = action;
     useWorktree = false;
-    playwrightQa = false;
     groupMode = 'separate';
   }
 
@@ -100,7 +98,6 @@
       (i) => i.status === 'ready' && i.transcript.trim()
     );
     const worktree = useWorktree;
-    const qa = playwrightQa;
     const together = groupMode === 'together' && itemsSnapshot.length > 1;
     selectedIds = new Set();
     pendingAction = null;
@@ -122,7 +119,6 @@
         () =>
           launchPileItemsTogether(itemsSnapshot, action as PileLaunchAction, {
             useWorktree: worktree,
-            playwrightQa: qa,
           }).then(() => {}),
       ]);
       return;
@@ -132,7 +128,6 @@
       itemsSnapshot.map((item) => () =>
         launchPileItem(item, action as PileLaunchAction, {
           useWorktree: worktree,
-          playwrightQa: qa,
         }).then(() => {})
       ),
       { stagger: true }
@@ -339,10 +334,6 @@
             <label class="flex items-center gap-1 text-[11px] text-text-secondary cursor-pointer">
               <input type="checkbox" bind:checked={useWorktree} class="accent-accent" />
               Worktree
-            </label>
-            <label class="flex items-center gap-1 text-[11px] text-text-secondary cursor-pointer">
-              <input type="checkbox" bind:checked={playwrightQa} class="accent-purple-500" />
-              Playwright
             </label>
           {/if}
           <button

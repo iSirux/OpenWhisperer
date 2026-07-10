@@ -46,17 +46,16 @@
   const queueSizeStore = launchQueue.size;
   const queueProcessingStore = launchQueue.processing;
   let useWorktree = $state(true);
-  let playwrightQa = $state(false);
   let pendingAction = $state<string | null>(null);
 
-  const ACTION_DEFAULTS: Record<string, { worktree: boolean; playwrightQa: boolean }> = {
-    implement: { worktree: true, playwrightQa: false },
-    talk: { worktree: false, playwrightQa: false },
-    groom: { worktree: false, playwrightQa: false },
-    classify: { worktree: false, playwrightQa: false },
-    split: { worktree: false, playwrightQa: false },
-    flesh_out: { worktree: false, playwrightQa: false },
-    plan: { worktree: false, playwrightQa: false },
+  const ACTION_DEFAULTS: Record<string, { worktree: boolean }> = {
+    implement: { worktree: true },
+    talk: { worktree: false },
+    groom: { worktree: false },
+    classify: { worktree: false },
+    split: { worktree: false },
+    flesh_out: { worktree: false },
+    plan: { worktree: false },
   };
 
   function selectAction(action: string) {
@@ -64,7 +63,6 @@
     const defaults = ACTION_DEFAULTS[action];
     if (defaults) {
       useWorktree = defaults.worktree;
-      playwrightQa = defaults.playwrightQa;
     }
   }
 
@@ -261,7 +259,6 @@
 
     const cardsSnapshot = [...selectedCards];
     const worktree = useWorktree;
-    const qa = playwrightQa;
     clearSelection();
 
     launchQueue.enqueue(
@@ -275,7 +272,6 @@
           provider: config.provider,
           useWorktree: worktree,
           branchNameHint: card.title,
-          playwrightQa: qa,
           tag: { notionCard: { id: card.id, title: card.title } },
         }).then(() => {});
       }),
@@ -286,7 +282,7 @@
   /**
    * Draft sessions from the selected cards without starting them. Each card becomes a New Session
    * (setup) draft with the action's prompt pre-written, tagged with the card, opening in the New
-   * Session view with the full controls (model/effort/repo/worktree/browser/schedule) so it can be
+   * Session view with the full controls (model/effort/repo/worktree/schedule) so it can be
    * reviewed, tweaked, and launched — or scheduled for later — when ready.
    */
   function draftAction(action: string) {
@@ -799,10 +795,6 @@
           <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
             <input type="checkbox" bind:checked={useWorktree} class="accent-accent" />
             Worktree
-          </label>
-          <label class="flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer">
-            <input type="checkbox" bind:checked={playwrightQa} class="accent-purple-500" />
-            Playwright
           </label>
           <button
             class="h-8 px-4 rounded text-xs font-semibold border border-border bg-surface-elevated hover:bg-border text-text-primary transition-colors"

@@ -254,7 +254,6 @@ export interface PersistedSdkSession {
   currentBranch?: string | null;
   model: string;
   provider?: SdkProvider;
-  readOnlyMode?: boolean;
   autoModelRequested?: boolean;
   effortLevel?: EffortLevel;
   /** @deprecated Use effortLevel - kept for backward compat loading */

@@ -128,10 +128,7 @@
     { id: "hotkeys", label: "Hotkeys" },
     { id: "overlay", label: "Overlay" },
     { id: "sequences", label: "Sequences" },
-    // Developer-only tabs
-    ...($settings.system.dev_mode
-      ? [{ id: "recordings-log", label: "Recordings Log" }]
-      : []),
+    { id: "recordings-log", label: "Recordings Log" },
     { id: "about", label: "About" },
   ]);
 </script>

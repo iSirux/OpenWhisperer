@@ -268,6 +268,16 @@
     await handleStopInlineRecording();
   }
 
+  // Record-and-send variant (the mic-button flow) for the page-level
+  // Shift+Space hold: transcribes and sends to the session on stop.
+  export async function startSendRecording() {
+    await handleStartRecording();
+  }
+
+  export async function stopSendRecording() {
+    await handleStopRecording();
+  }
+
   // Track previous session ID to save draft and scroll position before switching
   let prevSessionId = $state(sessionId);
   let restoredSessionId = $state<string | null>(null);

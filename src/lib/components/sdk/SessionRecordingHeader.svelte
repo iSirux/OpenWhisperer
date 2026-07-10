@@ -500,7 +500,7 @@
             stop: dictation.stop,
           }}
           class="prompt-textarea"
-          placeholder="Enter your prompt..."
+          placeholder={`Enter your prompt...${$settings.audio.hold_space_to_record_inline ? ' (hold Space to dictate)' : ''}`}
           rows="2"
         ></textarea>
       </div>

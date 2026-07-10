@@ -99,7 +99,7 @@ function resolveLaunchParams(item: PileItem): PileLaunchParams | null {
 export async function launchPileItem(
   item: PileItem,
   action: PileLaunchAction,
-  opts: { useWorktree?: boolean; playwrightQa?: boolean } = {}
+  opts: { useWorktree?: boolean } = {}
 ): Promise<string | null> {
   const params = resolveLaunchParams(item);
   if (!params || !item.transcript.trim()) return null;
@@ -115,7 +115,6 @@ export async function launchPileItem(
     provider: params.provider,
     useWorktree: opts.useWorktree,
     branchNameHint: pileItemTitle(item),
-    playwrightQa: opts.playwrightQa,
     systemPrompt: params.systemPrompt,
     tag: { pileItem: { id: item.id, title: pileItemTitle(item) } },
   });
@@ -132,7 +131,7 @@ export async function launchPileItem(
 export async function launchPileItemsTogether(
   items: PileItem[],
   action: PileLaunchAction,
-  opts: { useWorktree?: boolean; playwrightQa?: boolean } = {}
+  opts: { useWorktree?: boolean } = {}
 ): Promise<string | null> {
   const usable = items.filter((i) => i.transcript.trim());
   if (usable.length === 0) return null;
@@ -158,7 +157,6 @@ export async function launchPileItemsTogether(
     provider: params.provider,
     useWorktree: opts.useWorktree,
     branchNameHint: title,
-    playwrightQa: opts.playwrightQa,
     systemPrompt: params.systemPrompt,
     tag: { pileItem: { id: usable[0].id, title } },
   });

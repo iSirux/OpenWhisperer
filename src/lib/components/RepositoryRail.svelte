@@ -4,6 +4,8 @@
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { navigation } from '$lib/stores/navigation';
   import { repos } from '$lib/stores/repos';
+  import { settings } from '$lib/stores/settings';
+  import { createAndActivateNewSession } from '$lib/utils/sessionCreation';
 
   interface Props {
     currentRepoId?: string | null;
@@ -47,6 +49,22 @@
     navigation.showRepository(repoId);
   }
 
+  // Ctrl/Cmd+click (or middle-click) starts a new session in that repo
+  // instead of opening the repository view.
+  function handleRepoClick(event: MouseEvent, repo: { id?: string | null; path: string }) {
+    if (event.ctrlKey || event.metaKey) {
+      void createAndActivateNewSession(repo.path);
+    } else {
+      openRepo(repo.id ?? null);
+    }
+  }
+
+  function handleRepoAuxClick(event: MouseEvent, repo: { path: string }) {
+    if (event.button === 1) {
+      void createAndActivateNewSession(repo.path);
+    }
+  }
+
   function openAddRepo() {
     navigation.showRepositoryAdd();
   }
@@ -83,25 +101,28 @@
         </svg>
       </span>
     </button>
-    <button
-      class="rail-btn"
-      class:is-active={currentView === 'notion'}
-      onclick={toggleNotion}
-      title="Notion Board"
-    >
-      <span class="icon-wrap">
-        <svg class="notion-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z" />
-        </svg>
-      </span>
-    </button>
+    {#if $settings.system.dev_mode}
+      <button
+        class="rail-btn"
+        class:is-active={currentView === 'notion'}
+        onclick={toggleNotion}
+        title="Notion Board"
+      >
+        <span class="icon-wrap">
+          <svg class="notion-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z" />
+          </svg>
+        </span>
+      </button>
+    {/if}
     <div class="rail-divider"></div>
     {#each $repos.list as repo (repo.id ?? repo.path)}
       <button
         class="rail-btn"
         class:is-active={currentRepoId === repo.id && !showAddMode}
-        onclick={() => openRepo(repo.id ?? null)}
-        title={repo.name}
+        onclick={(e) => handleRepoClick(e, repo)}
+        onauxclick={(e) => handleRepoAuxClick(e, repo)}
+        title="{repo.name}&#10;Ctrl+Click or Middle-Click: new session"
       >
         <span class="icon-wrap">
           <RepoIcon {repo} size="lg" />

@@ -15,11 +15,32 @@ import { isRecording } from '$lib/stores/recording';
  *      further repeat-spaces, and start recording.
  *   3. Release    -> stop, transcribe, and insert the transcript at the caret.
  *
+ * When a hold cannot become a recording (guard declined, another recording or
+ * transcription in flight), the key-repeat is still suppressed so the hold
+ * types at most the one tap-space instead of a stream of spaces.
+ *
+ * An optional Shift+Space variant (`shift`) runs the same gesture through a
+ * different pipeline whose stop() consumes the recording itself (e.g.
+ * transcribe-and-send) — nothing is inserted at the caret. Without it,
+ * Shift+Space is left untouched as deliberate typing.
+ *
  * The action is pure gesture + insertion — the caller supplies `start`/`stop`
  * so each prompt input can route to its own recording/transcription pipeline.
  */
 
 export type HoldRecordState = 'idle' | 'warmup' | 'recording' | 'transcribing';
+
+export interface HoldSpaceVariantParams {
+  /** Extra guard evaluated on the initial press (same contract as `canStart`). */
+  canStart?: () => boolean;
+  /** Begin recording. Awaited before a release is allowed to stop it. */
+  start: () => void | Promise<void>;
+  /**
+   * Stop recording and consume the result itself (e.g. transcribe and send).
+   * Nothing is inserted at the caret.
+   */
+  stop: () => void | Promise<void>;
+}
 
 export interface HoldSpaceRecordParams {
   /** Master enable (settings.audio.hold_space_to_record_inline). */
@@ -41,6 +62,11 @@ export interface HoldSpaceRecordParams {
   onState?: (state: HoldRecordState) => void;
   /** Hold threshold in ms before a held Space becomes a recording (default 280). */
   thresholdMs?: number;
+  /**
+   * Optional Shift+Space variant routed to a pipeline that consumes the
+   * recording itself (e.g. record-and-send) instead of inserting at the caret.
+   */
+  shift?: HoldSpaceVariantParams;
 }
 
 /** Insert `text` at the caret, adding a separating space when joining onto a word. */
@@ -75,6 +101,8 @@ export function holdSpaceRecord(
   let leakedSpacePos: number | null = null;
   /** Set once we commit to a recording; blocks overlapping gestures. */
   let busy = false;
+  /** Which pipeline this gesture drives, locked in on the initial press. */
+  let variant: 'plain' | 'shift' = 'plain';
   /** Resolves when start() has settled, so a fast release can't stop before start. */
   let startSettled: Promise<void> = Promise.resolve();
 
@@ -101,14 +129,17 @@ export function holdSpaceRecord(
 
   function isEligible(e: KeyboardEvent): boolean {
     if (opts.enabled === false) return false;
-    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return false;
+    if (e.altKey || e.ctrlKey || e.metaKey) return false;
+    // Shift+Space only engages when a shift variant is configured.
+    if (e.shiftKey && !opts.shift) return false;
     if (e.isComposing) return false;
     // Only engage with a collapsed caret — Space with a selection would replace
     // the selected text, which we could not safely retract.
     if (node.selectionStart === null || node.selectionStart !== node.selectionEnd) {
       return false;
     }
-    if (opts.canStart && !opts.canStart()) return false;
+    const guard = e.shiftKey ? opts.shift?.canStart : opts.canStart;
+    if (guard && !guard()) return false;
     return true;
   }
 
@@ -135,7 +166,7 @@ export function holdSpaceRecord(
     busy = true;
     setState('recording');
     startSettled = Promise.resolve()
-      .then(() => opts.start())
+      .then(() => (variant === 'shift' ? opts.shift!.start() : opts.start()))
       .catch((err) => {
         console.error('[holdSpaceRecord] Failed to start recording:', err);
         reset();
@@ -148,6 +179,17 @@ export function holdSpaceRecord(
     setState('transcribing');
     // Ensure the recorder actually started before we stop it (fast release).
     await startSettled;
+
+    // The shift variant consumes the recording itself — nothing to insert.
+    if (variant === 'shift') {
+      try {
+        await opts.shift?.stop();
+      } catch (err) {
+        console.error('[holdSpaceRecord] Shift-variant stop failed:', err);
+      }
+      reset();
+      return;
+    }
 
     let text: string | null = null;
     try {
@@ -172,6 +214,21 @@ export function holdSpaceRecord(
       return;
     }
 
+    // A held Space that couldn't become a gesture (mid-transcription, another
+    // recording active, guard declined) must not spray key-repeat spaces into
+    // the input — the initial tap already typed one; swallow the repeats.
+    // Modified holds (Ctrl/Alt/Meta, or Shift without a shift variant) are
+    // left alone as deliberate typing.
+    if (
+      e.repeat &&
+      opts.enabled !== false &&
+      !e.altKey && !e.ctrlKey && !e.metaKey &&
+      (!e.shiftKey || !!opts.shift)
+    ) {
+      e.preventDefault();
+      return;
+    }
+
     // Mid-transcription: let the user keep typing normally, but don't start a
     // new overlapping gesture.
     if (busy) return;
@@ -180,6 +237,7 @@ export function holdSpaceRecord(
 
     // Initial tap: let the space type (no preventDefault), then arm the hold
     // timer. selectionStart here is the caret *before* the space is inserted.
+    variant = e.shiftKey ? 'shift' : 'plain';
     leakedSpacePos = node.selectionStart;
     setState('warmup');
     clearWarmup();

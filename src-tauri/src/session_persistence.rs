@@ -216,9 +216,6 @@ pub struct PersistedSdkSession {
     /// SDK provider ("anthropic", "openai", etc.)
     #[serde(default)]
     pub provider: Option<String>,
-    /// Whether the session uses read-only mode (read tools + web search)
-    #[serde(default)]
-    pub read_only_mode: bool,
     /// Whether 'auto' model was requested (before resolution)
     #[serde(default)]
     pub auto_model_requested: bool,
@@ -260,9 +257,6 @@ pub struct PersistedSdkSession {
     /// Setup draft images
     #[serde(default)]
     pub draft_images: Option<Vec<PersistedSdkImageContent>>,
-    /// Playwright MCP enabled for this session
-    #[serde(default, rename = "playwrightQa")]
-    pub playwright_qa: Option<bool>,
     /// SDK session ID for proper resume after app restart
     #[serde(default)]
     pub sdk_session_id: Option<String>,

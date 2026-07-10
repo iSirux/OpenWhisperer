@@ -63,8 +63,6 @@ pub enum OutboundMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         sdk_session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        read_only_mode: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         mcp_servers: Option<Vec<McpServerConfig>>,
         /// SDK session ID to fork from (creates a new branch from parent session)
         #[serde(skip_serializing_if = "Option::is_none")]

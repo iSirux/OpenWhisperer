@@ -414,7 +414,6 @@ export interface SdkSession {
   changedFileCount?: number;
   model: string;
   provider?: SdkProvider;
-  readOnlyMode?: boolean;
   autoModelRequested?: boolean;
   effortLevel: EffortLevel;
   /** @deprecated Use effortLevel */
@@ -477,8 +476,6 @@ export interface SdkSession {
   pileItem?: { id: string; title: string };
   /** Skip project/local hooks (lint, build, etc.) for non-implementation sessions */
   disableHooks?: boolean;
-  /** Playwright MCP enabled for this session (browser QA) */
-  playwrightQa?: boolean;
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
   contextOverflow?: boolean;
   /** Active auto-recovery from a "prompt is too long" overflow: fire /compact, then re-send the prompt that overflowed.
@@ -1601,10 +1598,8 @@ function createSdkSessionsStore() {
     provider?: string,
     forkFromSdkSessionId?: string | null, // SDK session ID to fork from
     forkAtMessageUuid?: string | null, // Message UUID to fork at (resumeSessionAt)
-    readOnlyMode?: boolean,
     autocompactEnabled?: boolean | null,
-    disableHooks?: boolean,
-    playwrightQa?: boolean
+    disableHooks?: boolean
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1671,23 +1666,6 @@ function createSdkSessionsStore() {
       );
     }
 
-    // Inject Playwright MCP server when QA mode is enabled for this session
-    // Uses --extension to connect to existing Chrome tabs (requires Playwright MCP Bridge extension)
-    if (playwrightQa) {
-      const playwrightServer: McpServerConfig = {
-        id: 'playwright-qa-session',
-        name: 'Playwright QA',
-        server_type: 'stdio',
-        command: 'npx',
-        args: ['-y', '@playwright/mcp@latest', '--extension'],
-        env: {},
-        enabled: true,
-        auth_type: 'none',
-      };
-      if (!mcpServers) mcpServers = [];
-      mcpServers.push(playwrightServer);
-    }
-
     console.log('[MCP Debug] Final mcpServers to send:', mcpServers?.length ?? 0, mcpServers);
 
     // Prefer SDK session ID for proper resume, fall back to history messages
@@ -1708,7 +1686,6 @@ function createSdkSessionsStore() {
       // Only send history messages if we don't have an SDK session ID (legacy fallback)
       messages: !usesSdkSessionId && historyMessages && historyMessages.length > 0 ? historyMessages : null,
       sdkSessionId: usesSdkSessionId ? sdkSessionId : null,
-      readOnlyMode: readOnlyMode ?? null,
       mcpServers: mcpServers && mcpServers.length > 0 ? mcpServers : null,
       provider: resolvedProvider,
       forkFromSdkSessionId: forkFromSdkSessionId ?? null,
@@ -1893,7 +1870,7 @@ function createSdkSessionsStore() {
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
-      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, resolvedProvider, undefined, undefined, undefined, autocompactEnabled ?? null);
+      await registerSessionWithBackend(id, cwd, model, effectiveEffort, systemPrompt, null, null, resolvedProvider, undefined, undefined, autocompactEnabled ?? null);
       await syncSessionBranchMetadata(id, cwd);
 
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1922,7 +1899,7 @@ function createSdkSessionsStore() {
         id, session.cwd, session.model, session.effortLevel,
         null, historyMessages, session.sdkSessionId,
         session.provider,
-        session.forkFromSdkSessionId, session.forkAtMessageUuid, session.readOnlyMode,
+        session.forkFromSdkSessionId, session.forkAtMessageUuid,
         session.autocompactEnabled ?? null
       );
     },
@@ -1966,8 +1943,7 @@ function createSdkSessionsStore() {
             sourceSession.model,
             sourceSession.effortLevel,
             sourceSession.provider,
-            sourceSession.cwd,
-            sourceSession.readOnlyMode ?? false
+            sourceSession.cwd
           );
           this.updateDraft(newId, targetMessage.content || '', targetMessage.images);
           return newId;
@@ -2003,7 +1979,6 @@ function createSdkSessionsStore() {
         repoId: sourceSession.repoId,
         model: sourceSession.model,
         provider: sourceSession.provider,
-        readOnlyMode: sourceSession.readOnlyMode,
         effortLevel: sourceSession.effortLevel,
         messages: parentMessages,
         status: 'setup',
@@ -2370,7 +2345,7 @@ function createSdkSessionsStore() {
       if (liveSessions.has(id)) {
         try {
           await invoke('close_sdk_session', { id });
-          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, session.provider, undefined, undefined, session.readOnlyMode, session.autocompactEnabled ?? null);
+          await registerSessionWithBackend(id, cwd, session.model, session.effortLevel, undefined, undefined, undefined, session.provider, undefined, undefined, session.autocompactEnabled ?? null);
         } catch (error) {
           console.error('[sdkSessions] Failed to reinitialize backend session:', error);
         }
@@ -2396,7 +2371,6 @@ function createSdkSessionsStore() {
       repoId?: string;
       currentBranch?: string | null;
       provider?: SdkProvider;
-      readOnlyMode?: boolean;
     }): void {
       update(sessions => sessions.map(s => {
         if (s.id !== id || s.status !== 'setup') return s;
@@ -2416,7 +2390,6 @@ function createSdkSessionsStore() {
         if (config.setupWorktreePath !== undefined) updated.setupWorktreePath = config.setupWorktreePath;
         if (config.currentBranch !== undefined) updated.currentBranch = config.currentBranch;
         if (config.provider !== undefined) updated.provider = normalizeSdkProvider(config.provider, updated.model);
-        if (config.readOnlyMode !== undefined) updated.readOnlyMode = config.readOnlyMode;
         return updated;
       }));
       debouncedSave();
@@ -2442,7 +2415,7 @@ function createSdkSessionsStore() {
       );
     },
 
-    createSetupSession(model: string, effortLevel: EffortLevel, provider?: SdkProvider, initialCwd: string = '', readOnlyMode: boolean = false): string {
+    createSetupSession(model: string, effortLevel: EffortLevel, provider?: SdkProvider, initialCwd: string = ''): string {
       const id = crypto.randomUUID();
       const resolvedProvider = normalizeSdkProvider(provider, model);
 
@@ -2455,7 +2428,6 @@ function createSdkSessionsStore() {
         repoId: resolveRepoId(initialCwd),
         model,
         provider: resolvedProvider,
-        readOnlyMode,
         effortLevel,
         messages: [],
         status: 'setup',
@@ -2468,7 +2440,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; readOnlyMode?: boolean; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; playwrightQa?: boolean; schedule?: QueueWindow }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; schedule?: QueueWindow }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -2499,7 +2471,6 @@ function createSdkSessionsStore() {
                   repoId: config.repoId ?? resolveRepoId(config.cwd),
                   model: gatedModel,
                   effortLevel: config.effortLevel,
-                  readOnlyMode: config.readOnlyMode ?? false,
                   provider: gatedProvider,
                   status: 'queued' as const,
                   preparedPrompt: config.prompt,
@@ -2509,7 +2480,6 @@ function createSdkSessionsStore() {
                   setupRepoPath: undefined,
                   setupWorktreeMode: undefined,
                   setupWorktreePath: undefined,
-                  playwrightQa: config.playwrightQa || undefined,
                   disableHooks: config.disableHooks || undefined,
                   ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),
                   queueInfo: { reason: config.schedule ? 'scheduled' as const : 'rate_limit' as const, provider: gatedProvider, window: queueWindow, queuedAt, targetStartAt },
@@ -2531,7 +2501,6 @@ function createSdkSessionsStore() {
                 repoId: config.repoId ?? resolveRepoId(config.cwd),
                 model: config.model,
                 effortLevel: config.effortLevel,
-                readOnlyMode: config.readOnlyMode ?? false,
                 status: 'initializing' as const,
                 // Setup drafts should not carry into the live SDK composer.
                 // If they remain on the session while SdkView mounts, the prompt input
@@ -2542,7 +2511,6 @@ function createSdkSessionsStore() {
                 setupRepoPath: undefined,
                 setupWorktreeMode: undefined,
                 setupWorktreePath: undefined,
-                playwrightQa: config.playwrightQa || undefined,
                 disableHooks: config.disableHooks || undefined,
                 // Pre-populate createdBranch from worktree creation so the header shows the correct
                 // branch immediately, without waiting for (or being overwritten by) the git query.
@@ -2575,10 +2543,8 @@ function createSdkSessionsStore() {
           finalProvider,
           session.forkFromSdkSessionId,
           session.forkAtMessageUuid,
-          config.readOnlyMode ?? false,
           undefined,
-          config.disableHooks,
-          config.playwrightQa
+          config.disableHooks
         );
         await syncSessionBranchMetadata(id, config.cwd);
 

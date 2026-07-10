@@ -156,7 +156,7 @@ function createRecordingFlowStore() {
 
   function clearOverlayRecordingInfo() {
     overlayInfoToken++;
-    clearOverlayRecordingInfo();
+    overlay.clearSessionInfo();
   }
 
   function createPendingSession(
@@ -280,12 +280,19 @@ function createRecordingFlowStore() {
   // Recording start/stop methods
   // -------------------------------------------------------------------------
 
+  /** Stop open mic without blocking recording start (failure is non-fatal). */
+  function stopOpenMicInBackground(): Promise<void> {
+    return openMic.stop().catch((e) => console.error('Failed to stop open mic:', e));
+  }
+
   /** Start recording for a new session (header button / record button). */
   async function startRecordingNewSession() {
     if (get(isRecording)) return;
     update((s) => ({ ...s, isRecordingForNewSession: true }));
 
-    await openMic.stop();
+    // Open-mic teardown and mic acquisition are independent — run them
+    // concurrently so wake-word cleanup never delays recording start.
+    const openMicStopped = stopOpenMicInBackground();
     const { provider, model, effortLevel, repoPath } = prepareRecording();
     setOverlayRecordingInfo(repoPath, model);
 
@@ -297,7 +304,10 @@ function createRecordingFlowStore() {
       await setupAudioVisualizationListener();
     }
 
-    await recording.startRecording(currentSettings.audio.device_id || undefined);
+    await Promise.all([
+      openMicStopped,
+      recording.startRecording(currentSettings.audio.device_id || undefined),
+    ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
     await overlay.show();
   }
@@ -325,7 +335,7 @@ function createRecordingFlowStore() {
   async function startRecordingFromHotkey() {
     if (get(isRecording)) return;
 
-    await openMic.stop();
+    const openMicStopped = stopOpenMicInBackground();
 
     const mainWindow = getCurrentWindow();
     wasAppFocusedOnRecordStart = await mainWindow.isFocused();
@@ -339,7 +349,10 @@ function createRecordingFlowStore() {
       await setupAudioVisualizationListener();
     }
 
-    await recording.startRecording(currentSettings.audio.device_id || undefined);
+    await Promise.all([
+      openMicStopped,
+      recording.startRecording(currentSettings.audio.device_id || undefined),
+    ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
 
     if (!wasAppFocusedOnRecordStart || currentSettings.overlay.show_when_focused) {
@@ -391,7 +404,7 @@ function createRecordingFlowStore() {
   async function startRecordingFromOpenMic() {
     if (get(isRecording)) return;
 
-    await openMic.stop();
+    const openMicStopped = stopOpenMicInBackground();
 
     const mainWindow = getCurrentWindow();
     wasAppFocusedOnRecordStart = await mainWindow.isFocused();
@@ -405,7 +418,10 @@ function createRecordingFlowStore() {
       await setupAudioVisualizationListener();
     }
 
-    await recording.startRecording(currentSettings.audio.device_id || undefined);
+    await Promise.all([
+      openMicStopped,
+      recording.startRecording(currentSettings.audio.device_id || undefined),
+    ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
     await overlay.show();
 
@@ -436,8 +452,10 @@ function createRecordingFlowStore() {
     if (get(isRecording)) return;
     update((s) => ({ ...s, isRecordingForSetup: true }));
 
-    await openMic.stop();
-    await recording.startRecording();
+    await Promise.all([
+      stopOpenMicInBackground(),
+      recording.startRecording(get(settings).audio.device_id || undefined),
+    ]);
   }
 
   /** Stop recording for session setup view. Returns the transcript (null on failure). */

@@ -99,8 +99,7 @@
       <div>
         <label class="text-sm font-medium text-text-secondary">Developer Mode</label>
         <p class="text-xs text-text-muted">
-          Surfaces debug-only features, including the Recordings Log
-          (captures recent recordings + all transcription stages)
+          Surfaces experimental features
         </p>
       </div>
       <input

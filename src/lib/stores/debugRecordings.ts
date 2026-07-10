@@ -6,9 +6,6 @@
  * stages — Vosk real-time, Whisper raw, and the LLM cleanup result — so a
  * developer can replay the audio and inspect exactly what each stage produced.
  *
- * Capture is gated on Developer Mode (`settings.system.dev_mode`): when it's off
- * the store is a no-op, so there's zero overhead in normal use.
- *
  * The list is trimmed to the {@link MAX_RECORDINGS} newest entries; audio for
  * evicted entries is deleted from disk so storage stays bounded. Metadata is
  * persisted via the `get_debug_recordings` / `save_debug_recordings` Tauri
@@ -18,7 +15,6 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 
-import { settings } from '$lib/stores/settings';
 import type { EffortLevel } from '$lib/stores/sdkSessions';
 
 // ---------------------------------------------------------------------------
@@ -84,10 +80,6 @@ export interface CaptureInput {
 // Store
 // ---------------------------------------------------------------------------
 
-function isDevMode(): boolean {
-  return get(settings)?.system?.dev_mode === true;
-}
-
 function createDebugRecordingsStore() {
   const { subscribe, set, update } = writable<DebugRecording[]>([]);
 
@@ -134,8 +126,6 @@ function createDebugRecordingsStore() {
    * saved to disk in the background.
    */
   function capture(input: CaptureInput) {
-    if (!isDevMode()) return;
-
     const entry: DebugRecording = {
       id: input.id,
       createdAt: Date.now(),
@@ -173,11 +163,10 @@ function createDebugRecordingsStore() {
 
   /**
    * Merge a patch into an existing recording (e.g. Whisper result, cleanup,
-   * recommendations arriving later). No-op if the id is unknown or dev mode is
-   * off. Does not create entries.
+   * recommendations arriving later). No-op if the id is unknown. Does not
+   * create entries.
    */
   function patch(id: string, updates: Partial<DebugRecording>) {
-    if (!isDevMode()) return;
     let found = false;
     update((items) =>
       items.map((item) => {

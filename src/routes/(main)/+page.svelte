@@ -75,10 +75,14 @@
           focusPromptInput: () => void;
           startInlineRecording: () => Promise<void>;
           stopInlineRecording: () => Promise<void>;
+          startSendRecording: () => Promise<void>;
+          stopSendRecording: () => Promise<void>;
         } | null;
       }
     | undefined;
   let isHoldingSpaceForInlineRecording = $state(false);
+  /** Whether the current page-level hold is the Shift+Space record-and-send variant. */
+  let holdSpaceIsSendVariant = false;
 
   // Show the multi-pane conversation area when any pane holds a session, or when
   // the user has split into multiple panes (even if the focused one is empty).
@@ -144,7 +148,8 @@
   function canUseHoldSpaceInlineRecording(event: KeyboardEvent): boolean {
     if (!$settings.audio.hold_space_to_record_inline) return false;
     if (event.code !== 'Space') return false;
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+    // Shift selects the record-and-send variant; other modifiers are ignored.
+    if (event.altKey || event.ctrlKey || event.metaKey) return false;
     if (isInteractiveTarget(event.target)) return false;
     if (!$activeSdkSession) return false;
     if (currentView !== 'sessions') return false;
@@ -155,17 +160,27 @@
   }
 
   async function handleInlineRecordingSpaceDown(event: KeyboardEvent) {
-    if (event.repeat || isHoldingSpaceForInlineRecording) return;
+    // Swallow key-repeats while a hold is live so Space doesn't also scroll.
+    if (isHoldingSpaceForInlineRecording && event.code === 'Space') {
+      event.preventDefault();
+      return;
+    }
+    if (event.repeat) return;
     if (!canUseHoldSpaceInlineRecording(event)) return;
     if ($isRecording) return;
 
     event.preventDefault();
     isHoldingSpaceForInlineRecording = true;
+    holdSpaceIsSendVariant = event.shiftKey;
 
     try {
-      await sessionPanesRef?.getFocusedSdkViewRef()?.startInlineRecording();
+      const view = sessionPanesRef?.getFocusedSdkViewRef();
+      if (holdSpaceIsSendVariant) await view?.startSendRecording();
+      else await view?.startInlineRecording();
       if (!isHoldingSpaceForInlineRecording && $isRecording) {
-        await sessionPanesRef?.getFocusedSdkViewRef()?.stopInlineRecording();
+        // Released before start settled — stop through the same variant.
+        if (holdSpaceIsSendVariant) await view?.stopSendRecording();
+        else await view?.stopInlineRecording();
       }
     } catch (error) {
       isHoldingSpaceForInlineRecording = false;
@@ -178,7 +193,9 @@
     isHoldingSpaceForInlineRecording = false;
 
     try {
-      await sessionPanesRef?.getFocusedSdkViewRef()?.stopInlineRecording();
+      const view = sessionPanesRef?.getFocusedSdkViewRef();
+      if (holdSpaceIsSendVariant) await view?.stopSendRecording();
+      else await view?.stopInlineRecording();
     } catch (error) {
       console.error('[sessions-page] Failed to stop inline hold-to-record:', error);
     }
@@ -375,8 +392,6 @@
           initialCwd={activeSession.setupRepoPath || activeSession.cwd || $activeRepo?.path || ''}
           initialWorktreeMode={activeSession.setupWorktreeMode || 'main'}
           initialWorktreePath={activeSession.setupWorktreePath || ''}
-          initialReadOnlyMode={activeSession.readOnlyMode || false}
-          initialPlaywrightQa={activeSession.playwrightQa || false}
           initialDraftPrompt={activeSession.draftPrompt || ''}
           initialDraftImages={activeSession.draftImages || []}
           providerLocked={!!activeSession.forkedFromSessionId}
@@ -413,7 +428,6 @@
           provider={activeSession.provider}
           autocompactEnabled={activeSession.autocompactEnabled ?? true}
           disableHooks={activeSession.disableHooks ?? false}
-          playwrightQa={activeSession.playwrightQa ?? false}
           createdBranch={activeSession.createdBranch}
           currentBranch={activeSession.currentBranch}
           changedFileCount={activeSession.changedFileCount}
@@ -457,7 +471,6 @@
             provider={activeSession.provider}
             autocompactEnabled={activeSession.autocompactEnabled ?? true}
             disableHooks={activeSession.disableHooks ?? false}
-            playwrightQa={activeSession.playwrightQa ?? false}
             createdBranch={activeSession.createdBranch}
             currentBranch={activeSession.currentBranch}
             changedFileCount={activeSession.changedFileCount}

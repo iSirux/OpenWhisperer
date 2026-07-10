@@ -6,7 +6,8 @@
   import { repos } from '$lib/stores/repos';
   import RepoSelector from '$lib/components/RepoSelector.svelte';
   import PromptChips from '$lib/components/PromptChips.svelte';
-  import { appendChips, mergeChips } from '$lib/utils/promptChips';
+  import { appendChips } from '$lib/utils/promptChips';
+  import SdkQuickActions from '$lib/components/sdk/SdkQuickActions.svelte';
   import { isRecording, isTranscribing } from '$lib/stores/recording';
   import { holdSpaceRecord } from '$lib/actions/holdSpaceRecord';
   import {
@@ -45,13 +46,11 @@
     model: string;
     effortLevel: EffortLevel;
     cwd: string;
-    readOnlyMode: boolean;
     provider?: SdkProvider;
     worktreeMode?: 'main' | 'new' | 'existing';
     worktreeBranch?: string;
     worktreeRepoPath?: string;
     worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
-    playwrightQa?: boolean;
   }
 
   interface Props {
@@ -62,8 +61,6 @@
     initialCwd?: string;
     initialWorktreeMode?: 'main' | 'new' | 'existing';
     initialWorktreePath?: string;
-    initialReadOnlyMode?: boolean;
-    initialPlaywrightQa?: boolean;
     initialDraftPrompt?: string;
     initialDraftImages?: SdkImageContent[];
     providerLocked?: boolean;
@@ -92,8 +89,6 @@
     initialCwd = '',
     initialWorktreeMode = 'main',
     initialWorktreePath = '',
-    initialReadOnlyMode = false,
-    initialPlaywrightQa = false,
     initialDraftPrompt = '',
     initialDraftImages = [],
     providerLocked = false,
@@ -115,7 +110,6 @@
   let model = $state(initialModel);
   let effortLevel = $state<EffortLevel>(normalizeEffortLevel(initialEffortLevel));
   let cwd = $state(initialCwd);
-  let readOnlyMode = $state(initialReadOnlyMode);
   let selectedChips = $state<string[]>([]);
   let pendingImages = $state<ImageData[]>(toImageData(initialDraftImages));
   let isProcessingImages = $state(false);
@@ -133,9 +127,6 @@
   let isLoadingWorktrees = $state(false);
   let isCreatingWorktree = $state(false);
   let showWorktreeDropdown = $state(false);
-
-  // Playwright QA state
-  let playwrightQa = $state(initialPlaywrightQa !== undefined ? initialPlaywrightQa : true);
 
   // Derived state
   const activeRepos = $derived(($repos.list || []).filter((r) => r.active !== false));
@@ -169,7 +160,6 @@
       cwd = initialCwd;
       worktreeMode = initialWorktreeMode;
       selectedWorktreePath = initialWorktreePath;
-      readOnlyMode = initialReadOnlyMode;
       prompt = initialDraftPrompt;
       pendingImages = toImageData(initialDraftImages);
       selectedChips = [];
@@ -249,7 +239,6 @@
       setupWorktreePath: selectedWorktreePath,
       currentBranch: null,
       provider,
-      readOnlyMode,
     });
   });
 
@@ -258,7 +247,8 @@
    * when in "new"/"existing" worktree mode. Shared by "Start" (launch now) and "Schedule for later"
    * (defer via the Smart Queue). Returns null if worktree creation failed.
    */
-  async function resolveStartConfig(): Promise<SetupLaunchConfig | null> {
+  async function resolveStartConfig(promptOverride?: string): Promise<SetupLaunchConfig | null> {
+    const effectivePrompt = (promptOverride ?? prompt).trim();
     const imageContent: SdkImageContent[] | undefined = pendingImages.length > 0
       ? toSdkImageContent(pendingImages)
       : undefined;
@@ -272,7 +262,7 @@
       isCreatingWorktree = true;
       try {
         const branchName = await invoke<string>('generate_worktree_branch_name', {
-          prompt: prompt.trim(),
+          prompt: effectivePrompt,
           repoPath: cwd,
         });
 
@@ -307,18 +297,16 @@
     }
 
     return {
-      prompt: appendChips(prompt.trim(), selectedChips),
+      prompt: appendChips(effectivePrompt, selectedChips),
       images: imageContent,
       model,
       effortLevel,
       cwd: effectiveCwd,
-      readOnlyMode,
       provider,
       worktreeMode: worktreeMode !== 'main' ? worktreeMode : undefined,
       worktreeBranch,
       worktreeRepoPath,
       worktreePostSetup,
-      playwrightQa: playwrightQa || undefined,
     };
   }
 
@@ -333,11 +321,16 @@
     }
   }
 
-  /** Quickship: select this chip and immediately start the session with the current prompt. */
-  async function handleQuickship(chip: string) {
-    if (!canStart || isStarting) return;
-    selectedChips = mergeChips(selectedChips, [chip]);
-    await handleStart();
+  /** Quick action: immediately start the session with the action's prompt (ignores the draft). */
+  async function handleQuickAction(actionPrompt: string) {
+    if (isStarting) return;
+    isStarting = true;
+    try {
+      const config = await resolveStartConfig(actionPrompt);
+      if (config) await onStart(config);
+    } finally {
+      isStarting = false;
+    }
   }
 
   async function handleSchedule(window: QueueWindow) {
@@ -368,7 +361,6 @@
       model,
       effortLevel,
       cwd,
-      readOnlyMode,
       provider,
     });
   }
@@ -543,31 +535,6 @@
 
     <div class="options-grid">
       <div class="option-row option-row--wide">
-        <div class="session-control-row session-control-row--double">
-          <div class="option-cell">
-            <label class="option-label">Access</label>
-            <div class="mode-toggle">
-              <button
-                class="mode-btn"
-                class:active={!readOnlyMode}
-                onclick={() => { readOnlyMode = false; }}
-              >
-                Full
-              </button>
-              <button
-                class="mode-btn readonly"
-                class:active={readOnlyMode}
-                onclick={() => { readOnlyMode = true; }}
-                title="Read-only tools (Read, Glob, Grep) + WebSearch"
-              >
-                Readonly
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="option-row option-row--wide">
         <div class="session-control-row" class:session-control-row--triple={(openaiAvailable || providerLocked) && (modelSupportsEffort(model) || isAutoModel(model))} class:session-control-row--double={!(openaiAvailable || providerLocked) || !(modelSupportsEffort(model) || isAutoModel(model))}>
           {#if openaiAvailable && !providerLocked}
             <div class="option-cell">
@@ -686,27 +653,6 @@
               </div>
             </div>
 
-            <div class="worktree-cell">
-              <label class="option-label">Browser</label>
-              <div class="mode-toggle">
-                <button
-                  class="mode-btn"
-                  class:active={!playwrightQa}
-                  onclick={() => { playwrightQa = false; }}
-                >
-                  Off
-                </button>
-                <button
-                  class="mode-btn playwright"
-                  class:active={playwrightQa}
-                  onclick={() => { playwrightQa = true; }}
-                  title="Enable Playwright MCP — gives Claude browser control for QA testing"
-                >
-                  Playwright
-                </button>
-              </div>
-            </div>
-
             {#if worktreeMode === 'existing'}
               <div class="worktree-cell">
                 <label class="option-label">Existing Worktree</label>
@@ -816,7 +762,7 @@
           stop: onStopRecording,
           onState: (s) => (isAwaitingTranscript = s === 'transcribing'),
         }}
-        placeholder={'Enter your prompt... (Ctrl+V to paste images)'}
+        placeholder={`Enter your prompt... (Ctrl+V to paste images${$settings.audio.hold_space_to_record_inline ? ', hold Space to dictate' : ''})`}
         rows="1"
       ></textarea>
 
@@ -825,13 +771,10 @@
       </div>
 
       <div class="chips-row">
-        <PromptChips
-          selected={selectedChips}
-          onchange={(next) => (selectedChips = next)}
-          onQuickship={handleQuickship}
-          quickshipDisabled={!canStart || isStarting}
-        />
+        <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
       </div>
+
+      <SdkQuickActions onSendPrompt={handleQuickAction} />
     </div>
 
     <!-- Action Buttons -->
@@ -1126,10 +1069,6 @@
     background: var(--color-accent);
     color: white;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-  }
-
-  .mode-btn.readonly.active {
-    background: #475569;
   }
 
   /* Model Selector */
@@ -1536,10 +1475,6 @@
   /* Worktree toggle */
   .mode-btn.worktree.active {
     background: #059669;
-  }
-
-  .mode-btn.playwright.active {
-    background: #7c3aed;
   }
 
   /* Worktree selector */

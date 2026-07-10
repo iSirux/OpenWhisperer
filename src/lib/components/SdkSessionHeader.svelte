@@ -42,7 +42,6 @@
      *  going lower just wastes context without preventing single-turn tool-result overflows. */
     autocompactEnabled?: boolean;
     disableHooks?: boolean;
-    playwrightQa?: boolean;
     createdBranch?: string | null;
     currentBranch?: string | null;
     /** Number of files changed in this session's cwd. Badge hidden when 0/undefined. */
@@ -69,7 +68,6 @@
     provider = 'claude',
     autocompactEnabled = true,
     disableHooks = false,
-    playwrightQa = false,
     createdBranch = null,
     currentBranch = null,
     changedFileCount = undefined,
@@ -289,11 +287,6 @@
       {#if effortLabel}
         <span class="px-1.5 py-0.5 text-[10px] font-medium bg-cyan-600/20 text-cyan-400 rounded flex-shrink-0">
           {effortLabel}
-        </span>
-      {/if}
-      {#if playwrightQa}
-        <span class="px-1.5 py-0.5 text-[10px] font-medium bg-purple-600/20 text-purple-400 rounded flex-shrink-0">
-          Playwright
         </span>
       {/if}
     </div>

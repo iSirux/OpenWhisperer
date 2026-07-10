@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { get } from 'svelte/store';
   import { settings } from '$lib/stores/settings';
   import { sdkSessions, activeSdkSessionId, type SdkImageContent, type EffortLevel, settingsToStoreEffort } from '$lib/stores/sdkSessions';
   import { activeSessionId } from '$lib/stores/sessions';
@@ -15,11 +14,9 @@
     currentModel: string;
     /** Current session's effort level */
     currentEffortLevel?: EffortLevel;
-    /** Whether the source session had Playwright QA enabled */
-    playwrightQa?: boolean;
   }
 
-  let { prompt, images, currentCwd, currentModel, currentEffortLevel = null, playwrightQa = false }: Props = $props();
+  let { prompt, images, currentCwd, currentModel, currentEffortLevel = null }: Props = $props();
 
   function handleRerun() {
     const model = currentModel || $settings.default_model;
@@ -34,13 +31,6 @@
       repoPath
     );
     sdkSessions.updateDraft(newSessionId, prompt, images);
-
-    // Carry over playwrightQa flag so the new session setup view has it pre-checked
-    if (playwrightQa) {
-      sdkSessions.set(
-        get(sdkSessions).map(s => s.id === newSessionId ? { ...s, playwrightQa: true } : s)
-      );
-    }
 
     // Select the new session (clear PTY selection first)
     activeSessionId.set(null);

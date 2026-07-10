@@ -7,8 +7,9 @@ import { DEFAULT_OPENAI_MODEL_ID } from '$lib/utils/models';
 /**
  * Create and activate a new session using the current settings.
  * Works for both SDK and PTY modes.
+ * In SDK mode, `repoPath` preselects the repository in the setup view.
  */
-export async function createAndActivateNewSession(): Promise<void> {
+export async function createAndActivateNewSession(repoPath?: string): Promise<void> {
   const currentSettings = get(settings);
   const terminalMode = getEffectiveTerminalMode(currentSettings);
 
@@ -18,7 +19,7 @@ export async function createAndActivateNewSession(): Promise<void> {
       ? (currentSettings.openai_model || DEFAULT_OPENAI_MODEL_ID)
       : currentSettings.default_model;
     const effortLevel = settingsToStoreEffort(currentSettings.default_effort_level);
-    const sessionId = sdkSessions.createSetupSession(model, effortLevel, provider);
+    const sessionId = sdkSessions.createSetupSession(model, effortLevel, provider, repoPath ?? '');
     activeSdkSessionId.set(sessionId);
     activeSessionId.set(null);
     window.dispatchEvent(new CustomEvent('switch-to-sessions'));

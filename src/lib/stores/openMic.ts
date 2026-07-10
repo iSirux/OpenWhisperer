@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { settings, OPEN_MIC_PRESETS } from "./settings";
 import { transcriptEndsWithCommand } from "$lib/utils/voiceCommands";
+import { acquireMicStream, type MicLease } from "./micStream";
 
 export type OpenMicState =
   | "disabled"
@@ -31,6 +32,8 @@ function createOpenMicStore() {
 
   // Audio context and processor for passive listening
   let mediaStream: MediaStream | null = null;
+  // Lease on the shared mic stream — released (never track-stopped) in cleanup.
+  let micLease: MicLease | null = null;
   let audioContext: AudioContext | null = null;
   let audioSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
   let processor: ScriptProcessorNode | null = null;
@@ -169,11 +172,10 @@ function createOpenMicStore() {
     // Wrap the async initialization in a tracked promise
     startPromise = (async () => {
     try {
-      // Request microphone access (use same constraints as recording store)
-      const deviceId = currentSettings.audio.device_id;
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-      });
+      // Lease the shared mic stream (same device as recordings, so a recording
+      // starting while open mic listens attaches to the already-open stream)
+      micLease = await acquireMicStream(currentSettings.audio.device_id || undefined);
+      mediaStream = micLease.stream;
 
       // Create visualization context (matches recording store's audio pipeline)
       // This adds another consumer to the audio stream for consistent timing
@@ -518,11 +520,11 @@ function createOpenMicStore() {
       audioContext = null;
     }
 
-    // Stop media stream
-    if (mediaStream) {
-      mediaStream.getTracks().forEach((track) => track.stop());
-      mediaStream = null;
-    }
+    // Release the shared mic stream (tracks stay live for other consumers —
+    // e.g. the recording that triggered this stop)
+    micLease?.release();
+    micLease = null;
+    mediaStream = null;
 
     // Stop the backend realtime session
     try {

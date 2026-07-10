@@ -51,7 +51,6 @@
         session.effortLevel,
         session.provider,
         session.cwd,
-        session.readOnlyMode ?? false,
       );
       activeSessionId.set(null);
       activeSdkSessionId.set(newId);

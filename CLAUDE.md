@@ -67,7 +67,7 @@ Most routes live in the `(main)` route group, which shares `(main)/+layout.svelt
 - `archive.ts` - Archived-session index (search, entries with cost/duration/message counts)
 - `launchProfiles.ts` - Launch profile runtimes per repo (running launches, queued launch waiting for an agent)
 - `sequences.ts` / `sequenceExecutions.ts` - Sequence definitions (YAML import/export) and live execution state (node results, logs, notifications)
-- `debugRecordings.ts` - Bounded rolling debug log (20 newest) of recordings with audio + all transcription stages; no-op unless `settings.system.dev_mode`
+- `debugRecordings.ts` - Bounded rolling log (20 newest) of recordings with audio + all transcription stages; always on
 - `noMistakes.ts` - No Mistakes run store (see No Mistakes Integration)
 
 **Components (`src/lib/components/`):**
@@ -83,13 +83,13 @@ Core UI:
 - `PileList.svelte` - Pile tab in the sidebar: pile item cards with multi-select and batch launch actions
 - `PileDetailView.svelte` - Main-pane editor for a pile item (transcript, repo/model, audio playback, re-transcribe, launch)
 - `ArchiveView.svelte` / `ArchiveEntryItem.svelte` - Archived sessions browser
-- `NotionKanban.svelte` - Notion-backed kanban board; cards can be launched as sessions (via the shared session queue)
+- `NotionKanban.svelte` - Notion-backed kanban board; cards can be launched as sessions (via the shared session queue). Rail button shown only in dev mode (`settings.system.dev_mode`)
 - `SessionCard.svelte` - Card component for sessions-view grid display
 - `SessionHeader.svelte` / `SdkSessionHeader.svelte` - Active session metadata display (PTY / SDK)
 - `SessionSidebarHeader.svelte` - Sidebar header with session controls
 - `EmptySessionPlaceholder.svelte` - Placeholder for empty session state
 - `SessionPendingView.svelte` - View for sessions in pending states (repo selection, transcription)
-- `SessionSetupView.svelte` - **The manual "New Session" form** (the fields-and-textarea view: Mode/Access/Provider/Model/Effort/Repository/Worktree/Browser + "Your prompt" + Record/Start Session). This is the typed/manual entry point, distinct from the voice-recording prepared/approval flow in `sdk/SessionRecordingHeader.svelte`. Its `onStart` config is the choke point where the final prompt is assembled. Helpers in `session-setup/sessionSetupHelpers.ts`.
+- `SessionSetupView.svelte` - **The manual "New Session" form** (the fields-and-textarea view: Provider/Model/Effort/Repository/Worktree + "Your prompt" + Record/Start Session). This is the typed/manual entry point, distinct from the voice-recording prepared/approval flow in `sdk/SessionRecordingHeader.svelte`. Its `onStart` config is the choke point where the final prompt is assembled. Helpers in `session-setup/sessionSetupHelpers.ts`.
 - `PromptChips.svelte` - Reusable toggleable prompt-chip row (chip set from `settings.prompt_chips`); selected chips are appended to the prompt on send. Used in `SessionSetupView`, `sdk/SessionRecordingHeader` (prepared + approval), and `PileDetailView`. See `src/lib/utils/promptChips.ts` (`appendChips`/`mergeChips`).
 - `Terminal.svelte` - xterm.js terminal with WebGL rendering for PTY sessions
 - `ModelSelector.svelte` - Model selection (per-provider model lists + Auto)
@@ -125,7 +125,7 @@ Core UI:
 
 **Settings Components (`src/lib/components/settings/`):**
 
-Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Microphone, Audio, Voice Commands, Transcription, LLM, Smart Queue (QueueTab), MCP, Hotkeys, Overlay, Sequences, Recordings Log (dev mode only), About.
+Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Microphone, Audio, Voice Commands, Transcription, LLM, Smart Queue (QueueTab), MCP, Hotkeys, Overlay, Sequences, Recordings Log, About.
 
 - `GeneralTab.svelte` - General settings (terminal mode, language)
 - `ClaudeTab.svelte` / `CodexTab.svelte` - Per-provider settings (auth method, models, execution mode)
@@ -142,7 +142,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `HotkeysTab.svelte` - Global hotkey configuration
 - `OverlayTab.svelte` - Overlay window settings (position, visibility, transparency)
 - `SequencesTab.svelte` - Sequence engine settings (notification channels)
-- `RecordingsLogTab.svelte` - Dev-only playback of the debug recordings log (audio + each transcription stage)
+- `RecordingsLogTab.svelte` - Playback of the recordings log (audio + each transcription stage)
 - `ReposTab.svelte` - Repository management (exported but repo management primarily lives in the repository rail/view)
 - `AboutTab.svelte` - Version/about info
 
@@ -235,7 +235,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `screenshot_cmds.rs` - Screen capture (`capture_screenshot`, xcap)
 - `image_cmds.rs` - `fetch_remote_image`: backend fetch of remote images (bypasses webview CORS, e.g. pasted Google-Docs HTML)
 - `docker_cmds.rs` - `run_docker_setup`: one-click Docker setup for local STT servers (embeds `docker/` build contexts into the binary, writes them + a setup script to the config dir, launches a terminal running docker build/run)
-- `debug_recordings_cmds.rs` - Debug recordings log persistence (dev mode)
+- `debug_recordings_cmds.rs` - Recordings log persistence
 - `sequence_cmds.rs` - Sequence engine commands
 - `notion_cmds.rs` - Notion card integration
 - `no_mistakes_cmds.rs` - No Mistakes run commands
@@ -443,9 +443,9 @@ Passive voice listening that activates recording when wake commands are detected
 3. User speaks prompt → normal recording flow continues
 4. Recording stops → transcription and prompt processing as usual
 
-## Debug Recordings Log (Dev Mode)
+## Recordings Log
 
-When `settings.system.dev_mode` is on, `stores/debugRecordings.ts` keeps a bounded rolling log (20 newest) of every recording: the audio plus each transcription stage (realtime, Whisper raw, LLM-cleaned). Playback and inspection in Settings → Recordings Log. Persistence via `debug_recordings_cmds.rs`; audio for evicted entries is deleted so storage stays bounded. Zero overhead when dev mode is off.
+`stores/debugRecordings.ts` keeps a bounded rolling log (20 newest) of every recording: the audio plus each transcription stage (realtime, Whisper raw, LLM-cleaned). Always on. Playback and inspection in Settings → Recordings Log. Persistence via `debug_recordings_cmds.rs`; audio for evicted entries is deleted so storage stays bounded.
 
 ## LLM Integration (Gemini/OpenAI/Groq/Local)
 

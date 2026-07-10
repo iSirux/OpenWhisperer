@@ -5,6 +5,7 @@ import { usageStats } from './usageStats';
 import { settings } from './settings';
 import { debugRecordings } from './debugRecordings';
 import { processVoiceCommand } from '$lib/utils/voiceCommands';
+import { acquireMicStream, type MicLease } from './micStream';
 
 export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 'error';
 
@@ -53,6 +54,8 @@ function createRecordingStore() {
   });
 
   let mediaRecorder: MediaRecorder | null = null;
+  // Lease on the shared mic stream — released (never track-stopped) on stop/cancel.
+  let micLease: MicLease | null = null;
   let audioChunks: Blob[] = [];
   let audioContext: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
@@ -77,6 +80,19 @@ function createRecordingStore() {
   let voiceCommandTriggered: boolean = false;
   // Flag to prevent concurrent realtime session starts
   let realtimeSessionStarting: boolean = false;
+  // In-flight background realtime start (recording no longer awaits it).
+  // Stop paths settle this first so they can't race a half-started session.
+  let realtimeStartPromise: Promise<void> | null = null;
+
+  async function settleRealtimeStart() {
+    if (realtimeStartPromise) {
+      try {
+        await realtimeStartPromise;
+      } catch {
+        // Realtime start failures are already logged and non-fatal.
+      }
+    }
+  }
 
   // Convert Float32 audio samples to Int16 for real-time transcription
   function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
@@ -113,8 +129,9 @@ function createRecordingStore() {
     }
     realtimeSessionStarting = true;
 
-    // Clean up any existing session first (guard against listener leaks)
-    await stopRealtimeSession();
+    // Clean up any existing session first (guard against listener leaks);
+    // joins a still-draining stop from the previous recording if there is one.
+    await stopRealtimeSessionShared();
 
     // Reset voice command flag for new session
     voiceCommandTriggered = false;
@@ -275,7 +292,7 @@ function createRecordingStore() {
     } catch (error) {
       console.error('Failed to start realtime session:', error);
       // Clean up on error
-      await stopRealtimeSession();
+      await stopRealtimeSessionShared();
     } finally {
       realtimeSessionStarting = false;
     }
@@ -365,6 +382,20 @@ function createRecordingStore() {
     realtimeFinalSegments = [];
     update((s) => ({ ...s, realtimeSessionId: null, realtimeTranscript: '' }));
     return harvested;
+  }
+
+  // De-dupes concurrent stops: with the Whisper enqueue no longer waiting for
+  // the realtime finalize, a new recording can start while the previous
+  // session's harvest is still draining — its startRealtimeSession cleanup
+  // must join that in-flight stop, not race it.
+  let realtimeStopPromise: Promise<string> | null = null;
+  function stopRealtimeSessionShared(): Promise<string> {
+    if (!realtimeStopPromise) {
+      realtimeStopPromise = stopRealtimeSession().finally(() => {
+        realtimeStopPromise = null;
+      });
+    }
+    return realtimeStopPromise;
   }
 
   function startVisualizationBroadcast(stream: MediaStream) {
@@ -544,11 +575,10 @@ function createRecordingStore() {
       let stream: MediaStream | null = null;
 
       try {
-        const constraints: MediaStreamConstraints = {
-          audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-        };
-
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        // Shared mic stream: when open mic (or a recent recording) already has
+        // the device open, this returns instantly instead of re-acquiring it.
+        micLease = await acquireMicStream(deviceId);
+        stream = micLease.stream;
         mediaRecorder = new MediaRecorder(stream, {
           mimeType: 'audio/webm;codecs=opus',
         });
@@ -566,29 +596,29 @@ function createRecordingStore() {
         // Start broadcasting audio visualization data to all windows
         startVisualizationBroadcast(stream);
 
-        // Start real-time transcription if enabled (wrapped in try-catch to not fail recording)
-        const realtimeSessionId = `rt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        try {
-          await startRealtimeSession(stream, realtimeSessionId);
-        } catch (realtimeError) {
-          // Log but don't fail recording if realtime transcription fails
-          console.warn('[recording] Realtime session failed to start, continuing without real-time transcription:', realtimeError);
-        }
-
-        // Also emit recording state change
+        // Audio is being captured — show 'recording' NOW. The realtime engine
+        // connects in the background so the UI never waits on a WebSocket
+        // handshake; its failure is non-fatal (recording works without it).
         emit('recording-state', { state: 'recording' });
-
         update((s) => ({ ...s, state: 'recording', error: null, transcript: '', realtimeTranscript: '', stream }));
+
+        const realtimeSessionId = `rt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        realtimeStartPromise = startRealtimeSession(stream, realtimeSessionId)
+          .catch((realtimeError) => {
+            console.warn('[recording] Realtime session failed to start, continuing without real-time transcription:', realtimeError);
+          })
+          .finally(() => {
+            realtimeStartPromise = null;
+          });
       } catch (error) {
         console.error('Failed to start recording:', error);
 
         // Clean up any resources that were allocated before the error
         await stopVisualizationBroadcast();
-        await stopRealtimeSession();
+        await stopRealtimeSessionShared();
 
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop());
-        }
+        micLease?.release();
+        micLease = null;
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
           try {
             mediaRecorder.stop();
@@ -616,7 +646,7 @@ function createRecordingStore() {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
           // Still need to clean up visualization and realtime transcription even if mediaRecorder is inactive
           stopVisualizationBroadcast().catch(console.error);
-          stopRealtimeSession().catch(console.error);
+          settleRealtimeStart().then(() => stopRealtimeSessionShared()).catch(console.error);
           emit('recording-state', { state: 'idle' });
           resolve(null);
           return;
@@ -645,19 +675,29 @@ function createRecordingStore() {
           update((s) => ({ ...s, lastDebugId: debugId }));
 
           const transcriptionMode = get(settings).vosk?.transcription_mode ?? 'Both';
-          let harvestedTranscript = '';
-          // Raw Vosk harvest kept regardless of mode, for the debug log.
-          let voskHarvest = '';
-          try {
-            // Stop real-time transcription (wrapped in try-catch to ensure promise resolves)
-            const harvested = await stopRealtimeSession();
-            voskHarvest = harvested;
-            if (autoTranscribe && transcriptionMode !== 'Whisper') {
-              harvestedTranscript = harvested;
+
+          // Finalize the realtime engine in the BACKGROUND — its eof drain
+          // takes up to ~1.5s and the Whisper request doesn't need the
+          // harvest, so awaiting it here would delay every transcription.
+          // The harvest is awaited only where it's actually consumed:
+          // Realtime-only mode (it IS the transcript) and the 'Both'-mode
+          // Whisper-failure fallback. Settling a still-connecting background
+          // start first ensures we can't miss a session registering mid-stop.
+          const harvestPromise: Promise<string> = (async () => {
+            try {
+              await settleRealtimeStart();
+              return await stopRealtimeSessionShared();
+            } catch (realtimeError) {
+              console.warn('[recording] Error stopping realtime session:', realtimeError);
+              return '';
             }
-          } catch (realtimeError) {
-            console.warn('[recording] Error stopping realtime session:', realtimeError);
-          }
+          })();
+          // Debug log (dev mode): attach the raw harvest whenever it lands.
+          const attachHarvestToDebugLog = () => {
+            harvestPromise.then((harvest) => {
+              if (harvest) debugRecordings.update(debugId, { voskTranscript: harvest });
+            });
+          };
 
           let durationMs: number | undefined;
           try {
@@ -672,66 +712,73 @@ function createRecordingStore() {
             const arrayBuffer = await audioBlob.arrayBuffer();
             const audioData = new Uint8Array(arrayBuffer);
 
-            // Clean up media resources immediately
-            mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
+            // Clean up media resources immediately (release the shared stream,
+            // never stop its tracks — open mic may still be using it)
+            micLease?.release();
+            micLease = null;
             mediaRecorder = null;
             audioChunks = [];
 
-            if (autoTranscribe && harvestedTranscript && transcriptionMode === 'Realtime') {
+            if (autoTranscribe && transcriptionMode === 'Realtime') {
               // Realtime-only mode: the harvest IS the transcript — no capture
-              // staging or Whisper round-trip. (In 'Both' mode we deliberately
+              // staging or Whisper round-trip — so this is the one mode that
+              // must wait for the finalize. (In 'Both' mode we deliberately
               // fall through to the Whisper queue below so BOTH engines run and
               // the realtime harvest feeds the dual-source cleanup.)
-              console.log('[recording] Realtime transcript used, skipping Whisper:', harvestedTranscript);
-              usageStats.trackTranscription();
-              update((s) => ({
-                ...s,
-                state: 'idle',
-                audioData,
-                stream: null,
-                transcript: harvestedTranscript,
-              }));
-              emit('recording-state', { state: 'idle' });
-              emit('transcription-complete', { id: generateId(), transcript: harvestedTranscript });
-              debugRecordings.capture({
-                id: debugId,
-                audioData,
-                durationMs,
-                transcriptionMode,
-                voskTranscript: voskHarvest,
-              });
-              resolve(harvestedTranscript);
-            } else if (autoTranscribe && transcriptionMode === 'Realtime') {
-              // Realtime-only with an empty harvest: there is no Whisper to
-              // fall back to, so surface it as a transcription failure — the
-              // callers' failure paths salvage the audio (pile).
-              console.error('[recording] Realtime-only mode but the realtime harvest was empty');
-              update((s) => ({ ...s, state: 'idle', audioData, stream: null }));
-              emit('recording-state', { state: 'idle' });
-              debugRecordings.capture({
-                id: debugId,
-                audioData,
-                durationMs,
-                transcriptionMode,
-                voskTranscript: voskHarvest,
-                error: 'Real-time transcription produced no text',
-              });
-              reject(new Error(
-                'Real-time transcription produced no text (Realtime-only mode; is the live engine running?)'
-              ));
+              const harvestedTranscript = await harvestPromise;
+              if (harvestedTranscript) {
+                console.log('[recording] Realtime transcript used, skipping Whisper:', harvestedTranscript);
+                usageStats.trackTranscription();
+                update((s) => ({
+                  ...s,
+                  state: 'idle',
+                  audioData,
+                  stream: null,
+                  transcript: harvestedTranscript,
+                }));
+                emit('recording-state', { state: 'idle' });
+                emit('transcription-complete', { id: generateId(), transcript: harvestedTranscript });
+                debugRecordings.capture({
+                  id: debugId,
+                  audioData,
+                  durationMs,
+                  transcriptionMode,
+                  voskTranscript: harvestedTranscript,
+                });
+                resolve(harvestedTranscript);
+              } else {
+                // Empty harvest: there is no Whisper to fall back to, so
+                // surface it as a transcription failure — the callers'
+                // failure paths salvage the audio (pile).
+                console.error('[recording] Realtime-only mode but the realtime harvest was empty');
+                update((s) => ({ ...s, state: 'idle', audioData, stream: null }));
+                emit('recording-state', { state: 'idle' });
+                debugRecordings.capture({
+                  id: debugId,
+                  audioData,
+                  durationMs,
+                  transcriptionMode,
+                  error: 'Real-time transcription produced no text',
+                });
+                reject(new Error(
+                  'Real-time transcription produced no text (Realtime-only mode; is the live engine running?)'
+                ));
+              }
             } else if (autoTranscribe) {
-              // Queue the transcription instead of blocking. Reuse debugId so the
+              // Whisper / Both: queue the Whisper transcription IMMEDIATELY —
+              // the realtime engine finalizes concurrently. Reuse debugId so the
               // capture, queue item and debug-log entry all share one id.
               const recordingId = debugId;
 
-              // Debug log: record audio + Vosk now; Whisper/error is filled in below.
+              // Debug log: record audio now; the harvest and Whisper/error
+              // stages are attached as they land.
               debugRecordings.capture({
                 id: debugId,
                 audioData,
                 durationMs,
                 transcriptionMode,
-                voskTranscript: voskHarvest || undefined,
               });
+              attachHarvestToDebugLog();
 
               // Capture-first durability: stage the audio to disk BEFORE attempting
               // transcription so an app crash mid-transcribe can't lose the recording.
@@ -767,15 +814,18 @@ function createRecordingStore() {
                       debugRecordings.update(recordingId, { whisperTranscript: transcript });
                       resolve(transcript);
                     },
-                    onError: (transcriptionError: Error) => {
+                    onError: async (transcriptionError: Error) => {
                       debugRecordings.update(recordingId, {
                         error: transcriptionError?.message || 'Transcription failed',
                       });
                       // 'Both' mode: Whisper is the primary transcript but a
-                      // realtime harvest is available — fall back to it rather
-                      // than losing the recording to the pile when Whisper is
-                      // unreachable. (In 'Whisper' mode harvestedTranscript is
-                      // always empty, so this reject path is unchanged there.)
+                      // realtime harvest may be available — fall back to it
+                      // rather than losing the recording to the pile when
+                      // Whisper is unreachable. This is the only spot in the
+                      // Whisper path that needs the harvest, so it alone waits
+                      // for the finalize. ('Whisper' mode never uses it.)
+                      const harvestedTranscript =
+                        transcriptionMode !== 'Whisper' ? await harvestPromise : '';
                       if (harvestedTranscript) {
                         console.warn(
                           '[recording] Whisper failed in Both mode; falling back to realtime harvest:',
@@ -804,8 +854,8 @@ function createRecordingStore() {
                 audioData,
                 durationMs,
                 transcriptionMode,
-                voskTranscript: voskHarvest || undefined,
               });
+              attachHarvestToDebugLog();
               resolve(null);
             }
           } catch (error) {
@@ -881,11 +931,13 @@ function createRecordingStore() {
 
     async cancelRecording() {
       stopVisualizationBroadcast();
-      await stopRealtimeSession();
+      await settleRealtimeStart();
+      await stopRealtimeSessionShared();
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
-        mediaRecorder.stream.getTracks().forEach((track) => track.stop());
       }
+      micLease?.release();
+      micLease = null;
       mediaRecorder = null;
       audioChunks = [];
       set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0, realtimeTranscript: '', realtimeSessionId: null, lastDebugId: null });

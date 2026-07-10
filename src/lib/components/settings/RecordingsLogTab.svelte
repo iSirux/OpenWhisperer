@@ -49,8 +49,6 @@
     }
   }
 
-  const devMode = $derived($settings.system.dev_mode);
-
   // Display name for the configured real-time provider (the "Vosk" field in the
   // log is provider-agnostic — Moonshine is the default now, not Vosk).
   const REALTIME_PROVIDER_LABELS: Record<string, string> = {
@@ -70,9 +68,8 @@
     <div>
       <h3 class="text-sm font-medium text-text-primary">Recordings Log</h3>
       <p class="text-xs text-text-muted mt-1 max-w-lg">
-        A rolling debug log of the {MAX_RECORDINGS} most recent recordings — audio plus
-        every transcription stage (real-time, Whisper, and LLM cleanup). Captured only
-        while Developer Mode is on.
+        A rolling log of the {MAX_RECORDINGS} most recent recordings — audio plus
+        every transcription stage (real-time, Whisper, and LLM cleanup).
       </p>
     </div>
     {#if $debugRecordings.length > 0}
@@ -84,13 +81,6 @@
       </button>
     {/if}
   </div>
-
-  {#if !devMode}
-    <div class="text-xs text-text-muted border border-border rounded p-3">
-      Developer Mode is off — new recordings won't be logged. Enable it in
-      Settings → System.
-    </div>
-  {/if}
 
   {#if $debugRecordings.length === 0}
     <div class="text-sm text-text-muted border border-border rounded p-6 text-center">

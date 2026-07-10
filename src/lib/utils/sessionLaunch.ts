@@ -60,7 +60,6 @@ export interface LaunchSessionOptions {
   useWorktree?: boolean;
   /** Hint used to generate the worktree branch name (defaults to the prompt). */
   branchNameHint?: string;
-  playwrightQa?: boolean;
   systemPrompt?: string;
   tag?: SessionTag;
 }
@@ -126,7 +125,6 @@ export async function launchSession(opts: LaunchSessionOptions): Promise<string>
     systemPrompt: opts.systemPrompt,
     createdBranch,
     worktreePostSetup,
-    playwrightQa: opts.playwrightQa,
   });
 
   return sessionId;

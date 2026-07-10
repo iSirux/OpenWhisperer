@@ -72,6 +72,12 @@
     ) => void;
   } = $props();
 
+  const holdSpaceHint = $derived(
+    $settings.audio.hold_space_to_record_inline
+      ? ", hold Space to dictate, +Shift to send"
+      : ""
+  );
+
   // Local state for immediate responsiveness, synced from props
   let prompt = $state(draftPrompt);
   let pendingImages = $state<ImageData[]>(
@@ -307,11 +313,13 @@
   let countdown7d = $derived(formatCountdown(reset7dMs));
 
   let hasDraft = $derived(prompt.trim().length > 0 || pendingImages.length > 0);
-  // The dropdown is only meaningful for a live session that can take a follow-up
-  // turn: not while querying/recording, and only when there's something to send.
+  // The caret is always shown for a schedulable (live) session; it's just
+  // disabled when it can't be acted on rather than hidden.
+  let showScheduleCaret = $derived(showScheduleSend && !!onScheduleSend);
+  // The dropdown can only be acted on for a live session that can take a
+  // follow-up turn: not while querying/recording, and only with a draft.
   let canScheduleSend = $derived(
-    showScheduleSend &&
-      !!onScheduleSend &&
+    showScheduleCaret &&
       !isQuerying &&
       !isRecording &&
       !isTranscribing &&
@@ -467,18 +475,30 @@
       onpaste={handlePaste}
       use:holdSpaceRecord={{
         enabled: $settings.audio.hold_space_to_record_inline,
+        // Note: no isQuerying guard — like the mic button, dictating while the
+        // agent works is fine (the transcript lands in the prompt, not sent).
         canStart: () =>
           !isRecording &&
           !isTranscribing &&
           !isInlineRecording &&
-          !isInlineTranscribing &&
-          !isQuerying,
+          !isInlineTranscribing,
         start: onStartInlineRecording,
         stop: () => onInlineTranscribe?.() ?? Promise.resolve(null),
+        // Shift+Space: record-and-send immediately (the mic-button flow)
+        // instead of inserting the transcript into the prompt.
+        shift: {
+          canStart: () =>
+            !isRecording &&
+            !isTranscribing &&
+            !isInlineRecording &&
+            !isInlineTranscribing,
+          start: onStartRecording,
+          stop: onStopRecording,
+        },
       }}
       placeholder={pendingImages.length > 0
-        ? "Add a message about the image(s)... (Enter to send)"
-        : "Enter your prompt... (Ctrl+V to paste images, Enter to send)"}
+        ? `Add a message about the image(s)... (Enter to send${holdSpaceHint})`
+        : `Enter your prompt... (Ctrl+V to paste images, Enter to send${holdSpaceHint})`}
       rows="1"
     ></textarea>
     {#if isInlineTranscribing}
@@ -586,17 +606,20 @@
     <div class="send-split">
       <button
         class="send-main"
-        class:has-caret={canScheduleSend}
+        class:has-caret={showScheduleCaret}
         onclick={handleSendPrompt}
-        disabled={!prompt.trim() && pendingImages.length === 0}
+        disabled={(!prompt.trim() && pendingImages.length === 0) ||
+          isRecording ||
+          isTranscribing}
         title={isQuerying ? "Send and interrupt" : "Send"}
       >
         Send
       </button>
-      {#if canScheduleSend}
+      {#if showScheduleCaret}
         <button
           class="send-caret"
           onclick={() => (scheduleMenuOpen = !scheduleMenuOpen)}
+          disabled={!canScheduleSend}
           title="Send on next usage-window reset"
           aria-label="Send options"
           aria-haspopup="menu"
