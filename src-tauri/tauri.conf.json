@@ -68,7 +68,7 @@
             "open": true
         },
         "updater": {
-            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ0MTY1QTIyRjY2RjJGOTIKUldTU0wyLzJJbG9XMUUvMHBkQi9zYk5lS05ZZ1BodW52Q2lPeTRIZnZZVngxTnN5OUdtcXlEelUK",
+            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2Mjg0MzUzOTZBM0ZFOUYKUldTZi9xT1dVME1vOW5iekpXWURhbldyQkgvNk5EeGE2SzNlbHhTcWhoK0ZGMUlpeUhMZDlCTXAK",
             "endpoints": [
                 "https://github.com/iSirux/OpenWhisperer/releases/latest/download/latest.json"
             ],

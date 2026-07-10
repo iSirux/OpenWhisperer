@@ -10,6 +10,8 @@ OpenWhisperer is a Tauri v2 desktop application that provides a voice-controlled
 
 ## Development Commands
 
+**Package manager: npm.** `package-lock.json` is the canonical (and only) lockfile — never use pnpm or yarn here. A stray `pnpm-lock.yaml` once made the Tauri CLI read stale package versions and fail `tauri build` with a version-mismatch error.
+
 ```bash
 # Full development - builds sidecar then runs Tauri dev (uses src-tauri/tauri.dev.conf.json)
 npm run tauri:dev
@@ -340,7 +342,7 @@ In-app updates via the Tauri v2 updater plugin (`tauri-plugin-updater` + `tauri-
 
 - **Endpoint:** static `latest.json` on the newest GitHub release (`https://github.com/iSirux/OpenWhisperer/releases/latest/download/latest.json`), generated automatically by `tauri-apps/tauri-action` in `.github/workflows/release.yml` (both matrix arches merge into one manifest). `bundle.createUpdaterArtifacts` is enabled in `tauri.conf.json`.
 - **Signing:** updates are minisign-verified against the `pubkey` in `tauri.conf.json`. CI signs with the `TAURI_SIGNING_PRIVATE_KEY` repo secret (no password); the private key lives at `~/.tauri/openwhisperer.key` on the maintainer's machine. Losing it means existing installs can never update again.
-- **Versioning:** the release workflow stamps the `workflow_dispatch` version input into `tauri.conf.json` before building — the updater compares against that version, so releases don't require a manual version bump in git.
+- **Versioning:** the release workflow auto-computes the next version from the latest `v*` git tag (bump type selectable at dispatch: minor default / patch / major, plus an explicit override input) and stamps it into `tauri.conf.json` before building — the updater compares against that version, so releases don't require a manual version bump in git. Git tags are the source of truth for computing the next version; after a successful release a final workflow job commits the new version back to `main` (`tauri.conf.json`, `package.json`, `package-lock.json`) so the checked-in manifests stay in sync.
 - **Frontend:** `stores/updater.ts` (check/download/install state machine); startup check in `(main)/+layout.svelte` per `system.update_check` (Off | Notify | Auto, default Notify; skipped in dev builds); header pill in `AppHeader` when an update is available (links to Settings → About); manual check + install UI in `AboutTab`; mode selector in `SystemTab`.
 - **Windows:** `installMode: "passive"` — the app exits while the installer runs, so post-install "restart" UI is only reachable on macOS/Linux.
 
@@ -359,6 +361,7 @@ In-app updates via the Tauri v2 updater plugin (`tauri-plugin-updater` + `tauri-
 - **Effort Levels:** Per-session effort selection (off/low/medium/high/xhigh/max)
 - **Plan Approval:** Native SDK plan mode surfaced as an approve/deny dialog (`PlanApprovalDialog`)
 - **Subagent Tracking:** Visual indicators when the agent spawns subagents
+- **Background Task Tracking:** SDK `task_started`/`task_notification` events feed `SdkSession.liveBackgroundTasks`, classified as `agent` (background subagents, task_type `local_agent`/`local_workflow`), `command` (backgrounded bash expected to finish — defers session completion like subagents), or `server` (bash matching `settings.server_command_patterns`, e.g. `npm run dev` — shown as running but never blocks completion; patterns editable in Settings → General). Caveats learned from real traffic: the SDK emits task events for FOREGROUND bash too (the vast majority), so `local_bash` tasks are only tracked when the correlated Bash `tool_use` has `run_in_background: true`; and `task_notification` arrives with `taskType` undefined, so bash-ness on completion is resolved from the tracked task or the tool_use block. Bash task events are never rendered as transcript messages (the Bash tool block already renders the run); background tasks survive across turns and are cleared on stop/error/restart
 - **Per-Session Models & Providers:** Each session tracks its own provider/model selection independently
 - **Fork & Rerun:** Fork a session; re-run a prompt (`ForkButton`, `RerunDropdown`)
 - **Rate-Limit Handling:** Rate-limited turns are kept on the session and re-sent by the Smart Queue when the window resets

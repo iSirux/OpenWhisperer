@@ -80,7 +80,8 @@
   $effect(() => {
     const currentHotkey = $settings.hotkeys.toggle_recording;
     const enabledState = $settings.hotkeys_enabled;
-    if (hotkeyManager.checkForHotkeyChange(currentHotkey, enabledState)) {
+    const voiceModeDisabled = $settings.system.voice_mode_disabled;
+    if (hotkeyManager.checkForHotkeyChange(currentHotkey, enabledState, voiceModeDisabled)) {
       hotkeyManager.setup({
         onStartRecording: () => recordingFlow.startRecordingFromHotkey(),
         onStopAndSend: () => recordingFlow.stopRecordingFromHotkey(),
@@ -94,7 +95,7 @@
 
   // Effect to manage open mic lifecycle
   $effect(() => {
-    const openMicEnabled = $settings.audio.open_mic.enabled;
+    const openMicEnabled = $settings.audio.open_mic.enabled && !$settings.system.voice_mode_disabled;
     const voskEnabled = $settings.vosk?.enabled ?? false;
     const vosk = $settings.vosk;
     const provider = vosk?.provider ?? "Vosk";

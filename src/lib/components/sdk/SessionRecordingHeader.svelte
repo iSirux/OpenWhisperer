@@ -494,13 +494,13 @@
           bind:value={editedPrompt}
           oninput={autoResizeTextarea}
           use:holdSpaceRecord={{
-            enabled: $settings.audio.hold_space_to_record_inline,
+            enabled: $settings.audio.hold_space_to_record_inline && !$settings.system.voice_mode_disabled,
             canStart: () => !$isRecording && !$isTranscribing,
             start: dictation.start,
             stop: dictation.stop,
           }}
           class="prompt-textarea"
-          placeholder={`Enter your prompt...${$settings.audio.hold_space_to_record_inline ? ' (hold Space to dictate)' : ''}`}
+          placeholder={`Enter your prompt...${$settings.audio.hold_space_to_record_inline && !$settings.system.voice_mode_disabled ? ' (hold Space to dictate)' : ''}`}
           rows="2"
         ></textarea>
       </div>

@@ -3,6 +3,7 @@ export { default as ClaudeTab } from "./ClaudeTab.svelte";
 export { default as CodexTab } from "./CodexTab.svelte";
 export { default as ThemesTab } from "./ThemesTab.svelte";
 export { default as SystemTab } from "./SystemTab.svelte";
+export { default as DeveloperTab } from "./DeveloperTab.svelte";
 export { default as MicrophoneTab } from "./MicrophoneTab.svelte";
 export { default as AudioTab } from "./AudioTab.svelte";
 export { default as WhisperTab } from "./WhisperTab.svelte";

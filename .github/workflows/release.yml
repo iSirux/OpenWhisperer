@@ -3,13 +3,59 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version (e.g., v0.1.0)'
+      bump:
+        description: 'Version bump type (from the latest v* tag)'
         required: true
+        type: choice
+        options:
+          - minor
+          - patch
+          - major
+        default: minor
+      version:
+        description: 'Explicit version override (e.g., v1.0.0). Leave empty to auto-bump.'
+        required: false
         type: string
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - name: Checkout (full history for tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: next
+        shell: bash
+        run: |
+          override="${{ inputs.version }}"
+          if [ -n "$override" ]; then
+            next="v${override#v}"
+          else
+            current=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+            if [ -z "$current" ]; then
+              current="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+            fi
+            IFS=. read -r major minor patch <<< "${current#v}"
+            case "${{ inputs.bump }}" in
+              major) next="v$((major + 1)).0.0" ;;
+              minor) next="v${major}.$((minor + 1)).0" ;;
+              patch) next="v${major}.${minor}.$((patch + 1))" ;;
+            esac
+          fi
+          if ! [[ "$next" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Computed version '$next' is not a valid vX.Y.Z version" >&2
+            exit 1
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "Releasing $next (previous: ${current:-none})"
+
   build-windows:
+    needs: version
     runs-on: windows-latest
     strategy:
       matrix:
@@ -28,11 +74,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+          cache: npm
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -46,7 +88,7 @@ jobs:
           key: ${{ matrix.arch }}
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: npm ci
 
       - name: Install sidecar dependencies
         run: npm install
@@ -55,7 +97,7 @@ jobs:
       - name: Stamp version into tauri.conf.json
         shell: pwsh
         run: |
-          $version = "${{ inputs.version }}".TrimStart("v")
+          $version = "${{ needs.version.outputs.version }}".TrimStart("v")
           $confPath = "src-tauri/tauri.conf.json"
           $conf = Get-Content $confPath -Raw | ConvertFrom-Json
           $conf.version = $version
@@ -67,11 +109,53 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ inputs.version }}
-          releaseName: 'OpenWhisperer ${{ inputs.version }}'
+          tagName: ${{ needs.version.outputs.version }}
+          releaseName: 'OpenWhisperer ${{ needs.version.outputs.version }}'
           releaseBody: 'See the assets below to download and install.'
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.rust-target }}
+
+  commit-version-bump:
+    needs: [version, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Stamp version into manifests
+        shell: bash
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          node - "${v#v}" <<'EOF'
+          const fs = require('fs');
+          const version = process.argv[2];
+          for (const file of ['src-tauri/tauri.conf.json', 'package.json', 'package-lock.json']) {
+            const raw = fs.readFileSync(file, 'utf8');
+            const indent = /^([ \t]+)"/m.exec(raw)?.[1] ?? '    ';
+            const json = JSON.parse(raw);
+            json.version = version;
+            if (json.packages && json.packages['']) json.packages[''].version = version;
+            fs.writeFileSync(file, JSON.stringify(json, null, indent) + '\n');
+          }
+          EOF
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/tauri.conf.json package.json package-lock.json
+          if git diff --cached --quiet; then
+            echo "Version already up to date, nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore: bump version to ${{ needs.version.outputs.version }} [skip ci]"
+          git pull --rebase origin main
+          git push origin main

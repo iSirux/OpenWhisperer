@@ -129,6 +129,7 @@
   let showWorktreeDropdown = $state(false);
 
   // Derived state
+  const noVoice = $derived($settings.system.voice_mode_disabled);
   const activeRepos = $derived(($repos.list || []).filter((r) => r.active !== false));
   const isAutoRepoMode = $derived(!cwd || cwd === '.');
   const isSmartModelEnabled = $derived(
@@ -756,13 +757,13 @@
         onkeydown={handleKeydown}
         onpaste={handlePaste}
         use:holdSpaceRecord={{
-          enabled: $settings.audio.hold_space_to_record_inline,
+          enabled: $settings.audio.hold_space_to_record_inline && !noVoice,
           canStart: () => !$isRecording && !$isTranscribing && !isAwaitingTranscript,
           start: onStartRecording,
           stop: onStopRecording,
           onState: (s) => (isAwaitingTranscript = s === 'transcribing'),
         }}
-        placeholder={`Enter your prompt... (Ctrl+V to paste images${$settings.audio.hold_space_to_record_inline ? ', hold Space to dictate' : ''})`}
+        placeholder={`Enter your prompt... (Ctrl+V to paste images${$settings.audio.hold_space_to_record_inline && !noVoice ? ', hold Space to dictate' : ''})`}
         rows="1"
       ></textarea>
 
@@ -779,26 +780,28 @@
 
     <!-- Action Buttons -->
     <div class="action-row">
-      {#if isAwaitingTranscript || $isTranscribing}
-        <button class="record-btn transcribing" disabled>
-          <div class="transcribing-spinner"></div>
-          Transcribing...
-        </button>
-      {:else if $isRecording && isRecordingForSetup}
-        <button class="record-btn recording" onclick={handleStopRecording}>
-          <div class="recording-dot"></div>
-          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
-          </svg>
-          Stop Recording
-        </button>
-      {:else if !$isRecording}
-        <button class="record-btn" onclick={onStartRecording}>
-          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
-          </svg>
-          Record
-        </button>
+      {#if !noVoice}
+        {#if isAwaitingTranscript || $isTranscribing}
+          <button class="record-btn transcribing" disabled>
+            <div class="transcribing-spinner"></div>
+            Transcribing...
+          </button>
+        {:else if $isRecording && isRecordingForSetup}
+          <button class="record-btn recording" onclick={handleStopRecording}>
+            <div class="recording-dot"></div>
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+            </svg>
+            Stop Recording
+          </button>
+        {:else if !$isRecording}
+          <button class="record-btn" onclick={onStartRecording}>
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+            </svg>
+            Record
+          </button>
+        {/if}
       {/if}
 
       <button
@@ -850,7 +853,7 @@
         </div>
       {/if}
 
-      {#if onToPile}
+      {#if onToPile && !noVoice}
         <button
           class="pile-btn"
           onclick={handleToPile}

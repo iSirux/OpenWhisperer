@@ -24,6 +24,7 @@ import {
   buildAllReposContext,
 } from '$lib/composables/useTranscriptionProcessor.svelte';
 import { generateSessionName, isRepoAutoSelectEnabled } from '$lib/utils/llm';
+import { debugRecordings } from '$lib/stores/debugRecordings';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -91,6 +92,9 @@ export interface AddRecordingInput {
   model?: string;
   effortLevel?: EffortLevel;
   title?: string;
+  /** Debug-recordings log entry for this recording, so the background LLM
+   *  pipeline can attach its cleanup stage to the log. Not persisted. */
+  debugRecordingId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +216,7 @@ function createPileStore() {
    * Run the full processing pipeline on an item: cleanup → repo rec → model
    * rec → title. Each step is best-effort; the item always ends 'ready'.
    */
-  async function processItem(id: string) {
+  async function processItem(id: string, debugRecordingId?: string) {
     const item = getItem(id);
     if (!item || !item.transcript.trim()) return;
 
@@ -234,6 +238,14 @@ function createPileStore() {
         cleanupCorrections: cleanupResult.corrections,
         usedDualSource: cleanupResult.usedDualSource,
       });
+      if (debugRecordingId) {
+        debugRecordings.update(debugRecordingId, {
+          cleanedTranscript: finalTranscript,
+          wasCleanedUp: cleanupResult.wasCleanedUp,
+          cleanupCorrections: cleanupResult.corrections,
+          usedDualSource: cleanupResult.usedDualSource,
+        });
+      }
     } catch (error) {
       console.error('[pile] Cleanup failed:', error);
     }
@@ -352,7 +364,7 @@ function createPileStore() {
 
     if (hasTranscript) {
       if (shouldProcess) {
-        void processItem(id);
+        void processItem(id, input.debugRecordingId);
       } else if (!input.title) {
         void generateTitle(id);
       }

@@ -12,6 +12,7 @@
 </script>
 
 <div class="space-y-4">
+  {#if !$settings.system.voice_mode_disabled}
   <div class="p-3 bg-surface-elevated rounded border border-border">
     <p class="text-xs text-text-muted">
       <strong class="text-text-secondary">Recording flow:</strong> Press
@@ -149,6 +150,7 @@
       enabled={$settings.hotkeys_enabled.cycle_model}
     />
   </div>
+  {/if}
 
   <!-- New Session -->
   <div class="border-t border-border pt-4">

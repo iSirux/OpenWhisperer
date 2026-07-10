@@ -364,7 +364,7 @@
         bind:value={editedTranscript}
         onblur={saveTranscript}
         use:holdSpaceRecord={{
-          enabled: $settings.audio.hold_space_to_record_inline,
+          enabled: $settings.audio.hold_space_to_record_inline && !$settings.system.voice_mode_disabled,
           canStart: () => !$isRecording && !$isTranscribing,
           start: dictation.start,
           stop: dictation.stop,
@@ -372,7 +372,7 @@
             if (s === 'idle') saveTranscript();
           },
         }}
-        placeholder={`Transcript...${$settings.audio.hold_space_to_record_inline ? ' (hold Space to dictate)' : ''}`}
+        placeholder={`Transcript...${$settings.audio.hold_space_to_record_inline && !$settings.system.voice_mode_disabled ? ' (hold Space to dictate)' : ''}`}
       ></textarea>
       {#if showRaw && item.rawTranscript}
         <div class="mt-2 p-3 bg-surface rounded border border-border/50 text-xs text-text-muted whitespace-pre-wrap">

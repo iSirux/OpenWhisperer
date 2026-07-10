@@ -26,6 +26,7 @@
   let selectedModel = $derived(currentProvider === 'openai' ? $settings.openai_model : $settings.default_model);
   let defaultEffortLevel = $derived(settingsToStoreEffort($settings.default_effort_level));
   let autoModelEffort = $derived($settings.llm.features.auto_model_effort);
+  const noVoice = $derived($settings.system.voice_mode_disabled);
   let recording = $derived($isRecording);
   let recordingForNewSession = $derived($isRecordingForNewSession);
   let pending = $derived($pendingTranscriptions);
@@ -160,7 +161,7 @@
       size="sm"
       maxVisible={3}
       dropdownDirection="down"
-      notice={recording ? 'Recording - switch repository for this prompt' : undefined}
+      notice={recording && !noVoice ? 'Recording - switch repository for this prompt' : undefined}
       onAddRepo={handleAddRepo}
     />
 
@@ -238,43 +239,45 @@
     <!-- Smart Queue Indicator (queued count + next reset) -->
     <QueueIndicator />
 
-    <!-- Open Mic Marquee (shows live transcription when listening) -->
-    <OpenMicMarquee />
+    {#if !noVoice}
+      <!-- Open Mic Marquee (shows live transcription when listening) -->
+      <OpenMicMarquee />
 
-    <!-- Record Button -->
-    {#if recording && recordingForNewSession}
-      <button
-        class="px-3 py-1.5 text-sm bg-recording hover:bg-recording/90 text-white rounded transition-colors flex items-center gap-2"
-        onclick={handleStopRecording}
-        title={`Stop recording and ${recordStopVerb}`}
-      >
-        <div class="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-        {#if recordStopVerb === 'prepare'}
-          Stop & Prepare
-        {:else}
-          Stop & Send
-        {/if}
-      </button>
-    {:else if !recording}
-      <div class="flex items-center gap-2">
-        <!-- Pending transcriptions indicator -->
-        {#if pending > 0}
-          <div class="flex items-center gap-1.5 px-2 py-1 bg-warning/20 text-warning rounded text-xs" title="Transcriptions in progress">
-            <div class="w-2 h-2 bg-warning rounded-full animate-pulse"></div>
-            <span>{pending}</span>
-          </div>
-        {/if}
+      <!-- Record Button -->
+      {#if recording && recordingForNewSession}
         <button
-          class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors flex items-center gap-2"
-          onclick={handleStartRecording}
-          title="Record voice prompt"
+          class="px-3 py-1.5 text-sm bg-recording hover:bg-recording/90 text-white rounded transition-colors flex items-center gap-2"
+          onclick={handleStopRecording}
+          title={`Stop recording and ${recordStopVerb}`}
         >
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
-          </svg>
-          Record
+          <div class="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+          {#if recordStopVerb === 'prepare'}
+            Stop & Prepare
+          {:else}
+            Stop & Send
+          {/if}
         </button>
-      </div>
+      {:else if !recording}
+        <div class="flex items-center gap-2">
+          <!-- Pending transcriptions indicator -->
+          {#if pending > 0}
+            <div class="flex items-center gap-1.5 px-2 py-1 bg-warning/20 text-warning rounded text-xs" title="Transcriptions in progress">
+              <div class="w-2 h-2 bg-warning rounded-full animate-pulse"></div>
+              <span>{pending}</span>
+            </div>
+          {/if}
+          <button
+            class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors flex items-center gap-2"
+            onclick={handleStartRecording}
+            title="Record voice prompt"
+          >
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+            </svg>
+            Record
+          </button>
+        </div>
+      {/if}
     {/if}
 
     <!-- Settings Button -->

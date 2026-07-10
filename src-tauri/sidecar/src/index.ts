@@ -698,9 +698,10 @@ function sendTaskCompleted(
   toolUseId: string | undefined,
   status: string,
   summary: string,
+  taskType: string | undefined,
   usage?: { total_tokens: number; tool_uses: number; duration_ms: number }
 ): void {
-  send({ type: "task_completed", id, taskId, toolUseId, status, summary, usage });
+  send({ type: "task_completed", id, taskId, toolUseId, status, summary, taskType, usage });
 }
 
 function sendSdkSessionId(id: string, sdkSessionId: string): void {
@@ -1240,6 +1241,7 @@ function handleAppServerItemEvent(
         itemId,
         String(item.status || "completed"),
         agentStatus,
+        tool,
       );
       sendSubagentStop(id, agentId, "");
     }
@@ -2316,7 +2318,8 @@ function handleCodexItemEvent(
           typedItem.id,
           typedItem.id,
           typedItem.status || "completed",
-          agentStatus
+          agentStatus,
+          taskType
         );
         sendSubagentStop(id, agentId, "");
       }
@@ -4442,27 +4445,23 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       const sysMsg = message as { subtype?: string; task_id?: string; tool_use_id?: string; description?: string; task_type?: string; status?: string; summary?: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } };
       // The SDK emits task_started/task_notification for background-bash tasks
       // (task_type === "local_bash") in addition to the normal Bash tool_use
-      // block. Forwarding those duplicates the tool call in the UI, so skip
-      // them — the tool_use/tool_result pair already renders the bash run.
-      const isLocalBash = sysMsg.task_type === "local_bash";
+      // block. Forward everything — the frontend uses local_bash events for
+      // live-task tracking only (no transcript message), so the tool_use/
+      // tool_result pair stays the single rendering of the bash run.
       if (sysMsg.subtype === "task_started") {
         send({
           type: "debug",
           id,
-          message: `Task started: ${sysMsg.task_id} (toolUseId: ${sysMsg.tool_use_id}, taskType: ${sysMsg.task_type}, desc: ${sysMsg.description?.slice(0, 80)})${isLocalBash ? " [skipped: duplicates Bash tool_use]" : ""}`,
+          message: `Task started: ${sysMsg.task_id} (toolUseId: ${sysMsg.tool_use_id}, taskType: ${sysMsg.task_type}, desc: ${sysMsg.description?.slice(0, 80)})`,
         });
-        if (!isLocalBash) {
-          sendTaskStarted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.description || "", sysMsg.task_type);
-        }
+        sendTaskStarted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.description || "", sysMsg.task_type);
       } else if (sysMsg.subtype === "task_notification") {
         send({
           type: "debug",
           id,
-          message: `Task completed: ${sysMsg.task_id} (taskType: ${sysMsg.task_type}, status: ${sysMsg.status}, summary: ${sysMsg.summary?.slice(0, 80)})${isLocalBash ? " [skipped: duplicates Bash tool_use]" : ""}`,
+          message: `Task completed: ${sysMsg.task_id} (taskType: ${sysMsg.task_type}, status: ${sysMsg.status}, summary: ${sysMsg.summary?.slice(0, 80)})`,
         });
-        if (!isLocalBash) {
-          sendTaskCompleted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.status || "completed", sysMsg.summary || "", sysMsg.usage);
-        }
+        sendTaskCompleted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.status || "completed", sysMsg.summary || "", sysMsg.task_type, sysMsg.usage);
       }
       break;
     }

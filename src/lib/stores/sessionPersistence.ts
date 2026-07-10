@@ -32,7 +32,7 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
     'pendingSystemNotifications', // Transient parallel agent notifications - cleared after first query
     'overflowRecovery', // Transient compact-and-retry state for context overflow recovery
     'liveSubagentIds', // Runtime-only: subagents in flight this turn — nothing is live after restart
-    'liveBackgroundTaskIds', // Runtime-only: background tasks in flight — nothing is live after restart
+    'liveBackgroundTasks', // Runtime-only: background tasks in flight — nothing is live after restart
     'completionDeferred', // Runtime-only: deferred-completion flag, meaningless after restart
     'inFlightPrompt', // Smart Queue: transient capture of the current turn's prompt for mid-run recovery
     'inFlightImages', // Smart Queue: transient capture of the current turn's images for mid-run recovery

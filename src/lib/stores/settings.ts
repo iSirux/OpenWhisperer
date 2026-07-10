@@ -310,6 +310,8 @@ export interface SystemConfig {
   launch_terminal: LaunchTerminal;
   /** Developer mode: surfaces debug-only features such as the recordings log. */
   dev_mode: boolean;
+  /** Hide all voice/recording features (no-voice mode). */
+  voice_mode_disabled: boolean;
   /** Application update behavior on startup */
   update_check: UpdateCheckMode;
 }
@@ -559,6 +561,10 @@ export interface AppConfig {
   quick_actions: string[];
   /** User-defined toggleable prompt chips appended to prompts before sending */
   prompt_chips: string[];
+  /** Background bash commands matching one of these patterns (case-insensitive, word-boundary
+   *  substring) are treated as long-running servers: still shown as running, but never counted
+   *  as pending work and never delaying session completion */
+  server_command_patterns: string[];
 }
 
 const defaultConfig: AppConfig = {
@@ -728,6 +734,7 @@ const defaultConfig: AppConfig = {
     autostart: false,
     launch_terminal: "Cmd",
     dev_mode: false,
+    voice_mode_disabled: false,
     update_check: "Notify",
   },
   show_branch_in_sessions: true,
@@ -799,6 +806,35 @@ const defaultConfig: AppConfig = {
     "search web",
     "scan codebase",
     "brainstorm",
+  ],
+  // Keep in sync with default_server_command_patterns() in src-tauri/src/config/mod.rs
+  server_command_patterns: [
+    "npm run dev",
+    "npm start",
+    "yarn dev",
+    "yarn start",
+    "pnpm dev",
+    "pnpm start",
+    "vite",
+    "next dev",
+    "nuxt dev",
+    "astro dev",
+    "ng serve",
+    "expo start",
+    "tauri dev",
+    "tauri:dev",
+    "cargo watch",
+    "docker compose up",
+    "docker-compose up",
+    "http-server",
+    "http.server",
+    "flask run",
+    "uvicorn",
+    "rails server",
+    "php -S",
+    "nodemon",
+    "webpack serve",
+    "storybook",
   ],
 };
 

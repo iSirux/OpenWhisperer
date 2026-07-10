@@ -227,7 +227,8 @@ function createRecordingFlowStore() {
             transcript || '',
             sessionIdToProcess,
             capturedVoskTranscript,
-            transcript ? undefined : 'No transcription returned'
+            transcript ? undefined : 'No transcription returned',
+            debugId
           );
         } else if (transcript) {
           if (shouldPrepareOnStop && sessionIdToProcess) {

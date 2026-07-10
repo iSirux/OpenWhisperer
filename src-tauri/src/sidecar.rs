@@ -309,6 +309,8 @@ pub enum InboundMessage {
         tool_use_id: Option<String>,
         status: String,
         summary: String,
+        #[serde(rename = "taskType")]
+        task_type: Option<String>,
         usage: Option<serde_json::Value>,
     },
     /// AskUserQuestion tool - interactive questions for the user
@@ -570,6 +572,8 @@ struct TaskCompletedPayload {
     tool_use_id: Option<String>,
     status: String,
     summary: String,
+    #[serde(rename = "taskType")]
+    task_type: Option<String>,
     usage: Option<serde_json::Value>,
 }
 
@@ -1106,6 +1110,7 @@ impl SidecarManager {
                 tool_use_id,
                 status,
                 summary,
+                task_type,
                 usage,
             } => {
                 log::info!(
@@ -1123,6 +1128,7 @@ impl SidecarManager {
                         tool_use_id,
                         status,
                         summary,
+                        task_type,
                         usage,
                     },
                 );

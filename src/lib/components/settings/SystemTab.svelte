@@ -128,15 +128,15 @@
   <div class="border-t border-border pt-4 mt-4">
     <div class="flex items-center justify-between">
       <div>
-        <label class="text-sm font-medium text-text-secondary">Developer Mode</label>
+        <label class="text-sm font-medium text-text-secondary">No Voice Mode</label>
         <p class="text-xs text-text-muted">
-          Surfaces experimental features
+          Hide all voice, recording, and transcription features
         </p>
       </div>
       <input
         type="checkbox"
         class="toggle"
-        bind:checked={$settings.system.dev_mode}
+        bind:checked={$settings.system.voice_mode_disabled}
       />
     </div>
   </div>

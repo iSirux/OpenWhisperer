@@ -50,6 +50,8 @@ export function useHotkeyManager() {
 
   // Track last-known enabled state for change detection
   let lastEnabledState: string | null = null;
+  // Track last-known No Voice Mode flag so toggling it re-registers hotkeys.
+  let lastVoiceModeDisabled: boolean | null = null;
 
   // Callbacks stored from setup
   let callbacks: HotkeyCallbacks | null = null;
@@ -73,9 +75,12 @@ export function useHotkeyManager() {
 
       const currentSettings = get(settings);
       const enabled = currentSettings.hotkeys_enabled;
+      // No Voice Mode disables all voice/recording hotkeys (but keeps the
+      // selection hotkeys, which drive text-only flows).
+      const voiceDisabled = currentSettings.system.voice_mode_disabled;
 
       // Register toggle_recording hotkey (only if enabled)
-      if (enabled.toggle_recording) {
+      if (enabled.toggle_recording && !voiceDisabled) {
         console.log('[Hotkey] Registering toggle_recording:', currentSettings.hotkeys.toggle_recording);
 
         await register(currentSettings.hotkeys.toggle_recording, async () => {
@@ -163,7 +168,25 @@ export function useHotkeyManager() {
   /**
    * Check if the toggle_recording hotkey or enabled states have changed and re-register if needed
    */
-  function checkForHotkeyChange(currentHotkey: string, enabledState?: HotkeyEnabledConfig) {
+  function checkForHotkeyChange(
+    currentHotkey: string,
+    enabledState?: HotkeyEnabledConfig,
+    voiceModeDisabled?: boolean,
+  ) {
+    // Check if the No Voice Mode flag changed (it gates which hotkeys register)
+    if (voiceModeDisabled !== undefined) {
+      if (
+        lastVoiceModeDisabled !== null &&
+        voiceModeDisabled !== lastVoiceModeDisabled &&
+        callbacks
+      ) {
+        console.log('[Hotkey] Detected No Voice Mode change, re-registering...');
+        lastVoiceModeDisabled = voiceModeDisabled;
+        return true;
+      }
+      lastVoiceModeDisabled = voiceModeDisabled;
+    }
+
     // Check if enabled states changed
     if (enabledState) {
       const enabledStr = JSON.stringify(enabledState);
@@ -198,6 +221,7 @@ export function useHotkeyManager() {
     if (transcribeHotkeyRegistered) return;
 
     const currentSettings = get(settings);
+    if (currentSettings.system.voice_mode_disabled) return;
     if (!currentSettings.hotkeys_enabled.transcribe_to_input) {
       console.log('[Hotkey] transcribe_to_input is disabled, skipping registration');
       return;
@@ -230,6 +254,7 @@ export function useHotkeyManager() {
     if (pileHotkeyRegistered) return;
 
     const currentSettings = get(settings);
+    if (currentSettings.system.voice_mode_disabled) return;
     if (!currentSettings.hotkeys_enabled.pile_recording) {
       console.log('[Hotkey] pile_recording is disabled, skipping registration');
       return;
@@ -298,6 +323,7 @@ export function useHotkeyManager() {
     }
 
     const currentSettings = get(settings);
+    if (currentSettings.system.voice_mode_disabled) return;
     if (!currentSettings.hotkeys_enabled.cycle_repo) {
       console.log('[Hotkey] cycle_repo is disabled, skipping registration');
       return;
@@ -374,6 +400,7 @@ export function useHotkeyManager() {
     if (cycleModelHotkeyRegistered) return;
 
     const currentSettings = get(settings);
+    if (currentSettings.system.voice_mode_disabled) return;
     if (!currentSettings.hotkeys_enabled.cycle_model) {
       console.log('[Hotkey] cycle_model is disabled, skipping registration');
       return;

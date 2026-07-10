@@ -58,9 +58,21 @@
   // Current view from navigation store
   let currentView = $derived($navigation.mainView);
 
+  // No Voice Mode: the pile is a voice-recording inbox, so hide it entirely.
+  const noVoice = $derived($settings.system.voice_mode_disabled);
+
   // Selecting a session clears the pile selection (they share the main pane)
   $effect(() => {
     if ($activeSdkSessionId || $activeSessionId) {
+      selectedPileItemId.set(null);
+    }
+  });
+
+  // When No Voice Mode is on, force the sidebar back to Sessions and drop any
+  // stale pile selection so it can't occupy the main pane.
+  $effect(() => {
+    if (noVoice) {
+      sidebarTab.set('sessions');
       selectedPileItemId.set(null);
     }
   });
@@ -333,26 +345,28 @@
           markSessionsUnread={$settings.mark_sessions_unread}
           onShowSessions={showSessionsView}
         />
-        <div class="flex border-b border-border px-1.5 pt-1 gap-1 shrink-0">
-          <button
-            class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'sessions'
-              ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
-              : 'text-text-muted hover:text-text-secondary'}"
-            onclick={() => sidebarTab.set('sessions')}
-          >
-            Sessions
-          </button>
-          <button
-            class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'pile'
-              ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
-              : 'text-text-muted hover:text-text-secondary'}"
-            onclick={() => sidebarTab.set('pile')}
-          >
-            Pile{$pileCount > 0 ? ` (${$pileCount})` : ''}
-          </button>
-        </div>
+        {#if !noVoice}
+          <div class="flex border-b border-border px-1.5 pt-1 gap-1 shrink-0">
+            <button
+              class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'sessions'
+                ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
+                : 'text-text-muted hover:text-text-secondary'}"
+              onclick={() => sidebarTab.set('sessions')}
+            >
+              Sessions
+            </button>
+            <button
+              class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'pile'
+                ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
+                : 'text-text-muted hover:text-text-secondary'}"
+              onclick={() => sidebarTab.set('pile')}
+            >
+              Pile{$pileCount > 0 ? ` (${$pileCount})` : ''}
+            </button>
+          </div>
+        {/if}
         <div class="flex-1 overflow-hidden">
-          {#if $sidebarTab === 'pile'}
+          {#if $sidebarTab === 'pile' && !noVoice}
             <PileList />
           {:else}
             <SessionList {currentView} />

@@ -72,8 +72,10 @@
     ) => void;
   } = $props();
 
+  const noVoice = $derived($settings.system.voice_mode_disabled);
+
   const holdSpaceHint = $derived(
-    $settings.audio.hold_space_to_record_inline
+    $settings.audio.hold_space_to_record_inline && !noVoice
       ? ", hold Space to dictate, +Shift to send"
       : ""
   );
@@ -474,7 +476,7 @@
       onkeydown={handleKeydown}
       onpaste={handlePaste}
       use:holdSpaceRecord={{
-        enabled: $settings.audio.hold_space_to_record_inline,
+        enabled: $settings.audio.hold_space_to_record_inline && !noVoice,
         // Note: no isQuerying guard — like the mic button, dictating while the
         // agent works is fine (the transcript lands in the prompt, not sent).
         canStart: () =>
@@ -501,6 +503,7 @@
         : `Enter your prompt... (Ctrl+V to paste images, Enter to send${holdSpaceHint})`}
       rows="1"
     ></textarea>
+    {#if !noVoice}
     {#if isInlineTranscribing}
       <button
         class="inline-record-btn transcribing"
@@ -545,6 +548,7 @@
         </svg>
       </button>
     {/if}
+    {/if}
   </div>
   <div class="button-group">
     {#if isQuerying}
@@ -558,6 +562,7 @@
         </svg>
       </button>
     {/if}
+    {#if !noVoice}
     {#if isTranscribing}
       <button
         class="record-button transcribing"
@@ -602,6 +607,7 @@
           />
         </svg>
       </button>
+    {/if}
     {/if}
     <div class="send-split">
       <button

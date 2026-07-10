@@ -79,6 +79,8 @@
       new CustomEvent("open-settings", { detail: { tab: "audio" } })
     );
   }
+
+  const noVoice = $derived($settings.system.voice_mode_disabled);
 </script>
 
 <div class="start-panel flex flex-col h-full">
@@ -88,6 +90,7 @@
         <h2 class="text-2xl font-bold text-text-primary mb-2">Welcome</h2>
       </div>
 
+      {#if !noVoice}
       <!-- Microphone Selection -->
       <div
         class="bg-surface-elevated border border-border rounded-lg p-6 overflow-hidden"
@@ -405,6 +408,7 @@
           <span class="text-text-muted">Whisper</span>
         </div>
       </div>
+      {/if}
     </div>
   </div>
 </div>

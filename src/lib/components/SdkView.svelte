@@ -56,6 +56,7 @@
     buildSingleRepoContext,
   } from "$lib/composables/useTranscriptionProcessor.svelte";
   import { pile, sidebarTab } from "$lib/stores/pile";
+  import { debugRecordings } from "$lib/stores/debugRecordings";
   import { activeSdkSessionId } from "$lib/stores/sdkSessions";
   import { focusedPaneSessionId } from "$lib/stores/panes";
   import { get } from "svelte/store";
@@ -129,13 +130,21 @@
   let sessionOutcome = $derived(session?.aiMetadata?.outcome);
   let sessionCategory = $derived(session?.aiMetadata?.category);
   let isNewChat = $derived(messages.length === 0 && status === "idle");
-  // Semi-stop state: the main agent's turn ended (sdk-done) but background subagents are still
-  // running, so completion was deferred. Background tasks (bg bash etc.) don't block completion
-  // and can linger past a Done/idle status — surface both so the UI never reads as fully finished
-  // while real work continues. See SdkSession.liveSubagentIds / liveBackgroundTaskIds.
+  // Semi-stop state: the main agent's turn ended (sdk-done) but background subagents or
+  // background commands are still running, so completion was deferred. Server-classified
+  // commands can linger past a Done/idle status — surface everything so the UI never reads
+  // as fully finished while real work continues. See SdkSession.liveSubagentIds /
+  // liveBackgroundTasks.
   let completionDeferred = $derived(session?.completionDeferred ?? false);
   let liveSubagentCount = $derived(session?.liveSubagentIds?.length ?? 0);
-  let liveBackgroundTaskCount = $derived(session?.liveBackgroundTaskIds?.length ?? 0);
+  let liveBackgroundTasks = $derived(session?.liveBackgroundTasks ?? []);
+  // Background agents are seen through two channels (SubagentStart/Stop hooks and the task
+  // system) with uncorrelatable ids — take the max rather than double-counting.
+  let liveAgentCount = $derived(
+    Math.max(liveSubagentCount, liveBackgroundTasks.filter((t) => t.kind === "agent").length),
+  );
+  let liveCommandTasks = $derived(liveBackgroundTasks.filter((t) => t.kind === "command"));
+  let liveServerTasks = $derived(liveBackgroundTasks.filter((t) => t.kind === "server"));
   let autoModelRequested = $derived(session?.autoModelRequested ?? false);
   let sessionEffortLevel = $derived(session?.effortLevel ?? null);
   let forkSourceLabel = $derived(session?.forkedFromSessionLabel ?? "");
@@ -573,9 +582,13 @@
     }
 
     if (status === "querying") {
-      // Deferred completion: the main turn is done, we're just waiting on background subagents.
+      // Deferred completion: the main turn is done, we're just waiting on background
+      // subagents and/or background commands.
       if (completionDeferred && liveSubagentCount > 0) {
         return { status: "subagents", detail: String(liveSubagentCount) };
+      }
+      if (completionDeferred && liveCommandTasks.length > 0) {
+        return { status: "background_commands", detail: String(liveCommandTasks.length) };
       }
 
       // Check if we have any response content yet
@@ -638,6 +651,10 @@
         return smartStatus.detail === "1"
           ? "Finishing 1 background agent..."
           : `Finishing ${smartStatus.detail} background agents...`;
+      case "background_commands":
+        return smartStatus.detail === "1"
+          ? "Waiting for 1 background command..."
+          : `Waiting for ${smartStatus.detail} background commands...`;
       case "initializing":
         return "Starting session...";
       default:
@@ -900,9 +917,12 @@
     // Capture Vosk transcript before stopping (for dual-source cleanup)
     const capturedVoskTranscript = get(recording).realtimeTranscript;
 
+    // Own the debug-recordings id so the LLM cleanup stage lands in the log.
+    const debugId = recording.newRecordingId();
+
     let whisperTranscript: string | null;
     try {
-      whisperTranscript = await recording.stopRecording(true);
+      whisperTranscript = await recording.stopRecording(true, debugId);
     } catch (error) {
       // Transcription failed — keep the recording attached to THIS session (it was
       // meant for this conversation, not the pile) as a durable, retriable failed
@@ -978,6 +998,12 @@
             repoContext,
           );
           finalTranscript = cleanupResult.text;
+          debugRecordings.update(debugId, {
+            cleanedTranscript: finalTranscript,
+            wasCleanedUp: cleanupResult.wasCleanedUp,
+            cleanupCorrections: cleanupResult.corrections,
+            usedDualSource: cleanupResult.usedDualSource,
+          });
 
           if (cleanupResult.wasCleanedUp) {
             console.log(
@@ -1026,13 +1052,16 @@
     // Capture Vosk transcript before stopping (for dual-source cleanup)
     const capturedVoskTranscript = get(recording).realtimeTranscript;
 
+    // Own the debug-recordings id so the LLM cleanup stage lands in the log.
+    const debugId = recording.newRecordingId();
+
     isInlineRecordingForCurrentSession = false;
     isInlineTranscribing = true;
 
     try {
       let whisperTranscript: string | null;
       try {
-        whisperTranscript = await recording.stopRecording(true);
+        whisperTranscript = await recording.stopRecording(true, debugId);
       } catch (error) {
         // Transcription failed — keep the recording attached to THIS session as a
         // durable, retriable failed recording (it was meant for this conversation).
@@ -1063,6 +1092,12 @@
             repoContext,
           );
           finalTranscript = cleanupResult.text;
+          debugRecordings.update(debugId, {
+            cleanedTranscript: finalTranscript,
+            wasCleanedUp: cleanupResult.wasCleanedUp,
+            cleanupCorrections: cleanupResult.corrections,
+            usedDualSource: cleanupResult.usedDualSource,
+          });
 
           if (cleanupResult.wasCleanedUp) {
             console.log(
@@ -1608,15 +1643,40 @@
         <SdkLoadingIndicator {statusMessage} />
       {/if}
 
-      <!-- Background tasks (e.g. run_in_background bash) don't block completion, so the session
-           can be idle/Done while they keep running. Surface a persistent indicator so it's clear
-           work is still happening in the background. -->
-      {#if liveBackgroundTaskCount > 0 && !completionDeferred}
-        <div class="background-tasks-indicator">
-          <span class="background-tasks-dot"></span>
-          {liveBackgroundTaskCount === 1
-            ? "1 background task running"
-            : `${liveBackgroundTaskCount} background tasks running`}
+      <!-- Background activity chips: agents (subagents running async), commands (backgrounded
+           bash expected to finish — defers completion), and servers (pattern-matched bash that
+           can run indefinitely and never blocks completion). Grouped tightly so they sit right
+           under the loading indicator. -->
+      {#if liveAgentCount > 0 || liveCommandTasks.length > 0 || liveServerTasks.length > 0}
+        <div class="background-activity">
+          {#if liveAgentCount > 0 || liveCommandTasks.length > 0}
+            <div class="background-tasks-indicator">
+              <span class="background-tasks-dot"></span>
+              {[
+                liveAgentCount > 0
+                  ? `${liveAgentCount} agent${liveAgentCount === 1 ? "" : "s"}`
+                  : null,
+                liveCommandTasks.length > 0
+                  ? `${liveCommandTasks.length} command${liveCommandTasks.length === 1 ? "" : "s"}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")} running in background
+            </div>
+          {/if}
+          {#if liveServerTasks.length > 0}
+            <div
+              class="background-tasks-indicator"
+              title={liveServerTasks.map((t) => t.label).join("\n")}
+            >
+              <span class="background-tasks-dot server-dot"></span>
+              {#if liveServerTasks.length === 1}
+                Server running: <span class="server-command-label">{liveServerTasks[0].label}</span>
+              {:else}
+                {liveServerTasks.length} servers running
+              {/if}
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -1886,12 +1946,20 @@
     color: var(--color-text-secondary);
   }
 
+  /* Sit tight under the loading indicator: the parent .messages gap is 0.75rem,
+     the negative margin halves it for this group. */
+  .background-activity {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    margin-top: -0.375rem;
+  }
+
   .background-tasks-indicator {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.375rem 0.625rem;
-    margin-top: 0.5rem;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 8px;
@@ -1906,6 +1974,19 @@
     border-radius: 50%;
     background: var(--color-warning, #f59e0b);
     animation: background-tasks-pulse 1.6s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  .background-tasks-dot.server-dot {
+    background: var(--color-success, #10b981);
+  }
+
+  .server-command-label {
+    font-family: var(--font-mono, monospace);
+    max-width: 24rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   @keyframes background-tasks-pulse {

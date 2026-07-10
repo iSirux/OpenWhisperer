@@ -489,7 +489,8 @@ export async function handlePileTranscriptReady(
   transcript: string,
   pendingSessionId: string | null,
   voskTranscript?: string,
-  transcriptionError?: string
+  transcriptionError?: string,
+  debugRecordingId?: string
 ) {
   const audioData = get(recording).audioData ?? undefined;
 
@@ -521,6 +522,7 @@ export async function handlePileTranscriptReady(
     audioVisualizationHistory,
     transcriptionError,
     screenshot,
+    debugRecordingId,
   });
 }
 
@@ -715,6 +717,10 @@ export async function handleVoiceCommand(
   const pendingSessionId = getPendingSessionId();
   cleanupAudioVisualizationListener();
 
+  // Own the debug-recordings id across the async transcription window so later
+  // stages (LLM cleanup, destination) attach to the right log entry.
+  const debugId = recording.newRecordingId();
+
   if (commandType === 'transcribe') {
     if (pendingSessionId) {
       sdkSessions.cancelPendingTranscription(pendingSessionId);
@@ -722,7 +728,7 @@ export async function handleVoiceCommand(
     }
 
     recording
-      .stopRecording(true)
+      .stopRecording(true, debugId)
       .then(async (whisperTranscript) => {
         const transcriptToUse = whisperTranscript
           ? processVoiceCommand(whisperTranscript).cleanedTranscript
@@ -732,7 +738,13 @@ export async function handleVoiceCommand(
           await invoke('paste_text', { text: transcriptToUse });
         } else {
           // Nothing to paste — keep the recording in the pile so it isn't lost.
-          await handlePileTranscriptReady('', null, cleanedTranscript, 'No transcription returned');
+          await handlePileTranscriptReady(
+            '',
+            null,
+            cleanedTranscript,
+            'No transcription returned',
+            debugId
+          );
         }
       })
       .catch(async (error) => {
@@ -741,7 +753,8 @@ export async function handleVoiceCommand(
           '',
           null,
           cleanedTranscript,
-          error?.message || 'Transcription failed'
+          error?.message || 'Transcription failed',
+          debugId
         );
       });
     return;
@@ -762,13 +775,19 @@ export async function handleVoiceCommand(
     }
 
     recording
-      .stopRecording(true)
+      .stopRecording(true, debugId)
       .then(async (whisperTranscript) => {
         const finalTranscript = whisperTranscript
           ? processVoiceCommand(whisperTranscript).cleanedTranscript
           : cleanedTranscript;
 
-        await handlePileTranscriptReady(finalTranscript || '', pendingSessionId, cleanedTranscript);
+        await handlePileTranscriptReady(
+          finalTranscript || '',
+          pendingSessionId,
+          cleanedTranscript,
+          undefined,
+          debugId
+        );
         clearPendingSessionId();
       })
       .catch(async (error) => {
@@ -776,7 +795,8 @@ export async function handleVoiceCommand(
           '',
           pendingSessionId,
           cleanedTranscript,
-          error?.message || 'Transcription failed'
+          error?.message || 'Transcription failed',
+          debugId
         );
         clearPendingSessionId();
       });
@@ -795,7 +815,7 @@ export async function handleVoiceCommand(
     sdkSessions.updatePendingTranscription(prepareSessionId, { status: 'transcribing' });
 
     recording
-      .stopRecording(true)
+      .stopRecording(true, debugId)
       .then(async (whisperTranscript) => {
         if (prepareSessionId) {
           const audioData = get(recording).audioData;
@@ -809,14 +829,20 @@ export async function handleVoiceCommand(
           : cleanedTranscript;
 
         if (finalTranscript) {
-          await handlePrepareTranscriptReady(finalTranscript, prepareSessionId, cleanedTranscript);
+          await handlePrepareTranscriptReady(
+            finalTranscript,
+            prepareSessionId,
+            cleanedTranscript,
+            debugId
+          );
         } else {
           // No usable transcript — salvage the recording to the pile for retry.
           await handlePileTranscriptReady(
             '',
             prepareSessionId,
             cleanedTranscript,
-            'No transcription available'
+            'No transcription available',
+            debugId
           );
         }
 
@@ -827,7 +853,8 @@ export async function handleVoiceCommand(
           '',
           prepareSessionId,
           cleanedTranscript,
-          error?.message || 'Transcription failed'
+          error?.message || 'Transcription failed',
+          debugId
         );
         clearPendingSessionId();
       });
@@ -840,7 +867,7 @@ export async function handleVoiceCommand(
   }
 
   recording
-    .stopRecording(true)
+    .stopRecording(true, debugId)
     .then(async (whisperTranscript) => {
       if (pendingSessionId) {
         const audioData = get(recording).audioData;
@@ -854,14 +881,15 @@ export async function handleVoiceCommand(
         : cleanedTranscript;
 
       if (finalTranscript) {
-        await handleTranscriptReady(finalTranscript, pendingSessionId, cleanedTranscript);
+        await handleTranscriptReady(finalTranscript, pendingSessionId, cleanedTranscript, debugId);
       } else {
         // No usable transcript — salvage the recording to the pile for retry.
         await handlePileTranscriptReady(
           '',
           pendingSessionId,
           cleanedTranscript,
-          'No transcription available'
+          'No transcription available',
+          debugId
         );
       }
 
@@ -872,7 +900,8 @@ export async function handleVoiceCommand(
         '',
         pendingSessionId,
         cleanedTranscript,
-        error?.message || 'Transcription failed'
+        error?.message || 'Transcription failed',
+        debugId
       );
       clearPendingSessionId();
     });

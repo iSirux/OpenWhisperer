@@ -28,8 +28,7 @@ A desktop tool for voice-controlled Claude Code and Codex interactions. Speak yo
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (latest stable)
-- [Node.js](https://nodejs.org/) (v18+)
-- [pnpm](https://pnpm.io/) (recommended) or npm
+- [Node.js](https://nodejs.org/) (v18+) with npm — **npm is the repo's package manager** (`package-lock.json` is the only lockfile; don't use pnpm or yarn, a second lockfile makes the Tauri CLI read stale versions and fail builds)
 - [Docker](https://www.docker.com/) (for Whisper)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - **Windows only**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++" workload
@@ -50,13 +49,13 @@ git clone https://github.com/iSirux/OpenWhisperer.git
 cd OpenWhisperer
 
 # Install frontend dependencies
-pnpm install
+npm install
 
-# Run in development mode
-pnpm tauri dev
+# Run in development mode (builds the sidecar first)
+npm run tauri:dev
 
 # Build for production
-pnpm tauri build
+npm run tauri:build
 ```
 
 ## Usage
@@ -144,17 +143,16 @@ Access settings via the gear icon or `Cmd/Ctrl + ,`.
 ## Development
 
 ```bash
-# Run with hot reload
-pnpm tauri dev
+# Run with hot reload (builds the sidecar first)
+npm run tauri:dev
 
 # Type checking
-pnpm check
+npm run check
+npm run check:watch   # watch mode
 
-# Lint
-pnpm lint
-
-# Format
-pnpm format
+# Sidecar only
+npm run sidecar:install
+npm run sidecar:build
 ```
 
 ### Project Structure

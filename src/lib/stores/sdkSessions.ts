@@ -495,14 +495,48 @@ export interface SdkSession {
    *  session reads as "Done" and post-completion actions fire on a half-finished transcript.
    *  Not persisted — nothing is live after an app restart. */
   liveSubagentIds?: string[];
-  /** Runtime-only. task_ids of background tasks (e.g. `run_in_background` bash) still running.
-   *  Unlike subagents, these can run indefinitely (a dev server never "completes"), so by design
-   *  they do NOT block completion — they only drive a "background work running" indicator.
-   *  Not persisted. */
-  liveBackgroundTaskIds?: string[];
+  /** Runtime-only. Background tasks (from SDK task_started/task_notification) still running,
+   *  classified by kind:
+   *  - 'agent'   — a background subagent (non-bash task types). Completion deferral for these is
+   *                handled via liveSubagentIds (SubagentStart/Stop hooks); here they only drive
+   *                the "running in background" indicator.
+   *  - 'command' — a backgrounded bash command that is expected to finish (build, test run…).
+   *                These DEFER completion like subagents: the session stays busy until they settle.
+   *  - 'server'  — a backgrounded bash command matching `settings.server_command_patterns`
+   *                (dev servers etc.). Shown as running, but can run indefinitely so they never
+   *                block completion.
+   *  Foreground bash ALSO emits task_started/task_notification (the vast majority of task events
+   *  in practice) — those are filtered out at the task_started handler via the tool_use block's
+   *  run_in_background flag; the tool spinner already covers a blocking foreground run.
+   *  Not persisted — nothing is live after an app restart. */
+  liveBackgroundTasks?: LiveBackgroundTask[];
   /** Runtime-only. Set when sdk-done arrived while subagents were still live and completion was
    *  deferred; the final subagent_stop consumes this to run the real completion. Not persisted. */
   completionDeferred?: boolean;
+}
+
+export type BackgroundTaskKind = 'agent' | 'command' | 'server';
+
+export interface LiveBackgroundTask {
+  taskId: string;
+  toolUseId?: string;
+  kind: BackgroundTaskKind;
+  /** The bash command for local_bash tasks (resolved from the tool_use input), else the task description. */
+  label: string;
+  startedAt: number;
+}
+
+/** Word-boundary substring match of any configured server pattern against the command text.
+ *  Word-boundary so "vite" matches "npx vite" but not "vitest run". */
+function matchesServerCommand(text: string): boolean {
+  const patterns = get(settings).server_command_patterns ?? [];
+  const lower = text.toLowerCase();
+  return patterns.some(p => {
+    const pat = p.trim().toLowerCase();
+    if (!pat) return false;
+    const escaped = pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`).test(lower);
+  });
 }
 
 export type OverflowRecovery = {
@@ -1165,11 +1199,12 @@ function createSdkSessionsStore() {
         // DEFER real completion until the last subagent_stop, so we don't prematurely mark the
         // session Done / play the completion sound / run AI analysis on a partial transcript.
         //
-        // NOTE: background TASKS (e.g. `run_in_background` bash) are intentionally NOT waited on —
-        // they can run indefinitely (a dev server never "completes"), so they only drive the
-        // "background work running" indicator (liveBackgroundTaskIds) and never block completion.
+        // Background bash COMMANDS (kind 'command') also defer completion — they're expected to
+        // finish (builds, test runs…). Commands matching the server patterns (kind 'server') can
+        // run indefinitely, so they never block; they only drive the "server running" indicator.
         const liveSubagents = snapshot.liveSubagentIds ?? [];
-        if (!wasStoppedByUser && liveSubagents.length > 0) {
+        const liveBlockingCommands = (snapshot.liveBackgroundTasks ?? []).filter(t => t.kind === 'command');
+        if (!wasStoppedByUser && (liveSubagents.length > 0 || liveBlockingCommands.length > 0)) {
           update(sessions =>
             sessions.map(s => {
               if (s.id !== id) return s;
@@ -1185,7 +1220,7 @@ function createSdkSessionsStore() {
             })
           );
           debouncedSave(id);
-          console.log(`[sdkSessions] sdk-done deferred: ${liveSubagents.length} subagent(s) still running (session: ${id})`);
+          console.log(`[sdkSessions] sdk-done deferred: ${liveSubagents.length} subagent(s), ${liveBlockingCommands.length} background command(s) still running (session: ${id})`);
           return;
         }
 
@@ -1226,7 +1261,7 @@ function createSdkSessionsStore() {
                 stopRequestedAt: undefined,
                 completionDeferred: false,
                 liveSubagentIds: [],
-                liveBackgroundTaskIds: [],
+                liveBackgroundTasks: [],
                 ...workPeriod,
                 usage: clearProgressiveUsage(s.usage),
                 messages: [...closedThinkingMessages, { type: 'stopped' as const, timestamp: now }],
@@ -1278,7 +1313,7 @@ function createSdkSessionsStore() {
               status: 'error' as const,
               completionDeferred: false,
               liveSubagentIds: [],
-              liveBackgroundTaskIds: [],
+              liveBackgroundTasks: [],
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: [...closedThinkingMessages, { type: 'error' as const, content: payload, timestamp: now }],
@@ -1331,7 +1366,7 @@ function createSdkSessionsStore() {
               status: 'idle' as const,
               completionDeferred: false,
               liveSubagentIds: [],
-              liveBackgroundTaskIds: [],
+              liveBackgroundTasks: [],
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: closedThinkingMessages,
@@ -1411,7 +1446,12 @@ function createSdkSessionsStore() {
           sessions.map(s => {
             if (s.id !== id) return s;
             const live = (s.liveSubagentIds ?? []).filter(aid => aid !== e.payload.agentId);
-            if (s.completionDeferred && live.length === 0 && !s.stopRequestedAt) {
+            if (
+              s.completionDeferred &&
+              live.length === 0 &&
+              !(s.liveBackgroundTasks ?? []).some(t => t.kind === 'command') &&
+              !s.stopRequestedAt
+            ) {
               shouldFinalize = true;
             }
             return {
@@ -1438,24 +1478,50 @@ function createSdkSessionsStore() {
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
-            // Track as live for the "background work running" indicator only — background tasks
-            // do NOT block completion (they can run forever). See liveBackgroundTaskIds docs.
             const base = reactivateOnActivity(s, Date.now());
-            const live = base.liveBackgroundTaskIds ?? [];
+            const live = base.liveBackgroundTasks ?? [];
+            if (live.some(t => t.taskId === e.payload.taskId)) return base;
+
+            const isBash = e.payload.taskType === 'local_bash';
+            // The SDK emits task_started for FOREGROUND bash too (real logs: ~1900 foreground
+            // events, zero backgrounded). Only track bash explicitly launched with
+            // run_in_background — a blocking foreground run is already covered by the tool
+            // spinner. The tool_use block (correlated via toolUseId) is the source of truth for
+            // both the flag and the command; the task description can be just a human label.
+            let label = e.payload.description;
+            if (isBash) {
+              const toolMsg = e.payload.toolUseId
+                ? base.messages.find(m => m.type === 'tool_start' && m.toolUseId === e.payload.toolUseId)
+                : undefined;
+              if (toolMsg?.input?.run_in_background !== true) return base;
+              const cmd = toolMsg.input?.command;
+              if (typeof cmd === 'string' && cmd.trim()) label = cmd;
+            }
+            const kind: BackgroundTaskKind = !isBash
+              ? 'agent'
+              : matchesServerCommand(`${label} ${e.payload.description}`) ? 'server' : 'command';
+
             return {
               ...base,
-              liveBackgroundTaskIds: live.includes(e.payload.taskId) ? live : [...live, e.payload.taskId],
-              messages: [
-                ...base.messages,
-                {
-                  type: 'task_started' as const,
-                  taskId: e.payload.taskId,
-                  toolUseId: e.payload.toolUseId,
-                  description: e.payload.description,
-                  taskType: e.payload.taskType,
-                  timestamp: Date.now(),
-                },
+              liveBackgroundTasks: [
+                ...live,
+                { taskId: e.payload.taskId, toolUseId: e.payload.toolUseId, kind, label, startedAt: Date.now() },
               ],
+              // local_bash tasks already render as their Bash tool_use block — track only,
+              // don't append a duplicate transcript message.
+              messages: isBash
+                ? base.messages
+                : [
+                    ...base.messages,
+                    {
+                      type: 'task_started' as const,
+                      taskId: e.payload.taskId,
+                      toolUseId: e.payload.toolUseId,
+                      description: e.payload.description,
+                      taskType: e.payload.taskType,
+                      timestamp: Date.now(),
+                    },
+                  ],
             };
           })
         );
@@ -1463,31 +1529,57 @@ function createSdkSessionsStore() {
       })
     );
 
-    // Task completed events (from SDK task_notification system messages)
+    // Task completed events (from SDK task_notification system messages). If completion was
+    // deferred and this was the last piece of blocking background work, finalize now.
     unlisteners.push(
-      await listen<{ taskId: string; toolUseId?: string; status: string; summary: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } }>(`sdk-task-completed-${id}`, (e) => {
+      await listen<{ taskId: string; toolUseId?: string; status: string; summary: string; taskType?: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } }>(`sdk-task-completed-${id}`, (e) => {
+        let shouldFinalize = false;
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
+            const settled = (s.liveBackgroundTasks ?? []).find(t => t.taskId === e.payload.taskId);
+            const live = (s.liveBackgroundTasks ?? []).filter(t => t.taskId !== e.payload.taskId);
+            if (
+              s.completionDeferred &&
+              !s.stopRequestedAt &&
+              (s.liveSubagentIds ?? []).length === 0 &&
+              !live.some(t => t.kind === 'command')
+            ) {
+              shouldFinalize = true;
+            }
+            // Real task_notifications arrive with taskType undefined — determine bash-ness from
+            // the tracked task, else by correlating the tool_use (untracked foreground bash also
+            // emits notifications; those must not become transcript messages).
+            const isBash = settled
+              ? settled.kind !== 'agent'
+              : e.payload.taskType === 'local_bash' ||
+                (!!e.payload.toolUseId &&
+                  s.messages.some(m => m.type === 'tool_start' && m.toolUseId === e.payload.toolUseId && m.tool === 'Bash'));
             return {
               ...s,
-              liveBackgroundTaskIds: (s.liveBackgroundTaskIds ?? []).filter(tid => tid !== e.payload.taskId),
-              messages: [
-                ...s.messages,
-                {
-                  type: 'task_completed' as const,
-                  taskId: e.payload.taskId,
-                  toolUseId: e.payload.toolUseId,
-                  taskStatus: e.payload.status,
-                  summary: e.payload.summary,
-                  taskUsage: e.payload.usage,
-                  timestamp: Date.now(),
-                },
-              ],
+              liveBackgroundTasks: live,
+              messages: isBash
+                ? s.messages
+                : [
+                    ...s.messages,
+                    {
+                      type: 'task_completed' as const,
+                      taskId: e.payload.taskId,
+                      toolUseId: e.payload.toolUseId,
+                      taskStatus: e.payload.status,
+                      summary: e.payload.summary,
+                      taskUsage: e.payload.usage,
+                      timestamp: Date.now(),
+                    },
+                  ],
             };
           })
         );
         debouncedSave(id);
+        if (shouldFinalize) {
+          console.log(`[sdkSessions] last blocking background task settled — running deferred completion (session: ${id})`);
+          finalizeCompletion(id, false);
+        }
       })
     );
 
@@ -2057,10 +2149,12 @@ function createSdkSessionsStore() {
                 lastActivityAt: Date.now(),
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: Date.now() }],
                 aiMetadata: clearCompletionMetadata(s.aiMetadata),
-                // New turn supersedes any prior semi-stop: reset live-work tracking so a stale
+                // New turn supersedes any prior semi-stop: reset subagent tracking so a stale
                 // deferred completion (or a prior turn's subagent_stop) can't fire against it.
+                // Background tasks are deliberately KEPT — a dev server or long build from a
+                // prior turn is still running and should keep showing (and, for commands,
+                // keep deferring completion) across turns.
                 liveSubagentIds: [],
-                liveBackgroundTaskIds: [],
                 completionDeferred: false,
                 // A fresh turn is never a "stop": clear any pending stop flag so a not-yet-landed
                 // terminal event from the prior turn can't settle this turn as stopped.
@@ -2167,7 +2261,7 @@ function createSdkSessionsStore() {
             stopRequestedAt: undefined,
             completionDeferred: false,
             liveSubagentIds: [],
-            liveBackgroundTaskIds: [],
+            liveBackgroundTasks: [],
             ...workPeriod,
             usage: clearProgressiveUsage(s.usage),
             messages: [...closedThinkingMessages, { type: 'stopped' as const, timestamp: now }],
@@ -2193,7 +2287,7 @@ function createSdkSessionsStore() {
           // can't trigger a deferred completion after the user already stopped.
           completionDeferred: false,
           liveSubagentIds: [],
-          liveBackgroundTaskIds: [],
+          liveBackgroundTasks: [],
           // Clear stale blocking-UI state so dialogs don't persist after stop
           pendingPlanApproval: undefined,
           askUserQuestion: undefined,

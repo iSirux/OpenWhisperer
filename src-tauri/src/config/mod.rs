@@ -176,6 +176,11 @@ pub struct AppConfig {
     /// User-defined toggleable prompt chips appended to prompts before sending
     #[serde(default = "default_prompt_chips")]
     pub prompt_chips: Vec<String>,
+    /// Background bash commands matching one of these patterns (case-insensitive,
+    /// word-boundary substring) are treated as long-running servers: still shown
+    /// as running, but never counted as pending work and never delaying completion
+    #[serde(default = "default_server_command_patterns")]
+    pub server_command_patterns: Vec<String>,
 }
 
 fn default_model() -> String {
@@ -200,6 +205,40 @@ fn default_prompt_chips() -> Vec<String> {
         "scan codebase".to_string(),
         "brainstorm".to_string(),
     ]
+}
+
+fn default_server_command_patterns() -> Vec<String> {
+    [
+        "npm run dev",
+        "npm start",
+        "yarn dev",
+        "yarn start",
+        "pnpm dev",
+        "pnpm start",
+        "vite",
+        "next dev",
+        "nuxt dev",
+        "astro dev",
+        "ng serve",
+        "expo start",
+        "tauri dev",
+        "tauri:dev",
+        "cargo watch",
+        "docker compose up",
+        "docker-compose up",
+        "http-server",
+        "http.server",
+        "flask run",
+        "uvicorn",
+        "rails server",
+        "php -S",
+        "nodemon",
+        "webpack serve",
+        "storybook",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 fn default_mark_sessions_unread() -> bool {
@@ -311,6 +350,7 @@ impl Default for AppConfig {
             notify_parallel_agents: default_notify_parallel_agents(),
             quick_actions: default_quick_actions(),
             prompt_chips: default_prompt_chips(),
+            server_command_patterns: default_server_command_patterns(),
         }
     }
 }

@@ -69,6 +69,8 @@ pub struct SystemConfig {
     pub launch_terminal: LaunchTerminal,
     /// Developer mode: surfaces debug-only features such as the recordings log.
     pub dev_mode: bool,
+    /// Hide all voice/recording features (no-voice mode).
+    pub voice_mode_disabled: bool,
     /// Application update behavior on startup
     pub update_check: UpdateCheckMode,
 }

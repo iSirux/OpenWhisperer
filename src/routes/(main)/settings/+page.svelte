@@ -11,6 +11,7 @@
     CodexTab,
     ThemesTab,
     SystemTab,
+    DeveloperTab,
     MicrophoneTab,
     AudioTab,
     TranscriptionTab,
@@ -112,25 +113,49 @@
     if (statusTimeout) clearTimeout(statusTimeout);
   });
 
-  const tabs = $derived([
-    { id: "claude", label: "Claude" },
-    { id: "codex", label: "Codex" },
-    { id: "sessions", label: "Sessions" },
-    { id: "themes", label: "Themes" },
-    { id: "system", label: "System" },
-    { id: "microphone", label: "Microphone" },
-    { id: "audio", label: "Audio" },
-    { id: "voice-commands", label: "Voice Commands" },
-    { id: "transcription", label: "Transcription" },
-    { id: "llm", label: "LLM" },
-    { id: "queue", label: "Smart Queue" },
-    { id: "mcp", label: "MCP Servers" },
-    { id: "hotkeys", label: "Hotkeys" },
-    { id: "overlay", label: "Overlay" },
-    { id: "sequences", label: "Sequences" },
-    { id: "recordings-log", label: "Recordings Log" },
-    { id: "about", label: "About" },
-  ]);
+  // Tabs that only make sense when voice/recording features are enabled.
+  const VOICE_ONLY_TABS = [
+    "microphone",
+    "audio",
+    "voice-commands",
+    "transcription",
+    "recordings-log",
+  ];
+
+  const tabs = $derived(
+    [
+      { id: "claude", label: "Claude" },
+      { id: "codex", label: "Codex" },
+      { id: "sessions", label: "Sessions" },
+      { id: "themes", label: "Themes" },
+      { id: "system", label: "System" },
+      { id: "microphone", label: "Microphone" },
+      { id: "audio", label: "Audio" },
+      { id: "voice-commands", label: "Voice Commands" },
+      { id: "transcription", label: "Transcription" },
+      { id: "llm", label: "LLM" },
+      { id: "queue", label: "Smart Queue" },
+      { id: "mcp", label: "MCP Servers" },
+      { id: "hotkeys", label: "Hotkeys" },
+      { id: "overlay", label: "Overlay" },
+      { id: "sequences", label: "Sequences" },
+      { id: "recordings-log", label: "Recordings Log" },
+      { id: "developer", label: "Developer" },
+      { id: "about", label: "About" },
+    ].filter(
+      (tab) =>
+        !$settings.system.voice_mode_disabled ||
+        !VOICE_ONLY_TABS.includes(tab.id)
+    )
+  );
+
+  // If the active tab was hidden (voice tab while no-voice mode is on, or a
+  // hidden ?tab= value), fall back to the first available tab.
+  $effect(() => {
+    if (!tabs.some((tab) => tab.id === activeTab)) {
+      activeTab = tabs[0]?.id ?? "claude";
+    }
+  });
 </script>
 
 <div class="settings-panel flex-1 flex flex-col overflow-hidden">
@@ -185,6 +210,8 @@
         <SequencesTab />
       {:else if activeTab === "recordings-log"}
         <RecordingsLogTab />
+      {:else if activeTab === "developer"}
+        <DeveloperTab />
       {:else if activeTab === "about"}
         <AboutTab />
       {/if}

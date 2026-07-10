@@ -4,7 +4,6 @@
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings, type SessionsViewLayout, type SessionsGridSize } from '$lib/stores/settings';
-  import { repos } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
   import type { DisplaySession } from '$lib/types/session';
   import { getStatusCategory } from '$lib/utils/sessionStatus';
@@ -40,7 +39,7 @@
     const sdkSessionsList = $sdkSessions;
     const sortOrder = $settings.session_sort_order;
 
-    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder, [], $repos.list);
+    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder);
     allSessions = sorted;
 
     // Fetch branches

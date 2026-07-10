@@ -8,6 +8,9 @@
   let newChip = $state("");
   let chipError = $state("");
 
+  let newServerPattern = $state("");
+  let serverPatternError = $state("");
+
   function addQuickAction() {
     const trimmed = newAction.trim();
     if (!trimmed) {
@@ -61,6 +64,30 @@
 
   function removeChip(index: number) {
     $settings.prompt_chips = ($settings.prompt_chips ?? []).filter((_, i) => i !== index);
+  }
+
+  function addServerPattern() {
+    const trimmed = newServerPattern.trim();
+    if (!trimmed) {
+      serverPatternError = "";
+      return;
+    }
+
+    const existing = ($settings.server_command_patterns ?? []).map((p) => p.toLowerCase());
+    if (existing.includes(trimmed.toLowerCase())) {
+      serverPatternError = "Pattern already exists";
+      return;
+    }
+
+    $settings.server_command_patterns = [...($settings.server_command_patterns ?? []), trimmed];
+    newServerPattern = "";
+    serverPatternError = "";
+  }
+
+  function removeServerPattern(index: number) {
+    $settings.server_command_patterns = ($settings.server_command_patterns ?? []).filter(
+      (_, i) => i !== index,
+    );
   }
 </script>
 
@@ -336,6 +363,74 @@
     {#if ($settings.prompt_chips ?? []).length === 0}
       <p class="text-xs text-text-muted mt-2 italic">
         No prompt chips configured.
+      </p>
+    {/if}
+  </div>
+
+  <!-- Background Server Commands -->
+  <div class="border-t border-border pt-4 mt-4">
+    <h3 class="text-sm font-medium text-text-primary mb-1">Background Server Commands</h3>
+    <p class="text-xs text-text-muted mb-3">
+      Background terminal commands matching one of these patterns (case-insensitive, matched on
+      word boundaries) are treated as long-running servers: they're shown as running in the
+      session, but never delay session completion. Other background commands keep the session
+      busy until they finish.
+    </p>
+
+    <!-- Existing patterns as removable pills -->
+    {#if ($settings.server_command_patterns ?? []).length > 0}
+      <div class="flex flex-wrap gap-2 mb-3">
+        {#each $settings.server_command_patterns ?? [] as pattern, i}
+          <div
+            class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-surface border border-border text-text-secondary font-mono"
+          >
+            <span>{pattern}</span>
+            <button
+              type="button"
+              class="ml-1 hover:text-red-400 rounded-full p-0.5 transition-colors"
+              onclick={() => removeServerPattern(i)}
+              title="Remove pattern"
+            >
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Add new pattern -->
+    <div class="flex gap-2">
+      <input
+        type="text"
+        placeholder="Add pattern (e.g. npm run dev)..."
+        class="flex-1 px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+        bind:value={newServerPattern}
+        onkeydown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            addServerPattern();
+          }
+        }}
+      />
+      <button
+        type="button"
+        class="px-3 py-1.5 bg-accent text-white rounded text-sm hover:bg-accent/90 transition-colors disabled:opacity-50"
+        onclick={addServerPattern}
+        disabled={!newServerPattern.trim()}
+      >
+        Add
+      </button>
+    </div>
+    {#if serverPatternError}
+      <p class="text-xs text-red-500 mt-1">{serverPatternError}</p>
+    {/if}
+
+    {#if ($settings.server_command_patterns ?? []).length === 0}
+      <p class="text-xs text-text-muted mt-2 italic">
+        No server patterns configured — every background command will keep its session busy until
+        it finishes.
       </p>
     {/if}
   </div>
