@@ -12,8 +12,12 @@
     type PileLaunchAction,
   } from '$lib/utils/pileActions';
   import { getShortModelName } from '$lib/utils/modelColors';
+  import { isRecording, isTranscribing } from '$lib/stores/recording';
+  import { holdSpaceRecord } from '$lib/actions/holdSpaceRecord';
+  import { makeInlineDictation } from '$lib/utils/inlineDictation';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import PromptChips from './PromptChips.svelte';
+  import RepoSelector from './RepoSelector.svelte';
 
   interface Props {
     item: PileItem;
@@ -91,6 +95,12 @@
     }
   }
 
+  // Hold-Space dictation into the transcript editor (records -> transcribes ->
+  // inserts at the caret). Cleanup is biased by the item's selected repo.
+  const dictation = makeInlineDictation(() =>
+    item.repoId ? $repos.list.find((r) => r.id === item.repoId) : undefined
+  );
+
   function saveTitle() {
     const title = editedTitle.trim();
     if (title !== (item.title ?? '')) {
@@ -99,6 +109,9 @@
   }
 
   const activeRepos = $derived($repos.list.filter(isRepoActive));
+  const selectedRepoPath = $derived(
+    item.repoId ? ($repos.list.find((r) => r.id === item.repoId)?.path ?? '') : ''
+  );
 
   function setRepo(repoId: string) {
     pile.updateItem(item.id, {
@@ -106,6 +119,10 @@
       repoConfidence: undefined,
       repoReasoning: 'Selected manually',
     });
+  }
+
+  function handleRepoChange(path: string) {
+    setRepo(path ? (activeRepos.find((r) => r.path === path)?.id ?? '') : '');
   }
 
   const modelOptions = $derived.by(() => {
@@ -348,6 +365,15 @@
         class="w-full min-h-32 p-3 text-sm bg-surface-elevated border border-border rounded text-text-primary resize-y focus:outline-none focus:border-accent"
         bind:value={editedTranscript}
         onblur={saveTranscript}
+        use:holdSpaceRecord={{
+          enabled: $settings.audio.hold_space_to_record_inline,
+          canStart: () => !$isRecording && !$isTranscribing,
+          start: dictation.start,
+          stop: dictation.stop,
+          onState: (s) => {
+            if (s === 'idle') saveTranscript();
+          },
+        }}
         placeholder="Transcript..."
       ></textarea>
       {#if showRaw && item.rawTranscript}
@@ -374,18 +400,15 @@
     <!-- Repo / model / effort -->
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
       <div>
-        <label class="text-xs font-medium text-text-secondary block mb-1" for="pile-repo">Repository</label>
-        <select
-          id="pile-repo"
-          class="w-full px-2 py-1.5 text-sm bg-surface-elevated border border-border rounded text-text-primary"
-          value={item.repoId ?? ''}
-          onchange={(e) => setRepo((e.currentTarget as HTMLSelectElement).value)}
-        >
-          <option value="">— none —</option>
-          {#each activeRepos as repo}
-            <option value={repo.id}>{repo.name}</option>
-          {/each}
-        </select>
+        <span class="text-xs font-medium text-text-secondary block mb-1">Repository</span>
+        <RepoSelector
+          cwd={selectedRepoPath}
+          onchange={handleRepoChange}
+          size="md"
+          maxVisible={3}
+          emptyOption="none"
+          dropdownDirection="down"
+        />
         {#if item.repoReasoning}
           <p class="text-[11px] text-text-muted mt-1" title={item.repoReasoning}>
             {#if item.repoConfidence && item.repoConfidence !== 'high'}

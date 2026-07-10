@@ -23,6 +23,8 @@
   import SdkPromptInput from "./sdk/SdkPromptInput.svelte";
   import SessionRecordingHeader from "./sdk/SessionRecordingHeader.svelte";
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
+  import NoMistakesPanel from "./sdk/NoMistakesPanel.svelte";
+  import { nmRuns, noMistakes } from "$lib/stores/noMistakes";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
@@ -35,7 +37,6 @@
   import SdkTaskBlock from "./sdk/SdkTaskBlock.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import EffortToggle from "./EffortToggle.svelte";
-  import RepoSelector from "./RepoSelector.svelte";
   import {
     processSdkMessages,
     buildRenderItems,
@@ -56,6 +57,7 @@
   } from "$lib/composables/useTranscriptionProcessor.svelte";
   import { pile, sidebarTab } from "$lib/stores/pile";
   import { activeSdkSessionId } from "$lib/stores/sdkSessions";
+  import { focusedPaneSessionId } from "$lib/stores/panes";
   import { get } from "svelte/store";
 
   let { sessionId }: { sessionId: string } = $props();
@@ -1001,8 +1003,15 @@
     await recording.startRecording($settings.audio.device_id || undefined);
   }
 
-  async function handleStopInlineRecording() {
-    if (!$isRecording) return;
+  /**
+   * Stop the inline recording, transcribe it (+ LLM cleanup), and RETURN the
+   * final text without inserting it. Returns null when nothing was transcribed
+   * or the transcription failed (a failed follow-up is salvaged to this session
+   * for retry). Shared by the record button/window hold (which append) and the
+   * hold-Space gesture (which inserts at the caret).
+   */
+  async function transcribeInlineToText(): Promise<string | null> {
+    if (!$isRecording) return null;
 
     // Capture Vosk transcript before stopping (for dual-source cleanup)
     const capturedVoskTranscript = get(recording).realtimeTranscript;
@@ -1022,10 +1031,10 @@
           capturedVoskTranscript,
           error instanceof Error ? error.message : "Transcription failed",
         );
-        return;
+        return null;
       }
 
-      if (!whisperTranscript) return;
+      if (!whisperTranscript) return null;
 
       // Apply LLM transcription cleanup (same as existing flow, but no voice commands)
       let finalTranscript = whisperTranscript;
@@ -1060,12 +1069,16 @@
         }
       }
 
-      // Append to prompt instead of sending
-      promptInputRef?.appendToPrompt(finalTranscript);
+      return finalTranscript;
     } finally {
       isInlineTranscribing = false;
       recording.clearTranscript();
     }
+  }
+
+  async function handleStopInlineRecording() {
+    const text = await transcribeInlineToText();
+    if (text) promptInputRef?.appendToPrompt(text);
   }
 
   // --- Failed follow-up recordings (transcription failed for a live session) ---
@@ -1257,8 +1270,16 @@
     sdkSessions.launchPrepared(sessionId);
   }
 
-  function handleUnschedule() {
+  // Revert a queued/scheduled session back to an editable New Session (setup)
+  // draft so the user can change the prompt, model, repo, or schedule.
+  function handleEditQueued() {
     sdkSessions.unschedule(sessionId);
+  }
+
+  // Take the session out of the queue entirely (close/discard).
+  function handleRemoveQueued() {
+    sdkSessions.closeSession(sessionId);
+    activeSdkSessionId.set(null);
   }
 
   async function handleScheduleSend(
@@ -1357,6 +1378,11 @@
     sdkSessions.clearAskUserQuestion(sessionId);
   }
 
+  // No mistakes (validation pipeline) run for this session, if any.
+  let nmRun = $derived(
+    [...$nmRuns.values()].find((r) => r.sessionId === sessionId),
+  );
+
   // Plan approval handlers
   function handleApprovePlan(feedback?: string) {
     sdkSessions.approvePlan(sessionId, feedback);
@@ -1370,7 +1396,8 @@
 </script>
 
 <svelte:window onkeydown={(e) => {
-  if (e.key === 'Escape' && isQuerying) {
+  // Only the focused pane's instance reacts, so Escape doesn't stop every visible session.
+  if (e.key === 'Escape' && isQuerying && sessionId === $focusedPaneSessionId) {
     e.preventDefault();
     handleStopQuery();
   }
@@ -1455,7 +1482,10 @@
               <button class="queued-btn primary" onclick={handleRunQueuedNow} title="Launch this session immediately">
                 Run now
               </button>
-              <button class="queued-btn" onclick={handleUnschedule} title="Take this session out of the queue">
+              <button class="queued-btn" onclick={handleEditQueued} title="Move back to New Session to edit the prompt, model, or schedule">
+                Edit
+              </button>
+              <button class="queued-btn" onclick={handleRemoveQueued} title="Take this session out of the queue and discard it">
                 Remove from queue
               </button>
             </div>
@@ -1543,6 +1573,7 @@
             taskStarted={item.taskStarted}
             children={item.children}
             taskCompleted={item.taskCompleted}
+            nestedSummaries={item.nestedSummaries}
             {copiedMessageId}
             onCopy={copyMessage}
             sessionCwd={cwd}
@@ -1636,6 +1667,17 @@
     {/if}
   </div>
 
+  {#if nmRun}
+    {@const nmRunId = nmRun.runId}
+    <NoMistakesPanel
+      run={nmRun}
+      onRespond={(action, findingIds) => noMistakes.respond(nmRunId, action, findingIds)}
+      onCancel={() => noMistakes.cancel(nmRunId)}
+      onDismiss={() => noMistakes.dismiss(nmRunId)}
+      onSelectFindings={(findingIds) => noMistakes.selectFindings(nmRunId, findingIds)}
+    />
+  {/if}
+
   {#if hasLaunchProfiles && sessionRepoId}
     <LaunchBar
       repoId={sessionRepoId}
@@ -1718,6 +1760,7 @@
       onStopRecording={handleStopRecording}
       onStartInlineRecording={handleStartInlineRecording}
       onStopInlineRecording={handleStopInlineRecording}
+      onInlineTranscribe={transcribeInlineToText}
       onDraftChange={handleDraftChange}
     />
   {/if}

@@ -1,26 +1,67 @@
 <script lang="ts">
   import { repos, isRepoActive } from '$lib/stores/repos';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
+  import { getRepoHeat, sortReposByHeat, touchRepo } from '$lib/stores/repoRecency';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {
     cwd: string;
     onchange: (cwd: string) => void;
     size?: 'sm' | 'md';
+    /** How many repos show as one-click buttons before overflowing into the dropdown */
+    maxVisible?: number;
+    /** What the empty selection means: LLM auto-routing ('auto') or unassigned ('none') */
+    emptyOption?: 'auto' | 'none';
+    dropdownDirection?: 'up' | 'down';
+    /** Optional hint shown at the top of the overflow dropdown (e.g. mid-recording notice) */
+    notice?: string;
+    /** Override for the "+ Add repository" action (defaults to opening repo settings) */
+    onAddRepo?: () => void;
   }
 
-  let { cwd, onchange, size = 'sm' }: Props = $props();
+  let {
+    cwd,
+    onchange,
+    size = 'sm',
+    maxVisible = 4,
+    emptyOption = 'auto',
+    dropdownDirection = 'up',
+    notice,
+    onAddRepo,
+  }: Props = $props();
 
   let showDropdown = $state(false);
+  let container: HTMLElement | undefined = $state();
 
   const activeRepos = $derived(($repos.list || []).filter(isRepoActive));
   const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
-  // Treat empty string or '.' as auto mode
-  const isAutoMode = $derived(!cwd || cwd === '.');
-  const currentRepoName = $derived(() => {
-    if (!cwd || cwd === '.') return 'Auto';
-    const repo = activeRepos.find(r => r.path === cwd);
-    return repo?.name || cwd.split(/[/\\]/).pop() || 'Unknown';
+  // Treat empty string or '.' as the empty (Auto/None) selection
+  const isEmptySelection = $derived(!cwd || cwd === '.');
+
+  // Heat is snapshotted once per mount so the buttons keep a stable order
+  // while the user interacts; new usage reorders the group on the next mount.
+  const heatSnapshot = getRepoHeat();
+  const orderedRepos = $derived(sortReposByHeat(activeRepos, heatSnapshot));
+
+  // Most recent repos get one-click buttons; the current selection is always
+  // swapped into the visible set so the active button never hides in overflow.
+  const visibleRepos = $derived.by(() => {
+    const visible = orderedRepos.slice(0, maxVisible);
+    if (!isEmptySelection && !visible.some((r) => r.path === cwd)) {
+      const selected = orderedRepos.find((r) => r.path === cwd);
+      if (selected) {
+        if (visible.length >= maxVisible) visible[visible.length - 1] = selected;
+        else visible.push(selected);
+      }
+    }
+    return visible;
+  });
+  const overflowRepos = $derived(orderedRepos.filter((r) => !visibleRepos.includes(r)));
+
+  // cwd pointing outside the configured repos (e.g. a worktree or ad-hoc path)
+  const unknownSelectionName = $derived.by(() => {
+    if (isEmptySelection || activeRepos.some((r) => r.path === cwd)) return null;
+    return cwd.split(/[/\\]/).pop() || cwd;
   });
 
   const sizeClasses = {
@@ -28,13 +69,14 @@
     md: 'px-3 py-1.5 text-xs',
   };
 
-  function handleRepoSelect(path: string) {
+  function selectRepo(path: string) {
+    touchRepo(path);
     onchange(path);
     showDropdown = false;
   }
 
-  function handleAutoClick() {
-    if (autoRepoEnabled) {
+  function handleEmptyClick() {
+    if (emptyOption === 'none' || autoRepoEnabled) {
       onchange('');
       showDropdown = false;
     } else {
@@ -43,9 +85,17 @@
     }
   }
 
+  function handleAddRepo() {
+    showDropdown = false;
+    if (onAddRepo) {
+      onAddRepo();
+    } else {
+      window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'repos' } }));
+    }
+  }
+
   function handleClickOutside(event: MouseEvent) {
-    const target = event.target as HTMLElement;
-    if (!target.closest('.repo-selector-container')) {
+    if (showDropdown && container && !container.contains(event.target as Node)) {
       showDropdown = false;
     }
   }
@@ -53,98 +103,107 @@
 
 <svelte:window onclick={handleClickOutside} />
 
-<div class="repo-selector-container relative">
-  <button
-    class="flex items-center gap-1.5 {sizeClasses[size]} bg-surface-elevated hover:bg-border rounded font-medium transition-colors"
-    onclick={() => showDropdown = !showDropdown}
-    title="Select repository"
-  >
-    {#if isAutoMode && autoRepoEnabled}
-      <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500">{currentRepoName()}</span>
+<div class="repo-selector-container relative inline-block" bind:this={container}>
+  <div class="inline-flex items-center gap-0.5 flex-wrap bg-surface-elevated rounded p-0.5">
+    <!-- Empty selection: Auto (LLM routing) or None (unassigned) -->
+    {#if emptyOption === 'auto'}
+      <button
+        class="{sizeClasses[size]} rounded font-medium transition-colors {isEmptySelection && autoRepoEnabled
+          ? 'bg-gradient-to-r from-purple-500 to-amber-500 text-white'
+          : autoRepoEnabled
+            ? 'text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500 hover:brightness-125'
+            : 'text-text-muted hover:bg-border'}"
+        onclick={handleEmptyClick}
+        title={autoRepoEnabled
+          ? 'Automatically select repository based on prompt'
+          : 'Auto repo selection is off — click to enable in LLM settings'}
+      >
+        Auto
+      </button>
     {:else}
-      {@const selectedRepo = activeRepos.find(r => r.path === cwd) ?? null}
-      <RepoIcon repo={selectedRepo} size="xs" />
-      <span class="text-text-primary">{currentRepoName()}</span>
+      <button
+        class="{sizeClasses[size]} rounded font-medium transition-colors {isEmptySelection
+          ? 'bg-border text-text-primary'
+          : 'text-text-muted hover:bg-border'}"
+        onclick={handleEmptyClick}
+        title="No repository"
+      >
+        None
+      </button>
     {/if}
-    <svg class="w-3 h-3 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-    </svg>
-  </button>
+
+    {#each visibleRepos as repo (repo.path)}
+      {@const isSelected = repo.path === cwd}
+      <button
+        class="{sizeClasses[size]} rounded font-medium transition-colors flex items-center gap-1.5 {isSelected
+          ? 'repo-chip-selected'
+          : 'text-text-secondary hover:bg-border hover:text-text-primary'}"
+        onclick={() => selectRepo(repo.path)}
+        title={repo.path}
+      >
+        <RepoIcon {repo} size="xs" />
+        <span class="max-w-32 truncate">{repo.name}</span>
+      </button>
+    {/each}
+
+    {#if unknownSelectionName}
+      <span
+        class="{sizeClasses[size]} rounded font-medium flex items-center gap-1.5 repo-chip-selected"
+        title={cwd}
+      >
+        <span class="max-w-32 truncate">{unknownSelectionName}</span>
+      </span>
+    {/if}
+
+    <!-- Overflow / more -->
+    <button
+      class="{sizeClasses[size]} rounded font-medium transition-colors text-text-muted hover:bg-border hover:text-text-primary"
+      onclick={() => (showDropdown = !showDropdown)}
+      title={overflowRepos.length > 0 ? `${overflowRepos.length} more repositories` : 'More options'}
+    >
+      {overflowRepos.length > 0 ? `+${overflowRepos.length}` : '⋯'}
+    </button>
+  </div>
 
   {#if showDropdown}
-    <div class="dropdown absolute bottom-full left-0 mb-1 w-56 bg-surface-elevated border border-border rounded shadow-lg z-50 max-h-64 overflow-y-auto">
-      <!-- Auto option -->
-      <button
-        class="w-full px-3 py-2 text-left text-xs hover:bg-border transition-colors flex items-center justify-between"
-        class:bg-gradient-to-r={isAutoMode && autoRepoEnabled}
-        class:from-purple-500={isAutoMode && autoRepoEnabled}
-        class:to-amber-500={isAutoMode && autoRepoEnabled}
-        class:text-white={isAutoMode && autoRepoEnabled}
-        onclick={handleAutoClick}
-        title={autoRepoEnabled ? "Automatically select repository based on prompt" : "Enable in LLM settings"}
-      >
-        <span class="flex items-center gap-2">
-          <span
-            class:text-transparent={autoRepoEnabled && !isAutoMode}
-            class:bg-clip-text={autoRepoEnabled && !isAutoMode}
-            class:bg-gradient-to-r={autoRepoEnabled && !isAutoMode}
-            class:from-purple-500={autoRepoEnabled && !isAutoMode}
-            class:to-amber-500={autoRepoEnabled && !isAutoMode}
-            class:text-text-muted={!autoRepoEnabled}
-          >Auto</span>
-          {#if !autoRepoEnabled}
-            <span class="text-text-muted text-[10px]">(enable in settings)</span>
-          {/if}
-        </span>
-        {#if isAutoMode && autoRepoEnabled}
-          <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-          </svg>
-        {/if}
-      </button>
-
-      {#if activeRepos.length > 0}
-        <div class="border-t border-border"></div>
+    <div
+      class="dropdown absolute {dropdownDirection === 'up'
+        ? 'bottom-full mb-1'
+        : 'top-full mt-1'} left-0 w-56 bg-surface-elevated border border-border rounded shadow-lg z-50 max-h-64 overflow-y-auto"
+    >
+      {#if notice}
+        <div class="px-3 py-2 border-b border-border text-xs text-recording flex items-center gap-2">
+          <div class="w-1.5 h-1.5 bg-recording rounded-full animate-pulse flex-shrink-0"></div>
+          <span>{notice}</span>
+        </div>
       {/if}
 
-      {#each activeRepos as repo}
-        {@const isSelected = repo.path === cwd}
+      {#each overflowRepos as repo (repo.path)}
         <button
-          class="w-full px-3 py-2 text-left text-xs hover:bg-border transition-colors flex items-center justify-between"
-          class:selected={isSelected}
-          onclick={() => handleRepoSelect(repo.path)}
+          class="w-full px-3 py-2 text-left text-xs hover:bg-border transition-colors flex items-center gap-2"
+          onclick={() => selectRepo(repo.path)}
           title={repo.path}
         >
-          <div class="flex items-center gap-2 flex-1 min-w-0">
-            <RepoIcon repo={repo} size="sm" />
-            <div class="flex-1 min-w-0">
-              <div class="font-medium truncate">{repo.name}</div>
-              {#if repo.description}
-                <div class="text-[10px] text-text-muted truncate">{repo.description}</div>
-              {/if}
-            </div>
+          <RepoIcon {repo} size="sm" />
+          <div class="flex-1 min-w-0">
+            <div class="font-medium truncate">{repo.name}</div>
+            {#if repo.description}
+              <div class="text-[10px] text-text-muted truncate">{repo.description}</div>
+            {/if}
           </div>
-          {#if isSelected}
-            <svg class="w-3 h-3 text-accent flex-shrink-0 ml-2" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-            </svg>
-          {/if}
         </button>
       {/each}
 
       {#if activeRepos.length === 0}
-        <div class="px-3 py-2 text-xs text-text-muted">
-          No repositories configured
-        </div>
+        <div class="px-3 py-2 text-xs text-text-muted">No repositories configured</div>
+      {:else if overflowRepos.length === 0}
+        <div class="px-3 py-2 text-xs text-text-muted">All repositories shown</div>
       {/if}
 
       <div class="border-t border-border">
         <button
           class="w-full px-3 py-2 text-left text-xs text-accent hover:bg-border transition-colors"
-          onclick={() => {
-            showDropdown = false;
-            window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'repos' } }));
-          }}
+          onclick={handleAddRepo}
         >
           + Add repository
         </button>
@@ -158,16 +217,8 @@
     scrollbar-width: thin;
   }
 
-  .selected {
+  .repo-chip-selected {
     background: var(--color-accent);
     color: white;
-  }
-
-  .selected:hover {
-    background: var(--color-accent);
-  }
-
-  .selected .text-text-muted {
-    color: rgba(255, 255, 255, 0.7);
   }
 </style>

@@ -4,6 +4,7 @@ mod config;
 mod git;
 mod launch;
 mod llm;
+mod no_mistakes;
 mod notion;
 mod persist;
 mod proc;
@@ -17,9 +18,10 @@ mod util;
 mod whisper;
 
 use commands::{
-    archive_cmds, audio_cmds, git_cmds, input_cmds, launch_cmds, llm_cmds, log_cmds, mcp_cmds,
-    notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds, sequence_cmds, session_cmds,
-    settings_cmds, terminal_cmds, usage_cmds,
+    archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, image_cmds, input_cmds,
+    launch_cmds, llm_cmds, log_cmds,
+    mcp_cmds, no_mistakes_cmds, notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds,
+    sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds,
 };
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -242,6 +244,7 @@ pub fn run() {
     let sidecar_manager = Arc::new(SidecarManager::new());
     let realtime_manager = Arc::new(RealtimeSessionManager::new());
     let launch_manager = Arc::new(launch::LaunchManager::new());
+    let no_mistakes_manager = Arc::new(no_mistakes::NoMistakesManager::new());
     let config_load_status = ConfigLoadStatus(Mutex::new(config_loaded_ok));
 
     // Set up backend file logging via tauri-plugin-log (date-stamped, 7-day rolling)
@@ -303,6 +306,7 @@ pub fn run() {
         .manage(sidecar_manager)
         .manage(realtime_manager)
         .manage(launch_manager)
+        .manage(no_mistakes_manager)
         .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
             #[cfg(target_os = "windows")]
@@ -376,6 +380,8 @@ pub fn run() {
             settings_cmds::run_in_terminal,
             // --- Git & worktrees ---
             git_cmds::list_git_worktrees,
+            git_cmds::get_git_changed_count,
+            git_cmds::get_git_changed_count_all_worktrees,
             git_cmds::create_git_worktree_with_setup,
             git_cmds::create_git_worktree_only,
             git_cmds::run_worktree_post_setup,
@@ -439,7 +445,13 @@ pub fn run() {
             pile_cmds::read_capture,
             pile_cmds::delete_capture,
             pile_cmds::list_captures,
+            debug_recordings_cmds::get_debug_recordings,
+            debug_recordings_cmds::save_debug_recordings,
+            debug_recordings_cmds::save_debug_audio,
+            debug_recordings_cmds::read_debug_audio,
+            debug_recordings_cmds::delete_debug_audio,
             screenshot_cmds::capture_screenshot,
+            image_cmds::fetch_remote_image,
             // --- Archive ---
             archive_cmds::get_archive_entries,
             archive_cmds::get_archive_entry_data,
@@ -479,6 +491,7 @@ pub fn run() {
             llm_cmds::recommend_repo,
             llm_cmds::generate_quick_actions,
             // --- Realtime transcription ---
+            docker_cmds::run_docker_setup,
             realtime_cmds::test_realtime_connection,
             realtime_cmds::start_realtime_session,
             realtime_cmds::send_realtime_audio,
@@ -489,6 +502,11 @@ pub fn run() {
             launch_cmds::launch_commands,
             launch_cmds::stop_launch_profile,
             launch_cmds::get_launch_status,
+            // --- No-mistakes validation ---
+            no_mistakes_cmds::nm_check,
+            no_mistakes_cmds::nm_start_run,
+            no_mistakes_cmds::nm_respond,
+            no_mistakes_cmds::nm_cancel,
             // --- Notion ---
             notion_cmds::fetch_notion_cards,
             // --- MCP servers ---

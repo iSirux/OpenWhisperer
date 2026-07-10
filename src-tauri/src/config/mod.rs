@@ -152,6 +152,8 @@ pub struct AppConfig {
     pub session_response_rows: usize,
     #[serde(default)]
     pub sessions_view: SessionsViewConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_layout: Option<PaneLayoutConfig>,
     #[serde(default)]
     pub tool_display_mode: ToolDisplayMode,
     #[serde(default, alias = "gemini")]
@@ -245,16 +247,17 @@ fn default_enabled_models() -> Vec<String> {
 /// Default Codex/OpenAI model. `pub(crate)` because the migration layer restores
 /// it when `enabled_openai_models` is emptied by alias remapping.
 pub(crate) fn default_openai_model() -> String {
-    "gpt-5.4".to_string()
+    "gpt-5.6-terra".to_string()
 }
 
 fn default_enabled_openai_models() -> Vec<String> {
     vec![
+        "gpt-5.6-sol".to_string(),
+        "gpt-5.6-terra".to_string(),
+        "gpt-5.6-luna".to_string(),
         "gpt-5.4".to_string(),
         "gpt-5.4-mini".to_string(),
-        "gpt-5.3-codex".to_string(),
         "gpt-5.3-codex-spark".to_string(),
-        "gpt-5.2-codex".to_string(),
     ]
 }
 
@@ -299,6 +302,7 @@ impl Default for AppConfig {
             session_prompt_rows: default_session_prompt_rows(),
             session_response_rows: default_session_response_rows(),
             sessions_view: SessionsViewConfig::default(),
+            pane_layout: None,
             tool_display_mode: ToolDisplayMode::default(),
             llm: LlmConfig::default(),
             mcp: McpConfig::default(),

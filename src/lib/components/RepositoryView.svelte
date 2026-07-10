@@ -362,16 +362,61 @@
     });
   }
 
-  function addTagFromInput(event: KeyboardEvent) {
+  async function browseRepoPath() {
+    if (!selectedRepo) return;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({ directory: true, multiple: false, defaultPath: selectedRepo.path });
+    if (selected) {
+      updateRepo({ path: selected as string });
+    }
+  }
+
+  function addListItemFromInput(event: KeyboardEvent, field: 'tags' | 'keywords' | 'vocabulary') {
     if (event.key !== 'Enter' || !selectedRepo) return;
     const input = event.currentTarget as HTMLInputElement;
-    const value = input.value.trim().toLowerCase();
+    const value = field === 'tags' ? input.value.trim().toLowerCase() : input.value.trim();
     if (!value) return;
 
-    if (!(selectedRepo.tags || []).includes(value)) {
-      updateRepo({ tags: [...(selectedRepo.tags || []), value] });
+    const current = selectedRepo[field] || [];
+    if (!current.includes(value)) {
+      updateRepo({ [field]: [...current, value] });
     }
     input.value = '';
+  }
+
+  function removeListItem(field: 'tags' | 'keywords' | 'vocabulary', value: string) {
+    if (!selectedRepo) return;
+    updateRepo({ [field]: (selectedRepo[field] || []).filter((item) => item !== value) });
+  }
+
+  function updateLaunchCommand(commandId: string, updates: Partial<LaunchCommand>) {
+    if (!selectedRepo) return;
+    updateRepo({
+      launch_commands: (selectedRepo.launch_commands ?? []).map((command) =>
+        command.id === commandId ? { ...command, ...updates } : command
+      ),
+    });
+  }
+
+  function updateLaunchProfile(profileId: string, updates: Partial<LaunchProfile>) {
+    if (!selectedRepo) return;
+    updateRepo({
+      launch_profiles: (selectedRepo.launch_profiles ?? []).map((profile) =>
+        profile.id === profileId ? { ...profile, ...updates } : profile
+      ),
+    });
+  }
+
+  function toggleProfileMembership(profileId: string, commandId: string) {
+    if (!selectedRepo) return;
+    const profile = (selectedRepo.launch_profiles ?? []).find((p) => p.id === profileId);
+    if (!profile) return;
+    const has = profile.command_ids.includes(commandId);
+    updateLaunchProfile(profileId, {
+      command_ids: has
+        ? profile.command_ids.filter((id) => id !== commandId)
+        : [...profile.command_ids, commandId],
+    });
   }
 
   function toggleMcpServer(serverId: string) {
@@ -431,8 +476,30 @@
                 <span class="status-pill">Active</span>
               {/if}
             </div>
-            <h2>{selectedRepo.name}</h2>
-            <p class="hero-path" title={selectedRepo.path}>{selectedRepo.path}</p>
+            <input
+              class="hero-name-input"
+              value={selectedRepo.name}
+              aria-label="Repository name"
+              onchange={(event) => {
+                const value = (event.currentTarget as HTMLInputElement).value.trim();
+                if (value) updateRepo({ name: value });
+                else (event.currentTarget as HTMLInputElement).value = selectedRepo.name;
+              }}
+            />
+            <div class="hero-path-row">
+              <input
+                class="hero-path-input"
+                value={selectedRepo.path}
+                title={selectedRepo.path}
+                aria-label="Repository path"
+                onchange={(event) => {
+                  const value = (event.currentTarget as HTMLInputElement).value.trim();
+                  if (value) updateRepo({ path: value });
+                  else (event.currentTarget as HTMLInputElement).value = selectedRepo.path;
+                }}
+              />
+              <button class="btn btn-secondary btn-small" onclick={browseRepoPath}>Browse</button>
+            </div>
           </div>
         </div>
 
@@ -444,13 +511,17 @@
         </div>
       </div>
 
-      {#if selectedRepo.description}
-        <p class="hero-description">{selectedRepo.description}</p>
-      {:else}
-        <p class="hero-description hero-description-empty">
-          No repository summary yet. Generate one to populate description, keywords, icon, and vocabulary.
-        </p>
-      {/if}
+      <div class="field">
+        <label for="repo-description">Description</label>
+        <textarea
+          id="repo-description"
+          class="description-input"
+          rows="3"
+          value={selectedRepo.description || ''}
+          placeholder="No repository summary yet. Write one here, or generate one to populate description, keywords, icon, and vocabulary."
+          onchange={(event) => updateRepo({ description: (event.currentTarget as HTMLTextAreaElement).value.trim() || undefined })}
+        ></textarea>
+      </div>
 
       <div class="button-row">
         {#if claudeAvailable}
@@ -465,31 +536,41 @@
         {/if}
       </div>
 
-      {#if selectedRepo.keywords?.length || selectedRepo.vocabulary?.length}
-        <div class="detail-grid">
-          {#if selectedRepo.keywords?.length}
-            <div class="detail-block">
-              <div class="detail-label">Keywords</div>
-              <div class="chip-list">
-                {#each selectedRepo.keywords as keyword}
-                  <span class="chip">{keyword}</span>
-                {/each}
-              </div>
-            </div>
-          {/if}
-
-          {#if selectedRepo.vocabulary?.length}
-            <div class="detail-block">
-              <div class="detail-label">Vocabulary</div>
-              <div class="chip-list">
-                {#each selectedRepo.vocabulary as word}
-                  <span class="chip chip-soft">{word}</span>
-                {/each}
-              </div>
-            </div>
-          {/if}
+      <div class="detail-grid">
+        <div class="detail-block">
+          <div class="detail-label">Keywords</div>
+          <div class="chip-list chip-list-wrap">
+            {#each selectedRepo.keywords || [] as keyword}
+              <span class="chip chip-editable">
+                {keyword}
+                <button class="chip-remove" onclick={() => removeListItem('keywords', keyword)} aria-label={`Remove ${keyword}`}>
+                  <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                  </svg>
+                </button>
+              </span>
+            {/each}
+            <input class="tag-input" placeholder="Add keyword and press Enter" onkeydown={(event) => addListItemFromInput(event, 'keywords')} />
+          </div>
         </div>
-      {/if}
+
+        <div class="detail-block">
+          <div class="detail-label">Vocabulary</div>
+          <div class="chip-list chip-list-wrap">
+            {#each selectedRepo.vocabulary || [] as word}
+              <span class="chip chip-soft chip-editable">
+                {word}
+                <button class="chip-remove" onclick={() => removeListItem('vocabulary', word)} aria-label={`Remove ${word}`}>
+                  <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                  </svg>
+                </button>
+              </span>
+            {/each}
+            <input class="tag-input" placeholder="Add word and press Enter" onkeydown={(event) => addListItemFromInput(event, 'vocabulary')} />
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="card">
@@ -613,14 +694,14 @@
           {#each selectedRepo.tags || [] as tag}
             <span class="chip chip-editable">
               {tag}
-              <button class="chip-remove" onclick={() => updateRepo({ tags: (selectedRepo.tags || []).filter((currentTag) => currentTag !== tag) })} aria-label={`Remove ${tag}`}>
+              <button class="chip-remove" onclick={() => removeListItem('tags', tag)} aria-label={`Remove ${tag}`}>
                 <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
                 </svg>
               </button>
             </span>
           {/each}
-          <input id="repo-tag-input" class="tag-input" placeholder="Add tag and press Enter" onkeydown={addTagFromInput} />
+          <input id="repo-tag-input" class="tag-input" placeholder="Add tag and press Enter" onkeydown={(event) => addListItemFromInput(event, 'tags')} />
         </div>
       </div>
     </section>
@@ -657,15 +738,37 @@
                 <div class="list-row">
                   <div class="list-copy">
                     <div class="list-title-row">
-                      <strong>{command.name}</strong>
+                      <input
+                        class="row-edit-input"
+                        value={command.name}
+                        aria-label="Command name"
+                        onchange={(event) => {
+                          const value = (event.currentTarget as HTMLInputElement).value.trim();
+                          if (value) updateLaunchCommand(command.id, { name: value });
+                          else (event.currentTarget as HTMLInputElement).value = command.name;
+                        }}
+                      />
                       {#if command.auto_detected}
                         <span class="status-pill status-pill-muted">Auto</span>
                       {/if}
                     </div>
-                    <div class="list-code">{command.command}</div>
-                    {#if command.working_dir}
-                      <div class="list-meta">Working dir: {command.working_dir}</div>
-                    {/if}
+                    <input
+                      class="row-edit-input row-edit-code"
+                      value={command.command}
+                      aria-label="Command"
+                      onchange={(event) => {
+                        const value = (event.currentTarget as HTMLInputElement).value.trim();
+                        if (value) updateLaunchCommand(command.id, { command: value });
+                        else (event.currentTarget as HTMLInputElement).value = command.command;
+                      }}
+                    />
+                    <input
+                      class="row-edit-input row-edit-meta"
+                      value={command.working_dir || ''}
+                      placeholder="Working dir (optional)"
+                      aria-label="Working directory"
+                      onchange={(event) => updateLaunchCommand(command.id, { working_dir: (event.currentTarget as HTMLInputElement).value.trim() || undefined })}
+                    />
                   </div>
                   <button class="icon-btn" onclick={() => removeLaunchCommand(command.id)} aria-label={`Remove ${command.name}`}>
                     <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -697,14 +800,25 @@
                 <div class="list-row">
                   <div class="list-copy">
                     <div class="list-title-row">
-                      <strong>{profile.name}</strong>
+                      <input
+                        class="row-edit-input"
+                        value={profile.name}
+                        aria-label="Profile name"
+                        onchange={(event) => {
+                          const value = (event.currentTarget as HTMLInputElement).value.trim();
+                          if (value) updateLaunchProfile(profile.id, { name: value });
+                          else (event.currentTarget as HTMLInputElement).value = profile.name;
+                        }}
+                      />
                       <span class="status-pill status-pill-muted">{profile.command_ids.length} cmds</span>
                     </div>
-                    <div class="list-meta">
-                      {profile.command_ids
-                        .map((id) => selectedRepo.launch_commands?.find((command) => command.id === id)?.name)
-                        .filter(Boolean)
-                        .join(', ')}
+                    <div class="chip-list">
+                      {#each selectedRepo.launch_commands ?? [] as command (command.id)}
+                        <label class="checkbox-chip">
+                          <input type="checkbox" checked={profile.command_ids.includes(command.id)} onchange={() => toggleProfileMembership(profile.id, command.id)} />
+                          <span>{command.name}</span>
+                        </label>
+                      {/each}
                     </div>
                   </div>
                   <button class="icon-btn" onclick={() => removeLaunchProfile(profile.id)} aria-label={`Remove ${profile.name}`}>
@@ -904,11 +1018,8 @@
 
   .section-header p,
   .field-help,
-  .hero-description,
-  .hero-path,
   .empty-state p,
-  .empty-inline,
-  .list-meta {
+  .empty-inline {
     margin: 0;
     color: var(--color-text-muted);
     font-size: 0.75rem;
@@ -936,28 +1047,73 @@
 
   .hero-copy {
     min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
   }
 
-  .hero-copy h2 {
-    margin: 0.1rem 0 0;
+  .hero-name-input {
     font-size: 0.95rem;
     font-weight: 600;
+    color: var(--color-text-primary);
+    background: transparent;
+    border-color: transparent;
+    padding: 0.2rem 0.35rem;
+    margin-left: -0.35rem;
+    width: 100%;
+    max-width: 24rem;
   }
 
-  .hero-path {
+  .hero-name-input:hover,
+  .hero-name-input:focus {
+    background: var(--color-background);
+  }
+
+  .hero-path-row {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .hero-path-input {
     font-size: 0.75rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    color: var(--color-text-muted);
+    background: transparent;
+    border-color: transparent;
+    padding: 0.2rem 0.35rem;
+    margin-left: -0.35rem;
+    max-width: 32rem;
   }
 
-  .hero-description {
-    line-height: 1.45;
+  .hero-path-input:hover,
+  .hero-path-input:focus {
+    background: var(--color-background);
+  }
+
+  .description-input {
+    width: 100%;
+    min-width: 0;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.375rem;
+    background: var(--color-background);
     color: var(--color-text-secondary);
+    font-size: 0.75rem;
+    font-family: inherit;
+    line-height: 1.45;
+    resize: vertical;
+    transition: border-color 0.16s ease, box-shadow 0.16s ease;
   }
 
-  .hero-description-empty {
-    font-style: italic;
+  .description-input:hover {
+    border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+  }
+
+  .description-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
   }
 
   .eyebrow-row {
@@ -1349,11 +1505,32 @@
     margin-bottom: 0.1rem;
   }
 
-  .list-code {
-    color: var(--color-text-secondary);
+  .list-copy .row-edit-input {
+    background: transparent;
+    border-color: transparent;
+    padding: 0.2rem 0.35rem;
+    margin-left: -0.35rem;
+  }
+
+  .list-copy .row-edit-input:hover,
+  .list-copy .row-edit-input:focus {
+    background: var(--color-surface-elevated);
+  }
+
+  .list-title-row .row-edit-input {
+    flex: 1;
+    min-width: 6rem;
+    font-weight: 600;
+    color: var(--color-text-primary);
+  }
+
+  .row-edit-code {
     font-family: monospace;
-    font-size: 0.75rem;
-    word-break: break-word;
+    color: var(--color-text-secondary);
+  }
+
+  .row-edit-meta {
+    color: var(--color-text-muted);
   }
 
   @media (max-width: 1024px) {

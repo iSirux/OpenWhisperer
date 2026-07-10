@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { usageStats } from './usageStats';
 import { settings } from './settings';
+import { debugRecordings } from './debugRecordings';
 import { processVoiceCommand } from '$lib/utils/voiceCommands';
 
 export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 'error';
@@ -32,6 +33,9 @@ interface RecordingStore {
   // Real-time transcription
   realtimeTranscript: string;
   realtimeSessionId: string | null;
+  // Id of the most recent recording in the debug-recordings log (dev mode);
+  // read by the transcript pipeline to attach cleanup/recommendations later.
+  lastDebugId: string | null;
 }
 
 function createRecordingStore() {
@@ -45,6 +49,7 @@ function createRecordingStore() {
     transcribingCount: 0,
     realtimeTranscript: '',
     realtimeSessionId: null,
+    lastDebugId: null,
   });
 
   let mediaRecorder: MediaRecorder | null = null;
@@ -64,6 +69,10 @@ function createRecordingStore() {
   let realtimeUnlistenError: UnlistenFn | null = null;
   // Accumulated final text from real-time transcription (when accumulate_transcript is enabled)
   let realtimeAccumulatedText: string = '';
+  // Every final segment of the current realtime session, kept regardless of the
+  // accumulate_transcript display setting — source of truth when the
+  // transcription mode (Realtime/Both) uses the realtime harvest as the transcript.
+  let realtimeFinalSegments: string[] = [];
   // Flag to prevent double-triggering of voice commands
   let voiceCommandTriggered: boolean = false;
   // Flag to prevent concurrent realtime session starts
@@ -86,7 +95,13 @@ function createRecordingStore() {
       sessionId,
       realtimeEnabled: currentSettings.vosk?.enabled,
     });
-    if (!currentSettings.vosk?.enabled) {
+    // The realtime engine runs when it's enabled for live preview OR when the
+    // transcription mode needs it to produce the final transcript (Realtime /
+    // Both) — the enabled toggle only governs preview-only use in Whisper mode.
+    const transcriptionMode = currentSettings.vosk?.transcription_mode ?? 'Both';
+    const realtimeNeeded =
+      (currentSettings.vosk?.enabled ?? false) || transcriptionMode !== 'Whisper';
+    if (!realtimeNeeded) {
       console.log('[recording] Real-time transcription disabled, skipping');
       return;
     }
@@ -106,6 +121,7 @@ function createRecordingStore() {
 
     // Clear accumulated text FIRST before anything else
     realtimeAccumulatedText = '';
+    realtimeFinalSegments = [];
     // Emit clear event immediately
     emit('realtime-transcript', { text: '' });
 
@@ -117,6 +133,8 @@ function createRecordingStore() {
           ? (currentSettings.vosk.sherpa_onnx?.sample_rate || 16000)
           : currentSettings.vosk.provider === 'Speaches'
             ? (currentSettings.vosk.speaches?.sample_rate || 16000)
+        : currentSettings.vosk.provider === 'Moonshine'
+            ? (currentSettings.vosk.moonshine?.sample_rate || 16000)
           : (currentSettings.vosk.sample_rate || 16000);
       realtimeAudioContext = new AudioContext({ sampleRate });
       realtimeSource = realtimeAudioContext.createMediaStreamSource(stream);
@@ -204,6 +222,7 @@ function createRecordingStore() {
           hasText: !!text,
         });
         if (text) {
+          realtimeFinalSegments.push(text.trim());
           const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
           const prevAccumulated = realtimeAccumulatedText;
           if (shouldAccumulate) {
@@ -262,24 +281,18 @@ function createRecordingStore() {
     }
   }
 
-  // Stop real-time transcription session
-  async function stopRealtimeSession() {
+  // Stop real-time transcription session. Returns the harvested full-session
+  // transcript (all final segments + the eof-finalized tail returned by the
+  // backend) — empty string when there was no session or it produced nothing.
+  async function stopRealtimeSession(): Promise<string> {
     const currentState = get({ subscribe });
     const sessionId = currentState.realtimeSessionId;
 
-    // Clean up event listeners first (before any async operations)
-    if (realtimeUnlistenPartial) {
-      realtimeUnlistenPartial();
-      realtimeUnlistenPartial = null;
-    }
-    if (realtimeUnlistenFinal) {
-      realtimeUnlistenFinal();
-      realtimeUnlistenFinal = null;
-    }
-    if (realtimeUnlistenError) {
-      realtimeUnlistenError();
-      realtimeUnlistenError = null;
-    }
+    // Stop feeding audio first. Event listeners are deliberately kept alive
+    // until AFTER the backend session stops: the engine often completes the
+    // last line right as recording stops, and the poll loop's realtime-final
+    // event for it may still be in flight — unlistening now would drop that
+    // segment and cut the end off the harvested transcript.
 
     // Clean up audio processing - disconnect source first, then processor
     if (realtimeSource) {
@@ -310,18 +323,48 @@ function createRecordingStore() {
       realtimeAudioContext = null;
     }
 
-    // Stop the backend session
+    // Stop the backend session; finalize (eof) returns the tail text for audio
+    // that hadn't produced a final segment yet.
+    let tailText = '';
     if (sessionId) {
       try {
-        await invoke('stop_realtime_session', { sessionId });
+        tailText = (await invoke<string>('stop_realtime_session', { sessionId })) || '';
       } catch (error) {
         console.error('Failed to stop realtime session:', error);
       }
+      // Grace period: let realtime-final events emitted just before/during the
+      // stop finish delivering into realtimeFinalSegments.
+      await new Promise((resolve) => setTimeout(resolve, 150));
     }
+
+    // Only now is it safe to detach the event listeners
+    if (realtimeUnlistenPartial) {
+      realtimeUnlistenPartial();
+      realtimeUnlistenPartial = null;
+    }
+    if (realtimeUnlistenFinal) {
+      realtimeUnlistenFinal();
+      realtimeUnlistenFinal = null;
+    }
+    if (realtimeUnlistenError) {
+      realtimeUnlistenError();
+      realtimeUnlistenError = null;
+    }
+
+    const segments = [...realtimeFinalSegments];
+    tailText = tailText.trim();
+    // Some engines return an eof-final duplicating the already-emitted last
+    // segment (e.g. the Moonshine shim's last partial) — skip exact repeats.
+    if (tailText && tailText !== segments[segments.length - 1]) {
+      segments.push(tailText);
+    }
+    const harvested = segments.join(' ').trim();
 
     // Clear accumulated text when session ends
     realtimeAccumulatedText = '';
+    realtimeFinalSegments = [];
     update((s) => ({ ...s, realtimeSessionId: null, realtimeTranscript: '' }));
+    return harvested;
   }
 
   function startVisualizationBroadcast(stream: MediaStream) {
@@ -493,6 +536,10 @@ function createRecordingStore() {
   return {
     subscribe,
 
+    /** Mint a recording/debug id up-front so a caller can own it across the
+     * async transcription window (pass it into stopRecording). */
+    newRecordingId: generateId,
+
     async startRecording(deviceId?: string) {
       let stream: MediaStream | null = null;
 
@@ -561,7 +608,10 @@ function createRecordingStore() {
       }
     },
 
-    async stopRecording(autoTranscribe: boolean = true): Promise<string | null> {
+    async stopRecording(
+      autoTranscribe: boolean = true,
+      providedDebugId?: string
+    ): Promise<string | null> {
       return new Promise((resolve, reject) => {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
           // Still need to clean up visualization and realtime transcription even if mediaRecorder is inactive
@@ -580,18 +630,41 @@ function createRecordingStore() {
             console.warn('[recording] Error stopping visualization:', vizError);
           }
 
+          // Transcription mode decides who produces the transcript:
+          //  - Whisper:  harvest ignored, batch Whisper transcribes
+          //  - Realtime: harvest IS the transcript; empty harvest = failure
+          //  - Both:     BOTH run — Whisper is the primary transcript and the
+          //              harvest is the dual-source secondary; harvest is the
+          //              fallback only if Whisper is unreachable
+          // Stable id shared by the on-disk capture, the transcription queue, and
+          // the debug-recordings log so all stages of this one recording line up.
+          // The caller may own the id (passed in) so it can attach later stages
+          // (destination, LLM cleanup) without racing the mutable lastDebugId
+          // store field across the async transcription window.
+          const debugId = providedDebugId ?? generateId();
+          update((s) => ({ ...s, lastDebugId: debugId }));
+
+          const transcriptionMode = get(settings).vosk?.transcription_mode ?? 'Both';
+          let harvestedTranscript = '';
+          // Raw Vosk harvest kept regardless of mode, for the debug log.
+          let voskHarvest = '';
           try {
             // Stop real-time transcription (wrapped in try-catch to ensure promise resolves)
-            await stopRealtimeSession();
+            const harvested = await stopRealtimeSession();
+            voskHarvest = harvested;
+            if (autoTranscribe && transcriptionMode !== 'Whisper') {
+              harvestedTranscript = harvested;
+            }
           } catch (realtimeError) {
             console.warn('[recording] Error stopping realtime session:', realtimeError);
           }
 
+          let durationMs: number | undefined;
           try {
             // Track recording duration
             if (recordingStartTime) {
-              const duration = Date.now() - recordingStartTime;
-              usageStats.trackRecording(duration);
+              durationMs = Date.now() - recordingStartTime;
+              usageStats.trackRecording(durationMs);
               recordingStartTime = null;
             }
 
@@ -604,9 +677,61 @@ function createRecordingStore() {
             mediaRecorder = null;
             audioChunks = [];
 
-            if (autoTranscribe) {
-              // Queue the transcription instead of blocking
-              const recordingId = generateId();
+            if (autoTranscribe && harvestedTranscript && transcriptionMode === 'Realtime') {
+              // Realtime-only mode: the harvest IS the transcript — no capture
+              // staging or Whisper round-trip. (In 'Both' mode we deliberately
+              // fall through to the Whisper queue below so BOTH engines run and
+              // the realtime harvest feeds the dual-source cleanup.)
+              console.log('[recording] Realtime transcript used, skipping Whisper:', harvestedTranscript);
+              usageStats.trackTranscription();
+              update((s) => ({
+                ...s,
+                state: 'idle',
+                audioData,
+                stream: null,
+                transcript: harvestedTranscript,
+              }));
+              emit('recording-state', { state: 'idle' });
+              emit('transcription-complete', { id: generateId(), transcript: harvestedTranscript });
+              debugRecordings.capture({
+                id: debugId,
+                audioData,
+                durationMs,
+                transcriptionMode,
+                voskTranscript: voskHarvest,
+              });
+              resolve(harvestedTranscript);
+            } else if (autoTranscribe && transcriptionMode === 'Realtime') {
+              // Realtime-only with an empty harvest: there is no Whisper to
+              // fall back to, so surface it as a transcription failure — the
+              // callers' failure paths salvage the audio (pile).
+              console.error('[recording] Realtime-only mode but the realtime harvest was empty');
+              update((s) => ({ ...s, state: 'idle', audioData, stream: null }));
+              emit('recording-state', { state: 'idle' });
+              debugRecordings.capture({
+                id: debugId,
+                audioData,
+                durationMs,
+                transcriptionMode,
+                voskTranscript: voskHarvest,
+                error: 'Real-time transcription produced no text',
+              });
+              reject(new Error(
+                'Real-time transcription produced no text (Realtime-only mode; is the live engine running?)'
+              ));
+            } else if (autoTranscribe) {
+              // Queue the transcription instead of blocking. Reuse debugId so the
+              // capture, queue item and debug-log entry all share one id.
+              const recordingId = debugId;
+
+              // Debug log: record audio + Vosk now; Whisper/error is filled in below.
+              debugRecordings.capture({
+                id: debugId,
+                audioData,
+                durationMs,
+                transcriptionMode,
+                voskTranscript: voskHarvest || undefined,
+              });
 
               // Capture-first durability: stage the audio to disk BEFORE attempting
               // transcription so an app crash mid-transcribe can't lose the recording.
@@ -639,10 +764,28 @@ function createRecordingStore() {
                     onComplete: (transcript: string) => {
                       // Update the store with the transcript when done
                       update((s2) => ({ ...s2, transcript }));
+                      debugRecordings.update(recordingId, { whisperTranscript: transcript });
                       resolve(transcript);
                     },
                     onError: (transcriptionError: Error) => {
-                      reject(transcriptionError);
+                      debugRecordings.update(recordingId, {
+                        error: transcriptionError?.message || 'Transcription failed',
+                      });
+                      // 'Both' mode: Whisper is the primary transcript but a
+                      // realtime harvest is available — fall back to it rather
+                      // than losing the recording to the pile when Whisper is
+                      // unreachable. (In 'Whisper' mode harvestedTranscript is
+                      // always empty, so this reject path is unchanged there.)
+                      if (harvestedTranscript) {
+                        console.warn(
+                          '[recording] Whisper failed in Both mode; falling back to realtime harvest:',
+                          transcriptionError?.message
+                        );
+                        update((s2) => ({ ...s2, transcript: harvestedTranscript }));
+                        resolve(harvestedTranscript);
+                      } else {
+                        reject(transcriptionError);
+                      }
                     },
                   },
                 ],
@@ -656,6 +799,13 @@ function createRecordingStore() {
             } else {
               update((s) => ({ ...s, state: 'recorded', audioData, stream: null }));
               emit('recording-state', { state: 'recorded' });
+              debugRecordings.capture({
+                id: debugId,
+                audioData,
+                durationMs,
+                transcriptionMode,
+                voskTranscript: voskHarvest || undefined,
+              });
               resolve(null);
             }
           } catch (error) {
@@ -738,7 +888,7 @@ function createRecordingStore() {
       }
       mediaRecorder = null;
       audioChunks = [];
-      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0, realtimeTranscript: '', realtimeSessionId: null });
+      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0, realtimeTranscript: '', realtimeSessionId: null, lastDebugId: null });
       emit('recording-state', { state: 'idle' });
     },
 

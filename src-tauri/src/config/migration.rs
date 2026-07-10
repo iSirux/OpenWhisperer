@@ -15,7 +15,7 @@ use super::ui::Theme;
 type Migration = fn(&mut Value);
 
 /// Ordered migration table. Index `i` upgrades a config from version `i` to `i + 1`.
-const MIGRATIONS: &[Migration] = &[migrate_v0_to_v1];
+const MIGRATIONS: &[Migration] = &[migrate_v0_to_v1, migrate_v1_to_v2];
 
 /// The schema version the current build writes. Derived from the table length so
 /// it always matches the number of available migrations.
@@ -43,6 +43,8 @@ pub fn openai_model_alias(model: &str) -> Option<&'static str> {
     match model {
         "codex-mini-latest" | "gpt-5.4-codex" => Some("gpt-5.4"),
         "gpt-5-mini" | "gpt-5.1-codex-mini" => Some("gpt-5.4-mini"),
+        // Deprecated by OpenAI with the GPT-5.6 (Sol/Terra/Luna) release
+        "gpt-5.3-codex" | "gpt-5.2-codex" => Some("gpt-5.6-terra"),
         _ => None,
     }
 }
@@ -75,6 +77,52 @@ pub fn gemini_model_alias(model: &str) -> Option<&'static str> {
 fn migrate_v0_to_v1(value: &mut Value) {
     fix_known_fields(value);
     migrate_deprecated_llm_models(value);
+}
+
+// ============================================================================
+// v1 -> v2: GPT-5.6 rollout (Sol/Terra/Luna) — remap deprecated Codex models
+// and surface the new family in existing configs
+// ============================================================================
+
+fn migrate_v1_to_v2(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+
+    // Remap a deprecated default model (e.g. gpt-5.3-codex -> gpt-5.6-terra).
+    if let Some(Value::String(openai_model)) = obj.get("openai_model") {
+        if let Some(new_model) = openai_model_alias(openai_model) {
+            log::error!(
+                "[config.migrate] Migrating openai_model '{}' -> '{}'",
+                openai_model,
+                new_model
+            );
+            obj.insert(
+                "openai_model".to_string(),
+                Value::String(new_model.to_string()),
+            );
+        }
+    }
+
+    if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_openai_models") {
+        // Remap deprecated entries, then prepend the new GPT-5.6 family so
+        // existing users see the new models without resetting their selection.
+        for model in enabled_models.iter_mut() {
+            if let Value::String(s) = model {
+                if let Some(new_model) = openai_model_alias(s) {
+                    *s = new_model.to_string();
+                }
+            }
+        }
+        for new_model in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] {
+            enabled_models.insert(0, Value::String(new_model.to_string()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        enabled_models.retain(|v| match v {
+            Value::String(s) => seen.insert(s.clone()),
+            _ => true,
+        });
+    }
 }
 
 /// Remap deprecated Groq/Gemini LLM model IDs on the raw config value.

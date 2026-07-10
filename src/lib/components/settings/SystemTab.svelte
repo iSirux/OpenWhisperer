@@ -95,6 +95,23 @@
   </div>
 
   <div class="border-t border-border pt-4 mt-4">
+    <div class="flex items-center justify-between">
+      <div>
+        <label class="text-sm font-medium text-text-secondary">Developer Mode</label>
+        <p class="text-xs text-text-muted">
+          Surfaces debug-only features, including the Recordings Log
+          (captures recent recordings + all transcription stages)
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.system.dev_mode}
+      />
+    </div>
+  </div>
+
+  <div class="border-t border-border pt-4 mt-4">
     <h3 class="text-sm font-medium text-text-primary mb-3">
       Session Persistence
     </h3>

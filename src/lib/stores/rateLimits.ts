@@ -30,6 +30,14 @@ interface RateLimitState {
 	lastError: string | null;
 	lastFetched: number | null; // timestamp ms
 	consecutiveFailures: number;
+	authExpired: boolean; // true when the provider's auth token is expired/unauthorized
+}
+
+/** Detect whether an error string indicates the provider's auth token is expired/invalid */
+function isAuthError(errorText: string): boolean {
+	return /401|unauthorized|token_expired|token is expired|authentication token is expired/i.test(
+		errorText
+	);
 }
 
 const DEFAULT_REFRESH_INTERVAL_MS = 3 * 60_000; // 3 minutes
@@ -88,7 +96,8 @@ function createProviderRateLimitStore(
 		error: null,
 		lastError: null,
 		lastFetched: null,
-		consecutiveFailures: 0
+		consecutiveFailures: 0,
+		authExpired: false
 	});
 
 	let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -135,7 +144,8 @@ function createProviderRateLimitStore(
 					error: null,
 					lastError: null,
 					lastFetched: Date.now(),
-					consecutiveFailures: 0
+					consecutiveFailures: 0,
+					authExpired: false
 				});
 			} catch (error) {
 				const errorText = String(error);
@@ -154,7 +164,8 @@ function createProviderRateLimitStore(
 						...s,
 						loading: false,
 						lastError: errorText,
-						consecutiveFailures
+						consecutiveFailures,
+						authExpired: isAuthError(errorText)
 					};
 					return {
 						...nextState,
@@ -218,7 +229,8 @@ function createProviderRateLimitStore(
 				error: null,
 				lastError: null,
 				lastFetched: null,
-				consecutiveFailures: 0
+				consecutiveFailures: 0,
+				authExpired: false
 			});
 		}
 	};
@@ -237,6 +249,7 @@ export const rateLimits = createProviderRateLimitStore(
 export const rateLimitData = derived(rateLimits, ($rl) => $rl.data);
 export const rateLimitError = derived(rateLimits, ($rl) => $rl.error);
 export const isRateLimitLoading = derived(rateLimits, ($rl) => $rl.loading);
+export const rateLimitAuthExpired = derived(rateLimits, ($rl) => $rl.authExpired);
 
 // --- Codex ---
 export const codexRateLimits = createProviderRateLimitStore(
@@ -249,6 +262,7 @@ export const codexRateLimits = createProviderRateLimitStore(
 export const codexRateLimitData = derived(codexRateLimits, ($rl) => $rl.data);
 export const codexRateLimitError = derived(codexRateLimits, ($rl) => $rl.error);
 export const isCodexRateLimitLoading = derived(codexRateLimits, ($rl) => $rl.loading);
+export const codexRateLimitAuthExpired = derived(codexRateLimits, ($rl) => $rl.authExpired);
 
 // --- Visibility change handler ---
 // When the app regains focus (e.g. after sleep/wake or tab switch), restart

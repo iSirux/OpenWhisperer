@@ -19,6 +19,10 @@
   import RepoIcon from "$lib/components/RepoIcon.svelte";
   import { findRepoByPath } from "$lib/utils/repoIcons";
   import { repos, findRepoById } from "$lib/stores/repos";
+  import { visibleSessionIds, focusedPaneSessionId } from "$lib/stores/panes";
+
+  /** DnD payload type shared with SessionPanes (keep in sync). */
+  const SESSION_DND_TYPE = "application/x-openwhisperer-session-id";
 
   interface Props {
     session: DisplaySession;
@@ -90,6 +94,21 @@
         !!session.latestMessage &&
         !session.aiMetadata?.outcome),
   );
+
+  // Only SDK sessions can be dropped into a pane.
+  const isDraggable = $derived(session.type === "sdk");
+  // Shown in a (non-focused) pane right now — distinct from the active/focused styling.
+  const isOnScreen = $derived(
+    session.type === "sdk" &&
+      $visibleSessionIds.has(session.id) &&
+      $focusedPaneSessionId !== session.id,
+  );
+
+  function handleDragStart(e: DragEvent) {
+    if (!isDraggable || !e.dataTransfer) return;
+    e.dataTransfer.setData(SESSION_DND_TYPE, session.id);
+    e.dataTransfer.effectAllowed = "move";
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -98,6 +117,9 @@
   class="session-item p-3 border-b border-border/50 hover:bg-surface-elevated/50 transition-all cursor-pointer"
   class:active={isActive}
   class:unread={session.unread}
+  class:on-screen={isOnScreen}
+  draggable={isDraggable}
+  ondragstart={handleDragStart}
   onmousedown={(e) => {
     // Middle mouse button closes the session
     if (e.button === 1) {
@@ -130,74 +152,6 @@
             />
           </svg>
           Input Needed
-        </span>
-      {:else if session.status === "queued"}
-        <!-- Queued badge (Smart Queue: parked until reset / scheduled window) -->
-        {@const qi = session.queueInfo}
-        {@const qWindow = qi?.window === "7d" ? "7d" : "5h"}
-        {@const qCountdown = formatMsRemaining(qi?.targetStartAt, now)}
-        <span
-          class="px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/20 text-sky-400 rounded flex items-center gap-1"
-          title={qi?.reason === "scheduled"
-            ? `Scheduled launch for the next ${qWindow} reset`
-            : "Queued - waiting for the rate limit to reset"}
-        >
-          <svg
-            class="w-2.5 h-2.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-            />
-          </svg>
-          {qi?.reason === "scheduled" ? "Scheduled" : "Queued"}
-          {#if qCountdown}
-            <span class="opacity-70 font-normal">
-              · {qi?.reason === "scheduled"
-                ? `next ${qWindow} reset · in ${qCountdown}`
-                : `rate limited · resets in ${qCountdown}`}
-            </span>
-          {/if}
-        </span>
-      {:else if session.status === "rate_limited"}
-        <!-- Rate-limited badge (Smart Queue: live session with a pending turn) -->
-        {@const rl = session.rateLimited}
-        {@const rlCountdown = formatMsRemaining(
-          rl?.targetStartAt ?? rl?.resetsAt,
-          now,
-        )}
-        <span
-          class="px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/20 text-amber-400 rounded flex items-center gap-1"
-          title={rl?.reason === "scheduled"
-            ? "Scheduled to send on the next window reset"
-            : "Rate limit reached - will continue when the window resets"}
-        >
-          <svg
-            class="w-2.5 h-2.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-            />
-          </svg>
-          {rl?.reason === "scheduled" ? "Scheduled send" : "Rate limited"}
-          {#if rlCountdown}
-            <span class="opacity-70 font-normal">
-              · {rl?.reason === "scheduled"
-                ? `in ${rlCountdown}`
-                : `resets in ${rlCountdown}`}
-            </span>
-          {/if}
         </span>
       {:else if session.type === "sequence"}
         <!-- Sequence badge -->
@@ -273,6 +227,14 @@
       {/if}
     </div>
     <div class="flex items-center gap-2">
+      {#if isOnScreen}
+        <span class="on-screen-glyph" title="Showing in a pane">
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <rect x="4" y="5" width="16" height="14" rx="1.5" />
+            <line x1="12" y1="5" x2="12" y2="19" />
+          </svg>
+        </span>
+      {/if}
       {#if getDisplayedDuration() !== null}
         <span class="text-xs text-text-muted font-mono tabular-nums">
           {getDisplayedDuration()}
@@ -306,7 +268,7 @@
   <!-- Session name or prompt text -->
   {#if session.aiMetadata?.name}
     <!-- AI-generated session name -->
-    <div class="mb-1">
+    <div class="mb-1 flex items-center gap-1.5">
       <span
         class="text-sm text-text-primary"
         class:font-semibold={session.unread}
@@ -422,6 +384,41 @@
     </div>
   {/if}
 
+  <!-- Schedule / queue row (Smart Queue: parked until reset / scheduled window) -->
+  {#if session.status === "queued"}
+    {@const qi = session.queueInfo}
+    {@const qWindow = qi?.window === "7d" ? "7d" : "5h"}
+    {@const qCountdown = formatMsRemaining(qi?.targetStartAt, now)}
+    <div
+      class="schedule-row"
+      title={qi?.reason === "scheduled"
+        ? `Scheduled launch for the next ${qWindow} reset`
+        : "Queued - waiting for the rate limit to reset"}
+    >
+      <svg
+        class="w-3 h-3 shrink-0"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+        />
+      </svg>
+      <span class="truncate">
+        {qi?.reason === "scheduled" ? "Scheduled" : "Queued"}
+        {#if qCountdown}
+          · {qi?.reason === "scheduled"
+            ? `next ${qWindow} reset · in ${qCountdown}`
+            : `rate limited · resets in ${qCountdown}`}
+        {/if}
+      </span>
+    </div>
+  {/if}
+
   <!-- Repo name and branch (skip for pending_repo; setup sessions show repo when one is selected) -->
   {#if session.status !== "pending_repo" && session.repoPath && session.repoPath !== "."}
     <div class="flex items-center gap-1.5 text-text-muted min-w-0 overflow-hidden" class:mt-1.5={!hasTextContent}>
@@ -449,6 +446,19 @@
     position: relative;
   }
 
+  /* Session is visible in a non-focused pane: understated accent bar + glyph,
+     kept distinct from the .active (focused) styling. */
+  .session-item.on-screen:not(.active) {
+    border-left-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  }
+
+  .on-screen-glyph {
+    color: color-mix(in srgb, var(--color-accent) 80%, transparent);
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
   .fork-lineage {
     display: flex;
     align-items: center;
@@ -466,6 +476,16 @@
     margin-bottom: 0.35rem;
     font-size: 0.72rem;
     color: rgb(148, 163, 184);
+    min-width: 0;
+  }
+
+  .schedule-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-bottom: 0.35rem;
+    font-size: 0.72rem;
+    color: rgb(56, 189, 248);
     min-width: 0;
   }
 

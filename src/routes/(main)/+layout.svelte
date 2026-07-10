@@ -33,6 +33,7 @@
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import { type VoiceCommandType } from '$lib/utils/voiceCommands';
   import { eventMatchesHotkey } from '$lib/utils/hotkeys';
+  import { cycleModel, cycleRepo } from '$lib/utils/recordingCycles';
   import { createAndActivateNewSession } from '$lib/utils/sessionCreation';
 
   // Composables (now layout-level — survive route changes)
@@ -90,11 +91,24 @@
   $effect(() => {
     const openMicEnabled = $settings.audio.open_mic.enabled;
     const voskEnabled = $settings.vosk?.enabled ?? false;
+    const vosk = $settings.vosk;
+    const provider = vosk?.provider ?? "Vosk";
+    const providerConfig =
+      provider === "VoiceStreamAI" ? vosk?.voice_stream_ai
+      : provider === "SherpaOnnx" ? vosk?.sherpa_onnx
+      : provider === "Speaches" ? vosk?.speaches
+      : provider === "Moonshine" ? vosk?.moonshine
+      : vosk;
+    const realtimeConfigFingerprint = JSON.stringify({
+      provider,
+      endpoint: providerConfig?.endpoint,
+      sampleRate: providerConfig && "sample_rate" in providerConfig ? providerConfig.sample_rate : undefined,
+    });
     const currentlyRecording = $isRecording;
     const currentlyListening = $isOpenMicListening;
     const currentlyPaused = $isOpenMicPaused;
 
-    openMicLifecycle.update(openMicEnabled, voskEnabled, currentlyRecording, currentlyListening, currentlyPaused);
+    openMicLifecycle.update(openMicEnabled, voskEnabled, realtimeConfigFingerprint, currentlyRecording, currentlyListening, currentlyPaused);
   });
 
   // Effect to emit active session/sequence counts to the overlay
@@ -216,6 +230,8 @@
           audio: { ...current.audio, record_and_send_action: next },
         });
       },
+      onCycleRepo: cycleRepo,
+      onCycleModel: cycleModel,
     });
 
     // Setup event listeners

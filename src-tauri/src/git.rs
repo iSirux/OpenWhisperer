@@ -57,6 +57,36 @@ impl GitManager {
         Ok(Self::git(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])?)
     }
 
+    /// Count the number of changed files in `repo_path`'s working tree, matching
+    /// VS Code's source-control badge: uncommitted changes only (staged,
+    /// unstaged, and untracked-but-not-ignored files). Committed history is
+    /// ignored.
+    pub fn count_changed_files(repo_path: &str) -> Result<usize, String> {
+        // Each porcelain line is one changed path (renames included), so a line
+        // count is sufficient — no need to parse paths.
+        let status = Self::git(repo_path, &["status", "--porcelain"])?;
+        Ok(status.lines().filter(|l| !l.trim().is_empty()).count())
+    }
+
+    /// Sum [`count_changed_files`] across the main worktree and every linked
+    /// worktree of `repo_path`. Each worktree has its own working tree, so their
+    /// changes are disjoint and simply added. A worktree whose count can't be
+    /// read (e.g. removed on disk) contributes 0 rather than failing the whole
+    /// total.
+    pub fn count_changed_files_all_worktrees(repo_path: &str) -> Result<usize, String> {
+        let worktrees = match Self::list_worktrees(repo_path) {
+            Ok(w) if !w.is_empty() => w.into_iter().map(|w| w.path).collect::<Vec<_>>(),
+            // Fall back to just the given path if worktree listing is unavailable.
+            _ => vec![repo_path.to_string()],
+        };
+
+        let mut total = 0usize;
+        for path in worktrees {
+            total += Self::count_changed_files(&path).unwrap_or(0);
+        }
+        Ok(total)
+    }
+
     pub fn create_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
         Self::git(repo_path, &["checkout", "-b", branch_name])?;
         Ok(())

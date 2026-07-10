@@ -14,6 +14,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { sdkSessions, settingsToStoreEffort, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
 import { settings } from '$lib/stores/settings';
 import { activeRepo, type RepoConfig } from '$lib/stores/repos';
+import { touchRepo } from '$lib/stores/repoRecency';
 
 export interface LaunchConfig {
   repo: RepoConfig;
@@ -71,6 +72,7 @@ export interface LaunchSessionOptions {
 export async function launchSession(opts: LaunchSessionOptions): Promise<string> {
   const { repo, model, effortLevel, provider } = opts;
 
+  touchRepo(repo.path);
   const sessionId = sdkSessions.createSetupSession(model, effortLevel, provider, repo.path);
 
   if (opts.tag) {

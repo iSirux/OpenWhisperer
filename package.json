@@ -31,6 +31,7 @@
         "highlight.js": "^11.10.0",
         "marked": "^15.0.4",
         "marked-highlight": "^2.2.1",
+        "paneforge": "^1.0.2",
         "tauri-plugin-keyring-api": "^0.1.1"
     },
     "devDependencies": {

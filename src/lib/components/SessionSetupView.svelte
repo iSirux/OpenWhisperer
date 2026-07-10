@@ -3,12 +3,12 @@
   import { normalizeEffortLevel, sdkSessions, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
   import type { QueueWindow } from '$lib/stores/queueDetection';
   import { settings } from '$lib/stores/settings';
-  import { repos, type RepoConfig } from '$lib/stores/repos';
-  import RepoIcon from '$lib/components/RepoIcon.svelte';
+  import { repos } from '$lib/stores/repos';
+  import RepoSelector from '$lib/components/RepoSelector.svelte';
   import PromptChips from '$lib/components/PromptChips.svelte';
-  import { appendChips } from '$lib/utils/promptChips';
-  import { findRepoByPath } from '$lib/utils/repoIcons';
+  import { appendChips, mergeChips } from '$lib/utils/promptChips';
   import { isRecording, isTranscribing } from '$lib/stores/recording';
+  import { holdSpaceRecord } from '$lib/actions/holdSpaceRecord';
   import {
     getEnabledModelsWithAuto,
     getEnabledModels,
@@ -21,9 +21,9 @@
     modelSupportsXhigh,
     type SdkProvider,
   } from '$lib/utils/models';
-  import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import {
     getImagesFromClipboard,
+    getImagesFromClipboardHtml,
     getImagesFromDrop,
     processImages,
     createPreviewUrl,
@@ -119,7 +119,6 @@
   let selectedChips = $state<string[]>([]);
   let pendingImages = $state<ImageData[]>(toImageData(initialDraftImages));
   let isProcessingImages = $state(false);
-  let showRepoDropdown = $state(false);
   let provider = $state<SdkProvider>(initialProvider ?? getProviderForModel(initialModel));
   let openaiAvailable = $state(false);
   let isStarting = $state(false);
@@ -140,7 +139,6 @@
 
   // Derived state
   const activeRepos = $derived(($repos.list || []).filter((r) => r.active !== false));
-  const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
   const isAutoRepoMode = $derived(!cwd || cwd === '.');
   const isSmartModelEnabled = $derived(
     $settings.llm?.enabled && $settings.llm?.features?.recommend_model
@@ -150,12 +148,6 @@
       ? getEnabledModels($settings.enabled_openai_models, 'openai')
       : getEnabledModelsWithAuto($settings.enabled_models)
   );
-
-  const currentRepoName = $derived(() => {
-    if (!cwd || cwd === '.') return 'Auto';
-    const repo = activeRepos.find(r => r.path === cwd);
-    return repo?.name || cwd.split(/[/\\]/).pop() || 'Unknown';
-  });
 
   const currentRepo = $derived(activeRepos.find(r => r.path === cwd));
   const currentRepoIndex = $derived($repos.list.findIndex(r => r.path === cwd));
@@ -341,6 +333,13 @@
     }
   }
 
+  /** Quickship: select this chip and immediately start the session with the current prompt. */
+  async function handleQuickship(chip: string) {
+    if (!canStart || isStarting) return;
+    selectedChips = mergeChips(selectedChips, [chip]);
+    await handleStart();
+  }
+
   async function handleSchedule(window: QueueWindow) {
     scheduleMenuOpen = false;
     if (!canStart || isStarting || !onSchedule) return;
@@ -383,10 +382,21 @@
 
   // Image handling
   async function handlePaste(e: ClipboardEvent) {
+    // Read clipboard data synchronously — it's only valid during the event.
+    const html = e.clipboardData?.getData('text/html') ?? '';
     const imageFiles = await getImagesFromClipboard(e);
     if (imageFiles.length > 0) {
+      // Raw image blob (e.g. a screenshot) — replace the paste with the image.
       e.preventDefault();
       await addImages(imageFiles);
+      return;
+    }
+    // Rich HTML with embedded images (e.g. a page copied from Google Docs).
+    // Don't preventDefault — let the accompanying text paste normally, and
+    // attach the images alongside it.
+    const htmlImages = await getImagesFromClipboardHtml(html);
+    if (htmlImages.length > 0) {
+      await addImages(htmlImages);
     }
   }
 
@@ -455,25 +465,12 @@
     }
   }
 
-  // Repo handling
+  // Repo handling ('' means Auto — the RepoSelector only emits it when enabled)
   function handleRepoSelect(path: string) {
     cwd = path;
     const repo = activeRepos.find(r => r.path === path);
     worktreeMode = repo?.worktree_mode || 'main';
     selectedWorktreePath = '';
-    showRepoDropdown = false;
-  }
-
-  function handleAutoRepoClick() {
-    if (autoRepoEnabled) {
-      cwd = '';
-      worktreeMode = 'main';
-      selectedWorktreePath = '';
-      showRepoDropdown = false;
-    } else {
-      showRepoDropdown = false;
-      window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'llm' } }));
-    }
   }
 
   // Worktree handling
@@ -508,9 +505,6 @@
 
   function handleClickOutside(event: MouseEvent) {
     const target = event.target as HTMLElement;
-    if (!target.closest('.repo-selector-container')) {
-      showRepoDropdown = false;
-    }
     if (!target.closest('.worktree-selector-container')) {
       showWorktreeDropdown = false;
     }
@@ -651,93 +645,13 @@
       <div class="option-row option-row--wide">
         <div class="repo-selector-cell">
             <label class="option-label">Repository</label>
-            <div class="repo-selector-container relative">
-              <button
-                class="repo-btn"
-                onclick={() => showRepoDropdown = !showRepoDropdown}
-              >
-                {#if isAutoRepoMode && autoRepoEnabled}
-                  <span class="auto-text">{currentRepoName()}</span>
-                {:else}
-                  <RepoIcon repo={findRepoByPath(activeRepos, cwd)} size="sm" />
-                  <span>{currentRepoName()}</span>
-                {/if}
-                <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-
-              {#if showRepoDropdown}
-                <div class="repo-dropdown">
-                  <!-- Auto option -->
-                  <button
-                    class="repo-option"
-                    class:selected={isAutoRepoMode && autoRepoEnabled}
-                    onclick={handleAutoRepoClick}
-                  >
-                    <span class="flex items-center gap-2">
-                      <span class:auto-text={autoRepoEnabled && !isAutoRepoMode} class:text-text-muted={!autoRepoEnabled}>
-                        Auto
-                      </span>
-                      {#if !autoRepoEnabled}
-                        <span class="text-text-muted text-[10px]">(enable in settings)</span>
-                      {/if}
-                    </span>
-                    {#if isAutoRepoMode && autoRepoEnabled}
-                      <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                        <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                      </svg>
-                    {/if}
-                  </button>
-
-                  {#if activeRepos.length > 0}
-                    <div class="repo-divider"></div>
-                  {/if}
-
-                  {#each activeRepos as repo}
-                    {@const isSelected = repo.path === cwd}
-                    <button
-                      class="repo-option"
-                      class:selected={isSelected}
-                      onclick={() => handleRepoSelect(repo.path)}
-                      title={repo.path}
-                    >
-                      <div class="repo-option-left">
-                        <RepoIcon repo={repo} size="sm" />
-                        <div class="repo-info">
-                          <div class="repo-name">{repo.name}</div>
-                          {#if repo.description}
-                            <div class="repo-desc">{repo.description}</div>
-                          {/if}
-                        </div>
-                      </div>
-                      {#if isSelected}
-                        <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                          <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                        </svg>
-                      {/if}
-                    </button>
-                  {/each}
-
-                  {#if activeRepos.length === 0}
-                    <div class="px-3 py-2 text-xs text-text-muted">
-                      No repositories configured
-                    </div>
-                  {/if}
-
-                  <div class="repo-divider"></div>
-                  <button
-                    class="repo-option add-repo"
-                    onclick={() => {
-                      showRepoDropdown = false;
-                      window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'repos' } }));
-                    }}
-                  >
-                    + Add repository
-                  </button>
-                </div>
-              {/if}
-            </div>
+            <RepoSelector
+              {cwd}
+              onchange={handleRepoSelect}
+              size="md"
+              maxVisible={4}
+              dropdownDirection="down"
+            />
           </div>
       </div>
 
@@ -895,6 +809,13 @@
         oninput={autoResize}
         onkeydown={handleKeydown}
         onpaste={handlePaste}
+        use:holdSpaceRecord={{
+          enabled: $settings.audio.hold_space_to_record_inline,
+          canStart: () => !$isRecording && !$isTranscribing && !isAwaitingTranscript,
+          start: onStartRecording,
+          stop: onStopRecording,
+          onState: (s) => (isAwaitingTranscript = s === 'transcribing'),
+        }}
         placeholder={'Enter your prompt... (Ctrl+V to paste images)'}
         rows="1"
       ></textarea>
@@ -904,7 +825,12 @@
       </div>
 
       <div class="chips-row">
-        <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
+        <PromptChips
+          selected={selectedChips}
+          onchange={(next) => (selectedChips = next)}
+          onQuickship={handleQuickship}
+          quickshipDisabled={!canStart || isStarting}
+        />
       </div>
     </div>
 
@@ -1245,117 +1171,6 @@
     background: #0891b2;
     color: white;
     border-color: #06b6d4;
-  }
-
-  /* Repo Selector */
-  .repo-selector-container {
-    width: auto;
-  }
-
-  .repo-btn {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    border-radius: 0.5rem;
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--color-text-primary);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    transition: all 0.15s ease;
-  }
-
-  .repo-btn:hover {
-    background: var(--color-surface-elevated);
-    border-color: var(--color-accent);
-  }
-
-  .auto-text {
-    background: linear-gradient(to right, #a855f7, #f59e0b);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-
-  .repo-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    margin-top: 0.25rem;
-    width: 16rem;
-    background: var(--color-surface-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: 0.5rem;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    z-index: 50;
-    max-height: 16rem;
-    overflow-y: auto;
-  }
-
-  .repo-option {
-    width: 100%;
-    padding: 0.625rem 0.875rem;
-    text-align: left;
-    font-size: 0.8rem;
-    color: var(--color-text-primary);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    transition: background 0.15s ease;
-  }
-
-  .repo-option:hover {
-    background: var(--color-border);
-  }
-
-  .repo-option.selected {
-    background: var(--color-accent);
-    color: white;
-  }
-
-  .repo-option.add-repo {
-    color: var(--color-accent);
-  }
-
-  .repo-option-left {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .repo-info {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .repo-name {
-    font-weight: 500;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .repo-desc {
-    font-size: 0.7rem;
-    color: var(--color-text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    margin-top: 0.125rem;
-  }
-
-  .repo-option.selected .repo-desc {
-    color: rgba(255, 255, 255, 0.7);
-  }
-
-  .repo-divider {
-    height: 1px;
-    background: var(--color-border);
-    margin: 0.25rem 0;
   }
 
   /* Prompt Section */

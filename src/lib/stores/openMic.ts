@@ -2,6 +2,7 @@ import { writable, derived, get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { settings, OPEN_MIC_PRESETS } from "./settings";
+import { transcriptEndsWithCommand } from "$lib/utils/voiceCommands";
 
 export type OpenMicState =
   | "disabled"
@@ -74,41 +75,16 @@ function createOpenMicStore() {
     return Math.sqrt(sum / float32Array.length);
   }
 
-  // Check if a transcript contains any wake command
+  // Check if a transcript ends with any wake command, tolerating the
+  // punctuation/casing transcribers add (Moonshine emits "Hey, Claude."
+  // where Vosk emits "hey claude")
   function detectWakeCommand(transcript: string): string | null {
     const currentSettings = get(settings);
     const wakeCommands = currentSettings.audio.open_mic.wake_commands;
 
-    if (wakeCommands.length === 0) return null;
-
-    const lowerTranscript = transcript.toLowerCase().trim();
-
-    // Check for each wake command (exact match or at the end)
     for (const command of wakeCommands) {
-      const lowerCommand = command.toLowerCase();
-
-      // Check if transcript ends with the command
-      if (lowerTranscript.endsWith(lowerCommand)) {
+      if (transcriptEndsWithCommand(transcript, command)) {
         return command;
-      }
-
-      // Check if transcript equals the command exactly
-      if (lowerTranscript === lowerCommand) {
-        return command;
-      }
-
-      // Check with common punctuation variations at the end
-      const punctuationVariants = [
-        `. ${lowerCommand}`,
-        `, ${lowerCommand}`,
-        `! ${lowerCommand}`,
-        `? ${lowerCommand}`,
-      ];
-
-      for (const variant of punctuationVariants) {
-        if (lowerTranscript.endsWith(variant)) {
-          return command;
-        }
       }
     }
 
@@ -227,6 +203,8 @@ function createOpenMicStore() {
           ? (currentSettings.vosk.sherpa_onnx?.sample_rate || 16000)
           : currentSettings.vosk.provider === 'Speaches'
             ? (currentSettings.vosk.speaches?.sample_rate || 16000)
+        : currentSettings.vosk.provider === 'Moonshine'
+            ? (currentSettings.vosk.moonshine?.sample_rate || 16000)
           : (currentSettings.vosk.sample_rate || 16000);
       audioContext = new AudioContext({ sampleRate });
       audioSource = audioContext.createMediaStreamSource(mediaStream);

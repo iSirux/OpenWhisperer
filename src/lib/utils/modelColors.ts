@@ -31,6 +31,10 @@ export function getShortModelName(model: string): string {
   // OpenAI models
   if (model.startsWith('codex-mini')) return 'Codex Mini';
   if (model.startsWith('codex')) return 'Codex';
+  if (model === 'gpt-5.6-sol') return '5.6 Sol';
+  if (model === 'gpt-5.6-terra') return '5.6 Terra';
+  if (model === 'gpt-5.6-luna') return '5.6 Luna';
+  if (model === 'gpt-5.5') return '5.5';
   if (model === 'gpt-5.4' || model === 'gpt-5.4-codex') return '5.4';
   if (model === 'gpt-5-mini' || model === 'gpt-5.4-mini') return '5.4 Mini';
   if (model === 'gpt-5.3-codex-spark') return '5.3 Spark';

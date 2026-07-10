@@ -1,11 +1,15 @@
 pub mod archive_cmds;
 pub mod audio_cmds;
+pub mod debug_recordings_cmds;
+pub mod docker_cmds;
 pub mod git_cmds;
+pub mod image_cmds;
 pub mod input_cmds;
 pub mod launch_cmds;
 pub mod llm_cmds;
 pub mod log_cmds;
 pub mod mcp_cmds;
+pub mod no_mistakes_cmds;
 pub mod notion_cmds;
 pub mod pile_cmds;
 

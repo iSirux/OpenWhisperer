@@ -4,7 +4,7 @@
   import ModelSelector from './ModelSelector.svelte';
   import EffortToggle from './EffortToggle.svelte';
   import OpenMicMarquee from './OpenMicMarquee.svelte';
-  import RepoIcon from '$lib/components/RepoIcon.svelte';
+  import RepoSelector from './RepoSelector.svelte';
   import { navigation } from '$lib/stores/navigation';
   import { settings, type AutoModelEffort } from '$lib/stores/settings';
   import { repos, activeRepo, isAutoRepoSelected } from '$lib/stores/repos';
@@ -13,14 +13,11 @@
   import { settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import { DEFAULT_OPENAI_MODEL_ID, isAutoModel } from '$lib/utils/models';
   import RateLimitIndicator from './RateLimitIndicator.svelte';
   import QueueIndicator from './QueueIndicator.svelte';
 
   // Derived state from stores
-  let activeRepos = $derived($repos.list.filter((r) => r.active !== false));
-  let activeRepoIndex = $derived($repos.activeIndex);
   let currentActiveRepo = $derived($activeRepo);
   let autoRepoSelected = $derived($isAutoRepoSelected);
   let sdkProvider = $derived($settings.sdk_provider);
@@ -39,9 +36,7 @@
   // Check if current model is auto
   const isAuto = $derived(currentProvider === 'claude' && isAutoModel(selectedModel));
 
-  let showRepoSelector = $state(false);
   let openaiAvailable = $state(false);
-  const autoRepoEnabled = $derived(isRepoAutoSelectEnabled());
 
   // Detect if we're on settings route
   let isOnSettings = $derived(currentPath.startsWith('/settings'));
@@ -56,23 +51,18 @@
       });
   });
 
-  function handleRepoSelect(index: number) {
-    repos.setActiveRepo(index);
-    showRepoSelector = false;
-  }
-
-  function handleAutoRepoClick() {
-    if (isRepoAutoSelectEnabled()) {
+  function handleRepoChange(path: string) {
+    if (!path) {
       repos.setAutoRepoMode(true);
-      showRepoSelector = false;
-    } else {
-      showRepoSelector = false;
-      goto('/settings?tab=llm');
+      return;
+    }
+    const index = $repos.list.findIndex((r) => r.path === path);
+    if (index >= 0) {
+      repos.setActiveRepo(index);
     }
   }
 
   function handleAddRepo() {
-    showRepoSelector = false;
     if (currentPath !== '/') {
       goto('/');
     }
@@ -162,123 +152,16 @@
       OpenWhisperer
     </button>
 
-    <!-- Repo Selector Dropdown -->
-    <div class="relative">
-      <button
-        class="repo-selector flex items-center gap-1.5 px-2 py-1 bg-surface-elevated hover:bg-border rounded text-[10px] font-medium transition-colors"
-        onclick={() => showRepoSelector = !showRepoSelector}
-        title="Select repository"
-      >
-        {#if autoRepoSelected}
-          <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500">Auto</span>
-        {:else if currentActiveRepo}
-          <RepoIcon repo={currentActiveRepo} size="xs" />
-          <span class="text-text-primary">{currentActiveRepo.name}</span>
-        {:else}
-          <span class="text-text-muted">No repo selected</span>
-        {/if}
-        <svg class="w-3 h-3 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      {#if showRepoSelector}
-        <div class="absolute top-full left-0 mt-1 w-64 bg-surface-elevated border border-border rounded shadow-lg z-50">
-          {#if recording}
-            <div class="px-3 py-2 border-b border-border bg-recording/10">
-              <div class="flex items-center gap-2 text-xs text-recording">
-                <div class="w-1.5 h-1.5 bg-recording rounded-full animate-pulse-recording"></div>
-                <span>Recording - switch repository for this prompt</span>
-              </div>
-            </div>
-          {/if}
-
-          <!-- Auto repo option -->
-          <button
-            class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors relative"
-            class:bg-gradient-to-r={autoRepoSelected && autoRepoEnabled}
-            class:from-purple-500={autoRepoSelected && autoRepoEnabled}
-            class:to-amber-500={autoRepoSelected && autoRepoEnabled}
-            class:text-white={autoRepoSelected && autoRepoEnabled}
-            onclick={handleAutoRepoClick}
-            title={autoRepoEnabled ? "Automatically select repository based on prompt content" : "Click to enable Auto Repo Selection in LLM settings"}
-          >
-            <div class="flex items-center justify-between">
-              <div class="flex-1 min-w-0">
-                <div class="font-medium flex items-center gap-2">
-                  <span
-                    class:text-transparent={!autoRepoSelected || !autoRepoEnabled}
-                    class:bg-clip-text={!autoRepoSelected || !autoRepoEnabled}
-                    class:bg-gradient-to-r={!autoRepoSelected || !autoRepoEnabled}
-                    class:from-purple-500={!autoRepoSelected || !autoRepoEnabled}
-                    class:to-amber-500={!autoRepoSelected || !autoRepoEnabled}
-                    class:text-text-muted={!autoRepoEnabled}
-                  >Auto</span>
-                  {#if autoRepoSelected && autoRepoEnabled}
-                    <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                    </svg>
-                  {/if}
-                </div>
-                <div
-                  class="text-xs"
-                  class:text-text-muted={!autoRepoSelected || !autoRepoEnabled}
-                  class:opacity-80={autoRepoSelected && autoRepoEnabled}
-                >
-                  {autoRepoEnabled ? "Select repo based on prompt" : "Enable in LLM settings"}
-                </div>
-              </div>
-            </div>
-          </button>
-
-          {#if activeRepos.length > 0}
-            <div class="border-t border-border"></div>
-          {/if}
-
-          {#each activeRepos as repo, index}
-            {@const isSelected = index === activeRepoIndex && !autoRepoSelected}
-            <button
-              class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors relative"
-              class:bg-accent={isSelected}
-              class:text-white={isSelected}
-              onclick={() => handleRepoSelect(index)}
-            >
-              <div class="flex items-center gap-2">
-                <RepoIcon repo={repo} size="sm" />
-                <div class="flex-1 min-w-0">
-                  <div class="font-medium flex items-center gap-2">
-                    {repo.name}
-                    {#if isSelected}
-                      <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                        <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                      </svg>
-                    {/if}
-                  </div>
-                  <div class="text-xs truncate" class:text-text-muted={!isSelected} class:opacity-80={isSelected}>
-                    {repo.path}
-                  </div>
-                </div>
-              </div>
-            </button>
-          {/each}
-
-          {#if activeRepos.length === 0}
-            <div class="px-3 py-2 text-sm text-text-muted">
-              No repositories configured
-            </div>
-          {/if}
-
-          <div class="border-t border-border">
-            <button
-              class="w-full px-3 py-2 text-left text-sm text-accent hover:bg-border transition-colors"
-              onclick={handleAddRepo}
-            >
-              + Add repository
-            </button>
-          </div>
-        </div>
-      {/if}
-    </div>
+    <!-- Repo Selector Toggle Group -->
+    <RepoSelector
+      cwd={autoRepoSelected ? '' : currentActiveRepo?.path ?? ''}
+      onchange={handleRepoChange}
+      size="sm"
+      maxVisible={3}
+      dropdownDirection="down"
+      notice={recording ? 'Recording - switch repository for this prompt' : undefined}
+      onAddRepo={handleAddRepo}
+    />
 
     <!-- Global Model Selector -->
     {#if openaiAvailable}

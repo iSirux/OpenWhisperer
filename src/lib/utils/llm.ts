@@ -9,6 +9,41 @@ export interface SessionNameResult {
   category: string;
 }
 
+/**
+ * Curated pool of short, ASR-friendly callsign words. Session nicknames are picked
+ * from this pool deterministically (no LLM involvement). Sharp consonants and 1-2
+ * syllables for easy speech recognition.
+ */
+const CALLSIGN_WORDS = [
+  'falcon', 'delta', 'birch', 'tango', 'cobra', 'flint', 'raven', 'bravo',
+  'comet', 'ember', 'piston', 'quartz', 'basil', 'topaz', 'pilot', 'drake',
+  'cedar', 'talon', 'kilo', 'vector', 'pixel', 'oscar', 'granite', 'clover',
+  'badger', 'jasper', 'copper', 'domino', 'echo', 'foxtrot', 'ginger', 'harbor',
+  'ibex', 'juniper', 'kestrel', 'lupine', 'maple', 'nomad', 'onyx', 'poppy',
+  'quill', 'rocket', 'sable', 'timber', 'umber', 'viper', 'walnut', 'yankee',
+  'zephyr', 'anvil',
+];
+
+/**
+ * Pick a unique voice callsign from the curated pool: the first word not already in
+ * `existingNicknames` (case-insensitive). If the pool is exhausted, append an
+ * incrementing number to the first callsign until unique.
+ */
+export function pickNickname(existingNicknames: string[]): string {
+  const used = new Set(existingNicknames.map(n => n.trim().toLowerCase()));
+
+  const unused = CALLSIGN_WORDS.find(w => !used.has(w));
+  if (unused) {
+    return unused.charAt(0).toUpperCase() + unused.slice(1);
+  }
+
+  // Pool exhausted: append an incrementing number to the first callsign until unique.
+  const base = CALLSIGN_WORDS[0];
+  let n = 2;
+  while (used.has(`${base}${n}`.toLowerCase())) n++;
+  return `${base.charAt(0).toUpperCase()}${base.slice(1)}${n}`;
+}
+
 export interface SessionOutcomeResult {
   outcome: string;
 }
@@ -158,8 +193,27 @@ export function needsUserConfirmation(confidence: string): boolean {
 }
 
 /**
+ * App-level terms that are frequently spoken regardless of repo and commonly
+ * mangled by speech-to-text. Always included in the cleanup bias list.
+ */
+const BASE_CLEANUP_VOCABULARY = [
+  'Claude',
+  'Claude Code',
+  'Anthropic',
+  'Opus',
+  'Sonnet',
+  'Haiku',
+  'MCP',
+  'subagent',
+  'worktree',
+  'Playwright',
+  'CLAUDE.md',
+];
+
+/**
  * Build repo context string for transcription cleanup.
- * Returns a string with the repo name, description, keywords, and vocabulary.
+ * Produces a context-biasing term list (repo name + keywords + vocabulary +
+ * base app vocabulary) the LLM should prefer when the audio sounds similar.
  */
 export function buildRepoContextForCleanup(repo: {
   name: string;
@@ -173,20 +227,20 @@ export function buildRepoContextForCleanup(repo: {
     parts.push(`Description: ${repo.description}`);
   }
 
-  if (repo.keywords && repo.keywords.length > 0) {
-    parts.push(`Keywords: ${repo.keywords.join(', ')}`);
-  }
+  const biasTerms = new Set<string>([repo.name, ...BASE_CLEANUP_VOCABULARY]);
+  repo.keywords?.forEach(k => biasTerms.add(k));
+  repo.vocabulary?.forEach(v => biasTerms.add(v));
 
-  if (repo.vocabulary && repo.vocabulary.length > 0) {
-    parts.push(`Vocabulary (project-specific terms that may be spoken): ${repo.vocabulary.join(', ')}`);
-  }
+  parts.push(`Known terms: ${Array.from(biasTerms).join(', ')}`);
 
   return parts.join('\n');
 }
 
 /**
  * Build combined context from ALL repos for transcription cleanup.
- * Aggregates vocabulary and keywords from all repos for better recognition.
+ * Aggregates repo names, keywords, and vocabulary from all repos into one
+ * context-biasing term list. Repo names are prime mistranscription targets
+ * (used for voice routing), so context is returned even without keywords.
  */
 export function buildAllReposContextForCleanup(repos: Array<{
   name: string;
@@ -196,39 +250,24 @@ export function buildAllReposContextForCleanup(repos: Array<{
 }>): string | undefined {
   if (!repos || repos.length === 0) return undefined;
 
-  // Collect all unique vocabulary and keywords from all repos
-  const allVocabulary = new Set<string>();
-  const allKeywords = new Set<string>();
-  const repoNames: string[] = [];
+  const repoNames = repos.map(r => r.name);
+  const biasTerms = new Set<string>([...repoNames, ...BASE_CLEANUP_VOCABULARY]);
 
   for (const repo of repos) {
-    repoNames.push(repo.name);
-    if (repo.vocabulary) {
-      repo.vocabulary.forEach(v => allVocabulary.add(v));
-    }
-    if (repo.keywords) {
-      repo.keywords.forEach(k => allKeywords.add(k));
-    }
+    repo.keywords?.forEach(k => biasTerms.add(k));
+    repo.vocabulary?.forEach(v => biasTerms.add(v));
   }
 
-  // Only return context if we have vocabulary or keywords
-  if (allVocabulary.size === 0 && allKeywords.size === 0) return undefined;
-
-  const parts: string[] = [`Projects: ${repoNames.join(', ')}`];
-
-  if (allKeywords.size > 0) {
-    parts.push(`Keywords: ${Array.from(allKeywords).join(', ')}`);
-  }
-
-  if (allVocabulary.size > 0) {
-    parts.push(`Vocabulary (project-specific terms that may be spoken): ${Array.from(allVocabulary).join(', ')}`);
-  }
-
-  return parts.join('\n');
+  return [
+    `Projects: ${repoNames.join(', ')}`,
+    `Known terms: ${Array.from(biasTerms).join(', ')}`,
+  ].join('\n');
 }
 
 /**
- * Generate a session name from the user's prompt (called immediately when prompt is sent)
+ * Generate a session name from the user's prompt (called immediately when prompt is sent).
+ * Nicknames are NOT generated here — they are assigned deterministically at session
+ * creation via {@link pickNickname}.
  */
 export async function generateSessionName(
   userPrompt: string
@@ -612,7 +651,9 @@ export async function analyzeSessionCompletion(messages: SdkMessage[]): Promise<
  * Generate session name from the user's first prompt
  * This should be called immediately when a prompt is sent
  */
-export async function generateSessionNameFromPrompt(userPrompt: string): Promise<SessionAiMetadata> {
+export async function generateSessionNameFromPrompt(
+  userPrompt: string
+): Promise<SessionAiMetadata> {
   const metadata: SessionAiMetadata = {};
 
   if (!isAutoNamingEnabled()) {

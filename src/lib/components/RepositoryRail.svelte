@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
+  import { onDestroy } from 'svelte';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import { navigation } from '$lib/stores/navigation';
   import { repos } from '$lib/stores/repos';
@@ -10,6 +12,36 @@
   }
 
   let { currentRepoId = null, showAddMode = false, currentView = '' }: Props = $props();
+
+  // Number of changed files per repo path (summed across all its worktrees),
+  // shown as a badge on the repo icon.
+  let changedCounts = $state<Record<string, number>>({});
+
+  async function refreshChangedCounts() {
+    const paths = $repos.list.map((r) => r.path).filter((p): p is string => !!p);
+    await Promise.all(
+      paths.map(async (path) => {
+        try {
+          const count = await invoke<number>('get_git_changed_count_all_worktrees', {
+            repoPath: path,
+          });
+          changedCounts[path] = count;
+        } catch {
+          changedCounts[path] = 0;
+        }
+      })
+    );
+  }
+
+  // Refresh on mount / repo-list change, then poll so the badge stays live.
+  $effect(() => {
+    // Touch the list so the effect re-runs when repos are added/removed.
+    void $repos.list.length;
+    refreshChangedCounts();
+  });
+
+  const pollTimer = setInterval(refreshChangedCounts, 15000);
+  onDestroy(() => clearInterval(pollTimer));
 
   function openRepo(repoId: string | null) {
     navigation.showRepository(repoId);
@@ -26,10 +58,31 @@
       navigation.showNotion();
     }
   }
+
+  function toggleCockpit() {
+    if (currentView === 'cockpit') {
+      navigation.showSessions();
+    } else {
+      navigation.showCockpit();
+    }
+  }
 </script>
 
 <div class="repo-rail">
   <div class="repo-rail-scroll">
+    <button
+      class="rail-btn"
+      class:is-active={currentView === 'cockpit'}
+      onclick={toggleCockpit}
+      title="Cockpit — conduct the fleet by voice"
+    >
+      <span class="icon-wrap">
+        <svg class="cockpit-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M10 2a2 2 0 00-2 2v5a2 2 0 104 0V4a2 2 0 00-2-2z" />
+          <path d="M5.5 8.5a.75.75 0 011.5 0 3 3 0 006 0 .75.75 0 011.5 0 4.5 4.5 0 01-3.75 4.437V15h2a.75.75 0 010 1.5h-5.5a.75.75 0 010-1.5h2v-2.063A4.5 4.5 0 015.5 8.5z" />
+        </svg>
+      </span>
+    </button>
     <button
       class="rail-btn"
       class:is-active={currentView === 'notion'}
@@ -52,6 +105,14 @@
       >
         <span class="icon-wrap">
           <RepoIcon {repo} size="lg" />
+          {#if changedCounts[repo.path] > 0}
+            <span
+              class="change-badge"
+              title="{changedCounts[repo.path]} file{changedCounts[repo.path] === 1 ? '' : 's'} changed"
+            >
+              {changedCounts[repo.path] > 99 ? '99+' : changedCounts[repo.path]}
+            </span>
+          {/if}
         </span>
       </button>
     {/each}
@@ -124,11 +185,33 @@
   }
 
   .icon-wrap {
+    position: relative;
     width: 100%;
     height: 100%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+  }
+
+  .change-badge {
+    position: absolute;
+    top: 0.15rem;
+    right: 0.55rem;
+    min-width: 1.05rem;
+    height: 1.05rem;
+    padding: 0 0.25rem;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.62rem;
+    font-weight: 700;
+    line-height: 1;
+    color: #1a1205;
+    background: rgb(251, 191, 36);
+    border: 1px solid var(--color-surface-elevated);
+    border-radius: 999px;
+    pointer-events: none;
   }
 
   .add-wrap {
@@ -141,6 +224,11 @@
   }
 
   .notion-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  .cockpit-icon {
     width: 1.25rem;
     height: 1.25rem;
   }

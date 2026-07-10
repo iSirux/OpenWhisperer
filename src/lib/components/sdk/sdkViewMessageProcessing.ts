@@ -1,5 +1,19 @@
 import type { SdkMessage } from '$lib/stores/sdkSessions';
 
+// Compact stand-in for a nested subagent (a subagent spawned by another
+// subagent). We track its tool-call count and run status but never render its
+// transcript inline — that would bloat a parent task block with a whole second
+// agent's worth of messages. Keyed by the nested subagent's toolUseId.
+export interface NestedTaskSummary {
+  toolUseId: string;
+  label: string;
+  description: string;
+  /** undefined ⇒ still running; else 'completed' | 'failed' | 'stopped' */
+  status?: string;
+  /** real tool calls across the nested subagent's whole subtree */
+  toolCallCount: number;
+}
+
 export type RenderItem =
   | { type: 'message'; message: SdkMessage }
   | { type: 'tool_group'; tools: SdkMessage[] }
@@ -8,6 +22,8 @@ export type RenderItem =
       taskStarted: SdkMessage;
       children: SdkMessage[];
       taskCompleted?: SdkMessage;
+      /** Direct nested subagents of this task, keyed by toolUseId (compact rows). */
+      nestedSummaries?: Map<string, NestedTaskSummary>;
     };
 
 // Process messages to merge tool_start/tool_result pairs
@@ -117,13 +133,15 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
   // Filter out internal lifecycle markers that should not render in the chat body.
   const msgs = messages.filter((msg) => msg.type !== 'subagent_stop' && msg.type !== 'done' && msg.type !== 'stopped');
 
-  // Build task grouping data structures
-  // The SDK sends task_started system messages AFTER the task completes, so we
-  // cannot rely on them for grouping. Instead, we use the Task tool call itself
-  // (tool_start/tool_result with tool === "Task") which arrives immediately.
-  // task_started/task_completed are merged in for metadata (description, usage).
+  // Build task grouping data structures.
+  // A subagent is anchored on its tool call: the modern async "Agent" tool, or
+  // the legacy synchronous "Task" tool. Both arrive immediately when the agent
+  // spawns the subagent. task_started/task_completed system messages are folded
+  // in for metadata (description, usage) and as a completion signal — see the
+  // per-task completion logic in Step 5 for why task_completed is authoritative
+  // for async agents (their tool_result is only a launch ack, not a result).
 
-  // Maps toolUseId -> task_started system message (arrives late, used for metadata)
+  // Maps toolUseId -> task_started system message (used for metadata/description)
   const taskStartMap = new Map<string, SdkMessage>();
   // Maps toolUseId -> task_completed system message
   const taskCompletedMap = new Map<string, SdkMessage>();
@@ -132,12 +150,16 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
   // Set of toolUseIds that are task containers (for quick lookup)
   const knownTaskToolUseIds = new Set<string>();
 
-  // Step 1: Find top-level Task tool calls (tool_start or merged tool_result for "Task")
-  // These arrive immediately when the agent calls the Task tool, unlike task_started
+  // Step 1: Find top-level subagent tool calls (tool_start or merged tool_result).
+  // "Agent" is the modern async subagent tool; "Task" is the legacy synchronous
+  // one. Anchoring on the tool call here (not just task_started) guarantees the
+  // subagent always renders as a task block — important because the async Agent
+  // tool_result is internal launch metadata ("Async agent launched
+  // successfully...") that must never leak into the chat as a standalone card.
   for (const msg of msgs) {
     if (
       (msg.type === 'tool_start' || msg.type === 'tool_result') &&
-      msg.tool === 'Task' &&
+      (msg.tool === 'Task' || msg.tool === 'Agent') &&
       !msg.parentToolUseId &&
       msg.toolUseId
     ) {
@@ -186,6 +208,95 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
     }
   }
 
+  // Step 3.5: Collapse nested subagents (a subagent spawned inside another
+  // subagent) into compact summaries. A subagent's Agent/Task tool call carries
+  // a parentToolUseId when it was spawned by another subagent; that makes it
+  // "nested". We fold each nested subagent into a one-line summary (label, tool
+  // count, run status) shown in its immediate parent, and never render its
+  // transcript — otherwise a fan-out parent balloons with every child agent's
+  // full message history.
+
+  // toolUseId -> its spawning parent's toolUseId (only for tasks that are nested)
+  const taskParentId = new Map<string, string>();
+  // toolUseId -> the Agent/Task tool-call input (for the subagent label)
+  const taskToolInput = new Map<string, Record<string, unknown>>();
+  for (const msg of msgs) {
+    if (
+      (msg.type === 'tool_start' || msg.type === 'tool_result') &&
+      (msg.tool === 'Task' || msg.tool === 'Agent') &&
+      msg.toolUseId
+    ) {
+      if (msg.parentToolUseId) taskParentId.set(msg.toolUseId, msg.parentToolUseId);
+      if (msg.input && !taskToolInput.has(msg.toolUseId)) taskToolInput.set(msg.toolUseId, msg.input);
+    }
+  }
+
+  // Count real tool calls across a subagent's whole subtree. Children are already
+  // merged (processSdkMessages replaces a completed tool_start with its
+  // tool_result), so a tool is one entry of EITHER type — count both, deduped by
+  // toolUseId so an unmerged running pair can't double-count. A nested Agent/Task
+  // call isn't itself a "tool call": recurse into it so a nested subagent that
+  // fans out still contributes its own leaf tool work.
+  const subtreeCountCache = new Map<string, number>();
+  const countSubtreeTools = (taskId: string, seen: Set<string> = new Set()): number => {
+    const cached = subtreeCountCache.get(taskId);
+    if (cached !== undefined) return cached;
+    if (seen.has(taskId)) return 0; // guard against pathological cycles
+    seen.add(taskId);
+    let n = 0;
+    const counted = new Set<string>();
+    for (const c of taskChildrenMap.get(taskId) || []) {
+      if (c.type !== 'tool_start' && c.type !== 'tool_result') continue;
+      if (c.toolUseId && knownTaskToolUseIds.has(c.toolUseId)) {
+        n += countSubtreeTools(c.toolUseId, seen);
+      } else if (c.toolUseId) {
+        if (!counted.has(c.toolUseId)) {
+          counted.add(c.toolUseId);
+          n += 1;
+        }
+      } else {
+        n += 1;
+      }
+    }
+    subtreeCountCache.set(taskId, n);
+    return n;
+  };
+
+  // Group each nested subagent's summary under its immediate parent's toolUseId.
+  const nestedByParent = new Map<string, Map<string, NestedTaskSummary>>();
+  for (const taskId of knownTaskToolUseIds) {
+    const parentId = taskParentId.get(taskId);
+    if (!parentId) continue; // top-level subagent — rendered as a full block
+    const startMsg = taskStartMap.get(taskId);
+    const completedMsg = taskCompletedMap.get(taskId);
+    const input = taskToolInput.get(taskId);
+    const label =
+      (input?.subagent_type as string | undefined) ||
+      (startMsg?.taskType && startMsg.taskType !== 'local_agent' ? startMsg.taskType : undefined) ||
+      'Agent';
+    const description =
+      startMsg?.description ||
+      (input?.description as string | undefined) ||
+      (input?.prompt as string | undefined) ||
+      '';
+    // The SDK flattens deep subagent output: a sub-subagent's individual tool
+    // calls are never emitted with a parentToolUseId pointing back to their
+    // launcher, so countSubtreeTools() finds zero children and the row reads
+    // "0 tool calls" forever. The task_completed (task_notification) carries the
+    // authoritative tool_uses count for the whole subtree, so trust it when the
+    // subagent has finished; fall back to the subtree walk only while it's still
+    // running (no completion yet).
+    const summary: NestedTaskSummary = {
+      toolUseId: taskId,
+      label,
+      description,
+      status: completedMsg?.taskStatus,
+      toolCallCount: completedMsg?.taskUsage?.tool_uses ?? countSubtreeTools(taskId),
+    };
+    if (!nestedByParent.has(parentId)) nestedByParent.set(parentId, new Map());
+    nestedByParent.get(parentId)!.set(taskId, summary);
+  }
+
   // Step 4: Filter main stream messages
   const mainStreamMsgs = msgs.filter((msg) => {
     // Exclude child messages of tasks
@@ -208,14 +319,15 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
   let currentToolGroup: SdkMessage[] = [];
 
   for (const msg of mainStreamMsgs) {
-    // Detect Task tool calls and render as task blocks.
-    // Match by tool name "Task" OR by toolUseId being a known task container
-    // (detected via child message parentToolUseId references in Step 2.5).
+    // Detect subagent tool calls and render as task blocks.
+    // Match by tool name ("Agent" async / "Task" legacy) OR by toolUseId being a
+    // known task container (from task_started, or child parentToolUseId refs in
+    // Step 2.5).
     const isTaskToolCall =
       (msg.type === 'tool_start' || msg.type === 'tool_result') &&
       !msg.parentToolUseId &&
       msg.toolUseId &&
-      (msg.tool === 'Task' || knownTaskToolUseIds.has(msg.toolUseId));
+      (msg.tool === 'Task' || msg.tool === 'Agent' || knownTaskToolUseIds.has(msg.toolUseId));
 
     if (isTaskToolCall) {
       // Flush any pending tool group
@@ -248,11 +360,21 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
             timestamp: msg.timestamp,
           };
 
-      // Build taskCompleted: use real task_completed if available,
-      // else if the Task tool has a result (tool_result), it's done
+      // Build taskCompleted. The modern async subagent tool ("Agent") returns
+      // its tool_result almost immediately — an "Async agent launched
+      // successfully" ack — then keeps running in the background for minutes;
+      // its ONLY authoritative terminal signal is the task_completed (SDK
+      // task_notification) message. So for it we trust task_completed alone.
+      // Treating the early tool_result as "done" is exactly what made every
+      // running subagent show as "Completed" the instant it launched.
+      //
+      // The tool_result⇒done fallback survives only for the legacy *synchronous*
+      // "Task" tool, whose tool_result genuinely WAS the completion and which may
+      // lack a task_completed in old persisted sessions.
+      const isLegacySyncTask = msg.tool === 'Task';
       const effectiveTaskCompleted: SdkMessage | undefined =
         taskCompletedMsg ||
-        (msg.type === 'tool_result'
+        (isLegacySyncTask && msg.type === 'tool_result'
           ? {
               type: 'task_completed' as const,
               toolUseId,
@@ -268,6 +390,7 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
         taskStarted: effectiveTaskStarted,
         children: taskChildrenMap.get(toolUseId) || [],
         taskCompleted: effectiveTaskCompleted,
+        nestedSummaries: nestedByParent.get(toolUseId),
       });
     } else if (isGridMode) {
       const isToolMessage =
@@ -300,18 +423,53 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
     items.push({ type: 'tool_group', tools: currentToolGroup });
   }
 
+  // Representative timestamp for ordering render items (the stream is roughly
+  // ascending by time). For task blocks, prefer the earliest child timestamp
+  // (when the subagent actually began emitting) over the task_started system
+  // message, which the SDK sends only AFTER the task completes.
+  const itemTimestamp = (item: RenderItem): number => {
+    if (item.type === 'message') return item.message.timestamp;
+    if (item.type === 'tool_group') return item.tools[0]?.timestamp ?? 0;
+    const childMin = item.children.reduce(
+      (min, c) => (c.timestamp < min ? c.timestamp : min),
+      Number.POSITIVE_INFINITY,
+    );
+    return Number.isFinite(childMin) ? childMin : item.taskStarted.timestamp;
+  };
+
   // Step 6: Handle orphaned task containers.
   // These are task containers detected via parentToolUseId (Step 2.5) or
-  // task_started (Step 2) that had no matching tool call in the main stream.
+  // task_started (Step 2) that had no matching Task tool call in the main stream
+  // (e.g. the SDK emitted only the late task_started/task_completed system
+  // messages plus child messages, but no top-level Task tool_start to anchor on).
   // Without this, their children would be filtered from the main stream but
   // never displayed in any task block.
+  //
+  // Insert each orphan at its chronological position rather than appending at the
+  // end — appending pins a completed subagent below every later message, including
+  // messages from subsequent turns (a task that ran in turn 1 shows up at the very
+  // bottom under turn 2's replies).
   for (const taskId of knownTaskToolUseIds) {
     if (renderedTaskIds.has(taskId)) continue;
+    // Nested subagents are summarized as a compact row inside their parent task
+    // (Step 3.5) — never promoted to a standalone top-level block here, which is
+    // what used to bloat the view with a whole second agent's transcript.
+    if (taskParentId.has(taskId)) continue;
     const children = taskChildrenMap.get(taskId) || [];
     if (children.length === 0 && !taskStartMap.has(taskId) && !taskCompletedMap.has(taskId)) continue;
 
     const taskStartMsg = taskStartMap.get(taskId);
     const taskCompletedMsg = taskCompletedMap.get(taskId);
+
+    // Anchor at when the task began. task_started/task_completed arrive after the
+    // task finishes, so the earliest child timestamp is the truest "start" time.
+    const childStart = children.reduce(
+      (min, c) => (c.timestamp < min ? c.timestamp : min),
+      Number.POSITIVE_INFINITY,
+    );
+    const anchorTimestamp = Number.isFinite(childStart)
+      ? childStart
+      : (taskStartMsg?.timestamp ?? taskCompletedMsg?.timestamp ?? Date.now());
 
     const effectiveTaskStarted: SdkMessage = taskStartMsg
       ? { ...taskStartMsg }
@@ -321,15 +479,21 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
           description: '',
           taskType: undefined,
           taskId: taskId,
-          timestamp: children[0]?.timestamp ?? Date.now(),
+          timestamp: anchorTimestamp,
         };
 
-    items.push({
+    const orphanItem: RenderItem = {
       type: 'task',
       taskStarted: effectiveTaskStarted,
       children,
       taskCompleted: taskCompletedMsg,
-    });
+      nestedSummaries: nestedByParent.get(taskId),
+    };
+
+    // Place just after the last item that began at or before this task.
+    let insertAt = items.findIndex((it) => itemTimestamp(it) > anchorTimestamp);
+    if (insertAt < 0) insertAt = items.length;
+    items.splice(insertAt, 0, orphanItem);
   }
 
   return items;

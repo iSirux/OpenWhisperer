@@ -5,12 +5,14 @@ import { settings } from './settings';
 import { repos } from './repos';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
+import { rateLimits, codexRateLimits } from './rateLimits';
 import { saveSessionsToDisk, saveSdkSessionsPartial } from './sessionPersistence';
-import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
+import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, pickNickname, type QuickAction } from '$lib/utils/llm';
 import { clampEffortForModel, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
+import { panes, focusedPaneSessionId, visibleSessionIds } from './panes';
 
 // =============================================================================
 // Debounced Save
@@ -209,6 +211,8 @@ export interface SdkSessionUsage {
 
 export interface SessionAiMetadata {
   name?: string;
+  /** Short speakable callsign for referring to the session by voice (e.g. "Falcon") */
+  nickname?: string;
   category?: string;
   outcome?: string;
   needsInteraction?: boolean;
@@ -405,6 +409,9 @@ export interface SdkSession {
   createdBranch?: string | null;
   /** Most recently fetched branch for this session's cwd. */
   currentBranch?: string | null;
+  /** Number of uncommitted changed files in this session's cwd (working-tree, like VS Code).
+   *  Refreshed alongside branch metadata. Undefined until first sync. */
+  changedFileCount?: number;
   model: string;
   provider?: SdkProvider;
   readOnlyMode?: boolean;
@@ -854,7 +861,7 @@ function createSdkSessionsStore() {
         sessionMessages = updatedMessages;
         needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
-        const isActiveSession = get(activeSdkSessionId) === id;
+        const isActiveSession = get(visibleSessionIds).has(id);
         return {
           ...s,
           status: 'idle' as const,
@@ -1210,6 +1217,26 @@ function createSdkSessionsStore() {
             const workPeriod = calculateWorkPeriod(s);
             const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
 
+            // A user-requested stop takes precedence over everything. This error is the interrupt
+            // landing (or a real error racing the stop) — settle the turn as a clean stop, never as an
+            // error banner and NEVER auto-compacting. `stopRequestedAt` is set synchronously in
+            // stopQuery() before the interrupt, so it's reliably visible here. (Mirrors sdk-done's stop
+            // path; without this, stopping near the context limit could fire a spurious /compact.)
+            if (s.stopRequestedAt) {
+              return {
+                ...s,
+                status: 'idle' as const,
+                stopRequestedAt: undefined,
+                completionDeferred: false,
+                liveSubagentIds: [],
+                liveBackgroundTaskIds: [],
+                ...workPeriod,
+                usage: clearProgressiveUsage(s.usage),
+                messages: [...closedThinkingMessages, { type: 'stopped' as const, timestamp: now }],
+                overflowRecovery: null,
+              };
+            }
+
             // Auto-recover from context overflow — covers BOTH overflowing on the user's prompt and
             // running out of context mid-turn while Claude is working. Compact, then re-run the turn's
             // originating prompt. Gated to Claude sessions with auto-compaction on, one cycle per overflow.
@@ -1258,7 +1285,7 @@ function createSdkSessionsStore() {
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: [...closedThinkingMessages, { type: 'error' as const, content: payload, timestamp: now }],
-              unread: currentSettings.mark_sessions_unread && get(activeSdkSessionId) !== id ? true : s.unread,
+              unread: currentSettings.mark_sessions_unread && !get(visibleSessionIds).has(id) ? true : s.unread,
               contextOverflow: isContextOverflow ? true : s.contextOverflow,
               overflowRecovery: null,
             };
@@ -1721,12 +1748,20 @@ function createSdkSessionsStore() {
       currentBranch = null;
     }
 
+    let changedFileCount: number | undefined;
+    try {
+      changedFileCount = await invoke<number>('get_git_changed_count', { repoPath: cwd });
+    } catch {
+      changedFileCount = undefined;
+    }
+
     update(allSessions =>
       allSessions.map(s => {
         if (s.id !== id) return s;
         return {
           ...s,
           currentBranch,
+          changedFileCount,
           // Don't lock in createdBranch during the setup phase — the user hasn't
           // committed to a cwd yet and may switch worktree modes several times.
           // Once the session transitions past 'setup' (in startSetupSession), the
@@ -1763,6 +1798,16 @@ function createSdkSessionsStore() {
       const initialSettings = get(settings);
       const autocompactEnabled = resolvedProvider === 'claude' ? initialSettings.default_autocompact_enabled : undefined;
 
+      // Assign a voice callsign deterministically from the curated pool (no LLM),
+      // avoiding collisions with nicknames already in use across sessions.
+      let existingNicknames: string[] = [];
+      subscribe(sessions => {
+        existingNicknames = sessions
+          .map(s => s.aiMetadata?.nickname)
+          .filter((n): n is string => !!n);
+      })();
+      const nickname = pickNickname(existingNicknames);
+
       const session: SdkSession = {
         id,
         cwd,
@@ -1777,6 +1822,7 @@ function createSdkSessionsStore() {
         lastActivityAt: Date.now(),
         accumulatedDurationMs: 0,
         autocompactEnabled,
+        aiMetadata: { nickname },
       };
 
       update(sessions => [...sessions, session]);
@@ -2010,6 +2056,12 @@ function createSdkSessionsStore() {
 
       usageStats.trackPrompt(sessionCwd);
 
+      // Sending a prompt is a good moment to recover the rate-limit indicator if a
+      // prior fetch failed transiently (e.g. a startup network blip left it hidden).
+      // fetchIfStale() respects the in-flight guard and only refetches when data is
+      // stale/missing, so rapid sends won't hammer the usage API.
+      void ((sessionProvider as SdkProvider) === 'openai' ? codexRateLimits : rateLimits).fetchIfStale();
+
       update(sessions =>
         sessions.map(s =>
           s.id === id
@@ -2024,6 +2076,9 @@ function createSdkSessionsStore() {
                 liveSubagentIds: [],
                 liveBackgroundTaskIds: [],
                 completionDeferred: false,
+                // A fresh turn is never a "stop": clear any pending stop flag so a not-yet-landed
+                // terminal event from the prior turn can't settle this turn as stopped.
+                stopRequestedAt: undefined,
                 draftPrompt: undefined,
                 draftImages: undefined,
                 // Screenshots now live in the message — clear them so later prompts don't re-attach
@@ -2201,6 +2256,7 @@ function createSdkSessionsStore() {
       }
 
       update(sessions => sessions.filter(s => s.id !== id));
+      panes.clearSession(id);
 
       // Archive the session (only if it has messages worth archiving)
       if (sessionToArchive && sessionToArchive.messages.length > 0) {
@@ -2570,6 +2626,7 @@ function createSdkSessionsStore() {
 
     cancelSetupSession(id: string): void {
       update(sessions => sessions.filter(s => s.id !== id || s.status !== 'setup'));
+      panes.clearSession(id);
     },
 
     createPendingTranscriptionSession(model: string, effortLevel: EffortLevel, provider?: SdkProvider): string {
@@ -2701,6 +2758,7 @@ function createSdkSessionsStore() {
 
     cancelPendingTranscription(id: string): void {
       update(sessions => sessions.filter(s => s.id !== id));
+      panes.clearSession(id);
     },
 
     setPendingApproval(id: string, prompt: string, cwd?: string): void {
@@ -2715,6 +2773,7 @@ function createSdkSessionsStore() {
 
     cancelApproval(id: string): void {
       update(sessions => sessions.filter(s => s.id !== id));
+      panes.clearSession(id);
     },
 
     async launchPrepared(id: string, editedPrompt?: string): Promise<void> {
@@ -3223,7 +3282,10 @@ function createSdkSessionsStore() {
   return storeApi;
 }
 
-export const activeSdkSessionId = writable<string | null>(null);
+export const activeSdkSessionId = {
+  subscribe: focusedPaneSessionId.subscribe,
+  set: (id: string | null) => panes.assignToFocusedPane(id),
+};
 
 export const sdkSessions = createSdkSessionsStore();
 

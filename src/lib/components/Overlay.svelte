@@ -172,6 +172,24 @@
     emit("cycle-stop-mode");
   }
 
+  function handleCycleRepo(event: MouseEvent) {
+    event.stopPropagation();
+    // Handled by the main window (cycles auto/repos, then re-emits settings-changed)
+    emit("cycle-repo");
+  }
+
+  function handleCycleModel(event: MouseEvent) {
+    event.stopPropagation();
+    // Handled by the main window (cycles default model, then re-emits settings-changed)
+    emit("cycle-model");
+  }
+
+  // Model shown on the idle chip: what a new recording would use
+  $: toolbarModel =
+    $settings.sdk_provider === "OpenAI"
+      ? $settings.openai_model
+      : $settings.default_model;
+
   $: stopMode = $settings.audio.record_and_send_action;
 
   const STOP_MODE_DISPLAY: Record<string, { label: string; cls: string; title: string }> = {
@@ -236,13 +254,15 @@
           {/if}
         {:else}
           {#if $overlay.sessionInfo.model}
-            <span
-              class="text-xs px-1.5 py-0.5 rounded {getModelBadgeBgColor(
+            <button
+              class="text-xs px-1.5 py-0.5 rounded cursor-pointer hover:opacity-80 transition-opacity {getModelBadgeBgColor(
                 $overlay.sessionInfo.model
               )} {getModelTextColor($overlay.sessionInfo.model)}"
+              onclick={handleCycleModel}
+              title="Model for this recording. Click to cycle."
             >
               {getModelLabel($overlay.sessionInfo.model)}
-            </span>
+            </button>
           {/if}
         {/if}
       {:else if isProcessingActive}
@@ -268,6 +288,17 @@
         >
           {modeDisplay.label}
         </button>
+        {#if toolbarModel}
+          <button
+            class="text-xs px-1.5 py-0.5 rounded cursor-pointer hover:opacity-80 transition-opacity {getModelBadgeBgColor(
+              toolbarModel
+            )} {getModelTextColor(toolbarModel)}"
+            onclick={handleCycleModel}
+            title="Model for new recordings. Click to cycle."
+          >
+            {getModelLabel(toolbarModel)}
+          </button>
+        {/if}
       {/if}
     </div>
 
@@ -290,15 +321,23 @@
       {:else if $overlay.mode !== "paste"}
         <div class="flex items-center gap-2 text-xs justify-end">
           {#if $isAutoRepoSelected && isRepoAutoSelectEnabled()}
-            <span
-              class="px-2 py-0.5 rounded bg-gradient-to-r from-purple-500 to-amber-500 text-white font-medium shadow-sm flex-shrink-0"
-              >Auto</span
+            <button
+              class="px-2 py-0.5 rounded bg-gradient-to-r from-purple-500 to-amber-500 text-white font-medium shadow-sm flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+              onclick={handleCycleRepo}
+              title="Repository is auto-selected. Click to cycle."
+              >Auto</button
             >
           {:else if $activeRepo}
-            <RepoIcon repo={$activeRepo} size="xs" />
-            <span class="text-text-secondary truncate"
-              >{$activeRepo.name}</span
+            <button
+              class="flex items-center gap-2 min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
+              onclick={handleCycleRepo}
+              title="Active repository. Click to cycle."
             >
+              <RepoIcon repo={$activeRepo} size="xs" />
+              <span class="text-text-secondary truncate"
+                >{$activeRepo.name}</span
+              >
+            </button>
           {/if}
         </div>
       {/if}

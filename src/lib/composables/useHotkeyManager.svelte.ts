@@ -7,11 +7,9 @@ import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-s
 import { settings, type HotkeyEnabledConfig } from '$lib/stores/settings';
 import { repos } from '$lib/stores/repos';
 import { isRecording } from '$lib/stores/recording';
-import { overlay } from '$lib/stores/overlay';
-import { isModelRecommendationEnabled, isRepoAutoSelectEnabled } from '$lib/utils/llm';
-import { DEFAULT_OPENAI_MODEL_ID } from '$lib/utils/models';
+import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
+import { cycleModel, cycleRepo } from '$lib/utils/recordingCycles';
 import { get } from 'svelte/store';
-import { invoke } from '@tauri-apps/api/core';
 
 export interface HotkeyCallbacks {
   /** Called when recording should start */
@@ -55,14 +53,6 @@ export function useHotkeyManager() {
 
   // Callbacks stored from setup
   let callbacks: HotkeyCallbacks | null = null;
-
-  function getSelectedToolbarModel(): string {
-    const currentSettings = get(settings);
-    const provider = currentSettings.sdk_provider === 'OpenAI' ? 'openai' : 'claude';
-    return provider === 'openai'
-      ? (currentSettings.openai_model || DEFAULT_OPENAI_MODEL_ID)
-      : currentSettings.default_model;
-  }
 
   /**
    * Setup the main toggle_recording hotkey
@@ -346,54 +336,7 @@ export function useHotkeyManager() {
             return;
           }
 
-          const s = get(settings);
-          const autoRepoEnabled = isRepoAutoSelectEnabled();
-
-          // Build list of cyclable options: 'auto' (if enabled) + active repo indices
-          const cyclableOptions: ('auto' | number)[] = [];
-          if (autoRepoEnabled) {
-            cyclableOptions.push('auto');
-          }
-          for (let i = 0; i < get(repos).list.length; i++) {
-            if (get(repos).list[i].active !== false) {
-              cyclableOptions.push(i);
-            }
-          }
-
-          // Need at least 2 options to cycle
-          if (cyclableOptions.length < 2) return;
-
-          // Determine current position
-          const currentOption: 'auto' | number = get(repos).autoMode ? 'auto' : get(repos).activeIndex;
-          const currentIndex = cyclableOptions.indexOf(currentOption);
-          const nextIndex = (currentIndex + 1) % cyclableOptions.length;
-          const nextOption = cyclableOptions[nextIndex];
-
-          console.log('[Hotkey] Cycling repo from', currentOption, 'to', nextOption);
-
-          if (nextOption === 'auto') {
-            // Switch to auto-repo mode
-            await repos.setAutoRepoMode(true);
-            overlay.setSessionInfo(null, getSelectedToolbarModel(), false);
-          } else {
-            // Switch to specific repo
-            if (get(repos).autoMode) {
-              await repos.setAutoRepoMode(false);
-            }
-            await repos.setActiveRepo(nextOption);
-
-            // Update overlay with new repo info
-            const newRepo = get(repos).list[nextOption];
-            if (newRepo) {
-              let branch: string | null = null;
-              try {
-                branch = await invoke<string>('get_git_branch', { repoPath: newRepo.path });
-              } catch (e) {
-                console.error('Failed to get git branch:', e);
-              }
-              overlay.setSessionInfo(branch, getSelectedToolbarModel(), false);
-            }
-          }
+          await cycleRepo();
         } finally {
           setTimeout(() => {
             isCyclingRepo = false;
@@ -444,27 +387,7 @@ export function useHotkeyManager() {
         try {
           if (!get(isRecording)) return;
 
-          const currentSettings = get(settings);
-          const currentOverlay = get(overlay);
-
-          // Get enabled models for cycling
-          let cyclableModels = [...currentSettings.enabled_models];
-
-          // Add 'auto' to cyclable models if smart model selection is enabled
-          if (isModelRecommendationEnabled()) {
-            cyclableModels = ['auto', ...cyclableModels];
-          }
-
-          if (cyclableModels.length < 2) return;
-
-          const currentIndex = cyclableModels.indexOf(currentSettings.default_model);
-          const nextIndex = (currentIndex + 1) % cyclableModels.length;
-          const nextModel = cyclableModels[nextIndex];
-
-          settings.update(s => ({ ...s, default_model: nextModel }));
-          await settings.save({ ...currentSettings, default_model: nextModel });
-
-          overlay.setSessionInfo(currentOverlay.sessionInfo.branch, nextModel, false);
+          await cycleModel();
         } finally {
           setTimeout(() => {
             isCyclingModel = false;

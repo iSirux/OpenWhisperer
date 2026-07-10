@@ -3,6 +3,7 @@
   import type { SdkImageContent } from "$lib/stores/sdkSessions";
   import {
     getImagesFromClipboard,
+    getImagesFromClipboardHtml,
     getImagesFromDrop,
     processImages,
     createPreviewUrl,
@@ -12,6 +13,8 @@
   import { nextWindowResetAt, type QueueWindow } from "$lib/stores/queueDetection";
   import { rateLimitData, codexRateLimitData } from "$lib/stores/rateLimits";
   import type { SdkProvider } from "$lib/utils/models";
+  import { settings } from "$lib/stores/settings";
+  import { holdSpaceRecord } from "$lib/actions/holdSpaceRecord";
 
   let {
     sessionId,
@@ -32,6 +35,7 @@
     onStopRecording,
     onStartInlineRecording,
     onStopInlineRecording,
+    onInlineTranscribe,
     onDraftChange,
   }: {
     sessionId: string;
@@ -59,6 +63,8 @@
     onStopRecording: () => void;
     onStartInlineRecording: () => void;
     onStopInlineRecording: () => void;
+    /** Stop the inline recording and return the transcript (for hold-Space, which inserts at the caret). */
+    onInlineTranscribe?: () => Promise<string | null>;
     onDraftChange?: (
       sessionId: string,
       prompt: string,
@@ -348,10 +354,21 @@
   }
 
   async function handlePaste(e: ClipboardEvent) {
+    // Read clipboard data synchronously — it's only valid during the event.
+    const html = e.clipboardData?.getData("text/html") ?? "";
     const imageFiles = await getImagesFromClipboard(e);
     if (imageFiles.length > 0) {
+      // Raw image blob (e.g. a screenshot) — replace the paste with the image.
       e.preventDefault();
       await addImages(imageFiles);
+      return;
+    }
+    // Rich HTML with embedded images (e.g. a page copied from Google Docs).
+    // Don't preventDefault — let the accompanying text paste normally, and
+    // attach the images alongside it.
+    const htmlImages = await getImagesFromClipboardHtml(html);
+    if (htmlImages.length > 0) {
+      await addImages(htmlImages);
     }
   }
 
@@ -448,6 +465,17 @@
       oninput={() => { autoResize(); notifyDraftChange(); }}
       onkeydown={handleKeydown}
       onpaste={handlePaste}
+      use:holdSpaceRecord={{
+        enabled: $settings.audio.hold_space_to_record_inline,
+        canStart: () =>
+          !isRecording &&
+          !isTranscribing &&
+          !isInlineRecording &&
+          !isInlineTranscribing &&
+          !isQuerying,
+        start: onStartInlineRecording,
+        stop: () => onInlineTranscribe?.() ?? Promise.resolve(null),
+      }}
       placeholder={pendingImages.length > 0
         ? "Add a message about the image(s)... (Enter to send)"
         : "Enter your prompt... (Ctrl+V to paste images, Enter to send)"}

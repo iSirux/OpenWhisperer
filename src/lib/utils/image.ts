@@ -3,6 +3,8 @@
  * Claude API limits: 5MB per image, supports JPEG, PNG, GIF, WebP
  */
 
+import { invoke } from '@tauri-apps/api/core';
+
 export interface ImageData {
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
   base64Data: string;
@@ -37,6 +39,75 @@ export async function getImagesFromClipboard(event: ClipboardEvent): Promise<Fil
     }
   }
   return imageFiles;
+}
+
+/**
+ * Extract images embedded in rich-text HTML from the clipboard.
+ *
+ * Some sources (most notably Google Docs) don't put raw image bytes on the OS
+ * clipboard — they put `text/html` in which images are `<img>` tags. This
+ * pulls those out: `data:` URLs are decoded locally, and remote URLs (e.g.
+ * `googleusercontent.com`) are fetched through the Rust backend to sidestep
+ * the webview's CORS/CSP restrictions. Failures per-image are logged and
+ * skipped so one broken URL doesn't drop the rest.
+ */
+export async function getImagesFromClipboardHtml(html: string): Promise<File[]> {
+  if (!html || !/<img\b/i.test(html)) return [];
+
+  let doc: Document;
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html');
+  } catch {
+    return [];
+  }
+
+  const srcs = Array.from(doc.querySelectorAll('img'))
+    .map((img) => img.getAttribute('src')?.trim())
+    .filter((s): s is string => !!s);
+
+  const files: File[] = [];
+  for (const src of srcs) {
+    try {
+      if (src.startsWith('data:')) {
+        const file = dataUrlToImageFile(src);
+        if (file) files.push(file);
+      } else if (/^https?:\/\//i.test(src)) {
+        const fetched = await invoke<{ base64: string; mediaType: string }>(
+          'fetch_remote_image',
+          { url: src }
+        );
+        files.push(base64ToImageFile(fetched.base64, fetched.mediaType));
+      }
+      // Other schemes (blob:, cid:, file:) aren't reachable from here — skip.
+    } catch (err) {
+      console.warn('[image] Failed to load clipboard HTML image', src, err);
+    }
+  }
+  return files;
+}
+
+/** Decode a base64 image (no data-URL prefix) into a File. */
+function base64ToImageFile(base64: string, mediaType: string): File {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], 'clipboard-image', { type: mediaType });
+}
+
+/** Decode a `data:` URL into an image File, or null if it isn't an image. */
+function dataUrlToImageFile(dataUrl: string): File | null {
+  const match = /^data:([^;,]*)(;base64)?,([\s\S]*)$/.exec(dataUrl);
+  if (!match) return null;
+
+  const mediaType = match[1] || 'image/png';
+  if (!mediaType.startsWith('image/')) return null;
+
+  if (match[2]) {
+    return base64ToImageFile(match[3], mediaType);
+  }
+  // Non-base64 (percent-encoded) data URL, e.g. inline SVG.
+  const bytes = new TextEncoder().encode(decodeURIComponent(match[3]));
+  return new File([bytes], 'clipboard-image', { type: mediaType });
 }
 
 /**

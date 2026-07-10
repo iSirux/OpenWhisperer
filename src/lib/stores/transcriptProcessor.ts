@@ -23,6 +23,7 @@ import { repos, activeRepo, isAutoRepoSelected, isRepoActive, type RepoConfig } 
 import { recording } from '$lib/stores/recording';
 import { navigation } from '$lib/stores/navigation';
 import { pile } from '$lib/stores/pile';
+import { debugRecordings } from '$lib/stores/debugRecordings';
 
 // Transcription processing utilities (already stateless)
 import {
@@ -68,7 +69,8 @@ function getActiveReposList() {
 export async function handleTranscriptReady(
   transcript: string,
   pendingSessionId: string | null,
-  voskTranscript?: string
+  voskTranscript?: string,
+  debugRecordingId?: string
 ) {
   if (!transcript.trim()) {
     console.log('[transcript] Empty transcript, skipping');
@@ -89,9 +91,9 @@ export async function handleTranscriptReady(
 
   const currentSettings = get(settings);
   if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
-    await processSdkTranscript(transcript, pendingSessionId, voskTranscript);
+    await processSdkTranscript(transcript, pendingSessionId, voskTranscript, debugRecordingId);
   } else {
-    await processPtyTranscript(transcript, pendingSessionId, voskTranscript);
+    await processPtyTranscript(transcript, pendingSessionId, voskTranscript, debugRecordingId);
   }
 }
 
@@ -101,7 +103,8 @@ export async function handleTranscriptReady(
 async function processSdkTranscript(
   transcript: string,
   pendingSessionId: string | null,
-  voskTranscript?: string
+  voskTranscript?: string,
+  debugRecordingId?: string
 ) {
   const activeReposList = getActiveReposList();
   let finalTranscript = transcript;
@@ -121,6 +124,15 @@ async function processSdkTranscript(
         cleanupResult.corrections,
         cleanupResult.usedDualSource
       );
+    }
+
+    if (debugRecordingId) {
+      debugRecordings.update(debugRecordingId, {
+        cleanedTranscript: finalTranscript,
+        wasCleanedUp: cleanupResult.wasCleanedUp,
+        cleanupCorrections: cleanupResult.corrections,
+        usedDualSource: cleanupResult.usedDualSource,
+      });
     }
   }
 
@@ -151,6 +163,15 @@ async function processSdkTranscript(
         recommendedRepo?.name || 'Unknown'
       );
     }
+
+    if (debugRecordingId && repoRecommendation) {
+      const recommendedRepo = currentRepos.list[repoRecommendation.repoIndex];
+      debugRecordings.update(debugRecordingId, {
+        repoName: recommendedRepo?.name || 'Unknown',
+        repoConfidence: repoRecommendation.confidence,
+        repoReasoning: repoRecommendation.reasoning,
+      });
+    }
   }
 
   const sessionRepo = repoRecommendation
@@ -176,9 +197,9 @@ async function processSdkTranscript(
   }
 
   if (pendingSessionId) {
-    await completePendingSession(pendingSessionId, finalTranscript, sessionRepo);
+    await completePendingSession(pendingSessionId, finalTranscript, sessionRepo, debugRecordingId);
   } else {
-    await createSessionWithPrompt(finalTranscript, sessionRepo);
+    await createSessionWithPrompt(finalTranscript, sessionRepo, debugRecordingId);
   }
 }
 
@@ -188,7 +209,8 @@ async function processSdkTranscript(
 async function processPtyTranscript(
   transcript: string,
   pendingSessionId: string | null,
-  voskTranscript?: string
+  voskTranscript?: string,
+  debugRecordingId?: string
 ) {
   const currentActiveRepo = get(activeRepo);
   let finalTranscript = transcript;
@@ -197,6 +219,15 @@ async function processPtyTranscript(
     const repoContext = currentActiveRepo ? buildSingleRepoContext(currentActiveRepo) : undefined;
     const cleanupResult = await cleanupTranscript(transcript, voskTranscript, repoContext);
     finalTranscript = cleanupResult.text;
+
+    if (debugRecordingId) {
+      debugRecordings.update(debugRecordingId, {
+        cleanedTranscript: finalTranscript,
+        wasCleanedUp: cleanupResult.wasCleanedUp,
+        cleanupCorrections: cleanupResult.corrections,
+        usedDualSource: cleanupResult.usedDualSource,
+      });
+    }
   }
 
   if (pendingSessionId) {
@@ -214,7 +245,8 @@ async function processPtyTranscript(
 async function completePendingSession(
   sessionId: string,
   transcript: string,
-  repo: RepoConfig | null | undefined
+  repo: RepoConfig | null | undefined,
+  debugRecordingId?: string
 ) {
   const currentSettings = get(settings);
   const activeReposList = getActiveReposList();
@@ -234,6 +266,14 @@ async function completePendingSession(
     }
   }
 
+  if (debugRecordingId) {
+    debugRecordings.update(debugRecordingId, {
+      model,
+      effortLevel,
+      modelReasoning: recommendation?.reasoning,
+    });
+  }
+
   const systemPrompt = buildSystemPrompt({
     repoPath,
     repoName,
@@ -250,7 +290,8 @@ async function completePendingSession(
  */
 async function createSessionWithPrompt(
   transcript: string,
-  repo: RepoConfig | null | undefined
+  repo: RepoConfig | null | undefined,
+  debugRecordingId?: string
 ) {
   const currentSettings = get(settings);
   const activeReposList = getActiveReposList();
@@ -261,6 +302,10 @@ async function createSessionWithPrompt(
     transcript,
     currentSettings.enabled_models
   );
+
+  if (debugRecordingId) {
+    debugRecordings.update(debugRecordingId, { model, effortLevel });
+  }
 
   const systemPrompt = buildSystemPrompt({
     repoPath,
@@ -317,7 +362,8 @@ async function handleRepoSelectionNeeded(
 export async function handlePrepareTranscriptReady(
   transcript: string,
   sessionId: string,
-  voskTranscript?: string
+  voskTranscript?: string,
+  debugRecordingId?: string
 ) {
   if (!transcript.trim()) {
     sdkSessions.cancelPendingTranscription(sessionId);
@@ -351,6 +397,15 @@ export async function handlePrepareTranscriptReady(
       cleanupResult.corrections,
       cleanupResult.usedDualSource
     );
+
+    if (debugRecordingId) {
+      debugRecordings.update(debugRecordingId, {
+        cleanedTranscript: finalTranscript,
+        wasCleanedUp: cleanupResult.wasCleanedUp,
+        cleanupCorrections: cleanupResult.corrections,
+        usedDualSource: cleanupResult.usedDualSource,
+      });
+    }
   }
 
   // Step 2: Get repo recommendation if in auto-repo mode. A confident match sets the draft's repo;
@@ -373,6 +428,13 @@ export async function handlePrepareTranscriptReady(
         repoRecommendation,
         sessionRepo?.name || 'Unknown'
       );
+      if (debugRecordingId) {
+        debugRecordings.update(debugRecordingId, {
+          repoName: sessionRepo?.name || 'Unknown',
+          repoConfidence: repoRecommendation.confidence,
+          repoReasoning: repoRecommendation.reasoning,
+        });
+      }
     } else {
       sessionCwd = '';
     }
@@ -392,6 +454,14 @@ export async function handlePrepareTranscriptReady(
     if (recommendation.effortLevel) {
       await sdkSessions.updateSessionEffort(sessionId, recommendation.effortLevel);
     }
+  }
+
+  if (debugRecordingId) {
+    debugRecordings.update(debugRecordingId, {
+      model,
+      effortLevel,
+      modelReasoning: recommendation?.reasoning,
+    });
   }
 
   // Step 4: Open the transcript as an editable New Session draft instead of launching.

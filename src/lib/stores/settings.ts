@@ -6,7 +6,13 @@ import { dev } from "$app/environment";
 
 export type WhisperProvider = "Local" | "OpenAI" | "Groq" | "Custom";
 
-export type RealtimeProvider = "Vosk" | "VoiceStreamAI" | "SherpaOnnx" | "Speaches";
+export type RealtimeProvider = "Vosk" | "VoiceStreamAI" | "SherpaOnnx" | "Speaches" | "Moonshine";
+
+/** Which engine(s) produce the final transcript.
+ *  Whisper  - batch Whisper after stop; realtime engine (if enabled) is preview-only
+ *  Realtime - the realtime harvest IS the transcript; Whisper never called
+ *  Both     - realtime-first, Whisper fallback when the harvest is empty */
+export type TranscriptionMode = "Whisper" | "Realtime" | "Both";
 
 export type DockerComputeType = "CPU" | "GPU";
 
@@ -52,6 +58,15 @@ export interface SherpaOnnxConfig {
   docker: DockerConfig;
 }
 
+export interface MoonshineConfig {
+  /** WebSocket endpoint for the Moonshine shim server (speaks the Vosk protocol) */
+  endpoint: string;
+  /** Audio sample rate (default: 16000) */
+  sample_rate: number;
+  /** Docker configuration for the Moonshine server */
+  docker: DockerConfig;
+}
+
 export interface SpeachesConfig {
   /** WebSocket endpoint for Speaches realtime API */
   endpoint: string;
@@ -80,12 +95,16 @@ export interface VoskConfig {
   show_realtime_transcript: boolean;
   /** Whether to accumulate transcript text across pauses (vs reset on each pause) */
   accumulate_transcript: boolean;
+  /** Which engine(s) produce the final transcript */
+  transcription_mode: TranscriptionMode;
   /** VoiceStreamAI-specific configuration */
   voice_stream_ai: VoiceStreamAIConfig;
   /** sherpa-onnx-specific configuration */
   sherpa_onnx: SherpaOnnxConfig;
   /** Speaches-specific configuration */
   speaches: SpeachesConfig;
+  /** Moonshine-specific configuration */
+  moonshine: MoonshineConfig;
 }
 
 /** @deprecated Legacy GitConfig kept only for deserialization of old configs */
@@ -283,6 +302,8 @@ export interface SystemConfig {
   start_minimized: boolean;
   autostart: boolean;
   launch_terminal: LaunchTerminal;
+  /** Developer mode: surfaces debug-only features such as the recordings log. */
+  dev_mode: boolean;
 }
 
 export interface SessionPersistenceConfig {
@@ -334,6 +355,11 @@ export interface SessionsViewConfig {
   layout: SessionsViewLayout;
   grid_columns: number;
   card_size: SessionsGridSize;
+}
+
+export interface PaneLayoutConfig {
+  assignments: (string | null)[];
+  focused_index: number;
 }
 
 // Effort level for reasoning depth control
@@ -508,6 +534,7 @@ export interface AppConfig {
   show_session_summary: boolean;
   sidebar_width: number;
   sessions_view: SessionsViewConfig;
+  pane_layout?: PaneLayoutConfig;
   tool_display_mode: ToolDisplayMode;
   llm: LlmConfig;
   /** @deprecated Use llm instead */
@@ -540,8 +567,8 @@ const defaultConfig: AppConfig = {
     },
   },
   vosk: {
-    enabled: false,
-    provider: "Vosk",
+    enabled: true,
+    provider: "Moonshine",
     endpoint: "ws://localhost:2700",
     sample_rate: 16000,
     docker: {
@@ -551,6 +578,7 @@ const defaultConfig: AppConfig = {
     },
     show_realtime_transcript: true,
     accumulate_transcript: false,
+    transcription_mode: "Both",
     voice_stream_ai: {
       endpoint: "ws://localhost:8765",
       sample_rate: 16000,
@@ -581,6 +609,15 @@ const defaultConfig: AppConfig = {
         compute_type: "CPU",
         auto_restart: false,
         container_name: "open-whisperer-speaches",
+      },
+    },
+    moonshine: {
+      endpoint: "ws://localhost:2702",
+      sample_rate: 16000,
+      docker: {
+        compute_type: "CPU",
+        auto_restart: false,
+        container_name: "open-whisperer-moonshine",
       },
     },
   },
@@ -661,13 +698,14 @@ const defaultConfig: AppConfig = {
   terminal_mode: "Sdk",
   codex_mode: "AppServer",
   sdk_provider: "Claude",
-  openai_model: "gpt-5.4",
+  openai_model: "gpt-5.6-terra",
   enabled_openai_models: [
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.4",
     "gpt-5.4-mini",
-    "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
-    "gpt-5.2-codex",
   ],
   openai_auth_method: "OAuth",
   claude_auth_method: "OAuth",
@@ -679,6 +717,7 @@ const defaultConfig: AppConfig = {
     start_minimized: false,
     autostart: false,
     launch_terminal: "Cmd",
+    dev_mode: false,
   },
   show_branch_in_sessions: true,
   session_persistence: {

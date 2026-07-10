@@ -11,6 +11,10 @@
   import RepoIcon from "$lib/components/RepoIcon.svelte";
   import PromptChips from "$lib/components/PromptChips.svelte";
   import { appendChips } from "$lib/utils/promptChips";
+  import { settings } from "$lib/stores/settings";
+  import { isRecording, isTranscribing } from "$lib/stores/recording";
+  import { holdSpaceRecord } from "$lib/actions/holdSpaceRecord";
+  import { makeInlineDictation } from "$lib/utils/inlineDictation";
 
   interface Props {
     pendingTranscription: PendingTranscriptionInfo;
@@ -53,6 +57,12 @@
   // Editable prompt state (approval prompt is always editable)
   let editedPrompt = $state("");
   let textareaEl: HTMLTextAreaElement | null = $state(null);
+
+  // Hold-Space dictation into the editable prompt (records -> transcribes ->
+  // inserts at the caret). Cleanup is biased by the routed repo when known.
+  const dictation = makeInlineDictation(() =>
+    repoName ? $reposStore.list.find((r) => r.name === repoName) : undefined
+  );
 
   // Toggleable prompt chips appended to the prompt on send.
   // Reset when the session changes so selections don't leak across sessions.
@@ -483,6 +493,12 @@
           bind:this={textareaEl}
           bind:value={editedPrompt}
           oninput={autoResizeTextarea}
+          use:holdSpaceRecord={{
+            enabled: $settings.audio.hold_space_to_record_inline,
+            canStart: () => !$isRecording && !$isTranscribing,
+            start: dictation.start,
+            stop: dictation.stop,
+          }}
           class="prompt-textarea"
           placeholder="Enter your prompt..."
           rows="2"

@@ -8,7 +8,7 @@ import { writable } from 'svelte/store';
  * (/settings, /sequences, /usage, /sessions-view) rather than internal navigation.
  */
 
-export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository' | 'notion';
+export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository' | 'notion' | 'cockpit';
 
 interface NavigationState {
   mainView: MainView;
@@ -67,6 +67,13 @@ function createNavigationStore() {
 
     showNotion() {
       update((state) => ({ ...state, mainView: 'notion', repositoryAddMode: false }));
+    },
+
+    /**
+     * Show the voice-driven cockpit fleet view
+     */
+    showCockpit() {
+      update((state) => ({ ...state, mainView: 'cockpit', repositoryAddMode: false }));
     },
 
     showRepository(repoId: string | null | undefined) {

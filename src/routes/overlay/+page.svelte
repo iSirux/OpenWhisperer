@@ -173,9 +173,10 @@
   }
 
   async function startDrag(event: MouseEvent) {
-    // Don't start drag if clicking on the discard or go buttons
+    // Don't start drag when clicking any button (Go, Discard, cycle chips) —
+    // startDragging() on mousedown would swallow the click
     const target = event.target as HTMLElement;
-    if (target.closest('.discard-btn') || target.closest('.go-btn')) {
+    if (target.closest('button')) {
       return;
     }
 

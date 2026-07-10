@@ -70,7 +70,7 @@
 
   function openWhisperSettings() {
     window.dispatchEvent(
-      new CustomEvent("open-settings", { detail: { tab: "whisper" } })
+      new CustomEvent("open-settings", { detail: { tab: "transcription" } })
     );
   }
 

@@ -13,8 +13,7 @@
     SystemTab,
     MicrophoneTab,
     AudioTab,
-    WhisperTab,
-    VoskTab,
+    TranscriptionTab,
     LlmTab,
     HotkeysTab,
     OverlayTab,
@@ -22,11 +21,15 @@
     VoiceCommandsTab,
     SequencesTab,
     QueueTab,
+    RecordingsLogTab,
     AboutTab,
   } from "$lib/components/settings";
 
   function normalizeTab(tab: string | null): string {
-    return tab === 'repos' ? 'llm' : tab || 'claude';
+    if (tab === 'repos') return 'llm';
+    // The Whisper and Real-time tabs were merged into one Transcription tab
+    if (tab === 'whisper' || tab === 'vosk') return 'transcription';
+    return tab || 'claude';
   }
 
   // Read initial tab from URL query param (e.g. /settings?tab=llm)
@@ -109,7 +112,7 @@
     if (statusTimeout) clearTimeout(statusTimeout);
   });
 
-  const tabs = [
+  const tabs = $derived([
     { id: "claude", label: "Claude" },
     { id: "codex", label: "Codex" },
     { id: "sessions", label: "Sessions" },
@@ -118,16 +121,19 @@
     { id: "microphone", label: "Microphone" },
     { id: "audio", label: "Audio" },
     { id: "voice-commands", label: "Voice Commands" },
-    { id: "whisper", label: "Transcription (Whisper)" },
-    { id: "vosk", label: "Real-time Transcription" },
+    { id: "transcription", label: "Transcription" },
     { id: "llm", label: "LLM" },
     { id: "queue", label: "Smart Queue" },
     { id: "mcp", label: "MCP Servers" },
     { id: "hotkeys", label: "Hotkeys" },
     { id: "overlay", label: "Overlay" },
     { id: "sequences", label: "Sequences" },
+    // Developer-only tabs
+    ...($settings.system.dev_mode
+      ? [{ id: "recordings-log", label: "Recordings Log" }]
+      : []),
     { id: "about", label: "About" },
-  ];
+  ]);
 </script>
 
 <div class="settings-panel flex-1 flex flex-col overflow-hidden">
@@ -166,10 +172,8 @@
         <AudioTab />
       {:else if activeTab === "voice-commands"}
         <VoiceCommandsTab />
-      {:else if activeTab === "whisper"}
-        <WhisperTab />
-      {:else if activeTab === "vosk"}
-        <VoskTab />
+      {:else if activeTab === "transcription"}
+        <TranscriptionTab />
       {:else if activeTab === "llm"}
         <LlmTab />
       {:else if activeTab === "queue"}
@@ -182,6 +186,8 @@
         <OverlayTab />
       {:else if activeTab === "sequences"}
         <SequencesTab />
+      {:else if activeTab === "recordings-log"}
+        <RecordingsLogTab />
       {:else if activeTab === "about"}
         <AboutTab />
       {/if}

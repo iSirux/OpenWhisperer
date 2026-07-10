@@ -426,33 +426,166 @@ async fn authed_get_json(
         .map_err(|e| format!("Failed to parse response: {}", e))
 }
 
+/// Claude Code's public OAuth client id (the same value the CLI uses).
+const CLAUDE_OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+/// Anthropic OAuth token endpoint used to refresh access tokens.
+const CLAUDE_OAUTH_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+
+/// Current epoch time in milliseconds.
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Read accessToken, refreshToken, and expiresAt (epoch ms) from the Claude
+/// credentials file.
+fn read_claude_oauth(
+    path: &std::path::Path,
+) -> Result<(String, Option<String>, Option<u64>), String> {
+    if !path.exists() {
+        return Err(
+            "Claude OAuth credentials not found. Please log in via Claude CLI.".to_string(),
+        );
+    }
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read credentials: {}", e))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse credentials: {}", e))?;
+    let oauth = value.get("claudeAiOauth");
+    let access = oauth
+        .and_then(|o| o.get("accessToken"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .ok_or("OAuth access token not found in credentials")?;
+    let refresh = oauth
+        .and_then(|o| o.get("refreshToken"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+    let expires_at = oauth
+        .and_then(|o| o.get("expiresAt"))
+        .and_then(|t| t.as_u64());
+    Ok((access, refresh, expires_at))
+}
+
+/// Refresh the Claude OAuth access token using the stored refresh token, writing
+/// the rotated tokens back to `.credentials.json` (the same file the CLI reads,
+/// so both stay in sync). Returns the new access token.
+///
+/// The app can sit idle for hours (e.g. overnight) with no CLI activity, so its
+/// stored access token expires and the usage API starts returning 401. The CLI
+/// only refreshes when *it* runs, so we mirror that refresh here.
+async fn refresh_claude_oauth(
+    credentials_path: &std::path::Path,
+    refresh_token: &str,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLAUDE_OAUTH_CLIENT_ID,
+    });
+
+    let response = client
+        .post(CLAUDE_OAUTH_TOKEN_URL)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Token refresh request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Token refresh failed ({}): {}", status, text));
+    }
+
+    let token_data: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token refresh response: {}", e))?;
+
+    let new_access = token_data["access_token"]
+        .as_str()
+        .ok_or("Token refresh response missing access_token")?
+        .to_string();
+    let new_refresh = token_data["refresh_token"].as_str().map(|s| s.to_string());
+    let expires_in = token_data["expires_in"].as_u64();
+
+    // Merge rotated tokens back into the existing credentials, preserving all other
+    // fields (scopes, subscriptionType, rateLimitTier, ...).
+    let mut creds: serde_json::Value = std::fs::read_to_string(credentials_path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_else(|| serde_json::json!({ "claudeAiOauth": {} }));
+
+    if let Some(oauth) = creds
+        .get_mut("claudeAiOauth")
+        .and_then(|o| o.as_object_mut())
+    {
+        oauth.insert("accessToken".into(), serde_json::json!(new_access));
+        if let Some(rt) = &new_refresh {
+            oauth.insert("refreshToken".into(), serde_json::json!(rt));
+        }
+        if let Some(exp) = expires_in {
+            let expires_at = now_ms() as u64 + exp * 1000;
+            oauth.insert("expiresAt".into(), serde_json::json!(expires_at));
+        }
+    }
+
+    if let Ok(serialized) = serde_json::to_string_pretty(&creds) {
+        // Best-effort write-back; a write failure doesn't invalidate the fetched token.
+        let _ = std::fs::write(credentials_path, serialized);
+    }
+
+    Ok(new_access)
+}
+
 /// Fetch Claude Code rate limit usage from Anthropic OAuth API
 #[tauri::command]
 pub async fn fetch_claude_rate_limits() -> Result<ClaudeRateLimits, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let credentials_path = home.join(".claude").join(".credentials.json");
 
-    let token = read_bearer_token(
-        &credentials_path,
-        "Claude OAuth credentials not found. Please log in via Claude CLI.",
-        |creds| {
-            creds
-                .get("claudeAiOauth")
-                .and_then(|o| o.get("accessToken"))
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string())
-        },
-    )?;
+    let (mut token, refresh_token, expires_at) = read_claude_oauth(&credentials_path)?;
 
-    let data = authed_get_json(
-        "https://api.anthropic.com/api/oauth/usage",
-        &token,
-        &[
-            ("anthropic-beta", "oauth-2025-04-20"),
-            ("User-Agent", "claude-code/2.0.32"),
-        ],
-    )
-    .await?;
+    // Proactively refresh if the stored access token is expired or about to expire
+    // (60s buffer) — the common overnight-idle case that otherwise 401s and hides
+    // the usage indicator until the CLI is next run.
+    if let (Some(exp), Some(rt)) = (expires_at, refresh_token.as_ref()) {
+        if now_ms() + 60_000 >= exp as u128 {
+            if let Ok(new_token) = refresh_claude_oauth(&credentials_path, rt).await {
+                token = new_token;
+            }
+        }
+    }
+
+    const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+    let headers: [(&str, &str); 2] = [
+        ("anthropic-beta", "oauth-2025-04-20"),
+        ("User-Agent", "claude-code/2.0.32"),
+    ];
+
+    let data = match authed_get_json(USAGE_URL, &token, &headers).await {
+        Ok(d) => d,
+        Err(e) => {
+            // Reactive fallback: the token may have been revoked/expired without the
+            // expiry check catching it (e.g. clock skew). Refresh once and retry.
+            let looks_auth = e.contains("401") || e.to_lowercase().contains("unauthorized");
+            match (looks_auth, refresh_token.as_ref()) {
+                (true, Some(rt)) => {
+                    let new_token = refresh_claude_oauth(&credentials_path, rt).await?;
+                    authed_get_json(USAGE_URL, &new_token, &headers).await?
+                }
+                _ => return Err(e),
+            }
+        }
+    };
 
     Ok(ClaudeRateLimits {
         five_hour: RateLimitWindow {

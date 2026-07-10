@@ -16,6 +16,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 // Stores
 import { recording, isRecording } from '$lib/stores/recording';
+import { debugRecordings } from '$lib/stores/debugRecordings';
 import { sdkSessions, settingsToStoreEffort } from '$lib/stores/sdkSessions';
 import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
 import { activeRepo } from '$lib/stores/repos';
@@ -111,13 +112,12 @@ function createRecordingFlowStore() {
     }
   }
 
-  async function prepareRecording(): Promise<{
+  function prepareRecording(): {
     repoPath: string;
     provider: SdkProvider;
     model: string;
     effortLevel: ReturnType<typeof settingsToStoreEffort>;
-    branch: string | null;
-  }> {
+  } {
     const currentSettings = get(settings);
     const currentActiveRepo = get(activeRepo);
     const repoPath = currentActiveRepo?.path || '.';
@@ -129,14 +129,34 @@ function createRecordingFlowStore() {
         : currentSettings.default_model;
     const effortLevel = settingsToStoreEffort(currentSettings.default_effort_level);
 
-    let branch: string | null = null;
-    try {
-      branch = await invoke<string>('get_git_branch', { repoPath });
-    } catch (e) {
-      console.error('Failed to get git branch:', e);
-    }
+    return { repoPath, provider, model, effortLevel };
+  }
 
-    return { repoPath, provider, model, effortLevel, branch };
+  // Bumped whenever the overlay session info is set or cleared, so a branch
+  // lookup that resolves after the recording ended can't resurrect stale info.
+  let overlayInfoToken = 0;
+
+  /**
+   * Show the overlay session info immediately (without the branch) and fill
+   * the branch in when the lookup resolves — the git subprocess is
+   * display-only and must not delay recording start.
+   */
+  function setOverlayRecordingInfo(repoPath: string, model: string) {
+    const token = ++overlayInfoToken;
+    overlay.setMode('session');
+    overlay.setSessionInfo(null, model, false);
+    invoke<string>('get_git_branch', { repoPath })
+      .then((branch) => {
+        if (token === overlayInfoToken) {
+          overlay.setSessionInfo(branch, model, false);
+        }
+      })
+      .catch((e) => console.error('Failed to get git branch:', e));
+  }
+
+  function clearOverlayRecordingInfo() {
+    overlayInfoToken++;
+    clearOverlayRecordingInfo();
   }
 
   function createPendingSession(
@@ -181,8 +201,14 @@ function createRecordingFlowStore() {
     const shouldPileOnStop = stopAction === 'pile';
     const shouldPrepareOnStop = isSdk && stopAction === 'prepare';
 
+    // Mint the debug id up-front and own it through the whole flow, so the
+    // destination tag and the transcript pipeline's cleanup stage attach to the
+    // right entry regardless of when async transcription resolves (reading the
+    // mutable lastDebugId store field after the await raced and lost the id).
+    const debugId = recording.newRecordingId();
+
     recording
-      .stopRecording(true)
+      .stopRecording(true, debugId)
       .then(async (transcript) => {
         if (sessionIdToProcess) {
           const audioData = get(recording).audioData;
@@ -190,6 +216,10 @@ function createRecordingFlowStore() {
             sdkSessions.storeAudioData(sessionIdToProcess, audioData);
           }
         }
+
+        // Debug-recordings log (dev mode): tag this recording with its destination
+        // and, for the main path, let the transcript pipeline attach cleanup below.
+        debugRecordings.update(debugId, { destination: stopAction });
 
         if (shouldPileOnStop) {
           // Pile mode keeps failed transcriptions too (audio is preserved)
@@ -204,13 +234,15 @@ function createRecordingFlowStore() {
             await handlePrepareTranscriptReady(
               transcript,
               sessionIdToProcess,
-              capturedVoskTranscript
+              capturedVoskTranscript,
+              debugId
             );
           } else {
             await handleTranscriptReady(
               transcript,
               sessionIdToProcess,
-              capturedVoskTranscript
+              capturedVoskTranscript,
+              debugId
             );
           }
         } else {
@@ -254,10 +286,8 @@ function createRecordingFlowStore() {
     update((s) => ({ ...s, isRecordingForNewSession: true }));
 
     await openMic.stop();
-    const { provider, model, effortLevel, branch } = await prepareRecording();
-
-    overlay.setMode('session');
-    overlay.setSessionInfo(branch, model, false);
+    const { provider, model, effortLevel, repoPath } = prepareRecording();
+    setOverlayRecordingInfo(repoPath, model);
 
     const currentSettings = get(settings);
     if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
@@ -279,7 +309,7 @@ function createRecordingFlowStore() {
 
     await hotkeyCallbacks?.unregisterRecordingHotkeys();
     await overlay.hide();
-    overlay.clearSessionInfo();
+    clearOverlayRecordingInfo();
     cleanupAudioVisualizationListener();
 
     const sessionIdToProcess = pendingTranscriptionSessionId;
@@ -300,10 +330,8 @@ function createRecordingFlowStore() {
     const mainWindow = getCurrentWindow();
     wasAppFocusedOnRecordStart = await mainWindow.isFocused();
 
-    const { provider, model, effortLevel, branch } = await prepareRecording();
-
-    overlay.setMode('session');
-    overlay.setSessionInfo(branch, model, false);
+    const { provider, model, effortLevel, repoPath } = prepareRecording();
+    setOverlayRecordingInfo(repoPath, model);
 
     const currentSettings = get(settings);
     if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
@@ -323,7 +351,7 @@ function createRecordingFlowStore() {
   async function stopRecordingFromHotkey() {
     await hotkeyCallbacks?.unregisterRecordingHotkeys();
     await overlay.hide();
-    overlay.clearSessionInfo();
+    clearOverlayRecordingInfo();
     cleanupAudioVisualizationListener();
 
     const sessionIdToProcess = pendingTranscriptionSessionId;
@@ -341,7 +369,7 @@ function createRecordingFlowStore() {
 
     await hotkeyCallbacks?.unregisterRecordingHotkeys();
     await overlay.hide();
-    overlay.clearSessionInfo();
+    clearOverlayRecordingInfo();
     cleanupAudioVisualizationListener();
 
     const sessionIdToProcess = pendingTranscriptionSessionId;
@@ -368,10 +396,8 @@ function createRecordingFlowStore() {
     const mainWindow = getCurrentWindow();
     wasAppFocusedOnRecordStart = await mainWindow.isFocused();
 
-    const { provider, model, effortLevel, branch } = await prepareRecording();
-
-    overlay.setMode('session');
-    overlay.setSessionInfo(branch, model, false);
+    const { provider, model, effortLevel, repoPath } = prepareRecording();
+    setOverlayRecordingInfo(repoPath, model);
 
     const currentSettings = get(settings);
     if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
@@ -390,7 +416,7 @@ function createRecordingFlowStore() {
   async function cancelRecording() {
     await recording.cancelRecording();
     await overlay.hide();
-    overlay.clearSessionInfo();
+    clearOverlayRecordingInfo();
     cleanupAudioVisualizationListener();
 
     if (pendingTranscriptionSessionId) {
@@ -436,7 +462,7 @@ function createRecordingFlowStore() {
   async function handleTranscribeToInput() {
     await hotkeyCallbacks?.unregisterRecordingHotkeys();
     await overlay.hide();
-    overlay.clearSessionInfo();
+    clearOverlayRecordingInfo();
     cleanupAudioVisualizationListener();
 
     if (pendingTranscriptionSessionId) {

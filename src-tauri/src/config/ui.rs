@@ -54,6 +54,8 @@ pub struct SystemConfig {
     pub autostart: bool,
     /// Preferred terminal emulator for launch profiles
     pub launch_terminal: LaunchTerminal,
+    /// Developer mode: surfaces debug-only features such as the recordings log.
+    pub dev_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +199,15 @@ pub struct SessionsViewConfig {
 
 fn default_grid_columns() -> usize {
     3
+}
+
+/// Editor-group pane layout for the main session view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaneLayoutConfig {
+    #[serde(default)]
+    pub assignments: Vec<Option<String>>,
+    #[serde(default)]
+    pub focused_index: usize,
 }
 
 impl Default for SessionsViewConfig {

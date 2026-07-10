@@ -30,7 +30,7 @@ impl LlmClient {
             .await
     }
 
-    /// Generate a session name from the user's prompt (called immediately when prompt is sent)
+    /// Generate a session name from the user's prompt (called immediately when prompt is sent).
     pub async fn generate_session_name_with_usage(
         &self,
         user_prompt: &str,
@@ -195,8 +195,8 @@ Message to analyze:
     ) -> Result<GenerationResult<TranscriptionCleanupResult>, String> {
         let context_section = if let Some(context) = repo_context {
             format!(
-                r#"
-Project context (use this to better recognize project-specific terms):
+                r#"6. Project-specific terms. The speaker's known projects and vocabulary are listed below. If a word or phrase in the transcription is phonetically close to one of these known terms, the speaker almost certainly said the known term — replace it, using the exact casing shown (e.g. "cloud whisperer" -> "OpenWhisperer", "torii" -> "Tauri", "sopranos" -> "Sonnet"). Only substitute on sound-alike matches; never insert terms that were not plausibly spoken.
+
 {}
 
 "#,
@@ -237,6 +237,8 @@ Compare both transcriptions and produce the best combined result. Use Whisper as
 5. Common speech-to-text errors
 {}
 Keep the original meaning and intent. Only fix clear errors, don't rewrite the content.
+
+CRITICAL: Preserve ALL of the speaker's content. Keep every clause and sentence — including trailing questions, asides, and apparent self-corrections (e.g. "..., or does it show here?"). Never drop, shorten, summarize, or merge parts of what was said. The cleaned text must carry the same information as the input, only with errors fixed. When in doubt, leave the wording as-is.
 
 {}{}"#,
             context_section,

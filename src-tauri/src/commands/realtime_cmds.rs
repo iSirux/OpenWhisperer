@@ -35,6 +35,12 @@ pub async fn test_realtime_connection(
             Ok(test_sherpa_connection(&cfg.vosk.sherpa_onnx.endpoint).await)
         }
         RealtimeProvider::Speaches => Ok(test_speaches_connection(&cfg.vosk.speaches).await),
+        // Moonshine's shim server speaks the Vosk protocol
+        RealtimeProvider::Moonshine => Ok(test_vosk_connection(
+            &cfg.vosk.moonshine.endpoint,
+            cfg.vosk.moonshine.sample_rate,
+        )
+        .await),
     }
 }
 
@@ -79,6 +85,7 @@ pub async fn start_realtime_session(
             &cfg.vosk.voice_stream_ai,
             &cfg.vosk.sherpa_onnx,
             &cfg.vosk.speaches,
+            &cfg.vosk.moonshine,
         )
         .await?;
 

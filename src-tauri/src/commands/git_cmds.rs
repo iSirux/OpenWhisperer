@@ -12,6 +12,24 @@ pub fn list_git_worktrees(repo_path: String) -> Result<Vec<WorktreeInfo>, String
     GitManager::list_worktrees(&repo_path)
 }
 
+/// Count uncommitted changed files in a repo/worktree (working-tree changes,
+/// like VS Code). Returns 0 when the path is not a git repo or has no changes.
+#[tauri::command]
+pub async fn get_git_changed_count(repo_path: String) -> Result<usize, String> {
+    tokio::task::spawn_blocking(move || GitManager::count_changed_files(&repo_path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Count uncommitted changed files summed across a repo's main worktree and all
+/// its linked worktrees. Returns 0 when the path is not a git repo.
+#[tauri::command]
+pub async fn get_git_changed_count_all_worktrees(repo_path: String) -> Result<usize, String> {
+    tokio::task::spawn_blocking(move || GitManager::count_changed_files_all_worktrees(&repo_path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
 /// Create a new worktree with full setup (copy files, run post-create commands)
 #[tauri::command]
 pub async fn create_git_worktree_with_setup(

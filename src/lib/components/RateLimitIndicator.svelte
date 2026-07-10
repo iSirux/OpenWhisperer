@@ -1,12 +1,16 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { rateLimits, rateLimitData, rateLimitError, codexRateLimits, codexRateLimitData, codexRateLimitError, calculatePace, formatTimeRemaining, registerVisibilityHandler } from '$lib/stores/rateLimits';
+  import { rateLimits, rateLimitData, rateLimitError, rateLimitAuthExpired, codexRateLimits, codexRateLimitData, codexRateLimitError, codexRateLimitAuthExpired, calculatePace, formatTimeRemaining, registerVisibilityHandler } from '$lib/stores/rateLimits';
   import { openUrl } from '@tauri-apps/plugin-opener';
 
   let claude = $derived($rateLimitData);
   let codex = $derived($codexRateLimitData);
   let claudeError = $derived($rateLimitError);
   let codexError = $derived($codexRateLimitError);
+  // Hide a provider's indicator entirely when its auth token is expired/unauthorized.
+  // It reappears automatically once a fetch succeeds again (token renewed).
+  let claudeAuthExpired = $derived($rateLimitAuthExpired);
+  let codexAuthExpired = $derived($codexRateLimitAuthExpired);
 
   // Calculate paces per provider
   let claudePace5h = $derived(claude ? calculatePace(claude.five_hour.utilization, claude.five_hour.resets_at, 5) : null);
@@ -90,8 +94,8 @@
   });
 </script>
 
-{#snippet providerIndicator(data: typeof claude, p5h: typeof claudePace5h, p7d: typeof claudePace7d, name: 'Claude' | 'Codex', error: string | null)}
-  {#if data || error}
+{#snippet providerIndicator(data: typeof claude, p5h: typeof claudePace5h, p7d: typeof claudePace7d, name: 'Claude' | 'Codex', error: string | null, authExpired: boolean)}
+  {#if (data || error) && !authExpired}
     <button
       class="indicator"
       class:indicator-claude={name === 'Claude'}
@@ -122,9 +126,9 @@
   {/if}
 {/snippet}
 
-{#if claude || codex}
-  {@render providerIndicator(claude, claudePace5h, claudePace7d, 'Claude', claudeError)}
-  {@render providerIndicator(codex, codexPace5h, codexPace7d, 'Codex', codexError)}
+{#if (claude && !claudeAuthExpired) || (codex && !codexAuthExpired) || (claudeError && !claudeAuthExpired) || (codexError && !codexAuthExpired)}
+  {@render providerIndicator(claude, claudePace5h, claudePace7d, 'Claude', claudeError, claudeAuthExpired)}
+  {@render providerIndicator(codex, codexPace5h, codexPace7d, 'Codex', codexError, codexAuthExpired)}
 {/if}
 
 <style>

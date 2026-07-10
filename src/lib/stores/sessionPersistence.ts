@@ -5,6 +5,7 @@ import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type
 import { getProviderForModel, type SdkProvider } from '$lib/utils/models';
 import { sessions, activeSessionId, type TerminalSession } from './sessions';
 import { repos } from './repos';
+import { panes } from './panes';
 
 // ============================================================================
 // AUTO-PERSISTENCE SYSTEM
@@ -670,8 +671,10 @@ export async function loadSessionsFromDisk(): Promise<void> {
     });
 
     // Restore SDK sessions
+    let restoredSdkSessionIds: string[] = [];
     if (limitedSdkSessions.length > 0) {
       const restoredSdkSessions = limitedSdkSessions.map(persistedToSdkSession);
+      restoredSdkSessionIds = restoredSdkSessions.map(s => s.id);
       sdkSessions.set(restoredSdkSessions);
 
       // Restore active SDK session selection if it exists and is within the restored sessions
@@ -682,6 +685,7 @@ export async function loadSessionsFromDisk(): Promise<void> {
         }
       }
     }
+    panes.reconcile(restoredSdkSessionIds);
 
     // Restore terminal sessions (as completed/read-only)
     if (limitedTerminalSessions.length > 0) {

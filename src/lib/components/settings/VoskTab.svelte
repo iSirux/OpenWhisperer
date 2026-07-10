@@ -11,6 +11,33 @@
   let testing = $state(false);
   let testStatus: "idle" | "success" | "error" = $state("idle");
   let testResult: RealtimeConnectionTestResult | null = $state(null);
+  let buildError: string | null = $state(null);
+
+  /**
+   * One-click setup for the bundled images (sherpa-onnx / moonshine): the
+   * backend writes the embedded Docker build context plus a setup script to
+   * disk, then opens a terminal window running the script (remove old
+   * container, docker build, docker run) so progress is visible.
+   */
+  async function buildAndStartContainer(
+    provider: string,
+    image: string,
+    runCommand: string,
+    containerName?: string
+  ) {
+    buildError = null;
+    try {
+      await invoke("run_docker_setup", {
+        provider,
+        image,
+        containerName: containerName || "",
+        runCommand,
+      });
+    } catch (e) {
+      buildError = String(e);
+      console.error("Failed to build/start container:", e);
+    }
+  }
 
   async function testConnection() {
     testing = true;
@@ -44,6 +71,7 @@
       <li><strong>VoiceStreamAI</strong> — Higher accuracy, uses faster-whisper (GPU recommended)</li>
       <li><strong>Speaches</strong> — Ready Docker images + OpenAI-compatible realtime API</li>
       <li><strong>Sherpa-ONNX</strong> — Fast streaming ASR with permissive licensing (Apache-2.0)</li>
+      <li><strong>Moonshine v2</strong> — Streaming-native, Whisper-level accuracy on CPU (English)</li>
     </ul>
   </div>
 
@@ -74,11 +102,12 @@
             ...s,
             vosk: {
               ...s.vosk,
-              provider: value as "Vosk" | "VoiceStreamAI" | "SherpaOnnx" | "Speaches",
+              provider: value as "Vosk" | "VoiceStreamAI" | "SherpaOnnx" | "Speaches" | "Moonshine",
             },
           }));
         }}
       >
+        <option value="Moonshine">Moonshine v2 (recommended — streaming, Whisper-level accuracy)</option>
         <option value="Vosk">Vosk (lightweight, low latency)</option>
         <option value="VoiceStreamAI">VoiceStreamAI (faster-whisper, higher accuracy)</option>
         <option value="Speaches">Speaches (docker-ready realtime API)</option>
@@ -356,6 +385,39 @@
           bind:value={$settings.vosk.sherpa_onnx.sample_rate}
         >
           <option value={8000}>8000 Hz</option>
+          <option value={16000}>16000 Hz (recommended)</option>
+          <option value={44100}>44100 Hz</option>
+          <option value={48000}>48000 Hz</option>
+        </select>
+      </div>
+    {:else if $settings.vosk.provider === "Moonshine"}
+      <!-- ═══ Moonshine-specific configuration ═══ -->
+
+      <!-- WebSocket Endpoint -->
+      <div>
+        <label class="block text-sm font-medium text-text-secondary mb-1"
+          >WebSocket Endpoint</label
+        >
+        <input
+          type="text"
+          class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+          bind:value={$settings.vosk.moonshine.endpoint}
+          placeholder="ws://localhost:2702"
+        />
+        <p class="text-xs text-text-muted mt-1">
+          The bundled Moonshine server listens on port 2702 (2700 = Vosk, 2701 = Speaches)
+        </p>
+      </div>
+
+      <!-- Sample Rate -->
+      <div>
+        <label class="block text-sm font-medium text-text-secondary mb-1"
+          >Sample Rate</label
+        >
+        <select
+          class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+          bind:value={$settings.vosk.moonshine.sample_rate}
+        >
           <option value={16000}>16000 Hz (recommended)</option>
           <option value={44100}>44100 Hz</option>
           <option value={48000}>48000 Hz</option>
@@ -1078,7 +1140,7 @@
         if ($settings.vosk.sherpa_onnx.docker.container_name) {
           parts.push(`--name ${$settings.vosk.sherpa_onnx.docker.container_name}`);
         }
-        parts.push("<your-sherpa-onnx-image>");
+        parts.push("open-whisperer-sherpa-onnx");
         return parts.join(" ");
       })()}
       <div class="border-t border-border pt-4 mt-4">
@@ -1221,9 +1283,128 @@
           </button>
         </div>
 
-        <p class="text-xs text-text-muted">
-          Replace <code class="bg-surface px-1 rounded">&lt;your-sherpa-onnx-image&gt;</code> with
-          your sherpa-onnx websocket server image/tag.
+        <button
+          class="px-4 py-2 bg-accent text-white text-sm rounded hover:bg-accent/80 transition-colors"
+          onclick={() =>
+            buildAndStartContainer(
+              "sherpa-onnx",
+              "open-whisperer-sherpa-onnx",
+              dockerCommand,
+              $settings.vosk.sherpa_onnx.docker.container_name
+            )}
+        >
+          Build &amp; Start Container
+        </button>
+        {#if buildError}
+          <p class="text-xs text-error mt-2">{buildError}</p>
+        {/if}
+        <p class="text-xs text-text-muted mt-2">
+          One click: writes the bundled build context to disk, then opens a terminal that builds
+          the image (downloads the streaming Zipformer model on first build) and starts the
+          container. Requires Docker Desktop to be running. CPU-only — streaming Zipformer runs
+          faster than real time on CPU.
+        </p>
+      </div>
+    {:else if $settings.vosk.provider === "Moonshine"}
+      {@const dockerCommand = (() => {
+        const parts = ["docker run -d"];
+        if ($settings.vosk.moonshine.docker.auto_restart) {
+          parts.push("--restart unless-stopped");
+        }
+        parts.push("-p 2702:2702");
+        if ($settings.vosk.moonshine.docker.container_name) {
+          parts.push(`--name ${$settings.vosk.moonshine.docker.container_name}`);
+        }
+        parts.push("open-whisperer-moonshine");
+        return parts.join(" ");
+      })()}
+      <div class="border-t border-border pt-4 mt-4">
+        <label class="block text-sm font-medium text-text-secondary mb-3"
+          >Docker Setup (Moonshine)</label
+        >
+
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <label class="text-sm font-medium text-text-secondary"
+              >Auto-start with Docker</label
+            >
+            <p class="text-xs text-text-muted">
+              Container starts automatically when Docker Engine starts
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            class="toggle"
+            checked={$settings.vosk.moonshine.docker.auto_restart}
+            onchange={(e) => {
+              const checked = (e.target as HTMLInputElement).checked;
+              settings.update((s) => ({
+                ...s,
+                vosk: {
+                  ...s.vosk,
+                  moonshine: {
+                    ...s.vosk.moonshine,
+                    docker: { ...s.vosk.moonshine.docker, auto_restart: checked },
+                  },
+                },
+              }));
+            }}
+          />
+        </div>
+
+        <div class="mb-4">
+          <label class="block text-xs font-medium text-text-muted mb-2"
+            >Container Name</label
+          >
+          <input
+            type="text"
+            class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
+            value={$settings.vosk.moonshine.docker.container_name}
+            oninput={(e) => {
+              const value = (e.target as HTMLInputElement).value;
+              settings.update((s) => ({
+                ...s,
+                vosk: {
+                  ...s.vosk,
+                  moonshine: {
+                    ...s.vosk.moonshine,
+                    docker: { ...s.vosk.moonshine.docker, container_name: value },
+                  },
+                },
+              }));
+            }}
+            placeholder="open-whisperer-moonshine"
+          />
+        </div>
+
+        <div class="mb-3">
+          <label class="block text-xs font-medium text-text-muted mb-2"
+            >Docker Command</label
+          >
+          <pre
+            class="p-3 bg-background border border-border rounded text-xs font-mono text-text-secondary overflow-x-auto whitespace-pre-wrap">{dockerCommand}</pre>
+        </div>
+
+        <button
+          class="px-4 py-2 bg-accent text-white text-sm rounded hover:bg-accent/80 transition-colors"
+          onclick={() =>
+            buildAndStartContainer(
+              "moonshine",
+              "open-whisperer-moonshine",
+              dockerCommand,
+              $settings.vosk.moonshine.docker.container_name
+            )}
+        >
+          Build &amp; Start Container
+        </button>
+        {#if buildError}
+          <p class="text-xs text-error mt-2">{buildError}</p>
+        {/if}
+        <p class="text-xs text-text-muted mt-2">
+          One click: writes the bundled build context to disk, then opens a terminal that builds
+          the image (downloads the Moonshine model on first build) and starts the container.
+          Requires Docker Desktop to be running. CPU-only by design — Moonshine v2 streams faster
+          than real time on CPU. English only.
         </p>
       </div>
     {/if}

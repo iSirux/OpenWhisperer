@@ -6,6 +6,10 @@
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
   import { sdkSessions, type EffortLevel } from '$lib/stores/sdkSessions';
   import type { SdkProvider } from '$lib/utils/models';
+  import { panes, paneLayout, MAX_PANES } from '$lib/stores/panes';
+  import { get } from 'svelte/store';
+  import { nmRuns, noMistakes } from '$lib/stores/noMistakes';
+  import { buildIntent } from '$lib/utils/noMistakesIntent';
 
   interface Message {
     type: string;
@@ -41,7 +45,11 @@
     playwrightQa?: boolean;
     createdBranch?: string | null;
     currentBranch?: string | null;
+    /** Number of files changed in this session's cwd. Badge hidden when 0/undefined. */
+    changedFileCount?: number;
     firstPrompt?: string | null;
+    /** Short speakable voice callsign for this session (e.g. "Falcon") */
+    nickname?: string | null;
     onClose: () => void;
     onCancel?: () => void;
   }
@@ -64,7 +72,9 @@
     playwrightQa = false,
     createdBranch = null,
     currentBranch = null,
+    changedFileCount = undefined,
     firstPrompt = null,
+    nickname = null,
     onClose,
     onCancel,
   }: Props = $props();
@@ -103,6 +113,28 @@
     const labels: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHigh', max: 'Max' };
     return effortLevel ? labels[effortLevel] ?? null : null;
   });
+
+  // --- No mistakes (validation pipeline) ---
+  const nmHasCwd = $derived(!!repoPath && repoPath !== '.');
+  const nmRun = $derived(
+    sessionId ? [...$nmRuns.values()].find((r) => r.sessionId === sessionId) : undefined,
+  );
+  const nmActive = $derived(
+    !!nmRun &&
+      (nmRun.status === 'starting' || nmRun.status === 'running' || nmRun.status === 'gate'),
+  );
+  // Enabled only with a real cwd, not pending, not querying, and no active run.
+  const nmCanStart = $derived(nmHasCwd && !isPending && !isQuerying && !nmActive);
+  const showNoMistakes = $derived(!isPending && !!sessionId);
+
+  function startNoMistakes() {
+    if (!sessionId || !nmCanStart) return;
+    const session = get(sdkSessions).find((s) => s.id === sessionId);
+    if (!session) return;
+    noMistakes.startRun(sessionId, repoPath, buildIntent(session)).catch((err) => {
+      console.error('[SdkSessionHeader] no-mistakes start failed:', err);
+    });
+  }
 
   const showAutocompactToggle = $derived(provider !== 'openai' && !isPending && !!sessionId);
   const showHooksToggle = $derived(!isPending && !!sessionId);
@@ -207,6 +239,12 @@
 <div class="session-header flex flex-col px-4 py-2 border-b border-border bg-surface-elevated gap-1">
   <div class="flex items-center justify-between">
     <div class="header-left">
+      {#if nickname}
+        <span
+          class="px-1 py-0.5 text-[9px] font-mono uppercase tracking-wide text-text-muted bg-border/60 rounded flex-shrink-0"
+          title="Voice callsign">{nickname}</span
+        >
+      {/if}
       {#if sessionTime}
         <span class="session-time">{sessionTime}</span>
       {/if}
@@ -231,6 +269,15 @@
             <span class="separator">·</span>
             <span class="branch-name">{singleBranchDisplay}</span>
           {/if}
+        {/if}
+        {#if changedFileCount && changedFileCount > 0}
+          <span class="separator">·</span>
+          <span
+            class="changed-count"
+            title="{changedFileCount} file{changedFileCount === 1 ? '' : 's'} changed"
+          >
+            {changedFileCount} changed
+          </span>
         {/if}
       {/if}
       {#if model}
@@ -332,6 +379,19 @@
           </span>
         </button>
       {/if}
+      {#if !isPending && $paneLayout.panes.length < MAX_PANES}
+        <button
+          class="action-icon-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
+          onclick={() => panes.splitPane()}
+          title="Split view"
+          aria-label="Split view"
+        >
+          <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <line x1="12" y1="4" x2="12" y2="20" />
+          </svg>
+        </button>
+      {/if}
       {#if !isPending && sessionId && sdkSessionId}
         <button
           class="action-icon-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
@@ -347,6 +407,21 @@
             <line x1="14" y1="10" x2="21" y2="3" />
             <line x1="3" y1="21" x2="10" y2="14" />
           </svg>
+        </button>
+      {/if}
+      {#if showNoMistakes}
+        <button
+          class="no-mistakes-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
+          class:active={!!nmRun}
+          onclick={startNoMistakes}
+          disabled={!nmCanStart}
+          title="Run the no-mistakes validation pipeline (review, test, docs, lint) on this session's branch — only pushes and opens a PR when everything is green."
+        >
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="M9 12l2 2 4-4" />
+          </svg>
+          No mistakes
         </button>
       {/if}
       {#if !isPending}
@@ -437,6 +512,16 @@
     flex-shrink: 0;
   }
 
+  .changed-count {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: rgb(251, 191, 36);
+    background: rgba(251, 191, 36, 0.12);
+    padding: 0.05rem 0.35rem;
+    border-radius: 0.25rem;
+    flex-shrink: 0;
+  }
+
   .prompt-preview {
     font-size: 0.8rem;
     color: var(--color-text-muted);
@@ -457,6 +542,24 @@
   .copy-all-btn.copied {
     background: color-mix(in srgb, var(--color-success) 20%, transparent);
     color: var(--color-success);
+  }
+
+  .no-mistakes-btn {
+    color: var(--color-text-muted);
+  }
+
+  .no-mistakes-btn:hover:not(:disabled) {
+    color: var(--color-text-primary);
+  }
+
+  .no-mistakes-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .no-mistakes-btn.active {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    color: var(--color-accent);
   }
 
   .autocompact-toggle {

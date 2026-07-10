@@ -1,4 +1,4 @@
-//! Real-time transcription provider configuration (Vosk / VoiceStreamAI / sherpa-onnx / Speaches).
+//! Real-time transcription provider configuration (Vosk / VoiceStreamAI / sherpa-onnx / Speaches / Moonshine).
 
 use serde::{Deserialize, Serialize};
 
@@ -7,11 +7,15 @@ use super::whisper::{DockerComputeType, DockerConfig};
 /// Provider type for real-time transcription (live during recording)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum RealtimeProvider {
-    #[default]
     Vosk,
     VoiceStreamAI,
     SherpaOnnx,
     Speaches,
+    /// Moonshine v2 streaming via the bundled Vosk-protocol shim server
+    /// (docker/moonshine); wire-compatible with `VoskSession`. The default
+    /// and recommended provider: Whisper-level accuracy while streaming.
+    #[default]
+    Moonshine,
 }
 
 /// Configuration for VoiceStreamAI real-time transcription
@@ -126,6 +130,52 @@ impl Default for SherpaOnnxConfig {
     }
 }
 
+/// Configuration for Moonshine v2 real-time transcription. The server
+/// (docker/moonshine) speaks the Vosk WebSocket protocol, so sessions reuse
+/// `VoskSession` — only the endpoint differs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoonshineConfig {
+    /// WebSocket endpoint for the Moonshine shim server
+    #[serde(default = "default_moonshine_endpoint")]
+    pub endpoint: String,
+    /// Audio sample rate (default: 16000)
+    #[serde(default = "default_moonshine_sample_rate")]
+    pub sample_rate: u32,
+    /// Docker configuration for the Moonshine server
+    #[serde(default = "default_moonshine_docker")]
+    pub docker: DockerConfig,
+}
+
+fn default_moonshine_endpoint() -> String {
+    "ws://localhost:2702".to_string()
+}
+
+fn default_moonshine_sample_rate() -> u32 {
+    16000
+}
+
+fn default_moonshine_container_name() -> String {
+    "open-whisperer-moonshine".to_string()
+}
+
+fn default_moonshine_docker() -> DockerConfig {
+    DockerConfig {
+        compute_type: DockerComputeType::CPU,
+        auto_restart: false,
+        container_name: default_moonshine_container_name(),
+    }
+}
+
+impl Default for MoonshineConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: default_moonshine_endpoint(),
+            sample_rate: default_moonshine_sample_rate(),
+            docker: default_moonshine_docker(),
+        }
+    }
+}
+
 /// Configuration for Speaches real-time transcription
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpeachesConfig {
@@ -185,8 +235,10 @@ impl Default for SpeachesConfig {
 /// Configuration for real-time transcription providers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoskConfig {
-    /// Whether real-time transcription is enabled
-    #[serde(default)]
+    /// Whether real-time transcription is enabled. Default on to match the
+    /// realtime-first default; a failed connect is graceful (recording
+    /// proceeds, Whisper transcribes).
+    #[serde(default = "default_realtime_enabled")]
     pub enabled: bool,
     /// Which real-time transcription provider to use
     #[serde(default)]
@@ -206,6 +258,9 @@ pub struct VoskConfig {
     /// Whether to accumulate transcript text across pauses (vs reset on each pause)
     #[serde(default)]
     pub accumulate_transcript: bool,
+    /// Which engine(s) produce the final transcript (see [`TranscriptionMode`])
+    #[serde(default)]
+    pub transcription_mode: TranscriptionMode,
     /// VoiceStreamAI-specific configuration
     #[serde(default)]
     pub voice_stream_ai: VoiceStreamAIConfig,
@@ -215,6 +270,9 @@ pub struct VoskConfig {
     /// Speaches-specific configuration
     #[serde(default)]
     pub speaches: SpeachesConfig,
+    /// Moonshine-specific configuration
+    #[serde(default)]
+    pub moonshine: MoonshineConfig,
 }
 
 fn default_vosk_endpoint() -> String {
@@ -241,19 +299,41 @@ fn default_show_realtime_transcript() -> bool {
     true
 }
 
+fn default_realtime_enabled() -> bool {
+    true
+}
+
+/// Which engine(s) produce the final transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum TranscriptionMode {
+    /// Batch Whisper transcribes the full recording after stop; the realtime
+    /// engine (if enabled) only powers the live preview and voice commands
+    Whisper,
+    /// The realtime engine's harvested transcript IS the transcript; Whisper
+    /// is never called. An empty harvest fails the recording (pile salvage)
+    Realtime,
+    /// Run both engines: the realtime engine powers the live preview and feeds
+    /// the dual-source LLM cleanup, while batch Whisper produces the primary
+    /// transcript. Falls back to the realtime harvest if Whisper is unreachable.
+    #[default]
+    Both,
+}
+
 impl Default for VoskConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_realtime_enabled(),
             provider: RealtimeProvider::default(),
             endpoint: default_vosk_endpoint(),
             sample_rate: default_vosk_sample_rate(),
             docker: default_vosk_docker(),
             show_realtime_transcript: default_show_realtime_transcript(),
             accumulate_transcript: false,
+            transcription_mode: TranscriptionMode::default(),
             voice_stream_ai: VoiceStreamAIConfig::default(),
             sherpa_onnx: SherpaOnnxConfig::default(),
             speaches: SpeachesConfig::default(),
+            moonshine: MoonshineConfig::default(),
         }
     }
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type { SdkMessage, EffortLevel } from "$lib/stores/sdkSessions";
+  import type { NestedTaskSummary } from "./sdkViewMessageProcessing";
   import { settings } from "$lib/stores/settings";
   import SdkMessageComponent from "./SdkMessage.svelte";
   import SdkToolGrid from "./SdkToolGrid.svelte";
@@ -9,6 +10,7 @@
     taskStarted,
     children,
     taskCompleted,
+    nestedSummaries = undefined,
     copiedMessageId = null,
     onCopy,
     sessionCwd = "",
@@ -18,12 +20,19 @@
     taskStarted: SdkMessage;
     children: SdkMessage[];
     taskCompleted?: SdkMessage;
+    nestedSummaries?: Map<string, NestedTaskSummary>;
     copiedMessageId?: number | null;
     onCopy: (msg: SdkMessage) => void;
     sessionCwd?: string;
     sessionModel?: string;
     sessionEffortLevel?: EffortLevel;
   } = $props();
+
+  // Nested subagents (spawned by this subagent) are folded into compact summary
+  // rows — we show their tool-call count and run status but never mount their
+  // transcript, so a fan-out parent doesn't balloon with child agents' history.
+  const isNestedSubagent = (m: SdkMessage): boolean =>
+    !!m.toolUseId && !!nestedSummaries?.has(m.toolUseId);
 
   // Auto-scroll task body to bottom when new children arrive
   let taskBodyEl = $state<HTMLDivElement | null>(null);
@@ -127,31 +136,68 @@
   // Derive the display label: use taskType if available (e.g. "Explore"), else "Task"
   let taskLabel = $derived(taskStarted.taskType || 'Task');
 
-  // Count tool calls (tool_start or tool_result, excluding thinking/text/other message types)
+  // Count this subagent's own tool calls (excluding nested-subagent launchers,
+  // which report their own counts on their compact rows).
   let toolCallCount = $derived(
-    children.filter(m => m.type === 'tool_start' || m.type === 'tool_result' || m.type === 'thinking').length
+    children.filter(
+      m =>
+        (m.type === 'tool_start' || m.type === 'tool_result' || m.type === 'thinking') &&
+        !isNestedSubagent(m),
+    ).length
   );
 
   let isGridMode = $derived($settings.tool_display_mode === 'grid');
 
-  // Group processed children into render items respecting grid/list setting
+  // Group processed children into render items respecting grid/list setting.
+  // Nested subagents become their own compact 'nested_task' item (never grouped
+  // into a tool grid, never mounted as a full transcript).
   type ChildRenderItem =
     | { type: 'message'; message: SdkMessage }
-    | { type: 'tool_group'; tools: SdkMessage[] };
+    | { type: 'tool_group'; tools: SdkMessage[] }
+    | { type: 'nested_task'; summary: NestedTaskSummary };
 
   let childRenderItems = $derived(() => {
     const msgs = processedChildren();
     if (msgs.length === 0) return [];
 
+    const seenNested = new Set<string>();
+    const nestedItem = (m: SdkMessage): ChildRenderItem | null => {
+      const summary = nestedSummaries?.get(m.toolUseId!);
+      if (!summary || seenNested.has(summary.toolUseId)) return null;
+      seenNested.add(summary.toolUseId);
+      return { type: 'nested_task', summary };
+    };
+
     if (!isGridMode) {
-      return msgs.map((m): ChildRenderItem => ({ type: 'message', message: m }));
+      const items: ChildRenderItem[] = [];
+      for (const m of msgs) {
+        if (isNestedSubagent(m)) {
+          const it = nestedItem(m);
+          if (it) items.push(it);
+        } else {
+          items.push({ type: 'message', message: m });
+        }
+      }
+      return items;
     }
 
     // Grid mode: group consecutive tool/thinking messages into tool_groups
     const items: ChildRenderItem[] = [];
     let currentToolGroup: SdkMessage[] = [];
+    const flushGroup = () => {
+      if (currentToolGroup.length > 0) {
+        items.push({ type: 'tool_group', tools: [...currentToolGroup] });
+        currentToolGroup = [];
+      }
+    };
 
     for (const msg of msgs) {
+      if (isNestedSubagent(msg)) {
+        flushGroup();
+        const it = nestedItem(msg);
+        if (it) items.push(it);
+        continue;
+      }
       const isToolMessage =
         msg.type === 'tool_start' ||
         msg.type === 'tool_result' ||
@@ -160,18 +206,12 @@
       if (isToolMessage) {
         currentToolGroup.push(msg);
       } else {
-        if (currentToolGroup.length > 0) {
-          items.push({ type: 'tool_group', tools: [...currentToolGroup] });
-          currentToolGroup = [];
-        }
+        flushGroup();
         items.push({ type: 'message', message: msg });
       }
     }
 
-    if (currentToolGroup.length > 0) {
-      items.push({ type: 'tool_group', tools: currentToolGroup });
-    }
-
+    flushGroup();
     return items;
   });
 
@@ -222,10 +262,39 @@
     <div class="task-body" bind:this={taskBodyEl}>
       {#if expanded && childRenderItems().length > 0}
         <div class="task-children">
-          {#each childRenderItems() as item, index (item.type === 'tool_group' ? `tool-group-${index}` : item.message.timestamp)}
+          {#each childRenderItems() as item, index (item.type === 'tool_group' ? `tool-group-${index}` : item.type === 'nested_task' ? `nested-${item.summary.toolUseId}` : item.message.timestamp)}
             {#if item.type === 'tool_group'}
               <div class="task-tool-grid-wrapper">
                 <SdkToolGrid tools={item.tools} />
+              </div>
+            {:else if item.type === 'nested_task'}
+              <div
+                class="nested-task-row"
+                class:running={!item.summary.status}
+                class:completed={item.summary.status === 'completed'}
+                class:failed={item.summary.status === 'failed'}
+                class:stopped={item.summary.status === 'stopped'}
+                title={item.summary.description}
+              >
+                <span class="nested-arrow">&#8627;</span>
+                <span class="nested-label">{item.summary.label}</span>
+                {#if item.summary.description}
+                  <span class="nested-description">{item.summary.description}</span>
+                {/if}
+                <span class="nested-count">{item.summary.toolCallCount} tool call{item.summary.toolCallCount === 1 ? '' : 's'}</span>
+                <span class="nested-status">
+                  {#if !item.summary.status}
+                    <span class="spinner"></span>Running
+                  {:else if item.summary.status === 'completed'}
+                    Completed
+                  {:else if item.summary.status === 'failed'}
+                    Failed
+                  {:else if item.summary.status === 'stopped'}
+                    Stopped
+                  {:else}
+                    {item.summary.status}
+                  {/if}
+                </span>
               </div>
             {:else}
               <SdkMessageComponent
@@ -399,7 +468,10 @@
   }
 
   .task-body {
-    max-height: min(72vh, 900px);
+    /* Keep a task/subagent ~3-4 tool calls tall, then scroll within it. While
+       running it auto-scrolls to the newest child (see the $effect), so this
+       reads like a small live tail instead of one subagent eating the viewport. */
+    max-height: 11rem;
     overflow-y: auto;
     overflow-x: hidden;
     border-top: 1px solid color-mix(in srgb, var(--color-model-opus) 10%, var(--color-border));
@@ -447,5 +519,75 @@
   .usage-separator {
     color: var(--color-text-muted);
     opacity: 0.5;
+  }
+
+  /* Compact row for a nested subagent — count + status only, no transcript. */
+  .nested-task-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3125rem 0.5rem;
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--color-model-opus) 18%, var(--color-border));
+    background: color-mix(in srgb, var(--color-model-opus) 5%, var(--color-surface));
+    min-width: 0;
+  }
+
+  .nested-task-row.failed {
+    border-color: color-mix(in srgb, var(--color-error) 30%, var(--color-border));
+    background: color-mix(in srgb, var(--color-error) 5%, var(--color-surface));
+  }
+
+  .nested-arrow {
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    font-size: 0.9rem;
+    line-height: 1;
+  }
+
+  .nested-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--color-model-opus);
+    flex-shrink: 0;
+  }
+
+  .nested-description {
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .nested-count {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  .nested-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.0625rem 0.375rem;
+    border-radius: 9999px;
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.025em;
+    flex-shrink: 0;
+    background: color-mix(in srgb, var(--color-model-opus) 15%, transparent);
+    color: var(--color-model-opus);
+  }
+
+  .nested-task-row.failed .nested-status {
+    background: color-mix(in srgb, var(--color-error) 15%, transparent);
+    color: var(--color-error);
   }
 </style>

@@ -46,6 +46,10 @@ export interface EventHandlerCallbacks {
   onUnregisterRecordingHotkeys: () => Promise<void>;
   /** Cycle the recording stop mode (send → prepare → pile), e.g. from the overlay */
   onCycleStopMode?: () => Promise<void>;
+  /** Cycle the active repository, e.g. from the overlay repo chip */
+  onCycleRepo?: () => Promise<void>;
+  /** Cycle the default model, e.g. from the overlay model chip */
+  onCycleModel?: () => Promise<void>;
 }
 
 export function useSessionEventHandlers() {
@@ -55,6 +59,8 @@ export function useSessionEventHandlers() {
   let unlistenOpenMicTriggered: UnlistenFn | null = null;
   let unlistenVoiceCommandTriggered: UnlistenFn | null = null;
   let unlistenCycleStopMode: UnlistenFn | null = null;
+  let unlistenCycleRepo: UnlistenFn | null = null;
+  let unlistenCycleModel: UnlistenFn | null = null;
 
   // Window event handlers
   function handleShowSessions() {
@@ -156,6 +162,16 @@ export function useSessionEventHandlers() {
       await callbacks?.onCycleStopMode?.();
     });
 
+    // Listen for cycle-repo events from overlay (repo chip click)
+    unlistenCycleRepo = await listen('cycle-repo', async () => {
+      await callbacks?.onCycleRepo?.();
+    });
+
+    // Listen for cycle-model events from overlay (model chip click)
+    unlistenCycleModel = await listen('cycle-model', async () => {
+      await callbacks?.onCycleModel?.();
+    });
+
     // Listen for open-mic-triggered events
     unlistenOpenMicTriggered = await listen<{ command: string }>(
       'open-mic-triggered',
@@ -235,6 +251,16 @@ export function useSessionEventHandlers() {
     if (unlistenCycleStopMode) {
       unlistenCycleStopMode();
       unlistenCycleStopMode = null;
+    }
+
+    if (unlistenCycleRepo) {
+      unlistenCycleRepo();
+      unlistenCycleRepo = null;
+    }
+
+    if (unlistenCycleModel) {
+      unlistenCycleModel();
+      unlistenCycleModel = null;
     }
   }
 

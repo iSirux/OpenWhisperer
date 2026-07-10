@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { isRecording } from '$lib/stores/recording';
   import Terminal from '$lib/components/Terminal.svelte';
-  import SdkView from '$lib/components/SdkView.svelte';
+  import SessionPanes from '$lib/components/SessionPanes.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
   import SessionHeader from '$lib/components/SessionHeader.svelte';
   import Start from '$lib/components/Start.svelte';
@@ -11,6 +11,7 @@
   import NotionKanban from '$lib/components/NotionKanban.svelte';
   import PileList from '$lib/components/PileList.svelte';
   import PileDetailView from '$lib/components/PileDetailView.svelte';
+  import CockpitView from '$lib/components/cockpit/CockpitView.svelte';
 
   // Refactored components
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
@@ -34,6 +35,7 @@
   import { settings } from '$lib/stores/settings';
   import { repos, activeRepo, findRepoById } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
+  import { paneLayout, visibleSessionIds } from '$lib/stores/panes';
   import { pile, sidebarTab, pileCount, selectedPileItem, selectedPileItemId } from '$lib/stores/pile';
   import {
     activeExecution,
@@ -65,15 +67,27 @@
   let currentRepoId = $derived($navigation.selectedRepoId);
   let repositoryAddMode = $derived($navigation.repositoryAddMode);
 
-  // Reference to SdkView for focusing prompt input
-  let sdkViewRef:
+  // Reference to the multi-pane container; the focused pane's SdkView is resolved
+  // on demand via getFocusedSdkViewRef() for focus + hold-to-record routing.
+  let sessionPanesRef:
     | {
-        focusPromptInput: () => void;
-        startInlineRecording: () => Promise<void>;
-        stopInlineRecording: () => Promise<void>;
+        getFocusedSdkViewRef: () => {
+          focusPromptInput: () => void;
+          startInlineRecording: () => Promise<void>;
+          stopInlineRecording: () => Promise<void>;
+        } | null;
       }
     | undefined;
   let isHoldingSpaceForInlineRecording = $state(false);
+
+  // Show the multi-pane conversation area when any pane holds a session, or when
+  // the user has split into multiple panes (even if the focused one is empty).
+  let showSessionPanes = $derived($visibleSessionIds.size > 0 || $paneLayout.panes.length > 1);
+  // Focused-session setup / pending states still take over the whole main pane.
+  let activeSetupState = $derived($activeSdkSession?.status === 'setup');
+  let activePendingState = $derived(
+    $activeSdkSession?.status === 'pending_repo' || $activeSdkSession?.status === 'initializing'
+  );
 
   // Computed values for the active SDK session header
   let activeSdkRepoName = $derived.by(() => {
@@ -113,7 +127,7 @@
 
   // Listen for focus-sdk-prompt events from the layout
   function onFocusSdkPrompt() {
-    tick().then(() => sdkViewRef?.focusPromptInput());
+    tick().then(() => sessionPanesRef?.getFocusedSdkViewRef()?.focusPromptInput());
   }
 
   function isInteractiveTarget(target: EventTarget | null): boolean {
@@ -137,7 +151,7 @@
     if ($activeSdkSession.status === 'pending_repo' || $activeSdkSession.status === 'initializing' || $activeSdkSession.status === 'setup') {
       return false;
     }
-    return !!sdkViewRef;
+    return !!sessionPanesRef?.getFocusedSdkViewRef();
   }
 
   async function handleInlineRecordingSpaceDown(event: KeyboardEvent) {
@@ -149,9 +163,9 @@
     isHoldingSpaceForInlineRecording = true;
 
     try {
-      await sdkViewRef?.startInlineRecording();
+      await sessionPanesRef?.getFocusedSdkViewRef()?.startInlineRecording();
       if (!isHoldingSpaceForInlineRecording && $isRecording) {
-        await sdkViewRef?.stopInlineRecording();
+        await sessionPanesRef?.getFocusedSdkViewRef()?.stopInlineRecording();
       }
     } catch (error) {
       isHoldingSpaceForInlineRecording = false;
@@ -164,7 +178,7 @@
     isHoldingSpaceForInlineRecording = false;
 
     try {
-      await sdkViewRef?.stopInlineRecording();
+      await sessionPanesRef?.getFocusedSdkViewRef()?.stopInlineRecording();
     } catch (error) {
       console.error('[sessions-page] Failed to stop inline hold-to-record:', error);
     }
@@ -264,7 +278,17 @@
 />
 
 <div class="main-content flex-1 flex overflow-hidden">
-  {#if currentView === 'notion'}
+  {#if currentView === 'cockpit'}
+    <div class="border-r border-border bg-surface flex shrink-0 overflow-hidden">
+      <RepositoryRail
+        currentRepoId={null}
+        {currentView}
+      />
+    </div>
+    <main class="flex-1 flex flex-col overflow-hidden">
+      <CockpitView />
+    </main>
+  {:else if currentView === 'notion'}
     <div class="border-r border-border bg-surface flex shrink-0 overflow-hidden">
       <RepositoryRail
         currentRepoId={null}
@@ -340,15 +364,9 @@
         <RepositoryView repoId={currentRepoId} showAddForm={repositoryAddMode} />
       {:else if $selectedPileItem}
         <PileDetailView item={$selectedPileItem} />
-      {:else if $activeSdkSession}
+      {:else if $activeSdkSession && activeSetupState}
       {@const activeSession = $activeSdkSession}
       {@const sessionId = activeSession.id}
-      {@const isPendingState =
-        activeSession.status === 'pending_repo' ||
-        activeSession.status === 'initializing'}
-      {@const isSetupState = activeSession.status === 'setup'}
-
-      {#if isSetupState}
         <SessionSetupView
           sessionId={sessionId}
           initialModel={activeSession.model}
@@ -378,14 +396,15 @@
           onStopRecording={recordingFlow.stopRecordingForSetup}
           onCancel={() => handleSetupSessionCancel(sessionId)}
         />
-      {:else}
+      {:else if $activeSdkSession && activePendingState}
+      {@const activeSession = $activeSdkSession}
         <SdkSessionHeader
-          sessionId={sessionId}
+          sessionId={activeSession.id}
           sdkSessionId={activeSession.sdkSessionId}
           isQuerying={activeSession.status === 'querying' || activeSession.status === 'initializing'}
           createdAt={activeSession.createdAt}
           messages={activeSession.messages}
-          isPending={isPendingState}
+          isPending={true}
           repoName={activeSdkRepoName}
           repoId={activeSession.repoId}
           repoPath={activeSession.cwd}
@@ -397,30 +416,22 @@
           playwrightQa={activeSession.playwrightQa ?? false}
           createdBranch={activeSession.createdBranch}
           currentBranch={activeSession.currentBranch}
+          changedFileCount={activeSession.changedFileCount}
           firstPrompt={activeSdkFirstPrompt()}
+          nickname={activeSession.aiMetadata?.nickname}
           onClose={handleSessionClose}
           onCancel={handlePendingSessionCancel}
         />
-
-        {#if isPendingState}
-          <div class="terminal-wrapper flex-1 overflow-hidden">
-            <SessionPendingView
-              status={activeSession.status as 'pending_repo' | 'initializing'}
-              repos={$repos.list}
-              pendingSelection={activeSession.pendingRepoSelection}
-              pendingPrompt={activeSession.pendingPrompt}
-              onSelectRepo={handlePendingRepoSelection}
-              onCancel={handlePendingSessionCancel}
-            />
-          </div>
-        {:else}
-          <div class="terminal-wrapper flex-1 overflow-hidden">
-            {#key sessionId}
-              <SdkView bind:this={sdkViewRef} sessionId={sessionId} />
-            {/key}
-          </div>
-        {/if}
-      {/if}
+        <div class="terminal-wrapper flex-1 overflow-hidden">
+          <SessionPendingView
+            status={activeSession.status as 'pending_repo' | 'initializing'}
+            repos={$repos.list}
+            pendingSelection={activeSession.pendingRepoSelection}
+            pendingPrompt={activeSession.pendingPrompt}
+            onSelectRepo={handlePendingRepoSelection}
+            onCancel={handlePendingSessionCancel}
+          />
+        </div>
     {:else if $activeSession}
       <SessionHeader session={$activeSession} />
       <div class="terminal-wrapper flex-1 overflow-hidden">
@@ -428,6 +439,35 @@
           <Terminal sessionId={$activeSession.id} />
         {/key}
       </div>
+      {:else if showSessionPanes}
+        {#if $activeSdkSession}
+        {@const activeSession = $activeSdkSession}
+          <SdkSessionHeader
+            sessionId={activeSession.id}
+            sdkSessionId={activeSession.sdkSessionId}
+            isQuerying={activeSession.status === 'querying' || activeSession.status === 'initializing'}
+            createdAt={activeSession.createdAt}
+            messages={activeSession.messages}
+            isPending={false}
+            repoName={activeSdkRepoName}
+            repoId={activeSession.repoId}
+            repoPath={activeSession.cwd}
+            model={activeSession.model}
+            effortLevel={activeSession.effortLevel}
+            provider={activeSession.provider}
+            autocompactEnabled={activeSession.autocompactEnabled ?? true}
+            disableHooks={activeSession.disableHooks ?? false}
+            playwrightQa={activeSession.playwrightQa ?? false}
+            createdBranch={activeSession.createdBranch}
+            currentBranch={activeSession.currentBranch}
+            changedFileCount={activeSession.changedFileCount}
+            firstPrompt={activeSdkFirstPrompt()}
+            nickname={activeSession.aiMetadata?.nickname}
+            onClose={handleSessionClose}
+            onCancel={handlePendingSessionCancel}
+          />
+        {/if}
+        <SessionPanes bind:this={sessionPanesRef} />
       {/if}
     </main>
   {/if}

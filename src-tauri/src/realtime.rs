@@ -1,4 +1,6 @@
-use crate::config::{RealtimeProvider, SherpaOnnxConfig, SpeachesConfig, VoiceStreamAIConfig};
+use crate::config::{
+    MoonshineConfig, RealtimeProvider, SherpaOnnxConfig, SpeachesConfig, VoiceStreamAIConfig,
+};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -185,19 +187,35 @@ impl RealtimeSession for VoskSession {
             .await
             .map_err(|e| format!("Failed to send EOF: {}", e))?;
 
-        loop {
-            match self.recv().await? {
-                Some(RealtimeResponse::Final { text }) => {
-                    let _ = self.socket.close(None).await;
-                    return Ok(text);
-                }
-                Some(RealtimeResponse::Partial { .. }) => continue,
-                None => {
-                    let _ = self.socket.close(None).await;
-                    return Ok(String::new());
+        // The server must answer eof with a final result (Vosk and the
+        // Moonshine shim both do). Bound the wait so a misbehaving server
+        // can't hang the stop path — realtime-first resolves the transcript
+        // from this, and an empty tail falls back to batch Whisper.
+        let drained = timeout(Duration::from_secs(10), async {
+            loop {
+                match self.recv().await? {
+                    Some(RealtimeResponse::Final { text }) => break Ok::<_, String>(text),
+                    Some(RealtimeResponse::Partial { .. }) => continue,
+                    None => break Ok(String::new()),
                 }
             }
-        }
+        })
+        .await;
+
+        let text = match drained {
+            Ok(Ok(text)) => text,
+            Ok(Err(e)) => {
+                let _ = self.socket.close(None).await;
+                return Err(e);
+            }
+            Err(_) => {
+                log::warn!("Realtime finalize timed out waiting for the final result; returning empty tail");
+                String::new()
+            }
+        };
+
+        let _ = self.socket.close(None).await;
+        Ok(text)
     }
 
     async fn close(&mut self) -> Result<(), String> {
@@ -1059,6 +1077,7 @@ impl RealtimeSessionManager {
         vsai_config: &VoiceStreamAIConfig,
         sherpa_config: &SherpaOnnxConfig,
         speaches_config: &SpeachesConfig,
+        moonshine_config: &MoonshineConfig,
     ) -> Result<(), String> {
         match provider {
             RealtimeProvider::Vosk => {
@@ -1076,6 +1095,16 @@ impl RealtimeSessionManager {
             RealtimeProvider::Speaches => {
                 self.create_speaches_session(session_id, speaches_config)
                     .await
+            }
+            // The Moonshine shim server speaks the Vosk protocol, so the
+            // session type is a plain VoskSession pointed at its endpoint.
+            RealtimeProvider::Moonshine => {
+                self.create_vosk_session(
+                    session_id,
+                    &moonshine_config.endpoint,
+                    moonshine_config.sample_rate,
+                )
+                .await
             }
         }
     }

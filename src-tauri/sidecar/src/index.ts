@@ -23,11 +23,15 @@ import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
 
-const OPENAI_MODEL_FALLBACK = "gpt-5.4";
+const OPENAI_MODEL_FALLBACK = "gpt-5.6-terra";
 
 function inferOpenAiContextWindow(model: string | undefined): number {
   const normalized = model?.toLowerCase() ?? "";
-  // GPT-5 family models use 400k context windows.
+  // GPT-5.6 family (Sol/Terra/Luna) has a 1M context window.
+  if (normalized.includes("gpt-5.6")) {
+    return 1000000;
+  }
+  // Older GPT-5 family models use 400k context windows.
   if (normalized.includes("gpt-5")) {
     return 400000;
   }
@@ -329,7 +333,8 @@ interface UpdateEffortMessage {
   type: "update_effort";
   id: string;
   // Effort level: null, 'low', 'medium', 'high', 'xhigh', 'max'.
-  // The Claude SDK accepts the full range natively; OpenAI clamps to 'high'.
+  // The Claude SDK accepts the full range natively; OpenAI clamps per model
+  // (GPT-5.6 caps at 'xhigh', older Codex models at 'high').
   effortLevel: string | null;
 }
 
@@ -352,17 +357,21 @@ interface UpdateDisableHooksMessage {
  * - Claude Agent SDK natively supports: 'low' | 'medium' | 'high' | 'xhigh' |
  *   'max' (EffortLevel), and it handles its own fallback for models that don't
  *   support a given level ('xhigh' -> 'high'). So every level passes through.
- * - Codex / OpenAI only support: 'low' | 'medium' | 'high'. Both 'xhigh' and
- *   'max' are clamped down to 'high'.
+ * - Codex / OpenAI: ModelReasoningEffort caps at 'xhigh'. The GPT-5.6 family
+ *   accepts up to 'xhigh' ('max' is clamped to 'xhigh'); older models only
+ *   accept 'low' | 'medium' | 'high' ('xhigh'/'max' clamped to 'high').
  * - `null` / `undefined` are passed through unchanged (effort off).
  */
 function mapEffortForProvider(
   effort: string | null | undefined,
-  provider: "claude" | "openai"
+  provider: "claude" | "openai",
+  model?: string
 ): string | undefined {
   if (!effort) return undefined;
   if (provider === "openai") {
-    if (effort === "xhigh" || effort === "max") return "high";
+    const supportsXhigh = (model ?? "").toLowerCase().includes("gpt-5.6");
+    if (effort === "max") return supportsXhigh ? "xhigh" : "high";
+    if (effort === "xhigh" && !supportsXhigh) return "high";
     return effort;
   }
   // Claude provider: SDK accepts the full EffortLevel range natively.
@@ -1958,12 +1967,18 @@ async function handleCodexAppServerQuery(
 
     const inputItems = buildCodexAppServerInputItems(msg, session, true);
 
+    const appServerEffort = mapEffortForProvider(
+      session.effortLevel,
+      "openai",
+      session.codexModel
+    );
     const turnResult = (await appServerRequest(
       appServer,
       "turn/start",
       {
         threadId,
         input: inputItems.length > 0 ? inputItems : [{ type: "text", text: "" }],
+        ...(appServerEffort ? { effort: appServerEffort } : {}),
       },
       abortController.signal
     )) as Record<string, unknown>;
@@ -2395,8 +2410,19 @@ async function handleCodexQuery(msg: QueryMessage): Promise<void> {
     if (!session.codexThread) {
       const codex = getCodexInstance();
       const resumeId = session.sdkSessionId || session.passedSdkSessionId;
+      const codexEffort = mapEffortForProvider(
+        session.effortLevel,
+        "openai",
+        session.codexModel
+      );
       const codexThreadOptions: ThreadOptions = {
         ...(session.codexModel ? { model: session.codexModel } : {}),
+        ...(codexEffort
+          ? {
+              modelReasoningEffort:
+                codexEffort as ThreadOptions["modelReasoningEffort"],
+            }
+          : {}),
         approvalPolicy: "never",
         ...(session.readOnlyMode
           ? {
@@ -4346,17 +4372,31 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       } else {
         // Error subtypes: error_during_execution, error_max_turns, error_max_budget_usd, error_max_structured_output_retries
         let errorText = resultMsg.errors?.join("; ") || `Error: ${message.subtype}`;
-        // A context overflow that happens mid-turn is usually thrown (handled in the query catch with the
-        // raw "prompt is too long" text). But if it instead surfaces here as a generic error result with no
-        // descriptive message, the raw text is lost. Detect it from the near-limit usage and tag it so the
-        // frontend's overflow recovery (compact + retry) still kicks in.
-        const usedContext =
-          (resultMsg.usage?.input_tokens || 0) +
-          (resultMsg.usage?.cache_read_input_tokens || 0) +
-          (resultMsg.usage?.cache_creation_input_tokens || 0);
-        const nearContextLimit = contextWindow > 0 && usedContext >= contextWindow * 0.9;
-        if (nearContextLimit && !/prompt is too long/i.test(errorText)) {
-          errorText = `Prompt is too long: ${usedContext} tokens, context window ${contextWindow}. ${errorText}`;
+        // A genuine mid-turn context overflow is usually THROWN (handled in the query catch with the raw
+        // "prompt is too long" text). Occasionally it instead surfaces here as a bare error_during_execution
+        // with no descriptive message, so we detect that from near-limit usage and tag it, letting the
+        // frontend's overflow recovery (compact + retry) still kick in.
+        //
+        // Two guards keep this from firing "too early" (which wrongly triggered compaction):
+        //  - ONLY error_during_execution qualifies. error_max_turns / error_max_budget_usd / an interrupt's
+        //    error result are NOT overflows and must never be relabelled as one.
+        //  - Measure MAIN-AGENT context (what the UI's context bar shows) rather than the summed total,
+        //    which also counts finished subagents' tokens — otherwise a subagent-heavy turn crosses the
+        //    threshold while the visible context is still low, so compaction fires far below the real limit.
+        const overflowUsage = mainAgentUsage
+          ? mainAgentUsage.inputTokens +
+            mainAgentUsage.cacheReadTokens +
+            mainAgentUsage.cacheCreationTokens
+          : (resultMsg.usage?.input_tokens || 0) +
+            (resultMsg.usage?.cache_read_input_tokens || 0) +
+            (resultMsg.usage?.cache_creation_input_tokens || 0);
+        const nearContextLimit = contextWindow > 0 && overflowUsage >= contextWindow * 0.9;
+        if (
+          message.subtype === "error_during_execution" &&
+          nearContextLimit &&
+          !/prompt is too long/i.test(errorText)
+        ) {
+          errorText = `Prompt is too long: ${overflowUsage} tokens, context window ${contextWindow}. ${errorText}`;
         }
         sendError(id, errorText);
         // Fallback rate-limit detection: some rejections surface here as an error result
@@ -4691,11 +4731,18 @@ async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
 
   // For Claude provider: set native effort option. The SDK accepts the full
   // EffortLevel range ('low'..'max' incl. 'xhigh') and falls back internally for
-  // models that don't support a given level. The Codex/OpenAI path doesn't plumb
-  // an effort option through ThreadOptions, so no clamping is needed there.
+  // models that don't support a given level.
   if (session.provider === "claude") {
     const mapped = mapEffortForProvider(msg.effortLevel, "claude");
     session.options.effort = (mapped as Options["effort"]) ?? undefined;
+  } else {
+    // OpenAI SDK mode reads effort from ThreadOptions at thread creation, so
+    // drop the cached thread and resume it (sdkSessionId is kept) with the new
+    // modelReasoningEffort on the next query. App-server mode passes effort on
+    // each turn/start and needs no reset.
+    if (session.openaiMode !== "app_server") {
+      session.codexThread = undefined;
+    }
   }
 
   send({
