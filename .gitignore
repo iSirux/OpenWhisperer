@@ -37,3 +37,6 @@ npm-debug.log*
 *.tsbuildinfo
 
 .tmp-codex-schema/
+
+__pycache__/
+*.pyc
