@@ -730,6 +730,7 @@ export async function handleVoiceCommand(
     recording
       .stopRecording(true, debugId)
       .then(async (whisperTranscript) => {
+        debugRecordings.update(debugId, { destination: 'paste' });
         const transcriptToUse = whisperTranscript
           ? processVoiceCommand(whisperTranscript).cleanedTranscript
           : cleanedTranscript;
@@ -777,6 +778,7 @@ export async function handleVoiceCommand(
     recording
       .stopRecording(true, debugId)
       .then(async (whisperTranscript) => {
+        debugRecordings.update(debugId, { destination: 'pile' });
         const finalTranscript = whisperTranscript
           ? processVoiceCommand(whisperTranscript).cleanedTranscript
           : cleanedTranscript;
@@ -817,6 +819,7 @@ export async function handleVoiceCommand(
     recording
       .stopRecording(true, debugId)
       .then(async (whisperTranscript) => {
+        debugRecordings.update(debugId, { destination: 'prepare' });
         if (prepareSessionId) {
           const audioData = get(recording).audioData;
           if (audioData) {
@@ -869,6 +872,7 @@ export async function handleVoiceCommand(
   recording
     .stopRecording(true, debugId)
     .then(async (whisperTranscript) => {
+      debugRecordings.update(debugId, { destination: 'send' });
       if (pendingSessionId) {
         const audioData = get(recording).audioData;
         if (audioData) {

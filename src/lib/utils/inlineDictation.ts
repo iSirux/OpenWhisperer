@@ -48,6 +48,8 @@ export function makeInlineDictation(getRepo?: () => RepoLike | undefined) {
         return null;
       }
 
+      debugRecordings.update(debugId, { destination: 'dictation' });
+
       if (!raw || !raw.trim() || !isTranscriptionCleanupEnabled()) return raw;
 
       const repo = getRepo?.();

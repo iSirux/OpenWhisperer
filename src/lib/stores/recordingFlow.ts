@@ -508,9 +508,11 @@ function createRecordingFlowStore() {
       isRecordingForNewSession: false,
     }));
 
+    const debugId = recording.newRecordingId();
     recording
-      .stopRecording(true)
+      .stopRecording(true, debugId)
       .then(async (transcript) => {
+        debugRecordings.update(debugId, { destination: 'paste' });
         if (transcript) {
           await invoke('paste_text', { text: transcript });
         } else {

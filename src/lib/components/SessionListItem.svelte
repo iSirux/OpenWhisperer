@@ -57,6 +57,14 @@
     oncontextmenu = undefined,
   }: Props = $props();
 
+  // Cap the length of the session summary/description so a runaway AI outcome
+  // can't blow out the list item. Full text stays available via the title attr.
+  const MAX_DESCRIPTION_CHARS = 200;
+  function capText(text: string, max = MAX_DESCRIPTION_CHARS): string {
+    if (text.length <= max) return text;
+    return text.slice(0, max).trimEnd() + "…";
+  }
+
   // Live countdown to an epoch-ms target, driven by the `now` prop so it stays
   // fresh. Mirrors the formatting of `formatTimeRemaining` in rateLimits.ts.
   function formatMsRemaining(target: number | undefined | null, ref: number): string {
@@ -319,7 +327,7 @@
         class="text-xs text-text-muted leading-snug mb-1.5 session-text-wrap"
         title={session.aiMetadata.outcome}
       >
-        {session.aiMetadata.outcome}
+        {capText(session.aiMetadata.outcome)}
       </p>
     {/if}
   {:else if session.prompt}

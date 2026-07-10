@@ -105,9 +105,26 @@ function createDebugRecordingsStore() {
 
   async function load() {
     try {
-      const items = await invoke<DebugRecording[]>('get_debug_recordings');
-      set(items);
+      const diskItems = await invoke<DebugRecording[]>('get_debug_recordings');
+      // MERGE disk into memory instead of replacing: in-memory entries are newer
+      // than disk (persistence is debounced), so replacing would (a) revert
+      // late-arriving stage patches like the LLM cleanup when the tab mounts
+      // mid-flight, and (b) before first load, let a fresh run's persist wipe
+      // the previous runs' entries from the file.
+      const evicted: string[] = [];
+      update((memory) => {
+        const memoryIds = new Set(memory.map((i) => i.id));
+        const merged = [...memory, ...diskItems.filter((i) => !memoryIds.has(i.id))];
+        merged.sort((a, b) => b.createdAt - a.createdAt);
+        while (merged.length > MAX_RECORDINGS) {
+          const removed = merged.pop();
+          if (removed?.id) evicted.push(removed.id);
+        }
+        return merged;
+      });
+      if (evicted.length) deleteAudio(evicted);
       loaded = true;
+      schedulePersist();
     } catch (error) {
       console.error('[debug-recordings] Failed to load:', error);
     }
@@ -121,11 +138,15 @@ function createDebugRecordingsStore() {
   }
 
   /**
-   * Record a new recording (newest first). No-op unless Developer Mode is on.
-   * Trims the list to MAX_RECORDINGS and deletes evicted audio. The audio is
-   * saved to disk in the background.
+   * Record a new recording (newest first). Trims the list to MAX_RECORDINGS
+   * and deletes evicted audio. The audio is saved to disk in the background.
    */
   function capture(input: CaptureInput) {
+    // Pull older runs' entries off disk before the debounced persist replaces
+    // the file, so a fresh app run doesn't wipe the existing log. The merge in
+    // load() keeps this just-captured entry (memory wins by id).
+    if (!loaded) void load();
+
     const entry: DebugRecording = {
       id: input.id,
       createdAt: Date.now(),

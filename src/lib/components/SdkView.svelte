@@ -942,6 +942,8 @@
     overlay.clearInlineSessionInfo();
     overlay.hide();
 
+    debugRecordings.update(debugId, { destination: "session" });
+
     if (!whisperTranscript || !isRecordingForCurrentSession) {
       isRecordingForCurrentSession = false;
       return;
@@ -1074,6 +1076,8 @@
       }
 
       if (!whisperTranscript) return null;
+
+      debugRecordings.update(debugId, { destination: "append" });
 
       // Apply LLM transcription cleanup (same as existing flow, but no voice commands)
       let finalTranscript = whisperTranscript;

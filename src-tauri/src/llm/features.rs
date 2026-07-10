@@ -217,14 +217,11 @@ Message to analyze:
 {}
 
 Compare both transcriptions and produce the best combined result. Use Whisper as the primary source but incorporate any clearly correct words from Vosk that Whisper may have missed."#,
-                truncate_text(whisper_transcription, 1500),
-                truncate_text(vosk, 1500)
+                whisper_transcription,
+                vosk
             )
         } else {
-            format!(
-                "Transcription to clean:\n{}",
-                truncate_text(whisper_transcription, 2000)
-            )
+            format!("Transcription to clean:\n{}", whisper_transcription)
         };
 
         let prompt = format!(
