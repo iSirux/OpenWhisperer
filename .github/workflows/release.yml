@@ -123,6 +123,27 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu')
         run: rm -rf src-tauri/sidecar/node_modules/@anthropic-ai/*musl* src-tauri/sidecar/node_modules/@openai/*musl*
 
+      # The gtk plugin's nested linuxdeploy pass aborts when ldd fails on the
+      # 250MB claude binary bundled in the sidecar resources. Its deps are all
+      # base glibc libs (blacklisted by linuxdeploy anyway), so when ldd fails
+      # for a sidecar file, report it as statically linked instead of failing.
+      - name: Shim ldd so linuxdeploy tolerates bundled sidecar binaries
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo mv /usr/bin/ldd /usr/bin/ldd.real
+          cat <<'EOF' | sudo tee /usr/bin/ldd >/dev/null
+          #!/bin/bash
+          /usr/bin/ldd.real "$@"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            case "$*" in
+              *sidecar/node_modules*) printf '\tstatically linked\n'; exit 0 ;;
+            esac
+          fi
+          exit $rc
+          EOF
+          sudo chmod +x /usr/bin/ldd
+
       - name: Stamp version into tauri.conf.json
         shell: pwsh
         run: |
