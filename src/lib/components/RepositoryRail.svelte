@@ -88,19 +88,21 @@
 
 <div class="repo-rail">
   <div class="repo-rail-scroll">
-    <button
-      class="rail-btn"
-      class:is-active={currentView === 'cockpit'}
-      onclick={toggleCockpit}
-      title="Cockpit — conduct the fleet by voice"
-    >
-      <span class="icon-wrap">
-        <svg class="cockpit-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-          <path d="M10 2a2 2 0 00-2 2v5a2 2 0 104 0V4a2 2 0 00-2-2z" />
-          <path d="M5.5 8.5a.75.75 0 011.5 0 3 3 0 006 0 .75.75 0 011.5 0 4.5 4.5 0 01-3.75 4.437V15h2a.75.75 0 010 1.5h-5.5a.75.75 0 010-1.5h2v-2.063A4.5 4.5 0 015.5 8.5z" />
-        </svg>
-      </span>
-    </button>
+    {#if $settings.system.dev_mode}
+      <button
+        class="rail-btn"
+        class:is-active={currentView === 'cockpit'}
+        onclick={toggleCockpit}
+        title="Cockpit — conduct the fleet by voice"
+      >
+        <span class="icon-wrap">
+          <svg class="cockpit-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path d="M10 2a2 2 0 00-2 2v5a2 2 0 104 0V4a2 2 0 00-2-2z" />
+            <path d="M5.5 8.5a.75.75 0 011.5 0 3 3 0 006 0 .75.75 0 011.5 0 4.5 4.5 0 01-3.75 4.437V15h2a.75.75 0 010 1.5h-5.5a.75.75 0 010-1.5h2v-2.063A4.5 4.5 0 015.5 8.5z" />
+          </svg>
+        </span>
+      </button>
+    {/if}
     {#if $settings.system.dev_mode}
       <button
         class="rail-btn"
