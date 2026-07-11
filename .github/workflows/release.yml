@@ -116,6 +116,13 @@ jobs:
         run: npm install
         working-directory: src-tauri/sidecar
 
+      # The SDK platform packages don't declare a libc field, so npm installs
+      # both glibc and musl variants on Linux; linuxdeploy then fails scanning
+      # the musl ELF (libc.musl-x86_64.so.1 unresolvable on a glibc system).
+      - name: Prune musl sidecar binaries
+        if: startsWith(matrix.os, 'ubuntu')
+        run: rm -rf src-tauri/sidecar/node_modules/@anthropic-ai/*musl* src-tauri/sidecar/node_modules/@openai/*musl*
+
       - name: Stamp version into tauri.conf.json
         shell: pwsh
         run: |
