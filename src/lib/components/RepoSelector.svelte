@@ -1,7 +1,7 @@
 <script lang="ts">
   import { repos, isRepoActive } from '$lib/stores/repos';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
-  import { getRepoHeat, sortReposByHeat, touchRepo } from '$lib/stores/repoRecency';
+  import { repoHeat, sortReposByHeat } from '$lib/stores/repoRecency';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
 
   interface Props {
@@ -41,10 +41,9 @@
   // Treat empty string or '.' as the empty (Auto/None) selection
   const isEmptySelection = $derived(!cwd || cwd === '.');
 
-  // Heat is snapshotted once per mount so the buttons keep a stable order
-  // while the user interacts; new usage reorders the group on the next mount.
-  const heatSnapshot = getRepoHeat();
-  const orderedRepos = $derived(sortReposByHeat(activeRepos, heatSnapshot));
+  // Live heat: every mounted picker reorders as soon as any repo use is
+  // recorded (a pick in any selector, a prompt sent to a session).
+  const orderedRepos = $derived(sortReposByHeat(activeRepos, $repoHeat));
 
   // Most recent repos get one-click buttons; the current selection is always
   // swapped into the visible set so the active button never hides in overflow.
@@ -73,7 +72,6 @@
   };
 
   function selectRepo(path: string) {
-    touchRepo(path);
     onchange(path);
     showDropdown = false;
   }

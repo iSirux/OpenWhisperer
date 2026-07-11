@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
 import { repos, findRepoById } from './repos';
+import { touchRepoForCwd } from './repoRecency';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { rateLimits, codexRateLimits } from './rateLimits';
@@ -2175,6 +2176,9 @@ function createSdkSessionsStore() {
       }
 
       usageStats.trackPrompt(sessionCwd);
+      // Every sent turn heats up the session's repo so the pickers rank the
+      // repos the user actually works in first (worktree cwds resolve to their repo).
+      touchRepoForCwd(sessionCwd);
 
       // Sending a prompt is a good moment to recover the rate-limit indicator if a
       // prior fetch failed transiently (e.g. a startup network blip left it hidden).

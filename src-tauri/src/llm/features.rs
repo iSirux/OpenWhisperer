@@ -98,7 +98,7 @@ The outcome should be:
 - If it was an implementation task: What was specifically done
 - If there was an error: The specific error or blocker
 
-Keep it brief (5-15 words) but INCLUDE THE ACTUAL INFORMATION.
+Keep it to a SINGLE sentence (roughly 5-15 words) but INCLUDE THE ACTUAL INFORMATION. Never exceed one sentence.
 
 User's original request:
 {}
@@ -115,7 +115,7 @@ Assistant's work (truncated):
             "properties": {
                 "outcome": {
                     "type": "string",
-                    "description": "A brief outcome describing what was accomplished or the answer (3-10 words)"
+                    "description": "A single-sentence outcome describing what was accomplished or the answer (roughly 3-15 words, one sentence max)"
                 }
             },
             "required": ["outcome"]
