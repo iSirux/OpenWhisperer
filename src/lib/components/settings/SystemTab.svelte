@@ -153,7 +153,7 @@
     </div>
     <select
       class="bg-surface-elevated border border-border rounded px-2 py-1 text-sm text-text-primary"
-      value={$settings.system.update_check ?? "Notify"}
+      value={$settings.system.update_check ?? "Auto"}
       onchange={(e) => {
         const val = (e.target as HTMLSelectElement).value as UpdateCheckMode;
         settings.update((s) => ({
@@ -166,6 +166,141 @@
       <option value="Notify">Notify me</option>
       <option value="Auto">Install automatically</option>
     </select>
+  </div>
+
+  <div class="border-t border-border pt-4 mt-4">
+    <h3 class="text-sm font-medium text-text-primary mb-3">
+      Session Persistence
+    </h3>
+    <div class="space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <label class="text-sm font-medium text-text-secondary"
+            >Restore Sessions on Startup</label
+          >
+          <p class="text-xs text-text-muted">
+            Save and restore session history between app restarts
+          </p>
+        </div>
+        <input
+          type="checkbox"
+          class="toggle"
+          bind:checked={$settings.session_persistence.enabled}
+        />
+      </div>
+      {#if $settings.session_persistence.enabled}
+        <div>
+          <label
+            class="block text-sm font-medium text-text-secondary mb-1"
+            >Maximum Sessions to Keep</label
+          >
+          <div class="flex items-center gap-3">
+            <input
+              type="range"
+              min="10"
+              max="200"
+              step="10"
+              class="flex-1 accent-accent"
+              bind:value={$settings.session_persistence.max_sessions}
+            />
+            <span class="text-sm text-text-primary w-12 text-right"
+              >{$settings.session_persistence.max_sessions}</span
+            >
+          </div>
+          <p class="text-xs text-text-muted mt-1">
+            Sessions exceeding this limit are automatically moved to the
+            archive. This is also how many sessions are restored on startup.
+          </p>
+        </div>
+        <div>
+          <label
+            class="block text-sm font-medium text-text-secondary mb-1"
+            >Maximum Archived Sessions</label
+          >
+          {#if ($settings.session_persistence.max_archived_sessions ?? 500) === 0}
+            <div class="flex items-center gap-3">
+              <span class="flex-1 text-sm text-text-primary">No cap</span>
+            </div>
+          {:else}
+            <div class="flex items-center gap-3">
+              <input
+                type="range"
+                min="50"
+                max="2000"
+                step="50"
+                class="flex-1 accent-accent"
+                bind:value={
+                  $settings.session_persistence.max_archived_sessions
+                }
+              />
+              <span class="text-sm text-text-primary w-12 text-right"
+                >{$settings.session_persistence.max_archived_sessions ??
+                  500}</span
+              >
+            </div>
+          {/if}
+          <label
+            class="flex items-center gap-2 mt-2 text-xs text-text-muted cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              class="accent-accent"
+              checked={($settings.session_persistence
+                .max_archived_sessions ?? 500) === 0}
+              onchange={(e) => {
+                const noCap = (e.target as HTMLInputElement).checked;
+                settings.update((s) => ({
+                  ...s,
+                  session_persistence: {
+                    ...s.session_persistence,
+                    max_archived_sessions: noCap ? 0 : 500,
+                  },
+                }));
+              }}
+            />
+            No cap (keep all archived sessions)
+          </label>
+          <p class="text-xs text-text-muted mt-1">
+            Closed sessions are moved to the archive. Oldest archived
+            sessions are permanently removed when this limit is exceeded.
+          </p>
+        </div>
+        <div class="flex gap-2">
+          <button
+            class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors"
+            onclick={async () => {
+              if (
+                confirm(
+                  "Are you sure you want to clear all saved sessions? This cannot be undone."
+                )
+              ) {
+                const { clearPersistedSessions } = await import(
+                  "$lib/stores/sessionPersistence"
+                );
+                await clearPersistedSessions();
+              }
+            }}
+          >
+            Clear Saved Sessions
+          </button>
+          <button
+            class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors"
+            onclick={async () => {
+              if (
+                confirm(
+                  "Are you sure you want to clear the entire archive? This cannot be undone."
+                )
+              ) {
+                const { archive } = await import("$lib/stores/archive");
+                await archive.clearAll();
+              }
+            }}
+          >
+            Clear Archive
+          </button>
+        </div>
+      {/if}
+    </div>
   </div>
 
   <div class="border-t border-border pt-4 mt-4">
@@ -228,138 +363,6 @@
       >
         {resetting ? "Restoring…" : "Restore Defaults"}
       </button>
-    </div>
-  </div>
-
-  <div class="border-t border-border pt-4 mt-4">
-    <h3 class="text-sm font-medium text-text-primary mb-3">
-      Session Persistence
-    </h3>
-    <div class="space-y-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <label class="text-sm font-medium text-text-secondary"
-            >Restore Sessions on Startup</label
-          >
-          <p class="text-xs text-text-muted">
-            Save and restore session history between app restarts
-          </p>
-        </div>
-        <input
-          type="checkbox"
-          class="toggle"
-          bind:checked={$settings.session_persistence.enabled}
-        />
-      </div>
-      {#if $settings.session_persistence.enabled}
-        <div>
-          <label
-            class="block text-sm font-medium text-text-secondary mb-1"
-            >Sessions to Restore on Startup</label
-          >
-          <div class="flex items-center gap-3">
-            <input
-              type="range"
-              min="1"
-              max="50"
-              step="1"
-              class="flex-1 accent-accent"
-              bind:value={
-                $settings.session_persistence.restore_sessions
-              }
-            />
-            <span class="text-sm text-text-primary w-12 text-right"
-              >{$settings.session_persistence.restore_sessions}</span
-            >
-          </div>
-          <p class="text-xs text-text-muted mt-1">
-            Number of recent sessions to load when the app starts
-          </p>
-        </div>
-        <div>
-          <label
-            class="block text-sm font-medium text-text-secondary mb-1"
-            >Maximum Sessions to Keep</label
-          >
-          <div class="flex items-center gap-3">
-            <input
-              type="range"
-              min="10"
-              max="200"
-              step="10"
-              class="flex-1 accent-accent"
-              bind:value={$settings.session_persistence.max_sessions}
-            />
-            <span class="text-sm text-text-primary w-12 text-right"
-              >{$settings.session_persistence.max_sessions}</span
-            >
-          </div>
-          <p class="text-xs text-text-muted mt-1">
-            Sessions exceeding this limit are automatically moved to the
-            archive
-          </p>
-        </div>
-        <div>
-          <label
-            class="block text-sm font-medium text-text-secondary mb-1"
-            >Maximum Archived Sessions</label
-          >
-          <div class="flex items-center gap-3">
-            <input
-              type="range"
-              min="50"
-              max="2000"
-              step="50"
-              class="flex-1 accent-accent"
-              bind:value={
-                $settings.session_persistence.max_archived_sessions
-              }
-            />
-            <span class="text-sm text-text-primary w-12 text-right"
-              >{$settings.session_persistence.max_archived_sessions ??
-                500}</span
-            >
-          </div>
-          <p class="text-xs text-text-muted mt-1">
-            Closed sessions are moved to the archive. Oldest archived
-            sessions are permanently removed when this limit is exceeded.
-          </p>
-        </div>
-        <div class="flex gap-2">
-          <button
-            class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors"
-            onclick={async () => {
-              if (
-                confirm(
-                  "Are you sure you want to clear all saved sessions? This cannot be undone."
-                )
-              ) {
-                const { clearPersistedSessions } = await import(
-                  "$lib/stores/sessionPersistence"
-                );
-                await clearPersistedSessions();
-              }
-            }}
-          >
-            Clear Saved Sessions
-          </button>
-          <button
-            class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors"
-            onclick={async () => {
-              if (
-                confirm(
-                  "Are you sure you want to clear the entire archive? This cannot be undone."
-                )
-              ) {
-                const { archive } = await import("$lib/stores/archive");
-                await archive.clearAll();
-              }
-            }}
-          >
-            Clear Archive
-          </button>
-        </div>
-      {/if}
     </div>
   </div>
 </div>

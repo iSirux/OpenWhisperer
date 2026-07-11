@@ -32,6 +32,7 @@
   const provider = $derived($settings.llm.provider);
   const needsKey = $derived(provider !== 'Local');
   const enabled = $derived($settings.llm.enabled);
+  const voice = $derived(!$settings.system.voice_mode_disabled);
 
   onMount(async () => {
     // Default fresh installs to Groq — free tier, fast, one key.
@@ -89,9 +90,13 @@
   <div class="p-3 bg-surface rounded-lg border border-border/50 text-sm text-text-secondary">
     Optional but recommended. A small, fast model quietly improves everything:
     <ul class="mt-2 text-text-muted list-disc list-inside space-y-0.5">
-      <li>Fixes transcription slips (homophones, technical terms)</li>
+      {#if voice}
+        <li>Fixes transcription slips (homophones, technical terms)</li>
+      {/if}
       <li>Names your sessions automatically</li>
       <li>Picks the right model, effort level, and repository for each prompt</li>
+      <li>Generates descriptive branch names for worktree sessions</li>
+      <li>Suggests follow-up actions when a session finishes</li>
     </ul>
   </div>
 

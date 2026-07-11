@@ -36,14 +36,19 @@
   const currentStep = $derived(steps[Math.min(currentIndex, steps.length - 1)]);
   const isLast = $derived(currentIndex >= steps.length - 1);
 
-  const STEP_TITLES: Record<StepId, { title: string; subtitle: string }> = {
+  const STEP_TITLES = $derived<Record<StepId, { title: string; subtitle: string }>>({
     welcome: { title: '', subtitle: '' },
     microphone: { title: 'Microphone', subtitle: 'Pick your recording device and make sure it hears you' },
     transcription: { title: 'Transcription', subtitle: 'Local speech-to-text via Docker — recommended setup, one click' },
     agent: { title: 'Coding agent', subtitle: 'Choose which agent(s) you want to use' },
-    llm: { title: 'Smart features', subtitle: 'A lightweight LLM cleans up transcripts, names sessions, and picks models' },
+    llm: {
+      title: 'Smart features',
+      subtitle: voice
+        ? 'A lightweight LLM cleans up transcripts, names sessions, and picks models'
+        : 'A lightweight LLM names sessions and picks the right model and repository',
+    },
     repository: { title: 'Your first repository', subtitle: 'Point OpenWhisperer at a project to work in' },
-  };
+  });
 
   // Persist wizard progress so choices survive an app restart mid-setup.
   async function persist() {

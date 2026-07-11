@@ -50,9 +50,9 @@ pub enum UpdateCheckMode {
     /// Never check automatically (manual check in Settings → About still works)
     Off,
     /// Check on startup and surface an "update available" indicator
-    #[default]
     Notify,
     /// Check on startup and install immediately (app restarts during install)
+    #[default]
     Auto,
 }
 
@@ -100,7 +100,8 @@ fn default_restore_sessions() -> usize {
 }
 
 fn default_max_archived_sessions() -> usize {
-    500
+    // 0 means "no cap" — keep all archived sessions by default.
+    0
 }
 
 impl Default for SessionPersistenceConfig {
@@ -295,6 +296,6 @@ impl<'de> Deserialize<'de> for EffortLevel {
 #[serde(rename_all = "lowercase")]
 pub enum ToolDisplayMode {
     #[default]
-    List,
     Grid,
+    List,
 }

@@ -32,19 +32,19 @@ pub struct QueueConfig {
 }
 
 fn default_fuzzy_delay_after_reset_min_secs() -> u32 {
-    120
+    5
 }
 
 fn default_fuzzy_delay_after_reset_max_secs() -> u32 {
-    240
+    60
 }
 
 fn default_fuzzy_delay_between_runs_min_secs() -> u32 {
-    10
+    0
 }
 
 fn default_fuzzy_delay_between_runs_max_secs() -> u32 {
-    45
+    3
 }
 
 impl Default for QueueConfig {

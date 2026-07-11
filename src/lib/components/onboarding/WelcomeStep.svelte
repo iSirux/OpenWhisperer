@@ -32,11 +32,11 @@
       </div>
       <div class="text-center">
         <div class="font-semibold text-text-primary">
-          Voice
+          Voice + Text
           <span class="ml-1 text-[10px] font-medium px-1.5 py-0.5 bg-accent/15 text-accent rounded-full align-middle">Recommended</span>
         </div>
         <p class="text-xs text-text-muted mt-1.5">
-          Record prompts with a hotkey, see live transcription, go hands-free
+          Record prompts with a hotkey or type them — live transcription, hands-free mode, and everything text offers
         </p>
       </div>
     </button>
@@ -56,9 +56,9 @@
         </svg>
       </div>
       <div class="text-center">
-        <div class="font-semibold text-text-primary">Text</div>
+        <div class="font-semibold text-text-primary">Just Text</div>
         <p class="text-xs text-text-muted mt-1.5">
-          Type your prompts. Voice stays hidden — enable it anytime in Settings
+          Type your prompts only. Voice stays hidden — enable it anytime in Settings
         </p>
       </div>
     </button>

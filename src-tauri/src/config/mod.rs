@@ -315,9 +315,6 @@ fn default_enabled_models() -> Vec<String> {
     vec![
         "claude-fable-5".to_string(),
         "claude-opus-4-8".to_string(),
-        "claude-opus-4-7".to_string(),
-        "claude-sonnet-5".to_string(),
-        "claude-haiku-4-5-20251001".to_string(),
     ]
 }
 
@@ -332,9 +329,6 @@ fn default_enabled_openai_models() -> Vec<String> {
         "gpt-5.6-sol".to_string(),
         "gpt-5.6-terra".to_string(),
         "gpt-5.6-luna".to_string(),
-        "gpt-5.4".to_string(),
-        "gpt-5.4-mini".to_string(),
-        "gpt-5.3-codex-spark".to_string(),
     ]
 }
 

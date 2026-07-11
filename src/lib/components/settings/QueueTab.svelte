@@ -42,6 +42,7 @@
         <input
           type="number"
           min="0"
+          max="120"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent disabled:opacity-50"
           bind:value={$settings.queue.fuzzy_delay_after_reset_min_secs}
           disabled={!$settings.queue.fuzzy_delay_after_reset}
@@ -52,6 +53,7 @@
         <input
           type="number"
           min="0"
+          max="120"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent disabled:opacity-50"
           bind:value={$settings.queue.fuzzy_delay_after_reset_max_secs}
           disabled={!$settings.queue.fuzzy_delay_after_reset}
@@ -82,6 +84,7 @@
         <input
           type="number"
           min="0"
+          max="60"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent disabled:opacity-50"
           bind:value={$settings.queue.fuzzy_delay_between_runs_min_secs}
           disabled={!$settings.queue.fuzzy_delay_between_runs}
@@ -92,6 +95,7 @@
         <input
           type="number"
           min="0"
+          max="60"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent disabled:opacity-50"
           bind:value={$settings.queue.fuzzy_delay_between_runs_max_secs}
           disabled={!$settings.queue.fuzzy_delay_between_runs}

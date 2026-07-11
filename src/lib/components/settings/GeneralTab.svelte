@@ -182,17 +182,6 @@
     >
     <div class="flex gap-2">
       <button
-        class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {$settings.tool_display_mode === 'list'
-          ? 'bg-accent text-white'
-          : 'bg-surface border border-border text-text-secondary hover:bg-border'}"
-        onclick={() => $settings.tool_display_mode = 'list' as ToolDisplayMode}
-      >
-        <svg class="w-4 h-4 inline-block mr-1.5 -mt-0.5" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M2 4a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm3.75-1.5a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5zm0 5a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5zm0 5a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5zM3 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm-1 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/>
-        </svg>
-        List
-      </button>
-      <button
         class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {$settings.tool_display_mode === 'grid'
           ? 'bg-accent text-white'
           : 'bg-surface border border-border text-text-secondary hover:bg-border'}"
@@ -202,6 +191,17 @@
           <path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5v-3z"/>
         </svg>
         Grid
+      </button>
+      <button
+        class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {$settings.tool_display_mode === 'list'
+          ? 'bg-accent text-white'
+          : 'bg-surface border border-border text-text-secondary hover:bg-border'}"
+        onclick={() => $settings.tool_display_mode = 'list' as ToolDisplayMode}
+      >
+        <svg class="w-4 h-4 inline-block mr-1.5 -mt-0.5" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M2 4a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm3.75-1.5a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5zm0 5a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5zm0 5a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5zM3 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm-1 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/>
+        </svg>
+        List
       </button>
     </div>
     <p class="text-xs text-text-muted mt-1">

@@ -249,7 +249,8 @@ impl ArchiveIndex {
 
     /// Trim archive to max size, removing oldest entries and their data files
     pub fn trim_to_max(&mut self, max_entries: usize) -> Result<(), String> {
-        if self.entries.len() <= max_entries {
+        // 0 means "no cap" — never trim the archive.
+        if max_entries == 0 || self.entries.len() <= max_entries {
             return Ok(());
         }
 

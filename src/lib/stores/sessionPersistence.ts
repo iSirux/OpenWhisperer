@@ -578,7 +578,10 @@ export async function loadSessionsFromDisk(): Promise<void> {
     return;
   }
 
-  const restoreLimit = currentSettings.session_persistence.restore_sessions;
+  // Restore as many sessions as we keep before auto-archiving — the "Maximum
+  // Sessions to Keep" limit is the single source of truth for how many live
+  // sessions exist at once.
+  const restoreLimit = currentSettings.session_persistence.max_sessions;
 
   try {
     const persistedData = await invoke<PersistedSessions>('get_persisted_sessions');
