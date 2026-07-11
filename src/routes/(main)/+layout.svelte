@@ -145,8 +145,37 @@
   }>({ show: false, sessionId: '' });
 
   function performActiveClose(sessionId: string) {
+    // Was the closing session the active one? If so, advance to the next session
+    // in the sidebar rather than dropping the user on an empty view — matching
+    // SessionList's close behaviour. Uses the same transform/order as the list.
+    const wasActive = get(activeSdkSessionId) === sessionId;
+    const ordered = transformToDisplaySessions(
+      get(sdkSessions),
+      get(settings).session_sort_order,
+      get(sequenceExecutions)
+    );
+    const idx = ordered.findIndex((s) => s.id === sessionId);
+    let nextSession = null;
+    if (wasActive && idx !== -1) {
+      for (let i = idx + 1; i < ordered.length; i++) {
+        if (ordered[i].id !== sessionId) { nextSession = ordered[i]; break; }
+      }
+      if (!nextSession) {
+        for (let i = idx - 1; i >= 0; i--) {
+          if (ordered[i].id !== sessionId) { nextSession = ordered[i]; break; }
+        }
+      }
+    }
+
     void sdkSessions.closeSession(sessionId);
-    if (get(activeSdkSessionId) === sessionId) activeSdkSessionId.set(null);
+
+    if (wasActive) {
+      if (nextSession) {
+        selectDisplaySession(nextSession);
+      } else if (get(activeSdkSessionId) === sessionId) {
+        activeSdkSessionId.set(null);
+      }
+    }
   }
 
   function confirmActiveClose() {
