@@ -208,11 +208,12 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
+        let xterm_cmd = format!("cd '{}' && bash", path);
         let terminals = [
             ("gnome-terminal", vec!["--working-directory", &path]),
             ("konsole", vec!["--workdir", &path]),
             ("xfce4-terminal", vec!["--working-directory", &path]),
-            ("xterm", vec!["-e", &format!("cd '{}' && bash", path)]),
+            ("xterm", vec!["-e", &xterm_cmd]),
         ];
 
         let mut launched = false;

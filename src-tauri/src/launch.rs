@@ -238,6 +238,7 @@ fn spawn_terminal_with_command(
         );
 
         // Try common terminal emulators
+        let wrapped_cmd = format!("bash -c '{}'", full_cmd);
         let terminals: Vec<(&str, Vec<&str>)> = vec![
             (
                 "gnome-terminal",
@@ -249,7 +250,7 @@ fn spawn_terminal_with_command(
             ),
             (
                 "xfce4-terminal",
-                vec!["--title", title, "-e", &format!("bash -c '{}'", full_cmd)],
+                vec!["--title", title, "-e", &wrapped_cmd],
             ),
             (
                 "xterm",

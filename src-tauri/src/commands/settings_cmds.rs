@@ -351,23 +351,13 @@ pub fn run_in_terminal(command: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         // Linux: Try common terminal emulators in order of preference
+        let shell_cmd = format!("{}; exec bash", command);
+        let wrapped_cmd = format!("bash -c '{}; exec bash'", command);
         let terminals = [
-            (
-                "gnome-terminal",
-                vec!["--", "bash", "-c", &format!("{}; exec bash", command)],
-            ),
-            (
-                "konsole",
-                vec!["-e", "bash", "-c", &format!("{}; exec bash", command)],
-            ),
-            (
-                "xfce4-terminal",
-                vec!["-e", &format!("bash -c '{}; exec bash'", command)],
-            ),
-            (
-                "xterm",
-                vec!["-e", &format!("bash -c '{}; exec bash'", command)],
-            ),
+            ("gnome-terminal", vec!["--", "bash", "-c", &shell_cmd]),
+            ("konsole", vec!["-e", "bash", "-c", &shell_cmd]),
+            ("xfce4-terminal", vec!["-e", &wrapped_cmd]),
+            ("xterm", vec!["-e", &wrapped_cmd]),
         ];
 
         let mut launched = false;
