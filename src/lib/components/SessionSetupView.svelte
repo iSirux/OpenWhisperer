@@ -345,6 +345,18 @@
     }
   }
 
+  /** Ctrl+click quick action: queue the session to start once the target repo/worktree is idle. */
+  async function handleQuickActionAfterIdle(actionPrompt: string) {
+    if (isStarting || !onSchedule) return;
+    isStarting = true;
+    try {
+      const config = await resolveStartConfig(actionPrompt);
+      if (config) await onSchedule(config, 'after_sessions');
+    } finally {
+      isStarting = false;
+    }
+  }
+
   async function handleSchedule(window: QueueWindow | 'after_sessions') {
     scheduleMenuOpen = false;
     if (!canStart || isStarting || !onSchedule) return;
@@ -786,7 +798,10 @@
         <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
       </div>
 
-      <SdkQuickActions onSendPrompt={handleQuickAction} />
+      <SdkQuickActions
+        onSendPrompt={handleQuickAction}
+        onSendAfterIdle={onSchedule ? handleQuickActionAfterIdle : undefined}
+      />
     </div>
 
     <!-- Action Buttons -->

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenWhisperer is a Tauri v2 desktop application that provides a voice-controlled interface for coding agents. Users record voice prompts via hotkeys, which are transcribed by a Whisper endpoint (optionally with live realtime transcription alongside), then sent to an agent either through embedded terminal sessions (PTY mode) or directly via an SDK sidecar (SDK mode). Two SDK providers are supported: **Claude** (Claude Agent SDK) and **OpenAI Codex** (Codex SDK or Codex app-server). The app supports multimodal prompts (text + images), session persistence, usage and rate-limit tracking, effort levels, voice commands, a recording pile, sequences (node-based automation), a smart queue that defers work across rate-limit windows, split panes, and LLM-powered intelligent features via Gemini or other providers.
+OpenWhisperer is a Tauri v2 desktop application that provides a voice-controlled interface for coding agents. Users record voice prompts via hotkeys, which are transcribed by a Whisper endpoint (optionally with live realtime transcription alongside), then sent to an agent directly via an SDK sidecar. Two SDK providers are supported: **Claude** (Claude Agent SDK) and **OpenAI Codex** (Codex app-server). The app supports multimodal prompts (text + images), session persistence, usage and rate-limit tracking, effort levels, voice commands, a recording pile, sequences (node-based automation), a smart queue that defers work across rate-limit windows, split panes, and LLM-powered intelligent features via Gemini or other providers.
 
 > **Log files:** `%APPDATA%\open-whisperer\logs\` (Windows) / `~/Library/Application Support/open-whisperer/logs/` (macOS) — named `backend[-dev]-YYYY-MM-DD.log` and `frontend[-dev]-YYYY-MM-DD.log`.
 
@@ -49,9 +49,8 @@ Most routes live in the `(main)` route group, which shares `(main)/+layout.svelt
 
 **Stores (`src/lib/stores/`):**
 
-- `settings.ts` - App configuration (terminal mode, providers, transcription, hotkeys, theme, voice commands, open mic, queue, prompt chips, pane layout)
+- `settings.ts` - App configuration (providers, transcription, hotkeys, theme, voice commands, open mic, queue, prompt chips, pane layout)
 - `repos.ts` - Repository list and active repo (`RepoConfig` with id, description, keywords, vocabulary, icon, color, MCP servers, launch profiles)
-- `sessions.ts` - PTY terminal session management and Tauri event listeners
 - `sdkSessions.ts` - SDK session management (Claude + Codex) with message streaming, persistence, progressive usage, effort levels, image support, plan approval, rate-limit state
 - `recording.ts` - Audio recording state machine using MediaRecorder API
 - `recordingFlow.ts` - Global recording lifecycle singleton (start/stop, pending sessions, audio visualization, overlay integration); replaced the former page-scoped `useRecordingFlow` composable
@@ -81,7 +80,7 @@ Core UI:
 - `AppHeader.svelte` - Application header with global controls
 - `RepositoryRail.svelte` - Narrow vertical icon rail listing repos with per-repo changed-file badges; drives repo/view selection
 - `RepositoryView.svelte` - Main-pane repository landing view: metadata, icon/color, launch profiles via `LaunchBar`
-- `SessionList.svelte` / `SessionListItem.svelte` - Unified sidebar list of PTY and SDK sessions with status indicators and unread markers
+- `SessionList.svelte` / `SessionListItem.svelte` - Unified sidebar list of SDK sessions and sequence executions with status indicators and unread markers
 - `SessionPanes.svelte` - Multi-pane split view (paneforge, up to 4 panes of `SdkView`)
 - `SdkView.svelte` - Main SDK session view (message stream, prompt input, panels)
 - `PileList.svelte` - Pile tab in the sidebar: pile item cards with multi-select and batch launch actions
@@ -89,13 +88,12 @@ Core UI:
 - `ArchiveView.svelte` / `ArchiveEntryItem.svelte` - Archived sessions browser
 - `NotionKanban.svelte` - Notion-backed kanban board; cards can be launched as sessions (via the shared session queue). Rail button shown only in dev mode (`settings.system.dev_mode`)
 - `SessionCard.svelte` - Card component for sessions-view grid display
-- `SessionHeader.svelte` / `SdkSessionHeader.svelte` - Active session metadata display (PTY / SDK)
+- `SdkSessionHeader.svelte` - Active session metadata display
 - `SessionSidebarHeader.svelte` - Sidebar header with session controls
 - `EmptySessionPlaceholder.svelte` - Placeholder for empty session state
 - `SessionPendingView.svelte` - View for sessions in pending states (repo selection, transcription)
 - `SessionSetupView.svelte` - **The manual "New Session" form** (the fields-and-textarea view: Provider/Model/Effort/Repository/Worktree + "Your prompt" + Record/Start Session). This is the typed/manual entry point, distinct from the voice-recording prepared/approval flow in `sdk/SessionRecordingHeader.svelte`. Its `onStart` config is the choke point where the final prompt is assembled. Helpers in `session-setup/sessionSetupHelpers.ts`.
 - `PromptChips.svelte` - Reusable toggleable prompt-chip row (chip set from `settings.prompt_chips`); selected chips are appended to the prompt on send. Used in `SessionSetupView`, `sdk/SessionRecordingHeader` (prepared + approval), and `PileDetailView`. See `src/lib/utils/promptChips.ts` (`appendChips`/`mergeChips`).
-- `Terminal.svelte` - xterm.js terminal with WebGL rendering for PTY sessions
 - `ModelSelector.svelte` - Model selection (per-provider model lists + Auto)
 - `EffortToggle.svelte` - Effort level selector (replaces the old on/off ThinkingToggle)
 - `RepoSelector.svelte` / `RepoSelectionDialog.svelte` / `RepoIcon.svelte` - Repository selection dropdown, LLM-recommendation dialog, curated repo icons (`utils/repoIcons.ts`)
@@ -131,7 +129,7 @@ Core UI:
 
 Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Microphone, Audio, Voice Commands, Transcription, LLM, Smart Queue (QueueTab), MCP, Hotkeys, Overlay, Sequences, Recordings Log, About.
 
-- `GeneralTab.svelte` - General settings (terminal mode, language)
+- `GeneralTab.svelte` - General settings (language, provider enablement, prompt chips)
 - `ClaudeTab.svelte` / `CodexTab.svelte` - Per-provider settings (auth method, models, execution mode)
 - `SystemTab.svelte` - System settings (tray behavior, autostart, single instance, dev mode, app update mode)
 - `ThemesTab.svelte` - Theme selection (Midnight, Slate, Snow, Sand)
@@ -173,7 +171,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `llm.ts` - LLM integration utilities (session analysis, transcription cleanup, model/repo recommendations, feature gates)
 - `voiceCommands.ts` - Voice command detection and processing
 - `sessionLaunch.ts` - Shared session launch machinery: `launchSession` (setup session + optional worktree + tagging) and `createSessionQueue` (simple sequential batch-launch queue with optional stagger; used by NotionKanban and the pile — distinct from the Smart Queue)
-- `sessionCreation.ts` - Create-and-activate a new session from current settings (SDK or PTY); `createSessionInSameRepo` clones the active session's repo/worktree/model into a new setup session (session-header button + `new_session_same_repo` hotkey, default Ctrl+D)
+- `sessionCreation.ts` - Create-and-activate a new SDK setup session from current settings; `createSessionInSameRepo` clones the active session's repo/worktree/model into a new setup session (session-header button + `new_session_same_repo` hotkey, default Ctrl+D)
 - `sessionSelection.ts` - Shared "activate this display session" logic used by the sidebar list and the fixed Ctrl+1–9 session-switching hotkey (handled in the main layout, ordered identically to the sidebar)
 - `pileActions.ts` - Turning pile items into sessions (`PILE_ACTIONS`: start / prepare / plan — "Plan first", a prompt-prefix instruction / discuss)
 - `promptChips.ts` - Prompt chip append/merge helpers
@@ -199,7 +197,6 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
   - `sequences.rs` - `QueueConfig` (Smart Queue), `SequenceConfig`, notification channels
   - `ui.rs` - `Theme`, `OverlayConfig`, `SystemConfig`, `SessionsViewConfig`, `PaneLayoutConfig`, `EffortLevel`, `ToolDisplayMode`, etc.
   - `migration.rs` - Versioned config migration ladder
-- `terminal.rs` - PTY management via `portable-pty`, spawns `claude` CLI
 - `sidecar.rs` - SidecarManager for Node.js process IPC (message/event protocol types)
 - `whisper.rs` - HTTP client for batch Whisper transcription
 - `realtime.rs` - Multi-provider real-time STT WebSocket clients (replaces the old `vosk.rs`): common `RealtimeSession` trait dispatched via `RealtimeSessionType`, `RealtimeSessionManager`, per-provider connection tests, `RealtimeResponse` (Partial/Final)
@@ -225,7 +222,6 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 **Commands (`src-tauri/src/commands/`):**
 
 - `settings_cmds.rs` - Config load/save, repo management
-- `terminal_cmds.rs` - PTY session CRUD, terminal I/O, resize
 - `audio_cmds.rs` - Audio transcription, Whisper connection testing
 - `sdk_cmds.rs` - SDK session management (Claude + Codex), prompt sending, model/effort updates, MCP passthrough
 - `realtime_cmds.rs` - Real-time transcription sessions (`test_realtime_connection`, `start_realtime_session`, `send_realtime_audio`, `stop_realtime_session`)
@@ -252,11 +248,11 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 Located in `src-tauri/sidecar/`:
 
 - `src/index.ts` - Node.js process communicating with Rust via JSON lines over stdin/stdout
-- **Two providers:** Claude (`@anthropic-ai/claude-agent-sdk`) and OpenAI Codex (`@openai/codex-sdk`); `inferProvider()` picks `"claude" | "openai"` per session
-- **Codex execution modes:** `codex_mode: "Sdk" | "AppServer"` — the app-server mode is a full JSON-RPC client implementation (turn tracking, item events, usage emission)
+- **Two providers:** Claude (`@anthropic-ai/claude-agent-sdk`) and OpenAI Codex (app-server); `inferProvider()` picks `"claude" | "openai"` per session
+- **Codex execution:** always via `codex app-server` — a full JSON-RPC client implementation (turn tracking, item events, usage emission). The former `codex_mode: "Sdk" | "AppServer"` choice is gone; the sidecar hardcodes app-server for OpenAI sessions (the SDK-based session-query path `handleCodexQuery` and the `codex_mode` config field remain as unreachable vestiges). `@openai/codex-sdk` itself is still in active use — the generation helpers (`generate_repo_description_with_codex`, `generate_launch_profile_with_codex`) run one-off Codex threads through it
 - Handles session creation, query execution, tool calls, and streaming responses
 - Supports multimodal prompts (text + images via base64 content blocks)
-- **Effort levels** via `update_effort` (`low|medium|high|xhigh|max` or off); Claude passes through natively, OpenAI clamps per model (GPT-5.6 family caps at `xhigh`, older Codex models at `high`); effort is plumbed to Codex via `modelReasoningEffort` (SDK mode) / `effort` on `turn/start` (app-server mode)
+- **Effort levels** via `update_effort` (`low|medium|high|xhigh|max` or off); Claude passes through natively, OpenAI clamps per model (GPT-5.6 family caps at `xhigh`, older Codex models at `high`); effort is plumbed to Codex via `effort` on `turn/start`
 - Live model switching via `update_model`
 - Permission mode defaults to `acceptEdits`; the SDK's native `ExitPlanMode` is intercepted via `canUseTool` and surfaced to the user as a plan-approval dialog (approve / deny / approve-with-note)
 - Session restoration with conversation history context injection
@@ -266,29 +262,11 @@ Located in `src-tauri/sidecar/`:
 - Codex-powered generation helpers (`generate_repo_description_with_codex`, `generate_launch_profile_with_codex`)
 - Built via esbuild, bundles to single `dist/index.js`
 
-## Terminal Modes
-
-The app supports three terminal modes (configured in settings):
-
-1. **Interactive** - Opens the agent CLI in interactive mode without a pre-specified prompt
-2. **Prompt** - Spawns the CLI with the transcribed prompt (`claude -p "<prompt>"`)
-3. **SDK** - Uses the provider SDK directly via the sidecar process (no CLI)
-
 ## Effort Levels
 
 SDK sessions carry a per-session effort level (off, `low`, `medium`, `high`, `xhigh`, `max`) selected via `EffortToggle` or recommended by the LLM integration. Claude maps effort natively; OpenAI clamps to the model's supported ceiling (`xhigh` for the GPT-5.6 family, `high` for older Codex models).
 
 ## Key Data Flow
-
-### PTY Mode (Interactive/Prompt)
-
-1. User presses hotkey → `recording.startRecording()` captures audio via WebRTC
-2. Stop recording → audio sent to backend via `transcribe_audio` command
-3. Backend posts to Whisper API → returns transcription
-4. User confirms → `create_terminal_session` spawns `claude` CLI in PTY
-5. PTY output streamed via `terminal-output-${sessionId}` event → rendered in xterm.js
-
-### SDK Mode
 
 1. User presses hotkey → `recording.startRecording()` captures audio
 2. (Optional) Realtime provider streams live transcription during recording
@@ -321,12 +299,12 @@ Defined in `tauri.conf.json`:
 
 App config stored in system config directory (`open-whisperer/config.json`), versioned with a migration ladder (`config/migration.rs`):
 
-- `terminal_mode` - Interactive | Prompt | Sdk (plus per-provider `SdkProvider`, auth methods, `CodexMode`)
+- `sdk_provider` / auth methods / `CodexMode` - Provider selection and per-provider execution settings
 - `theme` - Midnight | Slate | Snow | Sand
 - `whisper` - Batch transcription provider, endpoint, model, language, Docker settings
 - `vosk` - Real-time transcription config (legacy key name): `provider` (RealtimeProvider), `transcription_mode` (Whisper | Realtime | Both), per-provider endpoints, Docker settings
 - `hotkeys` - Global shortcuts (toggle recording, send prompt, switch repo, transcribe to input, pile recording)
-- `repos` - Repositories with paths, descriptions/keywords/vocabulary, icon/color, default models, MCP server and launch profile associations
+- `repos` - Repositories with paths, descriptions/keywords/vocabulary, icon/color, default models, MCP server and launch profile associations, GitHub link + gh account (see Per-Repo GitHub Integration)
 - `audio` - Recording device, stop action (`record_and_send_action`: send/prepare/pile), screenshot capture, sound settings
 - `voice_commands` / `open_mic` - Voice command and wake-word settings
 - `overlay` / `system` - Overlay position/visibility; tray, autostart, single instance, dev mode, `update_check` (Off | Notify | Auto)
@@ -359,8 +337,8 @@ In-app updates via the Tauri v2 updater plugin (`tauri-plugin-updater` + `tauri-
 
 ## Key Technologies
 
-**Frontend:** SvelteKit 2.9, Svelte 5, TypeScript 5.6, xterm.js 5.5, TailwindCSS 4.1, Vite 6, marked + highlight.js, @xyflow/svelte (sequence editor), paneforge (split panes)
-**Backend:** Rust, Tauri v2, portable-pty, reqwest, tokio-tungstenite, parking_lot, serde, enigo, xcap
+**Frontend:** SvelteKit 2.9, Svelte 5, TypeScript 5.6, TailwindCSS 4.1, Vite 6, marked + highlight.js, @xyflow/svelte (sequence editor), paneforge (split panes)
+**Backend:** Rust, Tauri v2, reqwest, tokio-tungstenite, parking_lot, serde, enigo, xcap
 **Sidecar:** Node.js, TypeScript, @anthropic-ai/claude-agent-sdk, @openai/codex-sdk, esbuild
 
 ## SDK Session Features
@@ -560,6 +538,15 @@ Repositories can have specific MCP servers assigned via `mcp_servers` in `RepoCo
 
 - **Settings → MCP** - Add, edit, remove, and test MCP servers
 - Repo association via repository management (repository rail/view)
+
+## Per-Repo GitHub Integration
+
+Each repo can be linked to its GitHub remote and pinned to a specific GitHub CLI account (`src-tauri/src/commands/github_cmds.rs`):
+
+- **Detection:** `detect_github_url` normalizes the repo's git remote (origin first, then any GitHub remote; ssh/https/credentialed forms) to `https://github.com/owner/repo`, stored in `RepoConfig.github_url`. `RepositoryView` auto-detects once per repo when unset and shows a clickable link (opener plugin) + "Re-detect" button in the Repository Settings card.
+- **Account selection:** `list_gh_accounts` parses `gh auth status` (multi-account, active flag); the chosen username is stored in `RepoConfig.gh_user`. First time (while `gh_user` was never set), the account whose username matches the GitHub URL's owner is auto-selected; an explicit "Default" choice is stored as `''` (both `''` and unset mean gh's active account) so the auto-match never overrides it.
+- **Session pinning:** at session creation the backend resolves `gh auth token --user <gh_user>` (never exposed to the frontend) and injects `GH_TOKEN`/`GITHUB_TOKEN` into the agent process env — via `OutboundMessage::Create.env` → sidecar `options.env` (Claude) / codex app-server spawn env. Best-effort: token resolution failure logs a warning and falls back to gh's active account. Sequence-engine sessions do not pin (env: None).
+- **Issues view:** per-repo GitHub issues as an agent dispatch queue (design: `docs/github-issues-integration-brainstorm-2026-07.md`). `fetch_github_issues`/`fetch_github_issue` shell out to `gh issue list/view --json` in the repo dir (pinned via the same GH_TOKEN mechanism; the newer `closedByPullRequestsReferences` list field is retried without on older gh). Frontend: `stores/repoIssues.ts` (per-repo cache, 2-min staleness), `RepoIssuesView.svelte` (`MainView: 'issues'`, entered via the Issues button in `RepositoryView`'s GitHub field; state/label/search filters, multi-select), `utils/issueActions.ts` (Implement / Plan first / Discuss prompts — full body+comments fetched at launch, `Fixes #N` instruction, branch hint `issue-N-title`). Launched sessions are tagged `githubIssue` (`SessionTag`/`SdkSession`, badge in `SessionListItem`) and show live per-issue session indicators on the issue cards; a Draft path creates reviewable setup sessions like NotionKanban's.
 
 ## No Mistakes Integration
 

@@ -2,7 +2,6 @@
   import { onDestroy } from 'svelte';
   import { pile, pileItemTitle, selectedPileItemId, type PileItem } from '$lib/stores/pile';
   import { sdkSessions, activeSdkSessionId, type EffortLevel } from '$lib/stores/sdkSessions';
-  import { activeSessionId } from '$lib/stores/sessions';
   import { settings } from '$lib/stores/settings';
   import { repos, isRepoActive } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
@@ -177,7 +176,6 @@
       if (sessionId) {
         selectedPileItemId.set(null);
         activeSdkSessionId.set(sessionId);
-        activeSessionId.set(null);
         navigation.setView('sessions');
       }
     } finally {
@@ -202,7 +200,6 @@
   function openSession(sessionId: string) {
     selectedPileItemId.set(null);
     activeSdkSessionId.set(sessionId);
-    activeSessionId.set(null);
     navigation.setView('sessions');
   }
 

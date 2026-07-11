@@ -1,7 +1,6 @@
 <script lang="ts">
   import { settings } from '$lib/stores/settings';
   import { sdkSessions, activeSdkSessionId, type SdkImageContent, type EffortLevel, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-  import { activeSessionId } from '$lib/stores/sessions';
 
   interface Props {
     /** The original prompt content to rerun */
@@ -32,8 +31,7 @@
     );
     sdkSessions.updateDraft(newSessionId, prompt, images);
 
-    // Select the new session (clear PTY selection first)
-    activeSessionId.set(null);
+    // Select the new session
     activeSdkSessionId.set(newSessionId);
   }
 </script>

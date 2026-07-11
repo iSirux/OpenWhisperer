@@ -8,11 +8,9 @@
   import { settings, configLoadedOk, configLoadReport, nextRecordStopMode } from '$lib/stores/settings';
   import { pile } from '$lib/stores/pile';
   import { repos } from '$lib/stores/repos';
-  import { sessions } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { startSmartQueue } from '$lib/stores/smartQueue';
   import { updater } from '$lib/stores/updater';
-  import { activeSessionId } from '$lib/stores/sessions';
   import { isRecording } from '$lib/stores/recording';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
   import { overlay } from '$lib/stores/overlay';
@@ -40,6 +38,8 @@
   import { selectDisplaySession } from '$lib/utils/sessionSelection';
   import { transformToDisplaySessions, getSdkSmartStatus } from '$lib/composables/useDisplaySessions.svelte';
   import { ctrlHintKeydown, ctrlHintKeyup, ctrlHintReset } from '$lib/stores/ctrlHint';
+  import { popRecentlyClosed, recentlyClosedSessions } from '$lib/stores/recentlyClosed';
+  import { archive } from '$lib/stores/archive';
 
   // Composables (now layout-level — survive route changes)
   import { useHotkeyManager } from '$lib/composables/useHotkeyManager.svelte';
@@ -133,8 +133,7 @@
 
   // Effect to emit active session/sequence counts to the overlay
   $effect(() => {
-    const allSessions = [...$sessions, ...$sdkSessions];
-    const activeSessions = allSessions.filter(s => isActivelyWorking(s.status)).length;
+    const activeSessions = $sdkSessions.filter(s => isActivelyWorking(s.status)).length;
     const activeSequences = $sequenceRunningCount;
     overlay.setActivityInfo(activeSessions, activeSequences);
   });
@@ -143,32 +142,52 @@
   let closeConfirm = $state<{
     show: boolean;
     sessionId: string;
-    sessionType: 'pty' | 'sdk';
-  }>({ show: false, sessionId: '', sessionType: 'sdk' });
+  }>({ show: false, sessionId: '' });
 
-  function performActiveClose(sessionId: string, sessionType: 'pty' | 'sdk') {
-    if (sessionType === 'sdk') {
-      void sdkSessions.closeSession(sessionId);
-      if (get(activeSdkSessionId) === sessionId) activeSdkSessionId.set(null);
-    } else {
-      void sessions.closeSession(sessionId);
-      if (get(activeSessionId) === sessionId) activeSessionId.set(null);
-    }
+  function performActiveClose(sessionId: string) {
+    void sdkSessions.closeSession(sessionId);
+    if (get(activeSdkSessionId) === sessionId) activeSdkSessionId.set(null);
   }
 
   function confirmActiveClose() {
-    performActiveClose(closeConfirm.sessionId, closeConfirm.sessionType);
-    closeConfirm = { show: false, sessionId: '', sessionType: 'sdk' };
+    performActiveClose(closeConfirm.sessionId);
+    closeConfirm = { show: false, sessionId: '' };
   }
 
   function cancelActiveClose() {
-    closeConfirm = { show: false, sessionId: '', sessionType: 'sdk' };
+    closeConfirm = { show: false, sessionId: '' };
+  }
+
+  // Ctrl+Shift+T — reopen the most recently closed session (browser-tab style).
+  // Pops the recently-closed stack, unarchiving entries until one succeeds
+  // (skipping any that were meanwhile deleted from the archive).
+  let reopeningClosed = false;
+  async function reopenLastClosed() {
+    if (reopeningClosed) return;
+    reopeningClosed = true;
+    try {
+      let entry = popRecentlyClosed();
+      while (entry) {
+        try {
+          const result = await archive.unarchiveEntry(entry.id);
+          if (result) {
+            navigation.setView('sessions');
+            return;
+          }
+        } catch (error) {
+          console.error('[layout] Failed to reopen closed session:', error);
+        }
+        // Entry was not restorable (deleted/trimmed) — try the next one.
+        entry = popRecentlyClosed();
+      }
+    } finally {
+      reopeningClosed = false;
+    }
   }
 
   // Helper: switch to a session by ID
   function handleSwitchToSession(sessionId: string) {
     activeSdkSessionId.set(sessionId);
-    activeSessionId.set(null);
     navigation.setView('sessions');
   }
 
@@ -187,7 +206,6 @@
       const digitMatch = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
       if (digitMatch) {
         const ordered = transformToDisplaySessions(
-          $sessions,
           $sdkSessions,
           $settings.session_sort_order,
           $sequenceExecutions
@@ -201,8 +219,8 @@
       }
     }
 
-    // Ctrl/Cmd+W — close the currently active session (SDK preferred, then PTY),
-    // mirroring the browser "close tab" convention. Fixed binding like Ctrl+1..9.
+    // Ctrl/Cmd+W — close the currently active session, mirroring the browser
+    // "close tab" convention. Fixed binding like Ctrl+1..9.
     // Confirms first when the session is actively working (matches SessionList).
     if (
       (event.ctrlKey || event.metaKey) &&
@@ -211,7 +229,6 @@
       event.code === 'KeyW'
     ) {
       const sdkId = get(activeSdkSessionId);
-      const ptyId = get(activeSessionId);
       if (sdkId) {
         event.preventDefault();
         const sdkSession = get(sdkSessions).find((s) => s.id === sdkId);
@@ -219,23 +236,26 @@
           ? isActivelyWorking(getSdkSmartStatus(sdkSession).status)
           : false;
         if (working) {
-          closeConfirm = { show: true, sessionId: sdkId, sessionType: 'sdk' };
+          closeConfirm = { show: true, sessionId: sdkId };
         } else {
-          performActiveClose(sdkId, 'sdk');
+          performActiveClose(sdkId);
         }
         return;
       }
-      if (ptyId) {
+    }
+
+    // Ctrl/Cmd+Shift+T — reopen the most recently closed session.
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.shiftKey &&
+      !event.altKey &&
+      event.code === 'KeyT'
+    ) {
+      if (get(recentlyClosedSessions).length > 0) {
         event.preventDefault();
-        const ptySession = get(sessions).find((s) => s.id === ptyId);
-        const working = ptySession ? isActivelyWorking(ptySession.status) : false;
-        if (working) {
-          closeConfirm = { show: true, sessionId: ptyId, sessionType: 'pty' };
-        } else {
-          performActiveClose(ptyId, 'pty');
-        }
-        return;
+        void reopenLastClosed();
       }
+      return;
     }
 
     if (
@@ -275,10 +295,6 @@
     // App update check per settings (fire-and-forget; skipped in dev builds)
     void updater.startupCheck($settings.system.update_check ?? 'Notify');
 
-    // Load sessions
-    await sessions.load();
-    sessions.setupListeners();
-
     // Load persisted sessions if enabled
     if ($settings.session_persistence.enabled) {
       await loadSessionsFromDisk();
@@ -301,7 +317,7 @@
     cleanupSmartQueue = startSmartQueue();
 
     // If there are existing sessions, show sessions view
-    if (($sessions.length > 0 || $sdkSessions.length > 0) && $navigation.mainView === 'start') {
+    if ($sdkSessions.length > 0 && $navigation.mainView === 'start') {
       navigation.setView('sessions');
     }
 

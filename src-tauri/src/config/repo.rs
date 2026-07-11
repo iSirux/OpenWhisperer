@@ -57,6 +57,13 @@ pub struct RepoConfig {
     /// Launch profiles - named groups of launch commands for one-click startup
     #[serde(default)]
     pub launch_profiles: Vec<LaunchProfile>,
+    /// Auto-detected GitHub URL for this repo (e.g., "https://github.com/owner/repo")
+    #[serde(default)]
+    pub github_url: Option<String>,
+    /// GitHub CLI account (username) to use for sessions in this repo.
+    /// None = gh's currently active account.
+    #[serde(default)]
+    pub gh_user: Option<String>,
 }
 
 /// A single runnable command/service for a repository (e.g., "npm run dev")

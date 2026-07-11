@@ -1,5 +1,5 @@
 use crate::archive::{ArchiveEntry, ArchiveIndex};
-use crate::session_persistence::{PersistedSdkSession, PersistedTerminalSession};
+use crate::session_persistence::PersistedSdkSession;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -41,13 +41,6 @@ pub fn get_archive_entry_data(id: String) -> Result<serde_json::Value, String> {
 pub fn archive_sdk_session(session: PersistedSdkSession) -> Result<(), String> {
     let mut index = ArchiveIndex::load();
     index.archive_sdk_session(&session)?;
-    index.save()
-}
-
-#[tauri::command]
-pub fn archive_terminal_session(session: PersistedTerminalSession) -> Result<(), String> {
-    let mut index = ArchiveIndex::load();
-    index.archive_terminal_session(&session)?;
     index.save()
 }
 

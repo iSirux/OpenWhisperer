@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings, type SessionsViewLayout, type SessionsGridSize } from '$lib/stores/settings';
   import { navigation } from '$lib/stores/navigation';
@@ -35,11 +34,10 @@
   let allSessions = $state<DisplaySession[]>([]);
 
   $effect(() => {
-    const ptySessions = $sessions;
     const sdkSessionsList = $sdkSessions;
     const sortOrder = $settings.session_sort_order;
 
-    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder);
+    const sorted = transformToDisplaySessions(sdkSessionsList, sortOrder);
     allSessions = sorted;
 
     // Fetch branches
@@ -55,31 +53,19 @@
   }
 
   function selectSession(session: DisplaySession) {
-    if (session.type === 'pty') {
-      activeSessionId.set(session.id);
-      activeSdkSessionId.set(null);
-    } else {
-      activeSdkSessionId.set(session.id);
-      activeSessionId.set(null);
-      sdkSessions.markAsRead(session.id);
-    }
+    activeSdkSessionId.set(session.id);
+    sdkSessions.markAsRead(session.id);
     navigation.setView('sessions');
     goto('/');
   }
 
   function closeSession(session: DisplaySession, event: MouseEvent) {
     event.stopPropagation();
-    if (session.type === 'pty') {
-      sessions.closeSession(session.id);
-      if ($activeSessionId === session.id) activeSessionId.set(null);
-    } else {
-      sdkSessions.closeSession(session.id);
-      if ($activeSdkSessionId === session.id) activeSdkSessionId.set(null);
-    }
+    sdkSessions.closeSession(session.id);
+    if ($activeSdkSessionId === session.id) activeSdkSessionId.set(null);
   }
 
   function isSessionActive(session: DisplaySession): boolean {
-    if (session.type === 'pty') return $activeSessionId === session.id;
     return $activeSdkSessionId === session.id;
   }
 

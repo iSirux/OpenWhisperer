@@ -342,9 +342,7 @@ export interface EnabledProviders {
   openai: boolean;
 }
 
-export type ClaudeTerminalMode = "Interactive" | "Prompt" | "Sdk";
 export type CodexMode = "Sdk" | "AppServer";
-export type TerminalMode = ClaudeTerminalMode | CodexMode;
 
 export type Theme =
   | "Midnight"
@@ -521,8 +519,6 @@ export interface AppConfig {
   /** @deprecated Use default_effort_level instead */
   default_thinking_level?: string;
   enabled_models: string[];
-  /** Terminal mode used when sdk_provider is Claude */
-  terminal_mode: ClaudeTerminalMode;
   /** OpenAI Codex mode used when sdk_provider is OpenAI */
   codex_mode: CodexMode;
   /** SDK provider for the main coding agent (Claude or OpenAI Codex) */
@@ -722,7 +718,6 @@ const defaultConfig: AppConfig = {
     "claude-sonnet-5",
     "claude-haiku-4-5-20251001",
   ],
-  terminal_mode: "Sdk",
   codex_mode: "AppServer",
   sdk_provider: "Claude",
   enabled_providers: { claude: true, openai: true },
@@ -987,9 +982,4 @@ export const settings = createSettingsStore();
 
 export function isPlanNewSessionAvailable(): boolean {
   return dev;
-}
-
-export function getEffectiveTerminalMode(config: AppConfig): TerminalMode {
-  // Session work always uses SDK-style flows.
-  return 'Sdk';
 }

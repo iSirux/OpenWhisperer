@@ -3,7 +3,6 @@ import { get } from 'svelte/store';
 import { settings } from './settings';
 import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo } from './sdkSessions';
 import { getProviderForModel, type SdkProvider } from '$lib/utils/models';
-import { sessions, activeSessionId, type TerminalSession } from './sessions';
 import { repos } from './repos';
 import { panes } from './panes';
 
@@ -276,20 +275,9 @@ export interface PersistedSdkSession {
   sdkSessionId?: string;
 }
 
-export interface PersistedTerminalSession {
-  id: string;
-  repo_path: string;
-  prompt: string;
-  status: string;
-  created_at: number;
-  output_buffer?: string;
-}
-
 export interface PersistedSessions {
   sdk_sessions: PersistedSdkSession[];
-  terminal_sessions: PersistedTerminalSession[];
   active_sdk_session_id: string | null;
-  active_terminal_session_id: string | null;
   saved_at: number;
 }
 
@@ -416,34 +404,6 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
   return session;
 }
 
-/**
- * Convert frontend terminal session to persisted format.
- */
-export function terminalSessionToPersisted(session: TerminalSession, outputBuffer?: string): PersistedTerminalSession {
-  return {
-    id: session.id,
-    repo_path: session.repo_path,
-    prompt: session.prompt,
-    // Persisted terminal sessions are always 'Completed' since we can't restore PTY
-    status: 'Completed',
-    created_at: session.created_at,
-    output_buffer: outputBuffer,
-  };
-}
-
-/**
- * Convert persisted terminal session to frontend format.
- */
-export function persistedToTerminalSession(persisted: PersistedTerminalSession): TerminalSession {
-  return {
-    id: persisted.id,
-    repo_path: persisted.repo_path,
-    prompt: persisted.prompt,
-    status: 'Completed', // Always completed since PTY can't be restored
-    created_at: persisted.created_at,
-  };
-}
-
 // ============================================================================
 // PUBLIC API
 // ============================================================================
@@ -498,52 +458,37 @@ export async function saveSessionsToDisk(): Promise<void> {
   }
 
   const currentSdkSessions = get(sdkSessions);
-  const currentTerminalSessions = get(sessions);
   const currentActiveSdkId = get(activeSdkSessionId);
-  const currentActiveTerminalId = get(activeSessionId);
 
   const persistableSdkSessions = currentSdkSessions.filter(isSdkSessionPersistable);
 
   const persistedData: PersistedSessions = {
     sdk_sessions: persistableSdkSessions.map(sdkSessionToPersisted),
-    terminal_sessions: currentTerminalSessions.map(s => terminalSessionToPersisted(s)),
     active_sdk_session_id: currentActiveSdkId && persistableSdkSessions.some(s => s.id === currentActiveSdkId)
       ? currentActiveSdkId
       : null,
-    active_terminal_session_id: currentActiveTerminalId,
     saved_at: Date.now(),
   };
 
   try {
     const result = await invoke<{
       overflowSdkSessions: PersistedSdkSession[];
-      overflowTerminalSessions: PersistedTerminalSession[];
     }>('save_persisted_sessions', {
       sessions: persistedData,
       maxSessions: currentSettings.session_persistence.max_sessions,
     });
 
     // Archive overflow sessions instead of losing them
-    const hasOverflow = (result.overflowSdkSessions?.length > 0) || (result.overflowTerminalSessions?.length > 0);
-    if (hasOverflow) {
-      console.log(`[sessionPersistence] Archiving ${result.overflowSdkSessions?.length ?? 0} SDK + ${result.overflowTerminalSessions?.length ?? 0} terminal overflow sessions`);
+    if (result.overflowSdkSessions?.length > 0) {
+      console.log(`[sessionPersistence] Archiving ${result.overflowSdkSessions.length} overflow SDK sessions`);
 
-      const overflowSdkIds = new Set((result.overflowSdkSessions || []).map((session) => session.id));
-      const overflowTerminalIds = new Set((result.overflowTerminalSessions || []).map((session) => session.id));
+      const overflowSdkIds = new Set(result.overflowSdkSessions.map((session) => session.id));
 
-      for (const session of (result.overflowSdkSessions || [])) {
+      for (const session of result.overflowSdkSessions) {
         try {
           await invoke('archive_sdk_session', { session });
         } catch (err) {
           console.error('[sessionPersistence] Failed to archive overflow SDK session:', err);
-        }
-      }
-
-      for (const session of (result.overflowTerminalSessions || [])) {
-        try {
-          await invoke('archive_terminal_session', { session });
-        } catch (err) {
-          console.error('[sessionPersistence] Failed to archive overflow terminal session:', err);
         }
       }
 
@@ -553,26 +498,13 @@ export async function saveSessionsToDisk(): Promise<void> {
       });
 
       // Keep the live session list aligned with persistence once overflow sessions are archived.
-      if (overflowSdkIds.size > 0) {
-        sdkSessions.set(
-          get(sdkSessions).filter((session) => !overflowSdkIds.has(session.id))
-        );
+      sdkSessions.set(
+        get(sdkSessions).filter((session) => !overflowSdkIds.has(session.id))
+      );
 
-        const currentActiveSdkSessionId = get(activeSdkSessionId);
-        if (currentActiveSdkSessionId && overflowSdkIds.has(currentActiveSdkSessionId)) {
-          activeSdkSessionId.set(null);
-        }
-      }
-
-      if (overflowTerminalIds.size > 0) {
-        sessions.update((currentSessions) =>
-          currentSessions.filter((session) => !overflowTerminalIds.has(session.id))
-        );
-
-        const currentActiveTerminalSessionId = get(activeSessionId);
-        if (currentActiveTerminalSessionId && overflowTerminalIds.has(currentActiveTerminalSessionId)) {
-          activeSessionId.set(null);
-        }
+      const currentActiveSdkSessionId = get(activeSdkSessionId);
+      if (currentActiveSdkSessionId && overflowSdkIds.has(currentActiveSdkSessionId)) {
+        activeSdkSessionId.set(null);
       }
 
       // Refresh archive metadata and list
@@ -590,8 +522,8 @@ export async function saveSessionsToDisk(): Promise<void> {
  * Partial autosave used by the debounced saver during a live query: persists
  * only the given (dirty) SDK sessions via `upsert_persisted_sdk_sessions`, so a
  * streaming session doesn't re-serialize and rewrite every other session on
- * each tick. Terminal sessions, stale-file cleanup, and overflow are left to
- * the full `saveSessionsToDisk` path (which still runs on structural changes,
+ * each tick. Stale-file cleanup and overflow are left to the full
+ * `saveSessionsToDisk` path (which still runs on structural changes,
  * the periodic timer, and visibility/unload).
  */
 export async function saveSdkSessionsPartial(dirtyIds: Set<string>): Promise<void> {
@@ -651,7 +583,7 @@ export async function loadSessionsFromDisk(): Promise<void> {
   try {
     const persistedData = await invoke<PersistedSessions>('get_persisted_sessions');
 
-    if (!persistedData || (!persistedData.sdk_sessions.length && !persistedData.terminal_sessions.length)) {
+    if (!persistedData || !persistedData.sdk_sessions.length) {
       console.log('[sessionPersistence] No persisted sessions found');
       sessionsLoadedFromDisk = true;
       return;
@@ -660,9 +592,8 @@ export async function loadSessionsFromDisk(): Promise<void> {
     // Limit the number of sessions to restore based on setting
     // Sessions are already sorted by created_at descending from the backend
     const limitedSdkSessions = persistedData.sdk_sessions.slice(0, restoreLimit);
-    const limitedTerminalSessions = persistedData.terminal_sessions.slice(0, restoreLimit);
 
-    console.log('[sessionPersistence] Restoring', limitedSdkSessions.length, 'of', persistedData.sdk_sessions.length, 'SDK sessions and', limitedTerminalSessions.length, 'of', persistedData.terminal_sessions.length, 'terminal sessions (limit:', restoreLimit + ')');
+    console.log('[sessionPersistence] Restoring', limitedSdkSessions.length, 'of', persistedData.sdk_sessions.length, 'SDK sessions (limit:', restoreLimit + ')');
 
     // Debug: Log thinking levels being restored
     limitedSdkSessions.forEach(s => {
@@ -685,20 +616,6 @@ export async function loadSessionsFromDisk(): Promise<void> {
       }
     }
     panes.reconcile(restoredSdkSessionIds);
-
-    // Restore terminal sessions (as completed/read-only)
-    if (limitedTerminalSessions.length > 0) {
-      const restoredTerminalSessions = limitedTerminalSessions.map(persistedToTerminalSession);
-      sessions.set(restoredTerminalSessions);
-
-      // Restore active terminal session selection if it exists and is within the restored sessions
-      if (persistedData.active_terminal_session_id) {
-        const exists = restoredTerminalSessions.some(s => s.id === persistedData.active_terminal_session_id);
-        if (exists) {
-          activeSessionId.set(persistedData.active_terminal_session_id);
-        }
-      }
-    }
 
     sessionsLoadedFromDisk = true;
     console.log('[sessionPersistence] Sessions restored successfully');

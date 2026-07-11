@@ -10,7 +10,6 @@ import {
   settingsToStoreEffort,
   type EffortLevel,
 } from '$lib/stores/sdkSessions';
-import { activeSessionId } from '$lib/stores/sessions';
 import { settings } from '$lib/stores/settings';
 import { repos, activeRepo, isRepoActive, findRepoById, type RepoConfig } from '$lib/stores/repos';
 import { pile, pileItemTitle, type PileItem } from '$lib/stores/pile';
@@ -257,6 +256,5 @@ export async function preparePileItemsTogether(items: PileItem[], select: boolea
 function selectPreparedSession(sessionId: string) {
   sdkSessions.selectSession(sessionId);
   activeSdkSessionId.set(sessionId);
-  activeSessionId.set(null);
   navigation.setView('sessions');
 }

@@ -1,4 +1,4 @@
-//! SDK provider selection, authentication methods, and (legacy) terminal-mode enums.
+//! SDK provider selection and authentication methods.
 
 use serde::{Deserialize, Serialize};
 
@@ -48,27 +48,9 @@ pub enum ClaudeAuthMethod {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub enum ClaudeTerminalMode {
-    Interactive,
-    Prompt,
-    #[default]
-    Sdk,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum CodexMode {
     #[default]
     AppServer,
     Sdk,
 }
 
-/// LEGACY / INERT: retained only so old persisted configs round-trip. Session work
-/// always uses SDK-style flows (`AppConfig::get_effective_terminal_mode` returns `Sdk`),
-/// so no live behavior depends on this discriminant.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TerminalMode {
-    Interactive,
-    Prompt,
-    Sdk,
-    CodexAppServer,
-}

@@ -1,16 +1,28 @@
 <script lang="ts">
   import type { QuickAction } from '$lib/utils/llm';
   import { settings } from '$lib/stores/settings';
+  import { ctrlHeld } from '$lib/stores/ctrlHint';
 
   let {
     onSendPrompt,
+    onSendAfterIdle,
     generatedActions,
     hasOutcomeAbove = false,
   }: {
     onSendPrompt: (prompt: string) => void;
+    /** Ctrl+click routes the action here: defer until the repo/worktree scope is idle. */
+    onSendAfterIdle?: (prompt: string) => void;
     generatedActions?: QuickAction[];
     hasOutcomeAbove?: boolean;
   } = $props();
+
+  function handleClick(e: MouseEvent, prompt: string) {
+    if (onSendAfterIdle && (e.ctrlKey || e.metaKey)) {
+      onSendAfterIdle(prompt);
+    } else {
+      onSendPrompt(prompt);
+    }
+  }
 
   // User-defined quick actions from settings (converted from string[] to QuickAction[])
   const customActions = $derived(
@@ -35,9 +47,18 @@
       {#each customActions as action}
         <button
           class="quick-action-button"
-          onclick={() => onSendPrompt(action.prompt)}
+          onclick={(e) => handleClick(e, action.prompt)}
+          title={onSendAfterIdle ? 'Ctrl+click: run when this repo/worktree is idle' : undefined}
         >
           {action.prompt}
+          {#if $ctrlHeld && onSendAfterIdle}
+            <span class="ctrl-hint-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </span>
+          {/if}
         </button>
       {/each}
     </div>
@@ -48,10 +69,21 @@
       {#each contextualActions as action}
         <button
           class="quick-action-button contextual"
-          title={action.label ? action.prompt : undefined}
-          onclick={() => onSendPrompt(action.prompt)}
+          title={[
+            action.label ? action.prompt : undefined,
+            onSendAfterIdle ? 'Ctrl+click: run when this repo/worktree is idle' : undefined,
+          ].filter(Boolean).join(' — ') || undefined}
+          onclick={(e) => handleClick(e, action.prompt)}
         >
           {action.label ?? action.prompt}
+          {#if $ctrlHeld && onSendAfterIdle}
+            <span class="ctrl-hint-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </span>
+          {/if}
         </button>
       {/each}
     </div>
@@ -80,6 +112,7 @@
   }
 
   .quick-action-button {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
@@ -111,5 +144,27 @@
 
   .quick-action-button.contextual:hover {
     border-color: var(--color-accent);
+  }
+
+  .ctrl-hint-badge {
+    position: absolute;
+    top: -0.45rem;
+    right: -0.45rem;
+    width: 1rem;
+    height: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    color: white;
+    border-radius: 0.25rem;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+
+  .ctrl-hint-badge svg {
+    width: 11px;
+    height: 11px;
   }
 </style>

@@ -177,7 +177,7 @@ function createUsageStatsStore() {
       }
     },
 
-    async trackSession(sessionType: 'pty' | 'sdk', model: string, repoPath?: string) {
+    async trackSession(sessionType: 'sdk', model: string, repoPath?: string) {
       try {
         await invoke('track_session', {
           sessionType,

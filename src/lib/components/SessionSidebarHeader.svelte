@@ -9,7 +9,6 @@
   }
 
   interface Props {
-    sessions: Session[];
     sdkSessions: Session[];
     currentView: string;
     markSessionsUnread: boolean;
@@ -17,19 +16,17 @@
   }
 
   let {
-    sessions,
     sdkSessions,
     currentView,
     markSessionsUnread,
     onShowSessions,
   }: Props = $props();
 
-  const allSessions = $derived([...sessions, ...sdkSessions]);
-  const totalCount = $derived(allSessions.length);
+  const totalCount = $derived(sdkSessions.length);
   const unreadCount = $derived(sdkSessions.filter(s => s.unread).length);
 
   const activeCount = $derived(
-    allSessions.filter(s => ['Starting', 'Running', 'querying', 'initializing'].includes(s.status)).length
+    sdkSessions.filter(s => ['querying', 'initializing'].includes(s.status)).length
   );
 
   const currentPath = $derived($page.url.pathname);

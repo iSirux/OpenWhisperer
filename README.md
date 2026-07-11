@@ -39,7 +39,7 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 
 **Agent sessions**
 
-- **Two providers** — Claude (Claude Agent SDK) and OpenAI Codex (SDK or app-server), with per-session model and effort selection, live model switching, and an Auto model picker
+- **Two providers** — Claude (Claude Agent SDK) and OpenAI Codex (app-server), with per-session model and effort selection, live model switching, and an Auto model picker
 - **Rich session view** — streaming responses, tool-call grids, subagent tracking, plan approval dialogs, token/cost usage bars, session forking and prompt re-runs
 - **Split panes** — up to four sessions side by side
 - **Multimodal prompts** — paste or drop images; they're compressed and attached automatically
@@ -166,7 +166,7 @@ Three processes, one app:
 ```
  Svelte 5 frontend ──(Tauri IPC)── Rust backend ──(JSON over stdio)── Node.js sidecar
  recording, sessions,              audio, PTY, git, config,           Claude Agent SDK,
- pile, overlay UI                  Whisper/realtime clients,          Codex SDK / app-server
+ pile, overlay UI                  Whisper/realtime clients,          Codex app-server
                                    persistence, sequences
 ```
 

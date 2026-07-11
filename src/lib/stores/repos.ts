@@ -39,6 +39,10 @@ export interface RepoConfig {
   launch_commands?: LaunchCommand[];
   /** Launch profiles - named groups of launch commands for one-click startup */
   launch_profiles?: LaunchProfile[];
+  /** Auto-detected GitHub URL for this repo (e.g., "https://github.com/owner/repo") */
+  github_url?: string;
+  /** GitHub CLI account (username) to use for sessions in this repo. Unset = gh's active account */
+  gh_user?: string;
 }
 
 /** Helper: treat undefined/missing active field as true for backward compatibility */

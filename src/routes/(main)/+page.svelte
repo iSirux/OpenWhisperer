@@ -1,10 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { isRecording } from '$lib/stores/recording';
-  import Terminal from '$lib/components/Terminal.svelte';
   import SessionPanes from '$lib/components/SessionPanes.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
-  import SessionHeader from '$lib/components/SessionHeader.svelte';
   import Start from '$lib/components/Start.svelte';
   import SessionPendingView from '$lib/components/SessionPendingView.svelte';
   import ArchiveView from '$lib/components/ArchiveView.svelte';
@@ -19,12 +17,12 @@
   import SessionSetupView from '$lib/components/SessionSetupView.svelte';
   import RepositoryRail from '$lib/components/RepositoryRail.svelte';
   import RepositoryView from '$lib/components/RepositoryView.svelte';
+  import RepoIssuesView from '$lib/components/RepoIssuesView.svelte';
 
   // Composables (page-specific only)
   import { useSidebarResize } from '$lib/composables/useSidebarResize.svelte';
 
   // Stores
-  import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
   import {
     sdkSessions,
     activeSdkSessionId,
@@ -63,7 +61,7 @@
 
   // Selecting a session clears the pile selection (they share the main pane)
   $effect(() => {
-    if ($activeSdkSessionId || $activeSessionId) {
+    if ($activeSdkSessionId) {
       selectedPileItemId.set(null);
     }
   });
@@ -333,13 +331,12 @@
       style="width: {sidebar.width}px; min-width: {sidebar.minWidth}px; max-width: {sidebar.maxWidth}px;"
     >
       <RepositoryRail
-        currentRepoId={currentView === 'repository' ? currentRepoId : null}
+        currentRepoId={currentView === 'repository' || currentView === 'issues' ? currentRepoId : null}
         showAddMode={currentView === 'repository' && repositoryAddMode}
         {currentView}
       />
       <div class="sidebar-main flex-1 min-w-0 flex flex-col overflow-hidden">
         <SessionSidebarHeader
-          sessions={$sessions}
           sdkSessions={$sdkSessions}
           {currentView}
           markSessionsUnread={$settings.mark_sessions_unread}
@@ -393,6 +390,8 @@
         />
       {:else if currentView === 'repository'}
         <RepositoryView repoId={currentRepoId} showAddForm={repositoryAddMode} />
+      {:else if currentView === 'issues'}
+        <RepoIssuesView repoId={currentRepoId} />
       {:else if $selectedPileItem}
         <PileDetailView item={$selectedPileItem} />
       {:else if $activeSdkSession && activeSetupState}
@@ -460,13 +459,6 @@
             onCancel={handlePendingSessionCancel}
           />
         </div>
-    {:else if $activeSession}
-      <SessionHeader session={$activeSession} />
-      <div class="terminal-wrapper flex-1 overflow-hidden">
-        {#key $activeSession.id}
-          <Terminal sessionId={$activeSession.id} />
-        {/key}
-      </div>
       {:else if showSessionPanes}
         {#if $activeSdkSession}
         {@const activeSession = $activeSdkSession}

@@ -17,6 +17,8 @@
     notice?: string;
     /** Override for the "+ Add repository" action (defaults to opening repo settings) */
     onAddRepo?: () => void;
+    /** Icon-only visible buttons (no repo name label); name still shown as tooltip */
+    compact?: boolean;
   }
 
   let {
@@ -28,6 +30,7 @@
     dropdownDirection = 'up',
     notice,
     onAddRepo,
+    compact = true,
   }: Props = $props();
 
   let showDropdown = $state(false);
@@ -139,10 +142,12 @@
           ? 'repo-chip-selected'
           : 'text-text-secondary hover:bg-border hover:text-text-primary'}"
         onclick={() => selectRepo(repo.path)}
-        title={repo.path}
+        title={compact ? `${repo.name} — ${repo.path}` : repo.path}
       >
         <RepoIcon {repo} size="xs" />
-        <span class="max-w-32 truncate">{repo.name}</span>
+        {#if !compact}
+          <span class="max-w-32 truncate">{repo.name}</span>
+        {/if}
       </button>
     {/each}
 

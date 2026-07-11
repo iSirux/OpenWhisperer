@@ -79,6 +79,10 @@ pub enum OutboundMessage {
         /// Skip project/local settings to disable filesystem hooks (lint, build, etc.)
         #[serde(skip_serializing_if = "Option::is_none")]
         disable_hooks: Option<bool>,
+        /// Extra env vars for the session's agent process (e.g., GH_TOKEN to pin
+        /// a gh account per repo)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<std::collections::HashMap<String, String>>,
     },
     Query {
         id: String,

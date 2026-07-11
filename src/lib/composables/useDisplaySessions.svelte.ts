@@ -1,7 +1,6 @@
-// Composable for combining PTY and SDK sessions into a unified display list
+// Composable for combining SDK sessions and sequence executions into a unified display list
 
 import { invoke } from '@tauri-apps/api/core';
-import type { TerminalSession } from '$lib/stores/sessions';
 import type { SdkSession } from '$lib/stores/sdkSessions';
 import type { SessionSortOrder } from '$lib/stores/settings';
 import type { DisplaySession } from '$lib/types/session';
@@ -304,10 +303,9 @@ function getSessionLabel(session: SdkSession): string | undefined {
 }
 
 /**
- * Transform PTY, SDK sessions, and sequence executions into unified DisplaySession format
+ * Transform SDK sessions and sequence executions into unified DisplaySession format
  */
 export function transformToDisplaySessions(
-  ptySessions: TerminalSession[],
   sdkSessionsList: SdkSession[],
   sortOrder: SessionSortOrder,
   sequenceExecutions: SequenceExecution[] = []
@@ -318,20 +316,6 @@ export function transformToDisplaySessions(
 
   // Build base sessions
   const baseSessions: DisplaySession[] = [
-    ...ptySessions.map((s) => ({
-      id: s.id,
-      type: 'pty' as const,
-      status: s.status,
-      statusDetail: undefined,
-      prompt: s.prompt,
-      repoPath: s.repo_path,
-      createdAt: s.created_at,
-      lastActivityAt: s.created_at,
-      startedAt: s.created_at,
-      accumulatedDurationMs: 0,
-      currentWorkStartedAt: undefined,
-      isFinished: s.status === 'Completed' || s.status === 'Failed'
-    })),
     ...sdkSessionsList.map((s) => {
       const smartStatus = getSdkSmartStatus(s);
       const finished = isFinishedStatus(smartStatus.status);
@@ -380,6 +364,7 @@ export function transformToDisplaySessions(
             }
           : undefined,
         notionCard: s.notionCard,
+        githubIssue: s.githubIssue,
         pileItem: s.pileItem,
         queueInfo: s.queueInfo,
         rateLimited: s.rateLimited,

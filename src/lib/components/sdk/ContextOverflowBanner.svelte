@@ -1,6 +1,5 @@
 <script lang="ts">
   import { sdkSessions, activeSdkSessionId, type SdkSession } from '$lib/stores/sdkSessions';
-  import { activeSessionId } from '$lib/stores/sessions';
 
   interface Props {
     session: SdkSession;
@@ -32,7 +31,6 @@
     try {
       const newId = await sdkSessions.forkSession(session.id, forkableIndex);
       if (newId) {
-        activeSessionId.set(null);
         activeSdkSessionId.set(newId);
       }
     } catch (err) {
@@ -52,7 +50,6 @@
         session.provider,
         session.cwd,
       );
-      activeSessionId.set(null);
       activeSdkSessionId.set(newId);
     } catch (err) {
       console.error('[ContextOverflowBanner] Start fresh failed:', err);

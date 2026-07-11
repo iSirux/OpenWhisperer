@@ -1,6 +1,5 @@
 <script lang="ts">
   import { sdkSessions, activeSdkSessionId, type SdkMessage, type SdkSession } from '$lib/stores/sdkSessions';
-  import { activeSessionId } from '$lib/stores/sessions';
 
   interface Props {
     /** The source session ID */
@@ -34,7 +33,6 @@
     try {
       const newSessionId = await sdkSessions.forkSession(sessionId, messageIndex);
       if (newSessionId) {
-        activeSessionId.set(null);
         activeSdkSessionId.set(newSessionId);
       }
     } catch (err) {

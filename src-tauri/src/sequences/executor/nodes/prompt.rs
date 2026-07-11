@@ -123,6 +123,7 @@ impl SequenceExecutor {
                 fork_at_message_uuid: None,
                 autocompact_pct: None,
                 disable_hooks: None,
+                env: None,
             })
             .map_err(|e| SequenceError::command(format!("Sidecar send error: {}", e)))?;
 

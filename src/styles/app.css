@@ -217,14 +217,6 @@ html, body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
-/* Terminal styles */
-.xterm {
-  padding: 8px;
-}
-
-.xterm-viewport {
-  overflow-y: auto !important;
-}
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {

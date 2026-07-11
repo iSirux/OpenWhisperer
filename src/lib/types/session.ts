@@ -6,11 +6,11 @@ import type { ExecutionStatus } from '$lib/types/sequence';
 
 /**
  * Unified session type for display in the session list and grid views.
- * Combines both PTY and SDK session data into a common format.
+ * Combines SDK session and sequence execution data into a common format.
  */
 export interface DisplaySession {
   id: string;
-  type: 'pty' | 'sdk' | 'sequence';
+  type: 'sdk' | 'sequence';
   status: string;
   statusDetail?: string; // e.g., tool name being run
   prompt: string;
@@ -26,10 +26,7 @@ export interface DisplaySession {
   accumulatedDurationMs: number;
   currentWorkStartedAt?: number;
   isFinished: boolean; // Whether the session is done/idle/error
-
-  // Legacy timestamp-based tracking (PTY sessions)
-  startedAt?: number;
-  endedAt?: number;
+  startedAt?: number; // When the first query started (epoch seconds)
 
   // UI state
   unread?: boolean; // Whether the session completed and user hasn't viewed it yet
@@ -68,6 +65,9 @@ export interface DisplaySession {
 
   // Notion card linked to this session
   notionCard?: { id: string; title: string };
+
+  // GitHub issue linked to this session
+  githubIssue?: { number: number; title: string; url: string };
 
   // Pile item this session was launched from
   pileItem?: { id: string; title: string };

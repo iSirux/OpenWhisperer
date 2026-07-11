@@ -296,6 +296,7 @@ interface CreateMessage {
   fork_at_message_uuid?: string; // Message UUID to fork at (resumeSessionAt)
   autocompact_pct?: number; // Claude-only: 0 = DISABLE_AUTO_COMPACT=1; 1-99 = CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; null/undefined/100 = Claude default
   disable_hooks?: boolean; // Set DISABLE_HOOKS=1 env var so hook scripts can early-exit
+  env?: Record<string, string>; // Extra env vars for the session's agent process (e.g., GH_TOKEN to pin a gh account per repo)
 }
 
 interface ImageData {
@@ -498,6 +499,7 @@ interface Session {
   codexModel?: string; // OpenAI model to use
   codexSystemPrompt?: string; // System prompt to prepend to first Codex query (since ThreadOptions has no systemPrompt)
   appServer?: AppServerState; // Active Codex app-server process state
+  extraEnv?: Record<string, string>; // Per-session extra env vars (e.g., GH_TOKEN) applied to spawned agent processes
   appServerTurnId?: string; // Active app-server turn ID
   pendingParallelNotification?: string; // Queued notification to inject via PreToolUse hook when parallel session detected
   claudeQueue: QueuedPrompt[]; // Pending Claude prompts (FIFO)
@@ -1701,11 +1703,13 @@ async function ensureCodexAppServer(
     child = spawn("cmd.exe", ["/d", "/s", "/c", cmd], {
       cwd: session.cwd,
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...globalThis.process.env, ...(session.extraEnv ?? {}) },
     });
   } else {
     child = spawn(codexExecutable, ["app-server"], {
       cwd: session.cwd,
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...globalThis.process.env, ...(session.extraEnv ?? {}) },
     });
   }
   const rl = readline.createInterface({
@@ -3180,6 +3184,8 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   options.env = {
     ...process.env,
     ...(options.env ?? {}),
+    // Per-session extras from the app (e.g., GH_TOKEN pinning a gh account per repo)
+    ...(msg.env ?? {}),
     CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "120000",
   };
 
@@ -3362,6 +3368,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     conversationHistory: msg.messages, // Store conversation history for restored sessions (DEPRECATED)
     codexModel: provider === "openai" ? msg.model : undefined,
     codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
+    extraEnv: msg.env,
     claudeQueue: [],
     claudeProcessing: false,
     forkFromSdkSessionId: msg.fork_from_sdk_session_id, // Fork: SDK session ID to fork from

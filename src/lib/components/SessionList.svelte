@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
-  import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
+  import { settings } from '$lib/stores/settings';
   import type { DisplaySession } from '$lib/types/session';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import { formatHotkeyForDisplay } from '$lib/utils/hotkeys';
@@ -62,12 +61,11 @@
 
   // Reactively update sessions when stores change
   $effect(() => {
-    const ptySessions = $sessions;
     const sdkSessionsList = $sdkSessions;
     const sortOrder = $settings.session_sort_order;
     const seqExecutions = $executions;
 
-    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder, seqExecutions);
+    const sorted = transformToDisplaySessions(sdkSessionsList, sortOrder, seqExecutions);
 
     // Preserve branch data from previous render (branches are fetched async and only on session list changes)
     // Use untrack to read allSessions without creating a reactive dependency on it,
@@ -112,15 +110,10 @@
   }
 
   // Track active session IDs reactively for proper UI updates
-  let currentActiveSessionId = $state<string | null>(null);
   let currentActiveSdkSessionId = $state<string | null>(null);
   let currentActiveExecutionId = $state<string | null>(null);
 
   // Keep local state in sync with stores
-  $effect(() => {
-    currentActiveSessionId = $activeSessionId;
-  });
-
   $effect(() => {
     currentActiveSdkSessionId = $activeSdkSessionId;
   });
@@ -139,17 +132,15 @@
       return currentView === 'sequences' && currentActiveExecutionId === session.id;
     }
     if (currentView !== 'sessions') return false;
-    return session.type === 'pty'
-      ? currentActiveSessionId === session.id
-      : currentActiveSdkSessionId === session.id;
+    return currentActiveSdkSessionId === session.id;
   }
 
   // Confirmation dialog state
   let confirmDialog = $state<{
     show: boolean;
     sessionId: string;
-    sessionType: 'pty' | 'sdk' | 'sequence';
-  }>({ show: false, sessionId: '', sessionType: 'pty' });
+    sessionType: 'sdk' | 'sequence';
+  }>({ show: false, sessionId: '', sessionType: 'sdk' });
 
   function closeSession(session: DisplaySession, event: MouseEvent) {
     event.stopPropagation();
@@ -165,20 +156,12 @@
     }
 
     // Check if session is actively working
-    if (session.type === 'pty') {
-      const ptySession = $sessions.find((s) => s.id === session.id);
-      if (ptySession && isActivelyWorking(ptySession.status)) {
-        confirmDialog = { show: true, sessionId: session.id, sessionType: 'pty' };
+    const sdkSession = $sdkSessions.find((s) => s.id === session.id);
+    if (sdkSession) {
+      const smartStatus = getSdkSmartStatus(sdkSession);
+      if (isActivelyWorking(smartStatus.status)) {
+        confirmDialog = { show: true, sessionId: session.id, sessionType: 'sdk' };
         return;
-      }
-    } else {
-      const sdkSession = $sdkSessions.find((s) => s.id === session.id);
-      if (sdkSession) {
-        const smartStatus = getSdkSmartStatus(sdkSession);
-        if (isActivelyWorking(smartStatus.status)) {
-          confirmDialog = { show: true, sessionId: session.id, sessionType: 'sdk' };
-          return;
-        }
       }
     }
 
@@ -186,13 +169,8 @@
     performClose(session.id, session.type);
   }
 
-  function performClose(sessionId: string, sessionType: 'pty' | 'sdk' | 'sequence') {
-    if (sessionType === 'pty') {
-      sessions.closeSession(sessionId);
-      if ($activeSessionId === sessionId) {
-        activeSessionId.set(null);
-      }
-    } else if (sessionType === 'sdk') {
+  function performClose(sessionId: string, sessionType: 'sdk' | 'sequence') {
+    if (sessionType === 'sdk') {
       sdkSessions.closeSession(sessionId);
       if ($activeSdkSessionId === sessionId) {
         activeSdkSessionId.set(null);
@@ -204,11 +182,11 @@
 
   function confirmClose() {
     performClose(confirmDialog.sessionId, confirmDialog.sessionType);
-    confirmDialog = { show: false, sessionId: '', sessionType: 'pty' };
+    confirmDialog = { show: false, sessionId: '', sessionType: 'sdk' };
   }
 
   function cancelClose() {
-    confirmDialog = { show: false, sessionId: '', sessionType: 'pty' };
+    confirmDialog = { show: false, sessionId: '', sessionType: 'sdk' };
   }
 
   // Right-click context menu (pin/unpin; SDK sessions only)
@@ -239,22 +217,18 @@
     <button
       class="w-full p-3 border-b border-border text-left hover:bg-surface-elevated transition-colors flex items-center gap-2 text-accent"
       onclick={createNewSession}
-      title={`${
-        getEffectiveTerminalMode($settings) === 'Sdk' ? 'New Session' : 'New Terminal'
-      } (${formatHotkeyForDisplay($settings.hotkeys.new_session)})`}
+      title={`New Session (${formatHotkeyForDisplay($settings.hotkeys.new_session)})`}
     >
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
       </svg>
-      <span class="text-sm font-medium">
-        {getEffectiveTerminalMode($settings) === 'Sdk' ? 'New Session' : 'New Terminal'}
-      </span>
+      <span class="text-sm font-medium">New Session</span>
       <span class="ml-auto text-xs text-text-muted font-mono">
         {formatHotkeyForDisplay($settings.hotkeys.new_session)}
       </span>
     </button>
 
-    <!-- Sessions (PTY + SDK + Sequences mixed) -->
+    <!-- Sessions (SDK + Sequences mixed) -->
     {#if allSessions.length === 0}
       <div class="p-4 text-center text-text-muted text-sm">
         <svg

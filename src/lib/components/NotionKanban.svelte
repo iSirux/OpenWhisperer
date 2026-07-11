@@ -3,7 +3,6 @@
   import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
   import { sdkSessions, activeSdkSessionId } from "$lib/stores/sdkSessions";
-  import { activeSessionId } from "$lib/stores/sessions";
   import { navigation } from "$lib/stores/navigation";
   import { activeRepo } from "$lib/stores/repos";
   import {
@@ -316,7 +315,6 @@
     if (firstId) {
       sdkSessions.selectSession(firstId);
       activeSdkSessionId.set(firstId);
-      activeSessionId.set(null);
       navigation.setView("sessions");
     }
   }

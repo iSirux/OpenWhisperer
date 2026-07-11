@@ -9,8 +9,8 @@ pub fn start_sidecar(app: AppHandle, sidecar: State<Arc<SidecarManager>>) -> Res
 }
 
 #[tauri::command]
-pub fn create_sdk_session(
-    sidecar: State<Arc<SidecarManager>>,
+pub async fn create_sdk_session(
+    sidecar: State<'_, Arc<SidecarManager>>,
     id: String,
     cwd: String,
     model: String,                             // Per-session model (required)
@@ -24,7 +24,17 @@ pub fn create_sdk_session(
     fork_at_message_uuid: Option<String>, // Message UUID to fork at (resumeSessionAt)
     autocompact_pct: Option<u32>, // Claude-only: 0=DISABLE_AUTO_COMPACT, 1..=99=PCT_OVERRIDE, None/100=default
     disable_hooks: Option<bool>,  // Skip project/local settings to disable filesystem hooks
+    gh_user: Option<String>,      // GitHub CLI account to pin this session to (via GH_TOKEN)
 ) -> Result<(), String> {
+    // Pin gh to a specific account for this session by injecting its token.
+    // Best-effort: a resolution failure falls back to gh's active account.
+    let gh_env = crate::commands::github_cmds::gh_session_env(gh_user.as_deref()).await;
+    let env = if gh_env.is_empty() {
+        None
+    } else {
+        Some(gh_env.into_iter().collect())
+    };
+
     // Started/alive guard is folded into `SidecarManager::send` (I3).
     sidecar.send(OutboundMessage::Create {
         id,
@@ -40,6 +50,7 @@ pub fn create_sdk_session(
         fork_at_message_uuid,
         autocompact_pct,
         disable_hooks,
+        env,
     })
 }
 

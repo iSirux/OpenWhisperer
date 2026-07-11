@@ -32,6 +32,19 @@ interface WorktreeCreationResult {
 export interface SessionTag {
   notionCard?: { id: string; title: string };
   pileItem?: { id: string; title: string };
+  githubIssue?: { number: number; title: string; url: string };
+}
+
+/**
+ * Snapshot the current model/effort/provider for a specific repo so queued
+ * launches are not affected by the user switching things mid-batch.
+ */
+export function snapshotLaunchConfigForRepo(repo: RepoConfig): LaunchConfig {
+  const s = get(settings);
+  const provider = s.sdk_provider === 'OpenAI' ? 'openai' : ('claude' as const);
+  const model = provider === 'openai' ? s.openai_model : s.default_model;
+  const effortLevel = settingsToStoreEffort(s.default_effort_level);
+  return { repo, model, effortLevel, provider };
 }
 
 /**
@@ -41,11 +54,7 @@ export interface SessionTag {
 export function snapshotLaunchConfig(): LaunchConfig | null {
   const repo = get(activeRepo);
   if (!repo) return null;
-  const s = get(settings);
-  const provider = s.sdk_provider === 'OpenAI' ? 'openai' : ('claude' as const);
-  const model = provider === 'openai' ? s.openai_model : s.default_model;
-  const effortLevel = settingsToStoreEffort(s.default_effort_level);
-  return { repo, model, effortLevel, provider };
+  return snapshotLaunchConfigForRepo(repo);
 }
 
 export interface LaunchSessionOptions {

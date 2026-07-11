@@ -18,7 +18,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { recording, isRecording } from '$lib/stores/recording';
 import { debugRecordings } from '$lib/stores/debugRecordings';
 import { sdkSessions, settingsToStoreEffort } from '$lib/stores/sdkSessions';
-import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
+import { settings } from '$lib/stores/settings';
 import { activeRepo } from '$lib/stores/repos';
 import { overlay } from '$lib/stores/overlay';
 import { openMic } from '$lib/stores/openMic';
@@ -194,12 +194,10 @@ function createRecordingFlowStore() {
     forceAction?: RecordAndSendAction
   ) {
     const currentSettings = get(settings);
-    const isSdk = getEffectiveTerminalMode(currentSettings) === 'Sdk';
     const stopAction: RecordAndSendAction =
-      forceAction ??
-      (isSdk ? currentSettings.audio.record_and_send_action : 'send');
+      forceAction ?? currentSettings.audio.record_and_send_action;
     const shouldPileOnStop = stopAction === 'pile';
-    const shouldPrepareOnStop = isSdk && stopAction === 'prepare';
+    const shouldPrepareOnStop = stopAction === 'prepare';
 
     // Mint the debug id up-front and own it through the whole flow, so the
     // destination tag and the transcript pipeline's cleanup stage attach to the
@@ -302,12 +300,10 @@ function createRecordingFlowStore() {
     const overlayShown = overlay.show();
 
     const currentSettings = get(settings);
-    if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
-      createPendingSession(model, effortLevel, provider);
-      // NOTE: We intentionally do NOT call navigation.setView('sessions') or
-      // sdkSessions.selectSession() here — recording should not force a view switch.
-      await setupAudioVisualizationListener();
-    }
+    createPendingSession(model, effortLevel, provider);
+    // NOTE: We intentionally do NOT call navigation.setView('sessions') or
+    // sdkSessions.selectSession() here — recording should not force a view switch.
+    await setupAudioVisualizationListener();
 
     await Promise.all([
       openMicStopped,
@@ -355,10 +351,8 @@ function createRecordingFlowStore() {
       !wasAppFocusedOnRecordStart || currentSettings.overlay.show_when_focused
         ? overlay.show()
         : Promise.resolve();
-    if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
-      createPendingSession(model, effortLevel, provider);
-      await setupAudioVisualizationListener();
-    }
+    createPendingSession(model, effortLevel, provider);
+    await setupAudioVisualizationListener();
 
     await Promise.all([
       openMicStopped,
@@ -428,10 +422,8 @@ function createRecordingFlowStore() {
     const overlayShown = overlay.show();
 
     const currentSettings = get(settings);
-    if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
-      createPendingSession(model, effortLevel, provider);
-      await setupAudioVisualizationListener();
-    }
+    createPendingSession(model, effortLevel, provider);
+    await setupAudioVisualizationListener();
 
     await Promise.all([
       openMicStopped,

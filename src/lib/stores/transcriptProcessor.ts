@@ -17,8 +17,8 @@ import {
   type EffortLevel,
   settingsToStoreEffort,
 } from '$lib/stores/sdkSessions';
-import { sessions, activeSessionId } from '$lib/stores/sessions';
-import { settings, getEffectiveTerminalMode } from '$lib/stores/settings';
+
+import { settings } from '$lib/stores/settings';
 import { repos, activeRepo, isAutoRepoSelected, isRepoActive, type RepoConfig } from '$lib/stores/repos';
 import { recording } from '$lib/stores/recording';
 import { navigation } from '$lib/stores/navigation';
@@ -89,12 +89,7 @@ export async function handleTranscriptReady(
     });
   }
 
-  const currentSettings = get(settings);
-  if (getEffectiveTerminalMode(currentSettings) === 'Sdk') {
-    await processSdkTranscript(transcript, pendingSessionId, voskTranscript, debugRecordingId);
-  } else {
-    await processPtyTranscript(transcript, pendingSessionId, voskTranscript, debugRecordingId);
-  }
+  await processSdkTranscript(transcript, pendingSessionId, voskTranscript, debugRecordingId);
 }
 
 /**
@@ -190,7 +185,6 @@ async function processSdkTranscript(
       );
       sdkSessions.setPendingApproval(newSessionId, finalTranscript, repoPath);
       activeSdkSessionId.set(newSessionId);
-      activeSessionId.set(null);
     }
     navigation.setView('sessions');
     return;
@@ -201,42 +195,6 @@ async function processSdkTranscript(
   } else {
     await createSessionWithPrompt(finalTranscript, sessionRepo, debugRecordingId);
   }
-}
-
-/**
- * Process transcript for PTY mode.
- */
-async function processPtyTranscript(
-  transcript: string,
-  pendingSessionId: string | null,
-  voskTranscript?: string,
-  debugRecordingId?: string
-) {
-  const currentActiveRepo = get(activeRepo);
-  let finalTranscript = transcript;
-
-  if (isTranscriptionCleanupEnabled()) {
-    const repoContext = currentActiveRepo ? buildSingleRepoContext(currentActiveRepo) : undefined;
-    const cleanupResult = await cleanupTranscript(transcript, voskTranscript, repoContext);
-    finalTranscript = cleanupResult.text;
-
-    if (debugRecordingId) {
-      debugRecordings.update(debugRecordingId, {
-        cleanedTranscript: finalTranscript,
-        wasCleanedUp: cleanupResult.wasCleanedUp,
-        cleanupCorrections: cleanupResult.corrections,
-        usedDualSource: cleanupResult.usedDualSource,
-      });
-    }
-  }
-
-  if (pendingSessionId) {
-    sdkSessions.cancelPendingTranscription(pendingSessionId);
-  }
-
-  const sessionId = await sessions.createSession(finalTranscript);
-  activeSessionId.set(sessionId);
-  activeSdkSessionId.set(null);
 }
 
 /**
@@ -282,7 +240,6 @@ async function completePendingSession(
   });
 
   await sdkSessions.completePendingTranscription(sessionId, repoPath, transcript, systemPrompt);
-  activeSessionId.set(null);
 }
 
 /**
@@ -317,7 +274,6 @@ async function createSessionWithPrompt(
   const sessionId = await sdkSessions.createSession(repoPath, model, effortLevel, systemPrompt);
   activeSdkSessionId.set(sessionId);
   await sdkSessions.sendPrompt(sessionId, transcript);
-  activeSessionId.set(null);
 }
 
 /**
@@ -471,7 +427,6 @@ export async function handlePrepareTranscriptReady(
     prompt: finalTranscript,
     cwd: sessionCwd,
   });
-  activeSessionId.set(null);
 }
 
 // ---------------------------------------------------------------------------
@@ -574,7 +529,6 @@ export async function handleSendSelection() {
           confidence: repoRecommendation?.confidence ?? 'low',
         });
         activeSdkSessionId.set(sessionId);
-        activeSessionId.set(null);
         return;
       }
     }
@@ -597,7 +551,6 @@ export async function handleSendSelection() {
     const sessionId = await sdkSessions.createSession(repoPath, model, effortLevel, systemPrompt);
     activeSdkSessionId.set(sessionId);
     await sdkSessions.sendPrompt(sessionId, selectedText);
-    activeSessionId.set(null);
   } catch (error) {
     console.error('[selection] Failed to send selection:', error);
   }
@@ -640,7 +593,6 @@ export async function handlePrepareSelection() {
     );
     sdkSessions.selectSession(sessionId);
     activeSdkSessionId.set(sessionId);
-    activeSessionId.set(null);
 
     sdkSessions.updatePendingTranscription(sessionId, {
       status: 'processing',

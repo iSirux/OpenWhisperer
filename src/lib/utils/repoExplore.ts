@@ -1,6 +1,5 @@
 import { listen } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
-import { activeSessionId } from '$lib/stores/sessions';
 import { activeSdkSessionId, sdkSessions } from '$lib/stores/sdkSessions';
 import { repos, type RepoConfig } from '$lib/stores/repos';
 import { DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
@@ -148,7 +147,6 @@ export async function startRepoExploreSession(
 
   // Show the session like any other newly created one
   activeSdkSessionId.set(sessionId);
-  activeSessionId.set(null);
   window.dispatchEvent(new CustomEvent('switch-to-sessions'));
 
   let resolveSettled: (applied: boolean) => void;

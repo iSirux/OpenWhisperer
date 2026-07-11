@@ -13,16 +13,15 @@ mod realtime;
 mod sequences;
 mod session_persistence;
 mod sidecar;
-mod terminal;
 mod usage_stats;
 mod util;
 mod whisper;
 
 use commands::{
-    archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, image_cmds, input_cmds,
+    archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
     launch_cmds, llm_cmds, log_cmds,
     mcp_cmds, no_mistakes_cmds, notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds,
-    sequence_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds,
+    sequence_cmds, session_cmds, settings_cmds, usage_cmds,
 };
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -42,7 +41,6 @@ use tauri::{
     Manager, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
-use terminal::TerminalManager;
 
 #[cfg(target_os = "windows")]
 fn set_windows_app_user_model_id(app_id: &str) {
@@ -250,7 +248,6 @@ pub fn run() {
     let (config, config_load_report) = AppConfig::load();
     let usage_stats = UsageStats::load();
     let start_minimized = config.system.start_minimized;
-    let terminal_manager = Arc::new(TerminalManager::new());
     let sidecar_manager = Arc::new(SidecarManager::new());
     let realtime_manager = Arc::new(RealtimeSessionManager::new());
     let launch_manager = Arc::new(launch::LaunchManager::new());
@@ -314,7 +311,6 @@ pub fn run() {
         .manage(Mutex::new(config))
         .manage(Mutex::new(usage_stats))
         .manage(config_load_status)
-        .manage(terminal_manager)
         .manage(sidecar_manager)
         .manage(realtime_manager)
         .manage(launch_manager)
@@ -420,14 +416,11 @@ pub fn run() {
             git_cmds::open_in_vscode,
             git_cmds::open_in_terminal,
             git_cmds::open_in_explorer,
-            // --- Terminal (PTY) sessions ---
-            terminal_cmds::create_terminal_session,
-            terminal_cmds::create_interactive_session,
-            terminal_cmds::write_to_terminal,
-            terminal_cmds::resize_terminal,
-            terminal_cmds::close_terminal,
-            terminal_cmds::get_terminal_sessions,
-            terminal_cmds::get_terminal_session,
+            // --- GitHub integration ---
+            github_cmds::detect_github_url,
+            github_cmds::list_gh_accounts,
+            github_cmds::fetch_github_issues,
+            github_cmds::fetch_github_issue,
             // --- Audio & transcription ---
             audio_cmds::transcribe_audio,
             audio_cmds::test_whisper_connection,
@@ -487,7 +480,6 @@ pub fn run() {
             archive_cmds::get_archive_entries,
             archive_cmds::get_archive_entry_data,
             archive_cmds::archive_sdk_session,
-            archive_cmds::archive_terminal_session,
             archive_cmds::archive_sequence_execution,
             archive_cmds::unarchive_entry,
             archive_cmds::delete_archive_entry,

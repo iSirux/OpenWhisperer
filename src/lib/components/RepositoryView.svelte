@@ -23,6 +23,12 @@
     profiles: Array<{ name: string; command_names: string[] }>;
   }
 
+  interface GhAccount {
+    username: string;
+    host: string;
+    active: boolean;
+  }
+
   let { repoId = null, showAddForm = false }: Props = $props();
 
   let newRepoPath = $state('');
@@ -45,6 +51,15 @@
   let newProfileName = $state('');
   let newProfileCmdIds = $state<Set<string>>(new Set());
   let lastRepoModeSyncKey = $state('');
+  let ghAccounts = $state<GhAccount[]>([]);
+  let ghAccountsLoaded = $state(false);
+  // Repo ids where the owner→account auto-match already ran this session.
+  let ghAutoMatchAttempted = $state<Set<string>>(new Set());
+  let ghInstalled = $state<boolean | null>(null);
+  let detectingGithub = $state(false);
+  // Repo ids where auto-detection already ran this session and found nothing,
+  // so the effect doesn't re-probe on every store update.
+  let githubDetectAttempted = $state<Set<string>>(new Set());
 
   const selectedRepo = $derived(repoId ? $repos.list.find((repo) => repo.id === repoId) ?? null : null);
   const selectedRepoIndex = $derived(selectedRepo ? $repos.list.findIndex((repo) => repo.id === selectedRepo.id) : -1);
@@ -79,7 +94,70 @@
     } catch {
       codexAvailable = false;
     }
+
+    try {
+      const result = await invoke<{ installed: boolean; accounts: GhAccount[] }>('list_gh_accounts');
+      ghInstalled = result.installed;
+      ghAccounts = result.accounts;
+    } catch {
+      ghInstalled = false;
+      ghAccounts = [];
+    } finally {
+      ghAccountsLoaded = true;
+    }
   });
+
+  // Auto-detect the GitHub remote once per repo when none is stored yet.
+  $effect(() => {
+    const repo = selectedRepo;
+    if (!repo?.id || repo.github_url !== undefined || githubDetectAttempted.has(repo.id)) return;
+    githubDetectAttempted = new Set([...githubDetectAttempted, repo.id]);
+    void detectGithubUrl(repo.id, repo.path);
+  });
+
+  /** Owner segment of a normalized GitHub URL ("https://host/owner/repo"). */
+  function githubUrlOwner(url: string): string | null {
+    const parts = url.split('/').filter(Boolean); // ["https:", host, owner, repo]
+    return parts.length >= 4 ? parts[2] : null;
+  }
+
+  // First-time default: when a repo has a GitHub URL but gh_user was never set,
+  // auto-pick the logged-in gh account whose username matches the URL's owner.
+  // An explicit "Default" choice is stored as '' so this never overrides it.
+  $effect(() => {
+    const repo = selectedRepo;
+    if (!ghAccountsLoaded || !repo?.id || !repo.github_url || repo.gh_user !== undefined) return;
+    if (ghAutoMatchAttempted.has(repo.id)) return;
+    ghAutoMatchAttempted = new Set([...ghAutoMatchAttempted, repo.id]);
+    const owner = githubUrlOwner(repo.github_url)?.toLowerCase();
+    const match = owner ? ghAccounts.find((a) => a.username.toLowerCase() === owner) : undefined;
+    if (match) {
+      updateRepoById(repo.id, { gh_user: match.username });
+    }
+  });
+
+  async function detectGithubUrl(targetRepoId: string, repoPath: string) {
+    detectingGithub = true;
+    try {
+      const url = await invoke<string | null>('detect_github_url', { repoPath });
+      if (url) {
+        updateRepoById(targetRepoId, { github_url: url });
+      }
+    } catch (error) {
+      console.warn('[repos] GitHub remote detection failed:', error);
+    } finally {
+      detectingGithub = false;
+    }
+  }
+
+  async function openGithubUrl(url: string) {
+    try {
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(url);
+    } catch (error) {
+      console.error('[repos] Failed to open GitHub URL:', error);
+    }
+  }
 
   $effect(() => {
     const syncKey = selectedRepo ? `${selectedRepo.id}:${selectedRepo.worktree_mode ?? 'main'}` : 'none';
@@ -637,6 +715,68 @@
         </div>
       </div>
 
+      <div class="field">
+        <div class="field-title">GitHub</div>
+        <div class="github-row">
+          {#if selectedRepo.github_url}
+            {@const githubUrl = selectedRepo.github_url}
+            <button class="github-link" title={githubUrl} onclick={() => openGithubUrl(githubUrl)}>
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+              {selectedRepo.github_url.replace(/^https:\/\/github\.com\//, '')}
+            </button>
+          {:else}
+            <span class="field-help">{detectingGithub ? 'Detecting GitHub remote...' : 'No GitHub remote detected'}</span>
+          {/if}
+          <button
+            class="btn btn-secondary btn-small"
+            onclick={() => selectedRepo.id && detectGithubUrl(selectedRepo.id, selectedRepo.path)}
+            disabled={detectingGithub}
+          >
+            {detectingGithub ? 'Detecting...' : 'Re-detect'}
+          </button>
+          {#if selectedRepo.github_url && ghInstalled}
+            <button
+              class="btn btn-primary btn-small"
+              onclick={() => navigation.showIssues(selectedRepo.id ?? null)}
+              title="Browse this repo's GitHub issues and launch sessions from them"
+            >
+              Issues
+            </button>
+          {/if}
+        </div>
+
+        {#if ghInstalled === false}
+          <p class="field-help">GitHub CLI (gh) not found — install it to pin a GitHub account for this repo.</p>
+        {:else if ghAccounts.length > 0 || selectedRepo.gh_user}
+          <div class="github-account-row">
+            <label for="repo-gh-user">gh account</label>
+            <select
+              id="repo-gh-user"
+              value={selectedRepo.gh_user ?? ''}
+              onchange={(event) => {
+                const value = (event.currentTarget as HTMLSelectElement).value;
+                // '' = explicit Default; distinguishable from never-set (undefined)
+                // so the owner auto-match doesn't override a deliberate choice.
+                updateRepo({ gh_user: value });
+              }}
+            >
+              <option value="">Default{ghAccounts.find((a) => a.active) ? ` (${ghAccounts.find((a) => a.active)?.username})` : ''}</option>
+              {#each ghAccounts as account}
+                <option value={account.username}>{account.username}{account.active ? ' (active)' : ''}</option>
+              {/each}
+              {#if selectedRepo.gh_user && !ghAccounts.some((a) => a.username === selectedRepo.gh_user)}
+                <option value={selectedRepo.gh_user}>{selectedRepo.gh_user} (not logged in)</option>
+              {/if}
+            </select>
+          </div>
+          {#if selectedRepo.gh_user}
+            <p class="field-help">Sessions in this repo run gh as {selectedRepo.gh_user} (via GH_TOKEN).</p>
+          {/if}
+        {/if}
+      </div>
+
       {#if enabledMcpServers.length > 0}
         <div class="field">
           <div class="field-title">MCP Servers</div>
@@ -1181,6 +1321,58 @@
     display: flex;
     gap: 0.5rem;
     align-items: center;
+  }
+
+  .github-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .github-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.55rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.375rem;
+    background: var(--color-background);
+    color: var(--color-text-primary);
+    font-size: 0.75rem;
+    cursor: pointer;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: border-color 0.16s ease, color 0.16s ease;
+  }
+
+  .github-link:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .github-link svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  .github-account-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-top: 0.4rem;
+  }
+
+  .github-account-row label {
+    flex-shrink: 0;
+  }
+
+  .github-account-row select {
+    width: auto;
+    min-width: 12rem;
   }
 
   input,

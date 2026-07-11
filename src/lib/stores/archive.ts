@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 export interface ArchiveEntry {
   id: string;
+  /** 'pty' only appears in legacy archives; those entries can no longer be restored */
   sessionType: 'sdk' | 'pty' | 'sequence';
   name?: string;
   summary?: string;
@@ -137,26 +138,6 @@ function createArchiveStore() {
           sdkSessions.set([restored, ...currentSessions]);
         }
         activeSdkSessionId.set(restored.id);
-
-        // Update local archive state
-        entries.update(e => e.filter(entry => entry.id !== id));
-        totalCount.update(n => n - 1);
-        archiveCount.update(n => Math.max(0, n - 1));
-
-        await saveSessionsToDisk();
-        return { id, sessionType: result.sessionType };
-      } else if (result.sessionType === 'pty') {
-        const { persistedToTerminalSession, saveSessionsToDisk } = await import('./sessionPersistence');
-        const { sessions, activeSessionId } = await import('./sessions');
-
-        const restored = persistedToTerminalSession(result.sessionData as Parameters<typeof persistedToTerminalSession>[0]);
-
-        // Add to live terminal sessions (guard against duplicates)
-        sessions.update(current => {
-          if (current.some(s => s.id === restored.id)) return current;
-          return [restored, ...current];
-        });
-        activeSessionId.set(restored.id);
 
         // Update local archive state
         entries.update(e => e.filter(entry => entry.id !== id));

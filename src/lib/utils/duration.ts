@@ -52,26 +52,6 @@ export function getElapsedTime(
 }
 
 /**
- * Get elapsed time for PTY sessions using legacy timestamp-based tracking
- * @param startedAt - When the session started (seconds)
- * @param endedAt - When the session ended (seconds), or undefined if still running
- * @param nowSeconds - Current time in seconds (for live updates)
- * @returns Formatted duration string, or null if session hasn't started yet
- */
-export function getLegacyElapsedTime(
-  startedAt: number | undefined,
-  endedAt: number | undefined,
-  nowSeconds: number
-): string | null {
-  if (startedAt === undefined) {
-    return null; // Timer not started yet
-  }
-  const endTime = endedAt ?? nowSeconds;
-  const elapsed = Math.max(0, endTime - startedAt);
-  return formatDuration(elapsed);
-}
-
-/**
  * Extract repository name from a path
  * @param path - Full repository path
  * @returns The last segment of the path (repo name)

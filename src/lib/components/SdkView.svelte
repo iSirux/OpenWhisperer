@@ -1709,6 +1709,7 @@
       {#if showQuickActions}
         <SdkQuickActions
           onSendPrompt={(prompt) => handleSendPrompt(prompt)}
+          onSendAfterIdle={(prompt) => handleSendAfterIdle(prompt)}
           generatedActions={generatedQuickActions}
           hasOutcomeAbove={!!sessionOutcome}
         />

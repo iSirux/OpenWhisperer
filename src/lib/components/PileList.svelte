@@ -8,7 +8,6 @@
     type PileItem,
   } from '$lib/stores/pile';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
-  import { activeSessionId } from '$lib/stores/sessions';
   import { repos, findRepoById } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
   import { createSessionQueue } from '$lib/utils/sessionLaunch';
@@ -68,7 +67,6 @@
   function openItem(item: PileItem) {
     selectedPileItemId.set(item.id);
     activeSdkSessionId.set(null);
-    activeSessionId.set(null);
     navigation.setView('sessions');
   }
 

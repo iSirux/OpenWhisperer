@@ -2,7 +2,7 @@ import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
-import { repos } from './repos';
+import { repos, findRepoById } from './repos';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { rateLimits, codexRateLimits } from './rateLimits';
@@ -498,6 +498,8 @@ export interface SdkSession {
   notionCard?: { id: string; title: string };
   /** Pile item this session was launched from */
   pileItem?: { id: string; title: string };
+  /** GitHub issue this session was launched from (repo Issues view) */
+  githubIssue?: { number: number; title: string; url: string };
   /** Skip project/local hooks (lint, build, etc.) for non-implementation sessions */
   disableHooks?: boolean;
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
@@ -1795,6 +1797,10 @@ function createSdkSessionsStore() {
 
     console.log('[MCP Debug] Final mcpServers to send:', mcpServers?.length ?? 0, mcpServers);
 
+    // Pin gh to the repo's configured GitHub account (backend resolves the token).
+    const sessionRepoId = resolveRepoId(cwd);
+    const ghUser = findRepoById(get(repos).list, sessionRepoId)?.gh_user ?? null;
+
     // Prefer SDK session ID for proper resume, fall back to history messages
     // The SDK session ID allows proper conversation continuation without re-sending all history
     const usesSdkSessionId = sdkSessionId && sdkSessionId.length > 0;
@@ -1826,6 +1832,7 @@ function createSdkSessionsStore() {
       autocompactPct:
         resolvedProvider === 'claude' && autocompactEnabled === false ? 0 : null,
       disableHooks: disableHooks || null,
+      ghUser,
     });
 
     if (effortLevel && modelSupportsEffort(model)) {
@@ -2379,6 +2386,9 @@ function createSdkSessionsStore() {
           const { sdkSessionToPersisted } = await import('./sessionPersistence');
           const persisted = sdkSessionToPersisted(sessionToArchive);
           await invoke('archive_sdk_session', { session: persisted });
+          // Record as reopenable (Ctrl+Shift+T), browser-tab style.
+          const { pushRecentlyClosed } = await import('./recentlyClosed');
+          pushRecentlyClosed(id, 'sdk');
           // Trim archive to configured max
           const currentSettings = get(settings);
           await invoke('trim_archive', {

@@ -132,9 +132,6 @@ pub struct AppConfig {
     pub default_effort_level: EffortLevel,
     #[serde(default = "default_enabled_models")]
     pub enabled_models: Vec<String>,
-    /// Terminal mode used when sdk_provider is Claude
-    #[serde(default)]
-    pub terminal_mode: ClaudeTerminalMode,
     /// OpenAI Codex mode used when sdk_provider is OpenAI
     #[serde(default, alias = "openai_terminal_mode")]
     pub codex_mode: CodexMode,
@@ -361,7 +358,6 @@ impl Default for AppConfig {
             default_model: default_model(),
             default_effort_level: default_effort_level(),
             enabled_models: default_enabled_models(),
-            terminal_mode: ClaudeTerminalMode::Sdk,
             codex_mode: CodexMode::default(),
             sdk_provider: SdkProvider::default(),
             enabled_providers: EnabledProviders::default(),
@@ -717,12 +713,6 @@ impl AppConfig {
         self.repos.get(self.active_repo_index).filter(|r| r.active)
     }
 
-    /// LEGACY / INERT: session work always uses SDK-style flows, so this always
-    /// returns `Sdk`. Retained only because callers/frontend still reference the
-    /// terminal-mode config keys; no live behavior depends on the result.
-    pub fn get_effective_terminal_mode(&self) -> TerminalMode {
-        TerminalMode::Sdk
-    }
 }
 
 /// Number of rolling `.bakN` backups kept alongside `config.json`.

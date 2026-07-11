@@ -277,26 +277,12 @@ pub struct PersistedSdkSession {
     pub rate_limited: Option<serde_json::Value>,
 }
 
-/// Represents a persisted terminal session (PTY)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedTerminalSession {
-    pub id: String,
-    pub repo_path: String,
-    pub prompt: String,
-    pub status: String,
-    pub created_at: u64,
-    /// Terminal output buffer - stored for historical viewing
-    pub output_buffer: Option<String>,
-}
-
 /// Transport container for all persisted sessions (used for frontend ↔ backend IPC).
 /// No longer handles its own file I/O - that's done by SessionIndex.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistedSessions {
     pub sdk_sessions: Vec<PersistedSdkSession>,
-    pub terminal_sessions: Vec<PersistedTerminalSession>,
     pub active_sdk_session_id: Option<String>,
-    pub active_terminal_session_id: Option<String>,
     /// Timestamp when sessions were last saved
     pub saved_at: u64,
 }
@@ -311,7 +297,7 @@ pub struct PersistedSessions {
 #[serde(rename_all = "camelCase")]
 pub struct SessionEntry {
     pub id: String,
-    /// "sdk" | "pty"
+    /// "sdk" (legacy indexes may still contain "pty" entries, which are ignored)
     pub session_type: String,
     /// AI-generated name (if available)
     pub name: Option<String>,
@@ -342,7 +328,6 @@ pub struct SessionEntry {
 pub struct SessionIndex {
     pub entries: Vec<SessionEntry>,
     pub active_sdk_session_id: Option<String>,
-    pub active_terminal_session_id: Option<String>,
     pub saved_at: u64,
     /// Version for future migrations
     #[serde(default)]
@@ -457,7 +442,6 @@ impl SessionIndex {
     /// removes corrupted data files + prunes them from the index.
     pub fn load_all_sessions(&mut self) -> PersistedSessions {
         let mut sdk_sessions = Vec::new();
-        let mut terminal_sessions = Vec::new();
         let mut corrupted_ids: Vec<String> = Vec::new();
 
         for entry in &self.entries {
@@ -467,17 +451,6 @@ impl SessionIndex {
                     Err(e) => {
                         log::error!(
                             "[session_persistence] Skipping corrupted SDK session {}: {}",
-                            entry.id,
-                            e
-                        );
-                        corrupted_ids.push(entry.id.clone());
-                    }
-                },
-                "pty" => match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
-                    Ok(session) => terminal_sessions.push(session),
-                    Err(e) => {
-                        log::error!(
-                            "[session_persistence] Skipping corrupted PTY session {}: {}",
                             entry.id,
                             e
                         );
@@ -517,13 +490,10 @@ impl SessionIndex {
             let b_activity = b.last_activity_at.unwrap_or(b.created_at);
             b_activity.cmp(&a_activity)
         });
-        terminal_sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
         PersistedSessions {
             sdk_sessions,
-            terminal_sessions,
             active_sdk_session_id: self.active_sdk_session_id.clone(),
-            active_terminal_session_id: self.active_terminal_session_id.clone(),
             saved_at: self.saved_at,
         }
     }
@@ -536,7 +506,6 @@ impl SessionIndex {
             .sdk_sessions
             .iter()
             .map(|s| s.id.clone())
-            .chain(sessions.terminal_sessions.iter().map(|s| s.id.clone()))
             .collect();
 
         // Snapshot the previously-stored content hashes so we can skip rewriting
@@ -567,7 +536,7 @@ impl SessionIndex {
         // Rebuild index entries and write each session file, skipping files whose
         // content is byte-identical to what's already on disk (unchanged hash).
         let mut new_entries: Vec<SessionEntry> =
-            Vec::with_capacity(sessions.sdk_sessions.len() + sessions.terminal_sessions.len());
+            Vec::with_capacity(sessions.sdk_sessions.len());
         for sdk in &sessions.sdk_sessions {
             let entry = sdk_to_session_entry(sdk);
             if Self::needs_write(&entry, &old_hashes) {
@@ -575,18 +544,10 @@ impl SessionIndex {
             }
             new_entries.push(entry);
         }
-        for pty in &sessions.terminal_sessions {
-            let entry = pty_to_session_entry(pty);
-            if Self::needs_write(&entry, &old_hashes) {
-                self.save_session_data(&pty.id, pty)?;
-            }
-            new_entries.push(entry);
-        }
         self.entries = new_entries;
 
-        // Copy active IDs and timestamp
+        // Copy active ID and timestamp
         self.active_sdk_session_id = sessions.active_sdk_session_id.clone();
-        self.active_terminal_session_id = sessions.active_terminal_session_id.clone();
         self.saved_at = sessions.saved_at;
 
         // Save index
@@ -608,8 +569,8 @@ impl SessionIndex {
     /// debounced autosave during a live query). Only rewrites the data files of
     /// sessions whose content changed, then rewrites the (small) index once.
     ///
-    /// Unlike `save_from_bulk`, this does NOT delete stale files, touch terminal
-    /// sessions, or enforce overflow — those are handled by full saves, which
+    /// Unlike `save_from_bulk`, this does NOT delete stale files or enforce
+    /// overflow — those are handled by full saves, which
     /// still run on structural changes, on the periodic timer, and on
     /// visibility/unload. This keeps the hot path down to ~1 session-file write
     /// plus the index write.
@@ -645,11 +606,7 @@ impl SessionIndex {
     /// Separate sessions that exceed max count, returning overflow sessions.
     /// Active/running sessions are protected and never overflowed.
     /// Overflow sessions are loaded from their data files, then the files are deleted.
-    /// Returns (overflow_sdk_sessions, overflow_terminal_sessions)
-    pub fn separate_overflow(
-        &mut self,
-        max_sessions: usize,
-    ) -> (Vec<PersistedSdkSession>, Vec<PersistedTerminalSession>) {
+    pub fn separate_overflow(&mut self, max_sessions: usize) -> Vec<PersistedSdkSession> {
         // Sort entries by last_activity_at descending (most recently active first), falling back to created_at
         self.entries.sort_by(|a, b| {
             let a_activity = a.last_activity_at.unwrap_or(a.created_at);
@@ -671,7 +628,6 @@ impl SessionIndex {
 
         // Load full data for overflow sessions and delete their files
         let mut overflow_sdk = Vec::new();
-        let mut overflow_terminal = Vec::new();
 
         for entry in &overflow_entries {
             match entry.session_type.as_str() {
@@ -679,14 +635,6 @@ impl SessionIndex {
                     Ok(session) => overflow_sdk.push(session),
                     Err(e) => log::error!(
                         "[session_persistence] Failed to load overflow SDK session {}: {}",
-                        entry.id,
-                        e
-                    ),
-                },
-                "pty" => match self.load_session_data::<PersistedTerminalSession>(&entry.id) {
-                    Ok(session) => overflow_terminal.push(session),
-                    Err(e) => log::error!(
-                        "[session_persistence] Failed to load overflow PTY session {}: {}",
                         entry.id,
                         e
                     ),
@@ -703,14 +651,13 @@ impl SessionIndex {
             }
         }
 
-        (overflow_sdk, overflow_terminal)
+        overflow_sdk
     }
 
     /// Clear all persisted sessions (delete all data files and reset index)
     pub fn clear(&mut self) -> Result<(), String> {
         self.entries.clear();
         self.active_sdk_session_id = None;
-        self.active_terminal_session_id = None;
         self.saved_at = 0;
 
         // Remove the data directory and all files within
@@ -760,7 +707,6 @@ impl SessionIndex {
 
         let mut index = SessionIndex {
             active_sdk_session_id: old_data.active_sdk_session_id,
-            active_terminal_session_id: old_data.active_terminal_session_id,
             saved_at: old_data.saved_at,
             version: 1,
             entries: Vec::new(),
@@ -786,19 +732,6 @@ impl SessionIndex {
                 continue;
             }
             index.entries.push(sdk_to_session_entry(sdk));
-        }
-
-        // Write each terminal session to its own file
-        for pty in &old_data.terminal_sessions {
-            if let Err(e) = index.save_session_data(&pty.id, pty) {
-                log::error!(
-                    "[session_persistence] Failed to migrate PTY session {}: {}",
-                    pty.id,
-                    e
-                );
-                continue;
-            }
-            index.entries.push(pty_to_session_entry(pty));
         }
 
         // Save the new index
@@ -855,22 +788,6 @@ fn sdk_to_session_entry(session: &PersistedSdkSession) -> SessionEntry {
         created_at: session.created_at,
         last_activity_at: session.last_activity_at,
         total_cost: session.usage.as_ref().map(|u| u.total_cost_usd),
-        content_hash: compute_content_hash(session),
-    }
-}
-
-/// Extract lightweight index metadata from a terminal session
-fn pty_to_session_entry(session: &PersistedTerminalSession) -> SessionEntry {
-    SessionEntry {
-        id: session.id.clone(),
-        session_type: "pty".to_string(),
-        name: None,
-        model: None,
-        cwd: Some(session.repo_path.clone()),
-        status: session.status.clone(),
-        created_at: session.created_at,
-        last_activity_at: None,
-        total_cost: None,
         content_hash: compute_content_hash(session),
     }
 }

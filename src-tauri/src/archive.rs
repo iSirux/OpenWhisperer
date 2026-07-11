@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::config::AppConfig;
-use crate::session_persistence::{atomic_write, PersistedSdkSession, PersistedTerminalSession};
+use crate::session_persistence::{atomic_write, PersistedSdkSession};
 use crate::util::truncate_chars;
 
 /// Lightweight metadata for an archived session, stored in the index
@@ -121,19 +121,6 @@ impl ArchiveIndex {
         // Upsert by ID so re-archived sessions get fresh metadata/timestamps.
         self.entries.retain(|e| e.id != session.id);
         let entry = sdk_session_to_archive_entry(session);
-        self.save_session_data(&session.id, session)?;
-        self.entries.push(entry);
-        Ok(())
-    }
-
-    /// Archive a terminal session: extract metadata and save full data
-    pub fn archive_terminal_session(
-        &mut self,
-        session: &PersistedTerminalSession,
-    ) -> Result<(), String> {
-        // Upsert by ID so re-archived sessions get fresh metadata/timestamps.
-        self.entries.retain(|e| e.id != session.id);
-        let entry = terminal_session_to_archive_entry(session);
         self.save_session_data(&session.id, session)?;
         self.entries.push(entry);
         Ok(())
@@ -374,31 +361,5 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession) -> ArchiveEntry {
         duration_ms: session.accumulated_duration_ms,
         total_cost: session.usage.as_ref().map(|u| u.total_cost_usd),
         message_count,
-    }
-}
-
-/// Extract metadata from a terminal session for the archive index
-fn terminal_session_to_archive_entry(session: &PersistedTerminalSession) -> ArchiveEntry {
-    let prompt = if session.prompt.is_empty() {
-        None
-    } else {
-        Some(truncate_chars(&session.prompt, 200))
-    };
-
-    ArchiveEntry {
-        id: session.id.clone(),
-        session_type: "pty".to_string(),
-        name: None,
-        summary: None,
-        category: None,
-        prompt,
-        model: None,
-        repo_path: Some(session.repo_path.clone()),
-        status: session.status.clone(),
-        created_at: session.created_at,
-        archived_at: now_millis(),
-        duration_ms: 0,
-        total_cost: None,
-        message_count: 0,
     }
 }

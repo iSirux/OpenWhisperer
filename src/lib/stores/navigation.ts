@@ -8,7 +8,7 @@ import { writable } from 'svelte/store';
  * (/settings, /sequences, /usage, /sessions-view) rather than internal navigation.
  */
 
-export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository' | 'notion' | 'cockpit';
+export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository' | 'issues' | 'notion' | 'cockpit';
 
 interface NavigationState {
   mainView: MainView;
@@ -80,6 +80,16 @@ function createNavigationStore() {
       update((state) => ({
         ...state,
         mainView: 'repository',
+        selectedRepoId: repoId === undefined ? state.selectedRepoId : repoId,
+        repositoryAddMode: false,
+      }));
+    },
+
+    /** Show the GitHub issues view for a repo (defaults to the currently selected repo) */
+    showIssues(repoId?: string | null) {
+      update((state) => ({
+        ...state,
+        mainView: 'issues',
         selectedRepoId: repoId === undefined ? state.selectedRepoId : repoId,
         repositoryAddMode: false,
       }));
