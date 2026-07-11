@@ -127,7 +127,7 @@
   );
   // Enabled only with a real cwd, not pending, not querying, and no active run.
   const nmCanStart = $derived(nmHasCwd && !isPending && !isQuerying && !nmActive);
-  const showNoMistakes = $derived(!isPending && !!sessionId);
+  const showNoMistakes = $derived(!isPending && !!sessionId && $settings.system.dev_mode);
 
   function startNoMistakes() {
     if (!sessionId || !nmCanStart) return;

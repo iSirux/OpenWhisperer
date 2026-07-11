@@ -169,14 +169,41 @@
     performClose(session.id, session.type);
   }
 
+  // Pick the session to activate after closing the one at `sessionId`:
+  // prefer the next one down the list, falling back to the previous.
+  function findNextSession(sessionId: string): DisplaySession | null {
+    const idx = allSessions.findIndex((s) => s.id === sessionId);
+    if (idx === -1) return null;
+    for (let i = idx + 1; i < allSessions.length; i++) {
+      if (allSessions[i].id !== sessionId) return allSessions[i];
+    }
+    for (let i = idx - 1; i >= 0; i--) {
+      if (allSessions[i].id !== sessionId) return allSessions[i];
+    }
+    return null;
+  }
+
   function performClose(sessionId: string, sessionType: 'sdk' | 'sequence') {
+    // Was the closing session the one currently open? If so, we advance to the
+    // next session in line rather than dropping the user on an empty view.
+    const wasActive =
+      sessionType === 'sdk'
+        ? $activeSdkSessionId === sessionId
+        : $activeExecutionId === sessionId;
+    const nextSession = wasActive ? findNextSession(sessionId) : null;
+
     if (sessionType === 'sdk') {
       sdkSessions.closeSession(sessionId);
-      if ($activeSdkSessionId === sessionId) {
-        activeSdkSessionId.set(null);
-      }
     } else {
       closeExecution(sessionId);
+    }
+
+    if (wasActive) {
+      if (nextSession) {
+        selectDisplaySession(nextSession);
+      } else if (sessionType === 'sdk' && $activeSdkSessionId === sessionId) {
+        activeSdkSessionId.set(null);
+      }
     }
   }
 
