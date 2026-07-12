@@ -169,6 +169,37 @@ function createReposStore() {
       }
     },
 
+    /** Move a repo to a new position in the list, keeping active_repo_index pointing at the same repo */
+    async moveRepo(fromIndex: number, toIndex: number) {
+      try {
+        const fullConfig = await invoke<Record<string, unknown>>("get_config");
+        const list = fullConfig.repos as RepoConfig[];
+        if (
+          fromIndex === toIndex ||
+          fromIndex < 0 ||
+          toIndex < 0 ||
+          fromIndex >= list.length ||
+          toIndex >= list.length
+        ) {
+          return;
+        }
+        const [moved] = list.splice(fromIndex, 1);
+        list.splice(toIndex, 0, moved);
+        const activeIdx = fullConfig.active_repo_index as number;
+        let newActive = activeIdx;
+        if (activeIdx === fromIndex) newActive = toIndex;
+        else if (fromIndex < activeIdx && toIndex >= activeIdx) newActive = activeIdx - 1;
+        else if (fromIndex > activeIdx && toIndex <= activeIdx) newActive = activeIdx + 1;
+        fullConfig.active_repo_index = newActive;
+        await invoke("save_config", { newConfig: fullConfig });
+        update((s) => ({ ...s, list: [...list], activeIndex: newActive }));
+        emit("settings-changed");
+      } catch (error) {
+        console.error("[repos] Failed to move repo:", error);
+        throw error;
+      }
+    },
+
     /** Update a single repo's metadata and persist */
     async updateRepo(index: number, updates: Partial<RepoConfig>) {
       try {

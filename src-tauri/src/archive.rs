@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, RepoConfig};
 use crate::session_persistence::{atomic_write, PersistedSdkSession};
 use crate::util::truncate_chars;
+
+/// Current archive index version. v1 fixed `repo_path` for worktree sessions
+/// (entries used to store the worktree directory instead of the repository).
+const ARCHIVE_INDEX_VERSION: u32 = 1;
 
 /// Lightweight metadata for an archived session, stored in the index
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,14 +82,70 @@ impl ArchiveIndex {
         let path = Self::index_path();
         if path.exists() {
             match fs::read_to_string(&path) {
-                Ok(content) => match serde_json::from_str(&content) {
-                    Ok(index) => return index,
+                Ok(content) => match serde_json::from_str::<Self>(&content) {
+                    Ok(mut index) => {
+                        index.migrate();
+                        return index;
+                    }
                     Err(e) => log::error!("[archive] Failed to parse index: {}", e),
                 },
                 Err(e) => log::error!("[archive] Failed to read index: {}", e),
             }
         }
-        Self::default()
+        // Fresh index: already on the current version, nothing to migrate.
+        Self {
+            version: ARCHIVE_INDEX_VERSION,
+            ..Self::default()
+        }
+    }
+
+    /// One-time, version-gated index migrations. Saves the index after a
+    /// successful run so the migration only executes once.
+    fn migrate(&mut self) {
+        if self.version >= ARCHIVE_INDEX_VERSION {
+            return;
+        }
+
+        if !self.entries.is_empty() {
+            let (config, _) = AppConfig::load();
+            let mut fixed = 0usize;
+            for entry in &mut self.entries {
+                let Some(current) = entry.repo_path.clone() else {
+                    continue;
+                };
+                let resolved = if entry.session_type == "sdk" {
+                    match read_session_file(&entry.id) {
+                        Ok(data) => resolve_repo_path(
+                            data.get("cwd").and_then(|v| v.as_str()).unwrap_or(&current),
+                            data.get("repoId").and_then(|v| v.as_str()),
+                            data.get("setupRepoPath").and_then(|v| v.as_str()),
+                            &config.repos,
+                        ),
+                        // Data file missing/corrupt: fall back to the path convention.
+                        Err(_) => {
+                            main_repo_from_worktree_path(&current).unwrap_or_else(|| current.clone())
+                        }
+                    }
+                } else {
+                    main_repo_from_worktree_path(&current).unwrap_or_else(|| current.clone())
+                };
+                if resolved != current {
+                    entry.repo_path = Some(resolved);
+                    fixed += 1;
+                }
+            }
+            if fixed > 0 {
+                log::info!(
+                    "[archive] Migrated {} entries from worktree paths to repo paths",
+                    fixed
+                );
+            }
+        }
+
+        self.version = ARCHIVE_INDEX_VERSION;
+        if let Err(e) = self.save() {
+            log::error!("[archive] Failed to save migrated index: {}", e);
+        }
     }
 
     /// Save the archive index to disk (atomic write)
@@ -117,10 +177,14 @@ impl ArchiveIndex {
     }
 
     /// Archive an SDK session: extract metadata and save full data
-    pub fn archive_sdk_session(&mut self, session: &PersistedSdkSession) -> Result<(), String> {
+    pub fn archive_sdk_session(
+        &mut self,
+        session: &PersistedSdkSession,
+        repos: &[RepoConfig],
+    ) -> Result<(), String> {
         // Upsert by ID so re-archived sessions get fresh metadata/timestamps.
         self.entries.retain(|e| e.id != session.id);
-        let entry = sdk_session_to_archive_entry(session);
+        let entry = sdk_session_to_archive_entry(session, repos);
         self.save_session_data(&session.id, session)?;
         self.entries.push(entry);
         Ok(())
@@ -141,15 +205,7 @@ impl ArchiveIndex {
 
     /// Load full session data from disk
     pub fn load_session_data(&self, id: &str) -> Result<serde_json::Value, String> {
-        let path = Self::sessions_dir().join(format!("{}.json", id));
-        if !path.exists() {
-            return Err(format!("Archive session data not found: {}", id));
-        }
-
-        let content =
-            fs::read_to_string(&path).map_err(|e| format!("Failed to read session data: {}", e))?;
-
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse session data: {}", e))
+        read_session_file(id)
     }
 
     /// Search archive entries by query string and optional type filter
@@ -333,8 +389,62 @@ impl ArchiveIndex {
     }
 }
 
+/// Read an archived session's data file from disk
+fn read_session_file(id: &str) -> Result<serde_json::Value, String> {
+    let path = ArchiveIndex::archive_dir()
+        .join("sessions")
+        .join(format!("{}.json", id));
+    if !path.exists() {
+        return Err(format!("Archive session data not found: {}", id));
+    }
+
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read session data: {}", e))?;
+
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse session data: {}", e))
+}
+
+/// Best-effort resolution of a session's main repository path. Sessions run in
+/// a git worktree have the worktree directory as `cwd`; the archive should
+/// record the repository itself so entries group, display, and filter by repo.
+fn resolve_repo_path(
+    cwd: &str,
+    repo_id: Option<&str>,
+    setup_repo_path: Option<&str>,
+    repos: &[RepoConfig],
+) -> String {
+    if let Some(id) = repo_id {
+        if let Some(repo) = repos.iter().find(|r| r.id.as_deref() == Some(id)) {
+            return repo.path.clone();
+        }
+    }
+    if let Some(path) = setup_repo_path.map(str::trim).filter(|p| !p.is_empty()) {
+        return path.to_string();
+    }
+    main_repo_from_worktree_path(cwd).unwrap_or_else(|| cwd.to_string())
+}
+
+/// Invert [`crate::git::GitManager::get_worktree_path`]'s convention: the app
+/// creates worktrees at `<parent>/<repo>-worktrees/<branch>`, so a path whose
+/// parent directory name ends in `-worktrees` maps back to `<parent>/<repo>`.
+fn main_repo_from_worktree_path(path: &str) -> Option<String> {
+    let path = Path::new(path);
+    let worktrees_dir = path.parent()?;
+    let repo_name = worktrees_dir.file_name()?.to_str()?.strip_suffix("-worktrees")?;
+    if repo_name.is_empty() {
+        return None;
+    }
+    Some(
+        worktrees_dir
+            .parent()?
+            .join(repo_name)
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
 /// Extract metadata from an SDK session for the archive index
-fn sdk_session_to_archive_entry(session: &PersistedSdkSession) -> ArchiveEntry {
+fn sdk_session_to_archive_entry(session: &PersistedSdkSession, repos: &[RepoConfig]) -> ArchiveEntry {
     let first_prompt = session
         .messages
         .iter()
@@ -355,12 +465,69 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession) -> ArchiveEntry {
             .and_then(|m| m.category.clone()),
         prompt: first_prompt,
         model: Some(session.model.clone()),
-        repo_path: Some(session.cwd.clone()),
+        repo_path: Some(resolve_repo_path(
+            &session.cwd,
+            session.repo_id.as_deref(),
+            session.setup_repo_path.as_deref(),
+            repos,
+        )),
         status: session.status.clone(),
         created_at: session.created_at,
         archived_at: now_millis(),
         duration_ms: session.accumulated_duration_ms,
         total_cost: session.usage.as_ref().map(|u| u.total_cost_usd),
         message_count,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo(id: &str, path: &str) -> RepoConfig {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "path": path,
+            "name": "test",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn worktree_path_maps_back_to_main_repo() {
+        assert_eq!(
+            main_repo_from_worktree_path(r"F:\Repos\Funnelfeedr-worktrees\email-fixes"),
+            Some(r"F:\Repos\Funnelfeedr".to_string())
+        );
+        // Forward slashes appear in older persisted sessions on Windows too.
+        assert_eq!(
+            main_repo_from_worktree_path("F:/Repos/Funnelfeedr-worktrees/email-fixes"),
+            Some(r"F:/Repos\Funnelfeedr".to_string())
+        );
+        assert_eq!(main_repo_from_worktree_path(r"F:\Repos\Funnelfeedr"), None);
+    }
+
+    #[test]
+    fn resolve_prefers_repo_id_then_setup_path_then_convention() {
+        let repos = vec![repo("abc", r"F:\Repos\Funnelfeedr")];
+        let wt = r"F:\Repos\Funnelfeedr-worktrees\email-fixes";
+
+        assert_eq!(
+            resolve_repo_path(wt, Some("abc"), None, &repos),
+            r"F:\Repos\Funnelfeedr"
+        );
+        assert_eq!(
+            resolve_repo_path(wt, Some("unknown"), Some(r"F:\Repos\Funnelfeedr"), &repos),
+            r"F:\Repos\Funnelfeedr"
+        );
+        assert_eq!(
+            resolve_repo_path(wt, None, None, &repos),
+            r"F:\Repos\Funnelfeedr"
+        );
+        // Non-worktree cwd with no metadata stays as-is.
+        assert_eq!(
+            resolve_repo_path(r"F:\Repos\Other", None, None, &repos),
+            r"F:\Repos\Other"
+        );
     }
 }

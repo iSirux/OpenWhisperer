@@ -1,6 +1,11 @@
 use crate::archive::{ArchiveEntry, ArchiveIndex};
+use crate::config::AppConfig;
 use crate::session_persistence::PersistedSdkSession;
+use parking_lot::Mutex;
 use serde::Serialize;
+use tauri::State;
+
+type ConfigState = Mutex<AppConfig>;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,9 +43,13 @@ pub fn get_archive_entry_data(id: String) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub fn archive_sdk_session(session: PersistedSdkSession) -> Result<(), String> {
+pub fn archive_sdk_session(
+    config: State<ConfigState>,
+    session: PersistedSdkSession,
+) -> Result<(), String> {
+    let repos = config.lock().repos.clone();
     let mut index = ArchiveIndex::load();
-    index.archive_sdk_session(&session)?;
+    index.archive_sdk_session(&session, &repos)?;
     index.save()
 }
 

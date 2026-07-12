@@ -290,6 +290,7 @@
     if (!config) return;
 
     const cardsSnapshot = [...selectedCards];
+    const worktree = useWorktree;
     clearSelection();
 
     let firstId: string | null = null;
@@ -301,6 +302,9 @@
         config.provider,
         config.repo.path,
       );
+      sdkSessions.updateSetupConfig(sessionId, {
+        setupWorktreeMode: worktree ? 'new' : 'main',
+      });
       sdkSessions.set(
         get(sdkSessions).map((s) =>
           s.id === sessionId

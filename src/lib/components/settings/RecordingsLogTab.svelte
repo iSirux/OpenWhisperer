@@ -11,6 +11,30 @@
   let audioUrls = $state<Record<string, string>>({});
   let loadingAudio = $state<Record<string, boolean>>({});
 
+  // Key of the last-copied text ("<recId>:<stage>") for brief "Copied" feedback.
+  let copiedKey = $state<string | null>(null);
+  let copiedTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  async function copyText(key: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copiedKey = key;
+      if (copiedTimeout) clearTimeout(copiedTimeout);
+      copiedTimeout = setTimeout(() => (copiedKey = null), 1500);
+    } catch (error) {
+      console.error("[recordings-log] Failed to copy:", error);
+    }
+  }
+
+  async function openAudioFolder(path: string) {
+    try {
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(path);
+    } catch (error) {
+      console.error("[recordings-log] Failed to open audio folder:", error);
+    }
+  }
+
   onMount(() => {
     debugRecordings.load();
   });
@@ -19,6 +43,7 @@
     for (const url of Object.values(audioUrls)) {
       URL.revokeObjectURL(url);
     }
+    if (copiedTimeout) clearTimeout(copiedTimeout);
   });
 
   async function loadAudio(id: string) {
@@ -62,6 +87,16 @@
     REALTIME_PROVIDER_LABELS[$settings.realtime?.provider ?? "Moonshine"] ?? "Real-time"
   );
 </script>
+
+{#snippet copyButton(key: string, text: string)}
+  <button
+    class="px-1 py-0.5 text-[10px] rounded transition-all text-text-muted hover:text-text-primary hover:bg-border opacity-0 group-hover:opacity-100 focus:opacity-100 {copiedKey === key ? 'opacity-100 text-success' : ''}"
+    title="Copy to clipboard"
+    onclick={() => copyText(key, text)}
+  >
+    {copiedKey === key ? "✓ Copied" : "Copy"}
+  </button>
+{/snippet}
 
 <div class="space-y-4">
   <div class="flex items-start justify-between gap-4">
@@ -121,18 +156,29 @@
 
           <!-- Audio -->
           {#if rec.hasAudio}
-            {#if audioUrls[rec.id]}
-              <!-- svelte-ignore a11y_media_has_caption -->
-              <audio controls src={audioUrls[rec.id]} class="w-full h-8"></audio>
-            {:else}
-              <button
-                class="text-xs px-2 py-1 rounded border border-border hover:bg-border transition-colors text-text-secondary"
-                disabled={loadingAudio[rec.id]}
-                onclick={() => loadAudio(rec.id)}
-              >
-                {loadingAudio[rec.id] ? "Loading…" : "▶ Load audio"}
-              </button>
-            {/if}
+            <div class="flex items-center gap-1.5">
+              {#if audioUrls[rec.id]}
+                <!-- svelte-ignore a11y_media_has_caption -->
+                <audio controls src={audioUrls[rec.id]} class="w-full h-8 min-w-0 flex-1"></audio>
+              {:else}
+                <button
+                  class="text-xs px-2 py-1 rounded border border-border hover:bg-border transition-colors text-text-secondary"
+                  disabled={loadingAudio[rec.id]}
+                  onclick={() => loadAudio(rec.id)}
+                >
+                  {loadingAudio[rec.id] ? "Loading…" : "▶ Load audio"}
+                </button>
+              {/if}
+              {#if rec.audioFilePath}
+                <button
+                  class="shrink-0 text-xs px-2 py-1 rounded border border-border hover:bg-border transition-colors text-text-secondary"
+                  title="Show the audio file in your file explorer"
+                  onclick={() => openAudioFolder(rec.audioFilePath!)}
+                >
+                  📂 Open folder
+                </button>
+              {/if}
+            </div>
           {:else}
             <span class="text-[10px] text-text-muted">no audio</span>
           {/if}
@@ -145,22 +191,31 @@
           <!-- Transcript stages -->
           <div class="space-y-1.5 text-xs">
             {#if rec.realtimeTranscript}
-              <div>
-                <span class="text-text-muted uppercase tracking-wide text-[10px]">Real-time ({realtimeLabel})</span>
+              <div class="group">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-text-muted uppercase tracking-wide text-[10px]">Real-time ({realtimeLabel})</span>
+                  {@render copyButton(`${rec.id}:realtime`, rec.realtimeTranscript)}
+                </div>
                 <p class="text-text-secondary whitespace-pre-wrap">{rec.realtimeTranscript}</p>
               </div>
             {/if}
             {#if rec.whisperTranscript}
-              <div>
-                <span class="text-text-muted uppercase tracking-wide text-[10px]">Whisper (raw)</span>
+              <div class="group">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-text-muted uppercase tracking-wide text-[10px]">Whisper (raw)</span>
+                  {@render copyButton(`${rec.id}:whisper`, rec.whisperTranscript)}
+                </div>
                 <p class="text-text-secondary whitespace-pre-wrap">{rec.whisperTranscript}</p>
               </div>
             {/if}
             {#if rec.cleanedTranscript}
-              <div>
-                <span class="text-text-muted uppercase tracking-wide text-[10px]">
-                  Cleaned{rec.usedDualSource ? " (dual-source)" : ""}{rec.wasCleanedUp === false ? " (unchanged)" : ""}
-                </span>
+              <div class="group">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-text-muted uppercase tracking-wide text-[10px]">
+                    Cleaned{rec.usedDualSource ? " (dual-source)" : ""}{rec.wasCleanedUp === false ? " (unchanged)" : ""}
+                  </span>
+                  {@render copyButton(`${rec.id}:cleaned`, rec.cleanedTranscript)}
+                </div>
                 <p class="text-text-primary whitespace-pre-wrap">{rec.cleanedTranscript}</p>
               </div>
             {/if}

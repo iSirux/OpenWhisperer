@@ -461,6 +461,8 @@ export interface SdkSession {
   unread?: boolean;
   /** Pinned sessions sort to the top of the session list. Persisted. */
   pinned?: boolean;
+  /** When the session was pinned (epoch ms). Newly pinned items sort below earlier pins. Persisted. */
+  pinnedAt?: number;
   aiMetadata?: SessionAiMetadata;
   pendingRepoSelection?: PendingRepoSelection;
   pendingPrompt?: string;
@@ -2526,7 +2528,7 @@ function createSdkSessionsStore() {
     },
 
     togglePin(id: string): void {
-      update(sessions => sessions.map(s => s.id === id ? { ...s, pinned: !s.pinned } : s));
+      update(sessions => sessions.map(s => s.id === id ? { ...s, pinned: !s.pinned, pinnedAt: !s.pinned ? Date.now() : undefined } : s));
     },
 
     /**

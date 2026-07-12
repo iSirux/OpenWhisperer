@@ -368,6 +368,7 @@ export function transformToDisplaySessions(
         isFinished: finished,
         unread: s.unread,
         pinned: s.pinned,
+        pinnedAt: s.pinnedAt,
         latestMessage: getLatestTextMessage(s.messages),
         aiMetadata: s.aiMetadata,
         pendingRepoSelection: s.pendingRepoSelection,
@@ -422,6 +423,12 @@ export function transformToDisplaySessions(
     // Pinned sessions always float to the top
     const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
     if (pinDiff !== 0) return pinDiff;
+    // Within the pinned group, order by when they were pinned so a newly pinned
+    // item lands at the bottom of the pins (just above the unpinned sessions).
+    if (a.pinned && b.pinned) {
+      const pinnedAtDiff = (a.pinnedAt ?? 0) - (b.pinnedAt ?? 0);
+      if (pinnedAtDiff !== 0) return pinnedAtDiff;
+    }
     if (sortOrder === 'StatusThenChronological') {
       const statusDiff = getStatusSortOrder(a.status) - getStatusSortOrder(b.status);
       if (statusDiff !== 0) return statusDiff;

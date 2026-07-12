@@ -485,7 +485,8 @@
   function handleRepoSelect(path: string) {
     cwd = path;
     const repo = activeRepos.find(r => r.path === path);
-    worktreeMode = repo?.worktree_mode || 'main';
+    // 'new' is a one-off per-session choice, never a sticky repo default (mirrors RepositoryView)
+    worktreeMode = repo?.worktree_mode === 'existing' ? 'existing' : 'main';
     selectedWorktreePath = '';
   }
 
@@ -508,8 +509,8 @@
     selectedWorktreePath = '';
     showWorktreeDropdown = false;
 
-    // Persist to repo config
-    if (currentRepoIndex >= 0) {
+    // Persist to repo config — but 'new' is a one-off per-session choice, not a repo default
+    if (currentRepoIndex >= 0 && mode !== 'new') {
       repos.updateRepo(currentRepoIndex, { worktree_mode: mode });
     }
   }

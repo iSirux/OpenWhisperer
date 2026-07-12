@@ -174,6 +174,7 @@
     const action = pendingAction;
     const config = snapshotLaunchConfigForRepo(repo);
     const issuesSnapshot = [...selectedIssues];
+    const worktree = useWorktree;
     clearSelection();
     pendingAction = null;
 
@@ -186,6 +187,9 @@
         config.provider,
         config.repo.path
       );
+      sdkSessions.updateSetupConfig(sessionId, {
+        setupWorktreeMode: worktree ? 'new' : 'main',
+      });
       sdkSessions.set(
         get(sdkSessions).map((s) => (s.id === sessionId ? { ...s, ...issueTag(issue) } : s))
       );

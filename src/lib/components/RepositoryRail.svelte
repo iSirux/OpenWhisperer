@@ -65,6 +65,45 @@
     }
   }
 
+  // Drag-and-drop reordering of repos within the rail.
+  let dragIndex = $state<number | null>(null);
+  // Insertion position: the dragged repo would land *before* the repo at this index.
+  let dropIndex = $state<number | null>(null);
+
+  function handleDragStart(event: DragEvent, index: number) {
+    dragIndex = index;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(index));
+    }
+  }
+
+  function handleDragOver(event: DragEvent, index: number) {
+    if (dragIndex === null) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const before = event.clientY < rect.top + rect.height / 2;
+    dropIndex = before ? index : index + 1;
+  }
+
+  function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    if (dragIndex !== null && dropIndex !== null) {
+      // Dropping at an insertion point after the dragged item shifts down by one
+      // once the item is removed from its original position.
+      const target = dropIndex > dragIndex ? dropIndex - 1 : dropIndex;
+      if (target !== dragIndex) void repos.moveRepo(dragIndex, target);
+    }
+    dragIndex = null;
+    dropIndex = null;
+  }
+
+  function handleDragEnd() {
+    dragIndex = null;
+    dropIndex = null;
+  }
+
   function openAddRepo() {
     navigation.showRepositoryAdd();
   }
@@ -117,14 +156,24 @@
         </span>
       </button>
     {/if}
-    <div class="rail-divider"></div>
-    {#each $repos.list as repo (repo.id ?? repo.path)}
+    {#if $settings.system.dev_mode}
+      <div class="rail-divider"></div>
+    {/if}
+    {#each $repos.list as repo, index (repo.id ?? repo.path)}
       <button
         class="rail-btn"
         class:is-active={currentRepoId === repo.id && !showAddMode}
+        class:is-dragging={dragIndex === index}
+        class:drop-before={dropIndex === index && dragIndex !== null}
+        class:drop-after={dropIndex === index + 1 && index === $repos.list.length - 1 && dragIndex !== null}
+        draggable="true"
+        ondragstart={(e) => handleDragStart(e, index)}
+        ondragover={(e) => handleDragOver(e, index)}
+        ondrop={handleDrop}
+        ondragend={handleDragEnd}
         onclick={(e) => handleRepoClick(e, repo)}
         onauxclick={(e) => handleRepoAuxClick(e, repo)}
-        title="{repo.name}&#10;Ctrl+Click or Middle-Click: new session"
+        title="{repo.name}&#10;Ctrl+Click or Middle-Click: new session&#10;Drag to reorder"
       >
         <span class="icon-wrap">
           <RepoIcon {repo} size="lg" />
@@ -254,6 +303,18 @@
   .cockpit-icon {
     width: 1.25rem;
     height: 1.25rem;
+  }
+
+  .rail-btn.is-dragging {
+    opacity: 0.4;
+  }
+
+  .rail-btn.drop-before {
+    box-shadow: inset 0 2px 0 0 var(--color-accent);
+  }
+
+  .rail-btn.drop-after {
+    box-shadow: inset 0 -2px 0 0 var(--color-accent);
   }
 
   .rail-divider {

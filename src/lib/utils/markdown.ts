@@ -68,6 +68,24 @@ marked.setOptions({
   gfm: true, // GitHub Flavored Markdown
 });
 
+// Marked's default GFM strikethrough accepts single tildes without GFM's
+// flanking rules, so "~245 ... (~58" pairs into one giant <del> span.
+// Models write "~N" for "approximately" all the time; require ~~ instead.
+marked.use({
+  tokenizer: {
+    del(src: string) {
+      const match = /^~~(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))~~(?=[^~]|$)/.exec(src);
+      if (!match) return undefined;
+      return {
+        type: 'del',
+        raw: match[0],
+        text: match[1],
+        tokens: this.lexer.inlineTokens(match[1]),
+      };
+    },
+  },
+});
+
 /**
  * Renders markdown text to HTML
  * @param markdown - The markdown string to render
