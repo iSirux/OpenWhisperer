@@ -58,6 +58,10 @@ And when typing is the slow part, speak instead: a global hotkey records from an
 
 ## Screenshots
 
+**The whole app** — repository rail, session list, and an active agent session:
+
+![Whole app](screenshots/whole-app.png)
+
 **Split panes** — multiple sessions side by side, each with its own model:
 
 ![Split panes](screenshots/split-panes.png)
