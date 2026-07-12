@@ -63,6 +63,26 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 
 ![Whole app](screenshots/whole-app.png)
 
+**Recording overlay** — floating always-on-top window with live waveform and transcription; prepare, send, or discard without leaving your current app:
+
+![Recording overlay](screenshots/recording-overlay.png)
+
+**Dual-provider transcription** — realtime (Moonshine) and Whisper transcripts merged and cleaned by an LLM, with every correction logged:
+
+![Dual transcription](screenshots/dual-transcription.png)
+
+**Split panes** — multiple sessions side by side, each with its own model:
+
+![Split panes](screenshots/split-panes.png)
+
+**Providers, models & effort** — swap between Claude and Codex, pick a model (or Auto), and set effort per session:
+
+![Provider, model and effort selection](screenshots/multi-provider.png)
+
+**Scheduling** — queue a session for when the repo is idle or your next 5h/7d usage reset:
+
+![Schedule session](screenshots/schedule-session.png)
+
 **Launch profiles** — one click to start (or queue) your dev servers, per repo or worktree:
 
 ![Launch profiles](screenshots/launch-profiles.png)
