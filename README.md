@@ -77,9 +77,9 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 
 ![Worktree setup](screenshots/worktree-setup.png)
 
-**Usage dashboard** — sessions, tokens, costs, and streaks over time:
+**Subscription usage** — live rate-limit utilization of your Claude/Codex subscription (5h and weekly windows):
 
-![Usage dashboard](screenshots/usage.png)
+![Subscription usage](screenshots/usage.png)
 
 ## Installation
 
