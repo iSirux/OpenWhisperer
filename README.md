@@ -6,7 +6,7 @@
 [![License: MIT + Commons Clause](https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-blue)](LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB)](https://v2.tauri.app/)
 
-<!-- Screenshot: main window with session list, active SDK session, and recording overlay -->
+![OpenWhisperer main window](screenshots/whole-app.png)
 
 ## Why
 
@@ -15,6 +15,7 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 ## Table of Contents
 
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Installation](#installation)
 - [Transcription Setup](#transcription-setup)
 - [Quick Start](#quick-start)
@@ -55,6 +56,30 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 - **Usage dashboard** — sessions, tokens, costs, and streaks over time
 - **MCP support** — global or per-repo MCP servers (stdio/HTTP/SSE, with OAuth)
 - **In-app updates** — signed updates delivered straight from GitHub releases
+
+## Screenshots
+
+**The whole app** — repository rail, session list, and an active agent session:
+
+![Whole app](screenshots/whole-app.png)
+
+**Launch profiles** — one click to start (or queue) your dev servers, per repo or worktree:
+
+![Launch profiles](screenshots/launch-profiles.png)
+
+![Launch profile setup](screenshots/launch-profile-setup.png)
+
+**Quick actions** — one-click prompts you use often:
+
+![Quick actions](screenshots/quick-actions.png)
+
+**Worktree setup** — auto-named branches, file copying, and setup commands:
+
+![Worktree setup](screenshots/worktree-setup.png)
+
+**Usage dashboard** — sessions, tokens, costs, and streaks over time:
+
+![Usage dashboard](screenshots/usage.png)
 
 ## Installation
 
