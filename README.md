@@ -84,6 +84,10 @@ And when typing is the slow part, speak instead: a global hotkey records from an
 
 ![Worktree setup](screenshots/worktree-setup.png)
 
+**LLM-powered features** — pick what a secondary LLM handles for you: session naming, interaction detection, quick-action generation, transcription cleanup, smart model selection, repo auto-selection, and branch naming:
+
+![LLM features](screenshots/llm-features.png)
+
 **Dual-provider transcription** — realtime (Moonshine) and Whisper transcripts merged and cleaned by an LLM, with every correction logged:
 
 ![Dual transcription](screenshots/dual-transcription.png)

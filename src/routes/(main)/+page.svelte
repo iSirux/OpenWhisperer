@@ -350,7 +350,7 @@
                 : 'text-text-muted hover:text-text-secondary'}"
               onclick={() => sidebarTab.set('sessions')}
             >
-              Sessions
+              Sessions{$sdkSessions.length > 0 ? ` (${$sdkSessions.length})` : ''}
             </button>
             <button
               class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'pile'
