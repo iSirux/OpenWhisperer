@@ -7,7 +7,7 @@ export { default as DeveloperTab } from "./DeveloperTab.svelte";
 export { default as MicrophoneTab } from "./MicrophoneTab.svelte";
 export { default as AudioTab } from "./AudioTab.svelte";
 export { default as WhisperTab } from "./WhisperTab.svelte";
-export { default as VoskTab } from "./VoskTab.svelte";
+export { default as RealtimeTab } from "./RealtimeTab.svelte";
 export { default as TranscriptionTab } from "./TranscriptionTab.svelte";
 export { default as LlmTab } from "./LlmTab.svelte";
 export { default as HotkeysTab } from "./HotkeysTab.svelte";

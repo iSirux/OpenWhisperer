@@ -185,15 +185,15 @@ pub async fn analyze_interaction_needed(
 }
 
 /// Clean up a voice transcription
-/// When vosk_transcription is provided along with use_dual_transcription enabled,
-/// both transcriptions are used to improve accuracy
+/// When realtime_transcription is provided along with use_dual_transcription
+/// enabled, both transcriptions are used to improve accuracy
 #[tauri::command]
 pub async fn clean_transcription(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
     stats: State<'_, UsageStatsState>,
     raw_transcription: String,
-    vosk_transcription: Option<String>,
+    realtime_transcription: Option<String>,
     repo_context: Option<String>,
 ) -> Result<TranscriptionCleanupResult, String> {
     let (cfg, client) = prepare_client(&app, &config, |c| {
@@ -204,15 +204,15 @@ pub async fn clean_transcription(
         }
     })?;
 
-    // Only use dual transcription if the feature is enabled and Vosk transcription is provided
-    let vosk = if cfg.llm.features.use_dual_transcription && cfg.vosk.enabled {
-        vosk_transcription.as_deref()
+    // Only use dual transcription if the feature is enabled and a realtime transcription is provided
+    let realtime = if cfg.llm.features.use_dual_transcription && cfg.realtime.enabled {
+        realtime_transcription.as_deref()
     } else {
         None
     };
 
     let result = client
-        .clean_transcription_with_usage(&raw_transcription, vosk, repo_context.as_deref())
+        .clean_transcription_with_usage(&raw_transcription, realtime, repo_context.as_deref())
         .await?;
     Ok(finish(&stats, "transcription_cleanup", result))
 }

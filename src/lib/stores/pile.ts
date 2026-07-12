@@ -43,7 +43,7 @@ export interface PileItem {
   transcript: string;
   /** Original Whisper transcript before cleanup/edits */
   rawTranscript?: string;
-  voskTranscript?: string;
+  realtimeTranscript?: string;
   wasCleanedUp?: boolean;
   cleanupCorrections?: string[];
   usedDualSource?: boolean;
@@ -67,12 +67,15 @@ export interface PileItem {
   linkedSessionIds?: string[];
   /** Toggleable prompt chips appended to the prompt when this item is launched */
   selectedChips?: string[];
+  /** Debug-recordings log entry for the originating recording, so re-transcription
+   *  and the LLM pipeline attach their stages to the log (no-op if evicted). */
+  debugRecordingId?: string;
 }
 
 export interface AddRecordingInput {
   /** Whisper transcript — may be empty if transcription failed (audio-only item) */
   transcript: string;
-  voskTranscript?: string;
+  realtimeTranscript?: string;
   audioData?: Uint8Array;
   recordingDurationMs?: number;
   audioVisualizationHistory?: number[][];
@@ -93,7 +96,7 @@ export interface AddRecordingInput {
   effortLevel?: EffortLevel;
   title?: string;
   /** Debug-recordings log entry for this recording, so the background LLM
-   *  pipeline can attach its cleanup stage to the log. Not persisted. */
+   *  pipeline can attach its cleanup stage to the log. */
   debugRecordingId?: string;
 }
 
@@ -230,7 +233,7 @@ function createPileStore() {
     // Step 1: transcription cleanup
     try {
       const repoContext = buildAllReposContext(activeReposList);
-      const cleanupResult = await cleanupTranscript(rawTranscript, item.voskTranscript, repoContext);
+      const cleanupResult = await cleanupTranscript(rawTranscript, item.realtimeTranscript, repoContext);
       finalTranscript = cleanupResult.text;
       updateItem(id, {
         transcript: finalTranscript,
@@ -320,7 +323,7 @@ function createPileStore() {
       title: input.title,
       transcript: input.transcript || '',
       rawTranscript: input.rawTranscript ?? (input.transcript || undefined),
-      voskTranscript: input.voskTranscript,
+      realtimeTranscript: input.realtimeTranscript,
       wasCleanedUp: input.wasCleanedUp,
       cleanupCorrections: input.cleanupCorrections,
       usedDualSource: input.usedDualSource,
@@ -337,6 +340,7 @@ function createPileStore() {
       hasAudio: !!input.audioData,
       hasScreenshot: !!input.screenshot,
       screenshotMediaType: input.screenshot?.mediaType,
+      debugRecordingId: input.debugRecordingId,
     };
 
     update((items) => [item, ...items]);
@@ -404,7 +408,13 @@ function createPileStore() {
           rawTranscript: transcript,
           transcriptionError: undefined,
         });
-        await processItem(id);
+        if (item.debugRecordingId) {
+          debugRecordings.update(item.debugRecordingId, {
+            whisperTranscript: transcript,
+            error: undefined,
+          });
+        }
+        await processItem(id, item.debugRecordingId);
       } else {
         updateItem(id, { status: 'error', transcriptionError: 'No transcription returned' });
       }

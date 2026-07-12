@@ -165,7 +165,8 @@ pub struct PersistedSessionAiMetadata {
 pub struct PersistedPendingTranscriptionInfo {
     pub status: String,
     pub transcript: Option<String>,
-    pub vosk_transcript: Option<String>,
+    #[serde(alias = "voskTranscript")]
+    pub realtime_transcript: Option<String>,
     pub cleaned_transcript: Option<String>,
     #[serde(default)]
     pub was_cleaned_up: bool,

@@ -190,7 +190,7 @@ Message to analyze:
     pub async fn clean_transcription_with_usage(
         &self,
         whisper_transcription: &str,
-        vosk_transcription: Option<&str>,
+        realtime_transcription: Option<&str>,
         repo_context: Option<&str>,
     ) -> Result<GenerationResult<TranscriptionCleanupResult>, String> {
         let context_section = if let Some(context) = repo_context {
@@ -206,19 +206,19 @@ Message to analyze:
             String::new()
         };
 
-        let transcription_section = if let Some(vosk) = vosk_transcription {
+        let transcription_section = if let Some(realtime) = realtime_transcription {
             format!(
-                r#"You have two transcriptions from different speech-to-text engines:
+                r#"You have two transcriptions of the same recording from different speech-to-text engines. Neither is inherently more accurate — each may capture words the other missed or misheard.
 
-**Whisper transcription** (more accurate, but may miss quick words):
+**Transcription A**:
 {}
 
-**Vosk transcription** (real-time, may capture words Whisper missed but less accurate overall):
+**Transcription B**:
 {}
 
-Compare both transcriptions and produce the best combined result. Use Whisper as the primary source but incorporate any clearly correct words from Vosk that Whisper may have missed."#,
+Compare both transcriptions and produce the best combined result. Prefer the more complete transcription as the base, and incorporate any clearly correct words or phrases from the other that it missed or misheard."#,
                 whisper_transcription,
-                vosk
+                realtime
             )
         } else {
             format!("Transcription to clean:\n{}", whisper_transcription)

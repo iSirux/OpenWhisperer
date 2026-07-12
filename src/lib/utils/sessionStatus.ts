@@ -144,25 +144,40 @@ export function getStatusBgColor(status: string): string {
 
 /**
  * Map raw Claude SDK agent types to friendly activity-style labels.
+ * Handles count suffixes like "explore ×3" -> "Exploring ×3".
  */
-function getSubagentLabel(agentType: string): string {
+function getSubagentLabel(detail: string): string {
+  const countMatch = detail.match(/^(.+?)(\s*×\d+)$/);
+  const agentType = countMatch ? countMatch[1].trim() : detail.trim();
+  const countSuffix = countMatch ? countMatch[2] : '';
+
+  let label: string;
+
   switch (agentType.toLowerCase()) {
     case 'explore':
-      return 'Exploring';
+      label = 'Exploring';
+      break;
     case 'plan':
-      return 'Planning';
-    case 'general-purpose':
-      return 'Researching';
+      label = 'Planning';
+      break;
     case 'bash':
-      return 'Running';
+      label = 'Running';
+      break;
     case 'statusline-setup':
-      return 'Configuring';
+      label = 'Configuring';
+      break;
+    case 'general-purpose':
+    case 'agent':
+      label = 'Agent';
+      break;
     default:
-      if (agentType && agentType.length > 0) {
-        return agentType.charAt(0).toUpperCase() + agentType.slice(1);
-      }
-      return 'Agent';
+      label = agentType.length > 0
+        ? agentType.charAt(0).toUpperCase() + agentType.slice(1)
+        : 'Agent';
+      break;
   }
+
+  return label + countSuffix;
 }
 
 /**

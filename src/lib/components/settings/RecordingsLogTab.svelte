@@ -59,7 +59,7 @@
     Moonshine: "Moonshine",
   };
   const realtimeLabel = $derived(
-    REALTIME_PROVIDER_LABELS[$settings.vosk?.provider ?? "Moonshine"] ?? "Real-time"
+    REALTIME_PROVIDER_LABELS[$settings.realtime?.provider ?? "Moonshine"] ?? "Real-time"
   );
 </script>
 
@@ -144,10 +144,10 @@
 
           <!-- Transcript stages -->
           <div class="space-y-1.5 text-xs">
-            {#if rec.voskTranscript}
+            {#if rec.realtimeTranscript}
               <div>
                 <span class="text-text-muted uppercase tracking-wide text-[10px]">Real-time ({realtimeLabel})</span>
-                <p class="text-text-secondary whitespace-pre-wrap">{rec.voskTranscript}</p>
+                <p class="text-text-secondary whitespace-pre-wrap">{rec.realtimeTranscript}</p>
               </div>
             {/if}
             {#if rec.whisperTranscript}

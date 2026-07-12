@@ -40,7 +40,7 @@
 
   const isWindows = navigator.userAgent.includes('Windows');
   const moonshineContainer = $derived(
-    $settings.vosk.moonshine.docker.container_name || 'open-whisperer-moonshine'
+    $settings.realtime.moonshine.docker.container_name || 'open-whisperer-moonshine'
   );
   const whisperContainer = $derived($settings.whisper.docker.container_name || 'whisper');
 

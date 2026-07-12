@@ -2,7 +2,7 @@
   /**
    * TranscriptDiff - Git diff-like visualization for transcript cleanup changes
    * Shows original vs cleaned text with highlighted additions/removals
-   * When dual-source is used, shows two diffs side-by-side (Whisper→Cleaned and Vosk→Cleaned)
+   * When dual-source is used, shows two diffs side-by-side (Whisper→Cleaned and Real-time→Cleaned)
    */
 
   const STORAGE_KEY = 'transcript-diff-expanded';
@@ -12,8 +12,8 @@
     original: string;
     /** Cleaned transcript text (after cleanup) */
     cleaned: string;
-    /** Vosk real-time transcript (optional, for dual-source display) */
-    voskTranscript?: string;
+    /** Real-time transcript (optional, for dual-source display) */
+    realtimeTranscript?: string;
     /** Whether dual-source cleanup was used */
     usedDualSource?: boolean;
     /** List of corrections made (optional, for tooltip) */
@@ -22,7 +22,7 @@
     collapsed?: boolean;
   }
 
-  let { original, cleaned, voskTranscript, usedDualSource = false, corrections = [], collapsed = false }: Props = $props();
+  let { original, cleaned, realtimeTranscript, usedDualSource = false, corrections = [], collapsed = false }: Props = $props();
 
   // Load saved preference from localStorage, fallback to collapsed prop
   function loadExpandedState(): boolean {
@@ -128,13 +128,13 @@
   }
 
   let whisperDiffSegments = $derived(mergeSegments(computeWordDiff(original, cleaned)));
-  let voskDiffSegments = $derived(voskTranscript ? mergeSegments(computeWordDiff(voskTranscript, cleaned)) : []);
-  // Show if whisper differs from cleaned OR vosk differs from cleaned (or whisper)
-  let hasChanges = $derived(original !== cleaned || (voskTranscript && voskTranscript !== cleaned));
+  let realtimeDiffSegments = $derived(realtimeTranscript ? mergeSegments(computeWordDiff(realtimeTranscript, cleaned)) : []);
+  // Show if whisper differs from cleaned OR realtime differs from cleaned (or whisper)
+  let hasChanges = $derived(original !== cleaned || (realtimeTranscript && realtimeTranscript !== cleaned));
   let whisperChangeCount = $derived(countChanges(whisperDiffSegments));
-  let voskChangeCount = $derived(voskTranscript ? countChanges(voskDiffSegments) : 0);
-  let totalChangeCount = $derived(corrections.length || Math.max(whisperChangeCount, voskChangeCount));
-  let showDualDiffs = $derived(usedDualSource && voskTranscript);
+  let realtimeChangeCount = $derived(realtimeTranscript ? countChanges(realtimeDiffSegments) : 0);
+  let totalChangeCount = $derived(corrections.length || Math.max(whisperChangeCount, realtimeChangeCount));
+  let showDualDiffs = $derived(usedDualSource && realtimeTranscript);
 </script>
 
 {#if hasChanges}
@@ -200,19 +200,19 @@
               </div>
             </div>
 
-            <!-- Vosk diff -->
-            <div class="diff-panel vosk">
+            <!-- Real-time diff -->
+            <div class="diff-panel realtime">
               <div class="diff-panel-header">
-                <span class="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-purple-500/15 text-purple-400 border border-purple-500/30 rounded">Vosk</span>
-                {#if voskChangeCount > 0}
+                <span class="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-purple-500/15 text-purple-400 border border-purple-500/30 rounded">Real-time</span>
+                {#if realtimeChangeCount > 0}
                   <span class="text-[10px] text-text-muted">→ Cleaned</span>
-                  <span class="text-[10px] text-text-muted ml-auto">({voskChangeCount} {voskChangeCount === 1 ? 'change' : 'changes'})</span>
+                  <span class="text-[10px] text-text-muted ml-auto">({realtimeChangeCount} {realtimeChangeCount === 1 ? 'change' : 'changes'})</span>
                 {:else}
                   <span class="text-[10px] text-green-400 ml-auto">No changes</span>
                 {/if}
               </div>
               <div class="diff-content">
-                {#each voskDiffSegments as segment}
+                {#each realtimeDiffSegments as segment}
                   {#if segment.type === 'unchanged'}
                     <span class="text-text-primary">{segment.text}</span>
                   {:else if segment.type === 'removed'}
@@ -277,7 +277,7 @@
     border-left: 2px solid var(--color-accent);
   }
 
-  .diff-panel.vosk {
+  .diff-panel.realtime {
     border-left-color: #a78bfa;
   }
 

@@ -5,7 +5,7 @@
 OpenWhisperer is a Tauri desktop app with three main code areas:
 
 - `src/`: SvelteKit + TypeScript frontend (routes, components, stores, composables, utilities).
-- `src-tauri/src/`: Rust backend (Tauri commands, PTY/session management, Whisper/Vosk/LLM integrations, sequences).
+- `src-tauri/src/`: Rust backend (Tauri commands, PTY/session management, Whisper/real-time/LLM integrations, sequences).
 - `src-tauri/sidecar/`: Node/TypeScript sidecar process for Claude Agent SDK.
 
 Supporting folders:

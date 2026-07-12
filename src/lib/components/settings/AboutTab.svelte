@@ -336,7 +336,7 @@
       </div>
       <div class="flex items-center gap-2">
         <span class="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0"></span>
-        Whisper / Vosk ASR
+        Whisper / real-time ASR
       </div>
       <div class="flex items-center gap-2">
         <span class="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0"></span>

@@ -306,6 +306,9 @@ export interface PendingRepoSelection {
   recommendedIndex: number | null;
   reasoning: string;
   confidence: string;
+  /** Debug-recordings log entry for the originating recording, so the post-selection
+   *  LLM cleanup pass can attach its result to the log. */
+  debugRecordingId?: string;
 }
 
 export type PendingTranscriptionStatus = 'recording' | 'transcribing' | 'processing';
@@ -316,9 +319,12 @@ export interface PendingTranscriptionInfo {
   recordingStartedAt?: number;
   recordingDurationMs?: number;
   audioData?: Uint8Array;
+  /** Debug-recordings log entry for this recording, so retries and later LLM
+   *  stages attach to the same log entry. */
+  debugRecordingId?: string;
   transcript?: string;
   transcriptionError?: string;
-  voskTranscript?: string;
+  realtimeTranscript?: string;
   cleanedTranscript?: string;
   wasCleanedUp?: boolean;
   cleanupCorrections?: string[];
@@ -352,9 +358,12 @@ export interface FailedRecording {
   audioId: string;
   /** What to do with the transcript on a successful retry. */
   mode: 'send' | 'append';
-  voskTranscript?: string;
+  realtimeTranscript?: string;
   error: string;
   createdAt: number;
+  /** Debug-recordings log entry for this recording, so a successful retry can
+   *  attach its Whisper/cleanup stages to the log. */
+  debugRecordingId?: string;
 }
 
 /** Why a session is sitting in the `queued` state. */
@@ -524,9 +533,11 @@ export interface SdkSession {
   liveSubagentIds?: string[];
   /** Runtime-only. Background tasks (from SDK task_started/task_notification) still running,
    *  classified by kind:
-   *  - 'agent'   — a background subagent (non-bash task types). Completion deferral for these is
-   *                handled via liveSubagentIds (SubagentStart/Stop hooks); here they only drive
-   *                the "running in background" indicator.
+   *  - 'agent'   — a background subagent (non-bash task types). These DEFER completion just like
+   *                liveSubagentIds: the same agents also arrive via SubagentStart/Stop hooks, but
+   *                the in-stream task_started can see them before (or without) the hook event —
+   *                blocking on both channels is what keeps a turn that ends right after spawning
+   *                background subagents from completing prematurely.
    *  - 'command' — a backgrounded bash command that is expected to finish (build, test run…).
    *                These DEFER completion like subagents: the session stays busy until they settle.
    *  - 'server'  — a backgrounded bash command matching `settings.server_command_patterns`
@@ -1237,12 +1248,16 @@ function createSdkSessionsStore() {
         // DEFER real completion until the last subagent_stop, so we don't prematurely mark the
         // session Done / play the completion sound / run AI analysis on a partial transcript.
         //
+        // Background AGENT tasks (kind 'agent') block too: they're the same subagents seen through
+        // the in-stream task_started channel, which can register them before (or without) the
+        // SubagentStart hook event arriving — without this, a turn that ends right after spawning
+        // background subagents reads as Done and plays the completion sound while they still work.
         // Background bash COMMANDS (kind 'command') also defer completion — they're expected to
         // finish (builds, test runs…). Commands matching the server patterns (kind 'server') can
         // run indefinitely, so they never block; they only drive the "server running" indicator.
         const liveSubagents = snapshot.liveSubagentIds ?? [];
-        const liveBlockingCommands = (snapshot.liveBackgroundTasks ?? []).filter(t => t.kind === 'command');
-        if (!wasStoppedByUser && (liveSubagents.length > 0 || liveBlockingCommands.length > 0)) {
+        const liveBlockingTasks = (snapshot.liveBackgroundTasks ?? []).filter(t => t.kind !== 'server');
+        if (!wasStoppedByUser && (liveSubagents.length > 0 || liveBlockingTasks.length > 0)) {
           update(sessions =>
             sessions.map(s => {
               if (s.id !== id) return s;
@@ -1258,7 +1273,7 @@ function createSdkSessionsStore() {
             })
           );
           debouncedSave(id);
-          console.log(`[sdkSessions] sdk-done deferred: ${liveSubagents.length} subagent(s), ${liveBlockingCommands.length} background command(s) still running (session: ${id})`);
+          console.log(`[sdkSessions] sdk-done deferred: ${liveSubagents.length} subagent(s), ${liveBlockingTasks.length} background task(s) still running (session: ${id})`);
           return;
         }
 
@@ -1487,7 +1502,7 @@ function createSdkSessionsStore() {
             if (
               s.completionDeferred &&
               live.length === 0 &&
-              !(s.liveBackgroundTasks ?? []).some(t => t.kind === 'command') &&
+              !(s.liveBackgroundTasks ?? []).some(t => t.kind !== 'server') &&
               !s.stopRequestedAt
             ) {
               shouldFinalize = true;
@@ -1581,7 +1596,7 @@ function createSdkSessionsStore() {
               s.completionDeferred &&
               !s.stopRequestedAt &&
               (s.liveSubagentIds ?? []).length === 0 &&
-              !live.some(t => t.kind === 'command')
+              !live.some(t => t.kind !== 'server')
             ) {
               shouldFinalize = true;
             }

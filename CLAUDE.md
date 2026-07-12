@@ -135,9 +135,9 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `ThemesTab.svelte` - Theme selection (Midnight, Slate, Snow, Sand)
 - `MicrophoneTab.svelte` / `AudioTab.svelte` - Microphone selection; recording behavior (stop action, screenshots, sounds, open mic)
 - `VoiceCommandsTab.svelte` - Voice command phrases
-- `TranscriptionTab.svelte` - Unified transcription settings: final transcript source mode (Whisper / Realtime / Both) and embeds `WhisperTab` + `VoskTab` as sub-sections (they are no longer standalone tabs)
+- `TranscriptionTab.svelte` - Unified transcription settings: final transcript source mode (Whisper / Realtime / Both) and embeds `WhisperTab` + `RealtimeTab` as sub-sections (they are no longer standalone tabs)
 - `WhisperTab.svelte` - Whisper provider selection (Local/OpenAI/Groq/Custom) with Docker configuration
-- `VoskTab.svelte` - Real-time transcription provider selection (Moonshine recommended, Vosk, VoiceStreamAI, Speaches, SherpaOnnx) with per-provider config and Docker support
+- `RealtimeTab.svelte` - Real-time transcription provider selection (Moonshine recommended, Vosk, VoiceStreamAI, Speaches, SherpaOnnx) with per-provider config and Docker support
 - `LlmTab.svelte` - LLM integration settings with provider selection and feature toggles
 - `QueueTab.svelte` - Smart Queue settings (rate-limit queueing, stagger delays)
 - `McpTab.svelte` - MCP server configuration (add/edit/remove/test servers, OAuth)
@@ -189,7 +189,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `config/` - Configuration module (was `config.rs`; all types re-exported from `crate::config`):
   - `mod.rs` - `AppConfig` aggregate, legacy `GitConfig`
   - `provider.rs` - `SdkProvider`, `OpenAiAuthMethod`, `ClaudeAuthMethod`, `ClaudeTerminalMode`, `CodexMode`, `TerminalMode`
-  - `realtime.rs` - `VoskConfig` (general realtime transcription config despite the legacy name), `RealtimeProvider` (Vosk | VoiceStreamAI | SherpaOnnx | Speaches | **Moonshine**, default Moonshine), `TranscriptionMode` (Whisper | Realtime | Both), per-provider sub-configs
+  - `realtime.rs` - `RealtimeConfig` (real-time transcription config; on-disk key `realtime`, formerly `vosk` — its top-level endpoint/sample_rate/docker still hold the Vosk provider's own settings), `RealtimeProvider` (Vosk | VoiceStreamAI | SherpaOnnx | Speaches | **Moonshine**, default Moonshine), `TranscriptionMode` (Whisper | Realtime | Both), per-provider sub-configs
   - `whisper.rs` - `WhisperProvider`, `WhisperConfig`, `DockerConfig`, `DockerComputeType`
   - `llm.rs` - `LlmProvider`, `LlmConfig`, `LlmFeaturesConfig`, `AutoModelEffort`, `RepoAutoSelectConfidence`
   - `audio.rs` - `AudioConfig`, `VoiceCommandConfig`, `OpenMicConfig`, `RecordAndSendAction`
@@ -302,7 +302,7 @@ App config stored in system config directory (`open-whisperer/config.json`), ver
 - `sdk_provider` / auth methods / `CodexMode` - Provider selection and per-provider execution settings
 - `theme` - Midnight | Slate | Snow | Sand
 - `whisper` - Batch transcription provider, endpoint, model, language, Docker settings
-- `vosk` - Real-time transcription config (legacy key name): `provider` (RealtimeProvider), `transcription_mode` (Whisper | Realtime | Both), per-provider endpoints, Docker settings
+- `realtime` - Real-time transcription config (on-disk key `realtime`, renamed from `vosk` in the v3→v4 config migration): `provider` (RealtimeProvider), `transcription_mode` (Whisper | Realtime | Both), per-provider endpoints, Docker settings
 - `hotkeys` - Global shortcuts (toggle recording, send prompt, switch repo, transcribe to input, pile recording)
 - `repos` - Repositories with paths, descriptions/keywords/vocabulary, icon/color, default models, MCP server and launch profile associations, GitHub link + gh account (see Per-Repo GitHub Integration)
 - `audio` - Recording device, stop action (`record_and_send_action`: send/prepare/pile), screenshot capture, sound settings
@@ -388,7 +388,7 @@ Optional live transcription runs alongside Whisper. The old Vosk-only integratio
 
 - **Providers** (`RealtimeProvider`): **Moonshine** (default/recommended — Whisper-level accuracy), Vosk, VoiceStreamAI, Speaches, SherpaOnnx. Backend clients live in `src-tauri/src/realtime.rs` behind a common `RealtimeSession` trait.
 - **Transcription mode** (`TranscriptionMode`): Whisper | Realtime | Both — which engine produces the *final* transcript (configured in Settings → Transcription).
-- Config still lives under the legacy `vosk` key / `VoskConfig` struct for back-compat.
+- Config lives under the `realtime` key / `RealtimeConfig` struct (renamed from `vosk` / `VoskConfig` in the v3→v4 migration; a `#[serde(alias = "vosk")]` also loads any pre-migration config).
 - **Docker:** `docker/` at the repo root holds CPU-only build contexts (moonshine shim on port 2702 speaking the Vosk WebSocket protocol, sherpa-onnx on 6006; real Vosk uses 2700, Speaches 2701). `run_docker_setup` embeds these at compile time and drives a one-click terminal build/run from settings.
 
 ### Data Flow

@@ -741,7 +741,7 @@
               </button>
 
               <!-- Dual-source transcription sub-option -->
-              {#if $settings.llm.features.clean_transcription && $settings.vosk?.enabled}
+              {#if $settings.llm.features.clean_transcription && $settings.realtime?.enabled}
                 <button
                   class="w-full flex items-center justify-between p-3 pl-8 rounded border-2 transition-all text-left {$settings
                     .llm.features.use_dual_transcription
@@ -806,7 +806,7 @@
                         >
                       </div>
                       <p class="text-xs text-text-muted mt-0.5">
-                        Compare both Vosk (real-time) and Whisper (accurate)
+                        Compare both real-time and Whisper (accurate)
                         transcriptions for maximum accuracy
                       </p>
                     </div>

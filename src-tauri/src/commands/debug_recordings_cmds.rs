@@ -2,7 +2,7 @@
 //!
 //! Mirrors the pile audio/JSON persistence pattern (`pile_cmds`) but is intended
 //! purely for debugging: it captures every recording's audio + all transcription
-//! stages (Vosk real-time, Whisper raw, LLM cleanup) so a developer can replay and
+//! stages (realtime, Whisper raw, LLM cleanup) so a developer can replay and
 //! inspect what happened. The frontend keeps the list trimmed to the N newest and
 //! deletes evicted audio, so storage stays bounded.
 //!

@@ -31,8 +31,8 @@ export function makeInlineDictation(getRepo?: () => RepoLike | undefined) {
       recording.startRecording(get(settings).audio.device_id || undefined),
 
     async stop(): Promise<string | null> {
-      // Capture the realtime/Vosk transcript before stopping clears it.
-      const voskTranscript = get(recording).realtimeTranscript || '';
+      // Capture the realtime transcript before stopping clears it.
+      const realtimeTranscript = get(recording).realtimeTranscript || '';
 
       // Own the debug-recordings id so the LLM cleanup stage lands in the log.
       const debugId = recording.newRecordingId();
@@ -55,7 +55,7 @@ export function makeInlineDictation(getRepo?: () => RepoLike | undefined) {
       const repo = getRepo?.();
       const repoContext = repo ? buildSingleRepoContext(repo) : undefined;
       try {
-        const result = await cleanupTranscript(raw, voskTranscript, repoContext);
+        const result = await cleanupTranscript(raw, realtimeTranscript, repoContext);
         debugRecordings.update(debugId, {
           cleanedTranscript: result.text,
           wasCleanedUp: result.wasCleanedUp,

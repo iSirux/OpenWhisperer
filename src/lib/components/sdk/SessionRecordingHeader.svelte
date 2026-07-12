@@ -307,7 +307,7 @@
           {#if pendingTranscription.wasCleanedUp}
             <span class="cleaned-badge">Cleaned</span>
           {/if}
-          {#if pendingTranscription.voskTranscript}
+          {#if pendingTranscription.realtimeTranscript}
             <span class="dual-source-badge">Dual-source</span>
           {/if}
           {#if displayDuration}
@@ -322,7 +322,7 @@
       </div>
 
       <!-- Collapsible details section (sources + diff) -->
-      {#if pendingTranscription.voskTranscript || (pendingTranscription.wasCleanedUp && pendingTranscription.cleanedTranscript !== pendingTranscription.transcript)}
+      {#if pendingTranscription.realtimeTranscript || (pendingTranscription.wasCleanedUp && pendingTranscription.cleanedTranscript !== pendingTranscription.transcript)}
         <details class="transcript-details">
           <summary>
             <span>Details</span>
@@ -332,28 +332,28 @@
           </summary>
           <div class="details-content">
             <!-- Source transcripts -->
-            {#if pendingTranscription.voskTranscript}
+            {#if pendingTranscription.realtimeTranscript}
               <div class="sources-compact">
                 <div class="source-row">
                   <span class="source-badge whisper-badge">Whisper</span>
                   <span class="source-text-inline">{pendingTranscription.transcript}</span>
                 </div>
                 <div class="source-row">
-                  <span class="source-badge vosk-badge">Vosk</span>
-                  <span class="source-text-inline">{pendingTranscription.voskTranscript}</span>
+                  <span class="source-badge realtime-badge">Real-time</span>
+                  <span class="source-text-inline">{pendingTranscription.realtimeTranscript}</span>
                 </div>
               </div>
             {/if}
 
             <!-- Diff visualization -->
-            {#if (pendingTranscription.wasCleanedUp && pendingTranscription.cleanedTranscript && pendingTranscription.cleanedTranscript !== pendingTranscription.transcript) || (pendingTranscription.voskTranscript && pendingTranscription.voskTranscript !== pendingTranscription.transcript)}
+            {#if (pendingTranscription.wasCleanedUp && pendingTranscription.cleanedTranscript && pendingTranscription.cleanedTranscript !== pendingTranscription.transcript) || (pendingTranscription.realtimeTranscript && pendingTranscription.realtimeTranscript !== pendingTranscription.transcript)}
               <div class="diff-container">
                 <TranscriptDiff
                   original={pendingTranscription.transcript}
                   cleaned={pendingTranscription.cleanedTranscript ||
                     pendingTranscription.transcript}
-                  voskTranscript={pendingTranscription.voskTranscript}
-                  usedDualSource={!!pendingTranscription.voskTranscript}
+                  realtimeTranscript={pendingTranscription.realtimeTranscript}
+                  usedDualSource={!!pendingTranscription.realtimeTranscript}
                   corrections={pendingTranscription.cleanupCorrections || []}
                   collapsed={false}
                 />
@@ -1032,7 +1032,7 @@
     color: var(--color-accent);
   }
 
-  .vosk-badge {
+  .realtime-badge {
     background: rgba(139, 92, 246, 0.15);
     border: 1px solid rgba(139, 92, 246, 0.3);
     color: #a78bfa;

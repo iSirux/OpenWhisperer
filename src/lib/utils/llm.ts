@@ -168,14 +168,14 @@ export function isTranscriptionCleanupEnabled(): boolean {
 }
 
 /**
- * Check if dual-source transcription cleanup is enabled (using both Vosk and Whisper)
+ * Check if dual-source transcription cleanup is enabled (using both realtime and Whisper)
  */
 export function isDualTranscriptionEnabled(): boolean {
   const currentSettings = get(settings);
   return (
     isTranscriptionCleanupEnabled() &&
     currentSettings.llm?.features?.use_dual_transcription &&
-    currentSettings.vosk?.enabled
+    currentSettings.realtime?.enabled
   ) ?? false;
 }
 
@@ -380,34 +380,34 @@ export async function analyzeInteractionNeeded(
 /**
  * Clean up a voice transcription using the LLM integration
  * Returns the original text if cleanup is disabled or fails
- * @param whisperTranscription - The Whisper transcription (primary source)
- * @param voskTranscription - Optional Vosk real-time transcription (secondary source for comparison)
+ * @param whisperTranscription - The Whisper transcription
+ * @param realtimeTranscription - Optional realtime transcription; when both exist the LLM merges them, preferring the more complete one
  * @param repoContext - Optional repo context (description + keywords) to help with cleanup
  */
 export async function cleanTranscription(
   whisperTranscription: string,
-  voskTranscription?: string,
+  realtimeTranscription?: string,
   repoContext?: string
 ): Promise<{ text: string; wasCleanedUp: boolean; corrections: string[]; usedDualSource: boolean }> {
   if (!isTranscriptionCleanupEnabled()) {
     return { text: whisperTranscription, wasCleanedUp: false, corrections: [], usedDualSource: false };
   }
 
-  // Only pass Vosk transcription if dual-source is enabled
-  const voskToUse = isDualTranscriptionEnabled() ? voskTranscription : undefined;
+  // Only pass the realtime transcription if dual-source is enabled
+  const realtimeToUse = isDualTranscriptionEnabled() ? realtimeTranscription : undefined;
 
   try {
     const result = await invoke<TranscriptionCleanupResult>('clean_transcription', {
       rawTranscription: whisperTranscription,
-      voskTranscription: voskToUse || null,
+      realtimeTranscription: realtimeToUse || null,
       repoContext: repoContext || null,
     });
-    console.log('[llm] Transcription cleaned:', result.corrections_made, voskToUse ? '(dual-source)' : '(whisper only)');
+    console.log('[llm] Transcription cleaned:', result.corrections_made, realtimeToUse ? '(dual-source)' : '(whisper only)');
     return {
       text: result.cleaned_text,
       wasCleanedUp: result.corrections_made.length > 0,
       corrections: result.corrections_made,
-      usedDualSource: !!voskToUse,
+      usedDualSource: !!realtimeToUse,
     };
   } catch (error) {
     console.error('[llm] Failed to clean transcription:', error);

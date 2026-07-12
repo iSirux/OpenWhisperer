@@ -40,8 +40,8 @@ export const PARALLEL_AGENT_SYSTEM_PROMPT =
 export interface ProcessedTranscript {
   /** Final cleaned transcript */
   transcript: string;
-  /** Vosk transcript (if available), also cleaned */
-  voskTranscript?: string;
+  /** Real-time transcript (if available), also cleaned */
+  realtimeTranscript?: string;
   /** Whether a voice command was detected */
   commandDetected: boolean;
   /** The detected command (if any) */
@@ -67,7 +67,7 @@ export interface CleanupResult {
   wasCleanedUp: boolean;
   /** List of corrections made */
   corrections?: string[];
-  /** Whether dual-source (Whisper + Vosk) cleanup was used */
+  /** Whether dual-source (Whisper + realtime) cleanup was used */
   usedDualSource?: boolean;
 }
 
@@ -97,15 +97,15 @@ export interface SystemPromptOptions {
  */
 export function processVoiceCommands(
   whisperTranscript: string,
-  voskTranscript?: string
+  realtimeTranscript?: string
 ): ProcessedTranscript {
   const result = processVoiceCommand(whisperTranscript);
-  let processedVosk = voskTranscript;
+  let processedRealtime = realtimeTranscript;
 
-  // Also strip command from Vosk if detected
-  if (voskTranscript && result.commandDetected && result.detectedCommand) {
-    const voskResult = processVoiceCommand(voskTranscript);
-    processedVosk = voskResult.cleanedTranscript;
+  // Also strip command from the realtime transcript if detected
+  if (realtimeTranscript && result.commandDetected && result.detectedCommand) {
+    const realtimeResult = processVoiceCommand(realtimeTranscript);
+    processedRealtime = realtimeResult.cleanedTranscript;
   }
 
   if (result.commandDetected) {
@@ -116,7 +116,7 @@ export function processVoiceCommands(
 
   return {
     transcript: result.cleanedTranscript,
-    voskTranscript: processedVosk,
+    realtimeTranscript: processedRealtime,
     commandDetected: result.commandDetected,
     detectedCommand: result.detectedCommand ?? undefined,
     commandType: result.commandType,
@@ -133,7 +133,7 @@ export function processVoiceCommands(
  */
 export async function cleanupTranscript(
   transcript: string,
-  voskTranscript?: string,
+  realtimeTranscript?: string,
   repoContext?: string
 ): Promise<CleanupResult> {
   if (!isTranscriptionCleanupEnabled()) {
@@ -141,7 +141,7 @@ export async function cleanupTranscript(
   }
 
   try {
-    const cleanupResult = await cleanTranscription(transcript, voskTranscript, repoContext);
+    const cleanupResult = await cleanTranscription(transcript, realtimeTranscript, repoContext);
 
     if (cleanupResult.wasCleanedUp) {
       console.log(
@@ -327,14 +327,14 @@ export function buildSingleRepoContext(repo: { path: string; name: string; descr
  */
 export function updatePendingWithCleanup(
   sessionId: string,
-  voskTranscript: string | undefined,
+  realtimeTranscript: string | undefined,
   cleanedTranscript: string,
   wasCleanedUp: boolean,
   corrections?: string[],
   usedDualSource?: boolean
 ): void {
   sdkSessions.updatePendingTranscription(sessionId, {
-    voskTranscript: voskTranscript || undefined,
+    realtimeTranscript: realtimeTranscript || undefined,
     cleanedTranscript,
     wasCleanedUp,
     cleanupCorrections: corrections,

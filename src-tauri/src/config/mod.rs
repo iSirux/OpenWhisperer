@@ -104,8 +104,11 @@ pub struct AppConfig {
     pub config_version: u32,
     #[serde(default)]
     pub whisper: WhisperConfig,
-    #[serde(default)]
-    pub vosk: VoskConfig,
+    /// Real-time transcription config. On-disk key `realtime` (was `vosk`
+    /// before the v4 migration; `RealtimeConfig` still holds the Vosk
+    /// provider's own endpoint/sample_rate/docker at the top level).
+    #[serde(default, alias = "vosk")]
+    pub realtime: RealtimeConfig,
     /// @deprecated Legacy git settings; superseded by per-repo worktree config.
     /// Kept (as a default field) only so old configs round-trip.
     #[serde(default)]
@@ -340,7 +343,7 @@ impl Default for AppConfig {
             // to 0 via #[serde(default)], which is what drives the migration ladder.)
             config_version: CURRENT_CONFIG_VERSION,
             whisper: WhisperConfig::default(),
-            vosk: VoskConfig::default(),
+            realtime: RealtimeConfig::default(),
             git: GitConfig::default(),
             hotkeys: HotkeyConfig::default(),
             hotkeys_enabled: HotkeyEnabledConfig::default(),
@@ -781,6 +784,32 @@ mod tests {
 
         // A fresh default (no file on disk) still starts un-onboarded.
         assert!(!AppConfig::default().onboarding_completed);
+    }
+
+    #[test]
+    fn migration_renames_vosk_key_to_realtime() {
+        // Pre-v4 configs stored the realtime transcription config under `vosk`.
+        // The v3->v4 migration must move that object to `realtime` without losing
+        // the user's settings.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(3));
+
+        // Rehome the realtime config under the legacy `vosk` key with a
+        // distinctive endpoint we can assert survived the move.
+        let mut realtime = obj.remove("realtime").expect("default has realtime");
+        realtime
+            .as_object_mut()
+            .unwrap()
+            .insert("endpoint".to_string(), serde_json::json!("ws://legacy:9999"));
+        obj.insert("vosk".to_string(), realtime);
+
+        migration::run_migrations(&mut value, 3);
+
+        // The legacy key is gone and the value landed under `realtime`.
+        assert!(value.get("vosk").is_none());
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.realtime.endpoint, "ws://legacy:9999");
     }
 
     #[test]

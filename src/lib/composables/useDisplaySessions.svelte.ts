@@ -32,6 +32,39 @@ async function getGitBranch(repoPath: string): Promise<string | undefined> {
 }
 
 /**
+ * Compute the currently-live subagents from the message stream: unmatched
+ * subagent_start markers, matched to stops by agentId (subagents run in
+ * parallel, so the most recent start is not necessarily the one that stopped).
+ * Reset at each turn boundary (done/stopped) so stale markers from a crashed
+ * or restored turn don't linger.
+ */
+function getLiveSubagentTypes(messages: SdkSession['messages']): string[] {
+  const live = new Map<string, string>(); // agentId -> agentType
+  for (const msg of messages) {
+    if (msg.type === 'done' || msg.type === 'stopped') {
+      live.clear();
+    } else if (msg.type === 'subagent_start') {
+      live.set(msg.agentId || `#${live.size}`, msg.agentType || 'Agent');
+    } else if (msg.type === 'subagent_stop') {
+      if (msg.agentId) live.delete(msg.agentId);
+    }
+  }
+  return [...live.values()];
+}
+
+/**
+ * Build the subagent status detail: the agent type when there's a single kind,
+ * with a count suffix when several run at once (e.g. "explore ×3", "Agent ×4").
+ * `count` may exceed `types.length` when background-task tracking sees agents
+ * whose subagent hook events haven't arrived (yet).
+ */
+function formatSubagentDetail(types: string[], count = types.length): string {
+  const unique = new Set(types);
+  const base = unique.size === 1 && types.length === count ? types[0] : 'Agent';
+  return count > 1 ? `${base} ×${count}` : (types[0] ?? 'Agent');
+}
+
+/**
  * Get smart status for SDK sessions based on messages
  */
 export function getSdkSmartStatus(session: SdkSession): {
@@ -103,25 +136,16 @@ export function getSdkSmartStatus(session: SdkSession): {
   }
 
   if (session.status === 'querying') {
-    // Phase 1: Check if we're inside an active subagent.
-    // Scan backwards — if we find subagent_start before subagent_stop,
-    // the subagent is still running. Its internal tool/text messages appear
-    // AFTER (higher index than) the subagent_start, so a single backwards
-    // pass that checks tool/text would return early before ever reaching it.
-    let activeSubagentType: string | undefined;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.type === 'subagent_stop') {
-        break; // Most recent subagent has ended
-      }
-      if (msg.type === 'subagent_start') {
-        activeSubagentType = msg.agentType;
-        break; // Found an active (unclosed) subagent
-      }
-    }
-
-    if (activeSubagentType) {
-      return { status: 'subagent', detail: activeSubagentType };
+    // Phase 1: Check if we're inside active subagents. Two channels track the
+    // same population: subagent_start/stop markers (SDK hooks) and agent-kind
+    // background tasks (task_started events — these arrive in-stream, so they
+    // can see background agents before/without the hook events). Use whichever
+    // sees more; max avoids double counting agents visible on both.
+    const liveTypes = getLiveSubagentTypes(messages);
+    const liveAgentTasks = (session.liveBackgroundTasks ?? []).filter(t => t.kind === 'agent').length;
+    const liveCount = Math.max(liveTypes.length, liveAgentTasks);
+    if (liveCount > 0) {
+      return { status: 'subagent', detail: formatSubagentDetail(liveTypes, liveCount) };
     }
 
     // Phase 2: No active subagent — determine status from latest messages
@@ -176,15 +200,10 @@ export function getSdkSmartStatus(session: SdkSession): {
     return { status: 'done' };
   }
 
-  // Check if there's an unfinished subagent
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.type === 'subagent_stop' || msg.type === 'done' || msg.type === 'stopped') {
-      break;
-    }
-    if (msg.type === 'subagent_start') {
-      return { status: 'subagent', detail: msg.agentType || 'Agent' };
-    }
+  // Check if there are unfinished subagents
+  const unfinished = getLiveSubagentTypes(messages);
+  if (unfinished.length > 0) {
+    return { status: 'subagent', detail: formatSubagentDetail(unfinished) };
   }
 
   return { status: 'idle' };

@@ -109,14 +109,14 @@ function createRecordingStore() {
     const currentSettings = get(settings);
     console.log('[recording] startRealtimeSession called', {
       sessionId,
-      realtimeEnabled: currentSettings.vosk?.enabled,
+      realtimeEnabled: currentSettings.realtime?.enabled,
     });
     // The realtime engine runs when it's enabled for live preview OR when the
     // transcription mode needs it to produce the final transcript (Realtime /
     // Both) — the enabled toggle only governs preview-only use in Whisper mode.
-    const transcriptionMode = currentSettings.vosk?.transcription_mode ?? 'Both';
+    const transcriptionMode = currentSettings.realtime?.transcription_mode ?? 'Both';
     const realtimeNeeded =
-      (currentSettings.vosk?.enabled ?? false) || transcriptionMode !== 'Whisper';
+      (currentSettings.realtime?.enabled ?? false) || transcriptionMode !== 'Whisper';
     if (!realtimeNeeded) {
       console.log('[recording] Real-time transcription disabled, skipping');
       return;
@@ -144,15 +144,15 @@ function createRecordingStore() {
 
     try {
       // Create audio context at provider's required sample rate (16kHz)
-      const sampleRate = currentSettings.vosk.provider === 'VoiceStreamAI'
-        ? (currentSettings.vosk.voice_stream_ai?.sample_rate || 16000)
-        : currentSettings.vosk.provider === 'SherpaOnnx'
-          ? (currentSettings.vosk.sherpa_onnx?.sample_rate || 16000)
-          : currentSettings.vosk.provider === 'Speaches'
-            ? (currentSettings.vosk.speaches?.sample_rate || 16000)
-        : currentSettings.vosk.provider === 'Moonshine'
-            ? (currentSettings.vosk.moonshine?.sample_rate || 16000)
-          : (currentSettings.vosk.sample_rate || 16000);
+      const sampleRate = currentSettings.realtime.provider === 'VoiceStreamAI'
+        ? (currentSettings.realtime.voice_stream_ai?.sample_rate || 16000)
+        : currentSettings.realtime.provider === 'SherpaOnnx'
+          ? (currentSettings.realtime.sherpa_onnx?.sample_rate || 16000)
+          : currentSettings.realtime.provider === 'Speaches'
+            ? (currentSettings.realtime.speaches?.sample_rate || 16000)
+        : currentSettings.realtime.provider === 'Moonshine'
+            ? (currentSettings.realtime.moonshine?.sample_rate || 16000)
+          : (currentSettings.realtime.sample_rate || 16000);
       realtimeAudioContext = new AudioContext({ sampleRate });
       realtimeSource = realtimeAudioContext.createMediaStreamSource(stream);
 
@@ -190,7 +190,7 @@ function createRecordingStore() {
       realtimeUnlistenPartial = await listen(`realtime-partial-${sessionId}`, (event: any) => {
         const partial = event.payload?.partial || '';
 
-        const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
+        const shouldAccumulate = currentSettings.realtime?.accumulate_transcript ?? false;
         // When accumulating, prepend accumulated text to partial
         const displayText = shouldAccumulate && realtimeAccumulatedText
           ? `${realtimeAccumulatedText} ${partial}`.trim()
@@ -240,7 +240,7 @@ function createRecordingStore() {
         });
         if (text) {
           realtimeFinalSegments.push(text.trim());
-          const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
+          const shouldAccumulate = currentSettings.realtime?.accumulate_transcript ?? false;
           const prevAccumulated = realtimeAccumulatedText;
           if (shouldAccumulate) {
             // Append this final text to accumulated text
@@ -674,7 +674,7 @@ function createRecordingStore() {
           const debugId = providedDebugId ?? generateId();
           update((s) => ({ ...s, lastDebugId: debugId }));
 
-          const transcriptionMode = get(settings).vosk?.transcription_mode ?? 'Both';
+          const transcriptionMode = get(settings).realtime?.transcription_mode ?? 'Both';
 
           // Finalize the realtime engine in the BACKGROUND — its eof drain
           // takes up to ~1.5s and the Whisper request doesn't need the
@@ -695,7 +695,7 @@ function createRecordingStore() {
           // Debug log (dev mode): attach the raw harvest whenever it lands.
           const attachHarvestToDebugLog = () => {
             harvestPromise.then((harvest) => {
-              if (harvest) debugRecordings.update(debugId, { voskTranscript: harvest });
+              if (harvest) debugRecordings.update(debugId, { realtimeTranscript: harvest });
             });
           };
 
@@ -743,7 +743,7 @@ function createRecordingStore() {
                   audioData,
                   durationMs,
                   transcriptionMode,
-                  voskTranscript: harvestedTranscript,
+                  realtimeTranscript: harvestedTranscript,
                 });
                 resolve(harvestedTranscript);
               } else {

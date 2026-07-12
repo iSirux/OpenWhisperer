@@ -69,7 +69,7 @@ function getActiveReposList() {
 export async function handleTranscriptReady(
   transcript: string,
   pendingSessionId: string | null,
-  voskTranscript?: string,
+  realtimeTranscript?: string,
   debugRecordingId?: string
 ) {
   if (!transcript.trim()) {
@@ -85,11 +85,12 @@ export async function handleTranscriptReady(
     sdkSessions.updatePendingTranscription(pendingSessionId, {
       status: 'processing',
       transcript: transcript,
-      voskTranscript: voskTranscript || undefined,
+      realtimeTranscript: realtimeTranscript || undefined,
+      debugRecordingId,
     });
   }
 
-  await processSdkTranscript(transcript, pendingSessionId, voskTranscript, debugRecordingId);
+  await processSdkTranscript(transcript, pendingSessionId, realtimeTranscript, debugRecordingId);
 }
 
 /**
@@ -98,7 +99,7 @@ export async function handleTranscriptReady(
 async function processSdkTranscript(
   transcript: string,
   pendingSessionId: string | null,
-  voskTranscript?: string,
+  realtimeTranscript?: string,
   debugRecordingId?: string
 ) {
   const activeReposList = getActiveReposList();
@@ -107,13 +108,13 @@ async function processSdkTranscript(
   // Step 1: Clean up transcription
   if (isTranscriptionCleanupEnabled()) {
     const repoContext = buildAllReposContext(activeReposList);
-    const cleanupResult = await cleanupTranscript(transcript, voskTranscript, repoContext);
+    const cleanupResult = await cleanupTranscript(transcript, realtimeTranscript, repoContext);
     finalTranscript = cleanupResult.text;
 
     if (pendingSessionId) {
       updatePendingWithCleanup(
         pendingSessionId,
-        voskTranscript,
+        realtimeTranscript,
         finalTranscript,
         cleanupResult.wasCleanedUp,
         cleanupResult.corrections,
@@ -145,7 +146,8 @@ async function processSdkTranscript(
         finalTranscript,
         repoRecommendation?.repoIndex ?? null,
         repoRecommendation?.reasoning ?? 'Not enough information to determine repository',
-        repoRecommendation?.confidence ?? 'low'
+        repoRecommendation?.confidence ?? 'low',
+        debugRecordingId
       );
       return;
     }
@@ -284,7 +286,8 @@ async function handleRepoSelectionNeeded(
   transcript: string,
   recommendedIndex: number | null,
   reasoning: string,
-  confidence: string
+  confidence: string,
+  debugRecordingId?: string
 ) {
   const currentSettings = get(settings);
   const model = currentSettings.default_model;
@@ -296,6 +299,7 @@ async function handleRepoSelectionNeeded(
       recommendedIndex,
       reasoning,
       confidence,
+      debugRecordingId,
     });
     navigation.setView('sessions');
   } else {
@@ -304,6 +308,7 @@ async function handleRepoSelectionNeeded(
       recommendedIndex,
       reasoning,
       confidence,
+      debugRecordingId,
     });
   }
 }
@@ -318,7 +323,7 @@ async function handleRepoSelectionNeeded(
 export async function handlePrepareTranscriptReady(
   transcript: string,
   sessionId: string,
-  voskTranscript?: string,
+  realtimeTranscript?: string,
   debugRecordingId?: string
 ) {
   if (!transcript.trim()) {
@@ -334,7 +339,8 @@ export async function handlePrepareTranscriptReady(
   sdkSessions.updatePendingTranscription(sessionId, {
     status: 'processing',
     transcript: transcript,
-    voskTranscript: voskTranscript || undefined,
+    realtimeTranscript: realtimeTranscript || undefined,
+    debugRecordingId,
   });
 
   let finalTranscript = transcript;
@@ -342,12 +348,12 @@ export async function handlePrepareTranscriptReady(
   // Step 1: Clean up transcription
   if (isTranscriptionCleanupEnabled()) {
     const repoContext = buildAllReposContext(activeReposList);
-    const cleanupResult = await cleanupTranscript(transcript, voskTranscript, repoContext);
+    const cleanupResult = await cleanupTranscript(transcript, realtimeTranscript, repoContext);
     finalTranscript = cleanupResult.text;
 
     updatePendingWithCleanup(
       sessionId,
-      voskTranscript,
+      realtimeTranscript,
       finalTranscript,
       cleanupResult.wasCleanedUp,
       cleanupResult.corrections,
@@ -443,7 +449,7 @@ export async function handlePrepareTranscriptReady(
 export async function handlePileTranscriptReady(
   transcript: string,
   pendingSessionId: string | null,
-  voskTranscript?: string,
+  realtimeTranscript?: string,
   transcriptionError?: string,
   debugRecordingId?: string
 ) {
@@ -471,7 +477,7 @@ export async function handlePileTranscriptReady(
 
   pile.addRecording({
     transcript,
-    voskTranscript: voskTranscript || undefined,
+    realtimeTranscript: realtimeTranscript || undefined,
     audioData,
     recordingDurationMs,
     audioVisualizationHistory,
@@ -653,7 +659,7 @@ export async function handlePrepareSelection() {
 
 /**
  * Handle voice commands detected during recording.
- * Called from the event handler when Vosk detects a command phrase.
+ * Called from the event handler when the realtime engine detects a command phrase.
  *
  * `getPendingSessionId` and `clearPendingSessionId` are passed in from the
  * recording flow store to avoid a circular dependency.
@@ -884,13 +890,22 @@ export async function handleRetryTranscription(sessionId: string) {
     transcriptionError: undefined,
   });
 
+  const debugRecordingId = session.pendingTranscription.debugRecordingId;
+  const realtimeTranscript = session.pendingTranscription.realtimeTranscript;
+
   try {
     const transcript = await invoke<string>('transcribe_audio', {
       audioData: Array.from(session.pendingTranscription.audioData),
     });
 
     if (transcript) {
-      await handleTranscriptReady(transcript, sessionId, undefined);
+      if (debugRecordingId) {
+        debugRecordings.update(debugRecordingId, {
+          whisperTranscript: transcript,
+          error: undefined,
+        });
+      }
+      await handleTranscriptReady(transcript, sessionId, realtimeTranscript, debugRecordingId);
     } else {
       sdkSessions.updatePendingTranscription(sessionId, {
         transcriptionError: 'No transcription returned',
@@ -975,6 +990,16 @@ export async function handleRepoSelectionForSession(
     const repoContext = buildSingleRepoContext(selectedRepo);
     const cleanupResult = await cleanupTranscript(rawTranscript, undefined, repoContext);
     finalTranscript = cleanupResult.text;
+
+    const debugRecordingId = session.pendingRepoSelection?.debugRecordingId;
+    if (debugRecordingId) {
+      debugRecordings.update(debugRecordingId, {
+        cleanedTranscript: finalTranscript,
+        wasCleanedUp: cleanupResult.wasCleanedUp,
+        cleanupCorrections: cleanupResult.corrections,
+        usedDualSource: cleanupResult.usedDualSource,
+      });
+    }
   }
 
   const systemPrompt = buildSystemPrompt({

@@ -80,7 +80,7 @@ export interface SpeachesConfig {
   docker: DockerConfig;
 }
 
-export interface VoskConfig {
+export interface RealtimeConfig {
   /** Whether real-time transcription is enabled */
   enabled: boolean;
   /** Which real-time transcription provider to use */
@@ -250,7 +250,7 @@ export interface OpenMicConfig {
   enabled: boolean;
   /** List of active wake commands that will trigger recording */
   wake_commands: string[];
-  /** Minimum volume threshold (0.0-1.0) to send audio to Vosk (saves resources when silent) */
+  /** Minimum volume threshold (0.0-1.0) to send audio to the realtime transcriber (saves resources when silent) */
   volume_threshold: number;
 }
 
@@ -421,7 +421,7 @@ export interface LlmFeaturesConfig {
   /** Generate contextual quick actions based on session completion */
   generate_quick_actions: boolean;
   clean_transcription: boolean;
-  /** Use both Vosk and Whisper transcriptions for cleanup (requires both to be enabled) */
+  /** Use both realtime and Whisper transcriptions for cleanup (requires both to be enabled) */
   use_dual_transcription: boolean;
   recommend_model: boolean;
   /** Controls effort level behavior when smart model selection is enabled */
@@ -504,7 +504,7 @@ export interface QueueConfig {
 
 export interface AppConfig {
   whisper: WhisperConfig;
-  vosk: VoskConfig;
+  realtime: RealtimeConfig;
   git: GitConfig;
   hotkeys: HotkeyConfig;
   hotkeys_enabled: HotkeyEnabledConfig;
@@ -587,7 +587,7 @@ const defaultConfig: AppConfig = {
       container_name: "whisper",
     },
   },
-  vosk: {
+  realtime: {
     enabled: true,
     provider: "Moonshine",
     endpoint: "ws://localhost:2700",

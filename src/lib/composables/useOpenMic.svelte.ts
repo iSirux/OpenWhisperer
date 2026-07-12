@@ -20,7 +20,7 @@ export function useOpenMicLifecycle() {
    */
   function update(
     openMicEnabled: boolean,
-    voskEnabled: boolean,
+    realtimeEnabled: boolean,
     realtimeConfigFingerprint: string,
     currentlyRecording: boolean,
     currentlyListening: boolean,
@@ -36,12 +36,12 @@ export function useOpenMicLifecycle() {
     prevRecording = currentlyRecording;
 
     // Clear any pending restart timeout if conditions change
-    if (restartTimeout && (currentlyRecording || !openMicEnabled || !voskEnabled)) {
+    if (restartTimeout && (currentlyRecording || !openMicEnabled || !realtimeEnabled)) {
       clearTimeout(restartTimeout);
       restartTimeout = null;
     }
 
-    if (openMicEnabled && voskEnabled) {
+    if (openMicEnabled && realtimeEnabled) {
       if (currentlyRecording) {
         // Don't start while recording
       } else if (currentlyPaused) {
@@ -79,29 +79,29 @@ export function useOpenMicLifecycle() {
     $effect(() => {
       const currentSettings = get(settings);
       const openMicEnabled = currentSettings.audio.open_mic.enabled;
-      const voskEnabled = currentSettings.vosk?.enabled ?? false;
+      const realtimeEnabled = currentSettings.realtime?.enabled ?? false;
       const realtimeConfigFingerprint = JSON.stringify({
-        provider: currentSettings.vosk?.provider ?? "Vosk",
-        endpoint: currentSettings.vosk?.provider === "VoiceStreamAI"
-          ? currentSettings.vosk?.voice_stream_ai?.endpoint
-          : currentSettings.vosk?.provider === "SherpaOnnx"
-            ? currentSettings.vosk?.sherpa_onnx?.endpoint
-            : currentSettings.vosk?.provider === "Speaches"
-              ? currentSettings.vosk?.speaches?.endpoint
-              : currentSettings.vosk?.endpoint,
-        sampleRate: currentSettings.vosk?.provider === "VoiceStreamAI"
-          ? currentSettings.vosk?.voice_stream_ai?.sample_rate
-          : currentSettings.vosk?.provider === "SherpaOnnx"
-            ? currentSettings.vosk?.sherpa_onnx?.sample_rate
-            : currentSettings.vosk?.provider === "Speaches"
-              ? currentSettings.vosk?.speaches?.sample_rate
-              : currentSettings.vosk?.sample_rate,
+        provider: currentSettings.realtime?.provider ?? "Vosk",
+        endpoint: currentSettings.realtime?.provider === "VoiceStreamAI"
+          ? currentSettings.realtime?.voice_stream_ai?.endpoint
+          : currentSettings.realtime?.provider === "SherpaOnnx"
+            ? currentSettings.realtime?.sherpa_onnx?.endpoint
+            : currentSettings.realtime?.provider === "Speaches"
+              ? currentSettings.realtime?.speaches?.endpoint
+              : currentSettings.realtime?.endpoint,
+        sampleRate: currentSettings.realtime?.provider === "VoiceStreamAI"
+          ? currentSettings.realtime?.voice_stream_ai?.sample_rate
+          : currentSettings.realtime?.provider === "SherpaOnnx"
+            ? currentSettings.realtime?.sherpa_onnx?.sample_rate
+            : currentSettings.realtime?.provider === "Speaches"
+              ? currentSettings.realtime?.speaches?.sample_rate
+              : currentSettings.realtime?.sample_rate,
       });
       const recording = get(isRecording);
       const listening = get(isOpenMicListening);
       const paused = get(isOpenMicPaused);
 
-      update(openMicEnabled, voskEnabled, realtimeConfigFingerprint, recording, listening, paused);
+      update(openMicEnabled, realtimeEnabled, realtimeConfigFingerprint, recording, listening, paused);
     });
   }
 
@@ -112,7 +112,7 @@ export function useOpenMicLifecycle() {
   async function restartAfterError() {
     const currentSettings = get(settings);
     const paused = get(isOpenMicPaused);
-    if (currentSettings.audio.open_mic.enabled && currentSettings.vosk?.enabled && !paused) {
+    if (currentSettings.audio.open_mic.enabled && currentSettings.realtime?.enabled && !paused) {
       await openMic.start();
     }
   }

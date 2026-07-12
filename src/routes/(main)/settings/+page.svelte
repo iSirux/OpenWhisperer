@@ -29,7 +29,8 @@
   function normalizeTab(tab: string | null): string {
     if (tab === 'repos') return 'llm';
     // The Whisper and Real-time tabs were merged into one Transcription tab
-    if (tab === 'whisper' || tab === 'vosk') return 'transcription';
+    // ('vosk' kept as a legacy deep-link alias for the old realtime tab)
+    if (tab === 'whisper' || tab === 'realtime' || tab === 'vosk') return 'transcription';
     return tab || 'claude';
   }
 

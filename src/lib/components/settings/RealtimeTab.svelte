@@ -83,11 +83,11 @@
     <input
       type="checkbox"
       class="toggle"
-      bind:checked={$settings.vosk.enabled}
+      bind:checked={$settings.realtime.enabled}
     />
   </div>
 
-  {#if $settings.vosk.enabled}
+  {#if $settings.realtime.enabled}
     <!-- Provider Selection -->
     <div>
       <label class="block text-sm font-medium text-text-secondary mb-1"
@@ -95,13 +95,13 @@
       >
       <select
         class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-        bind:value={$settings.vosk.provider}
+        bind:value={$settings.realtime.provider}
         onchange={(e) => {
           const value = (e.target as HTMLSelectElement).value;
           settings.update((s) => ({
             ...s,
-            vosk: {
-              ...s.vosk,
+            realtime: {
+              ...s.realtime,
               provider: value as "Vosk" | "VoiceStreamAI" | "SherpaOnnx" | "Speaches" | "Moonshine",
             },
           }));
@@ -115,7 +115,7 @@
       </select>
     </div>
 
-    {#if $settings.vosk.provider === "Vosk"}
+    {#if $settings.realtime.provider === "Vosk"}
       <!-- ═══ Vosk-specific configuration ═══ -->
 
       <!-- WebSocket Endpoint -->
@@ -126,7 +126,7 @@
         <input
           type="text"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.endpoint}
+          bind:value={$settings.realtime.endpoint}
           placeholder="ws://localhost:2700"
         />
         <p class="text-xs text-text-muted mt-1">
@@ -141,7 +141,7 @@
         >
         <select
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.sample_rate}
+          bind:value={$settings.realtime.sample_rate}
         >
           <option value={8000}>8000 Hz (telephony)</option>
           <option value={16000}>16000 Hz (recommended)</option>
@@ -152,7 +152,7 @@
           Must match the Vosk model's expected sample rate (usually 16kHz)
         </p>
       </div>
-    {:else if $settings.vosk.provider === "VoiceStreamAI"}
+    {:else if $settings.realtime.provider === "VoiceStreamAI"}
       <!-- ═══ VoiceStreamAI-specific configuration ═══ -->
 
       <!-- WebSocket Endpoint -->
@@ -163,7 +163,7 @@
         <input
           type="text"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.voice_stream_ai.endpoint}
+          bind:value={$settings.realtime.voice_stream_ai.endpoint}
           placeholder="ws://localhost:8765"
         />
         <p class="text-xs text-text-muted mt-1">
@@ -178,7 +178,7 @@
         >
         <select
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.voice_stream_ai.sample_rate}
+          bind:value={$settings.realtime.voice_stream_ai.sample_rate}
         >
           <option value={8000}>8000 Hz</option>
           <option value={16000}>16000 Hz (recommended)</option>
@@ -198,7 +198,7 @@
           min="1"
           max="30"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.voice_stream_ai.chunk_length_seconds}
+          bind:value={$settings.realtime.voice_stream_ai.chunk_length_seconds}
         />
         <p class="text-xs text-text-muted mt-1">
           Duration of audio chunks sent for processing (lower = more responsive, higher = more accurate)
@@ -216,7 +216,7 @@
           min="0"
           max="5"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.voice_stream_ai.chunk_offset_seconds}
+          bind:value={$settings.realtime.voice_stream_ai.chunk_offset_seconds}
         />
         <p class="text-xs text-text-muted mt-1">
           Silence duration before a chunk is processed
@@ -230,7 +230,7 @@
         >
         <select
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.voice_stream_ai.language}
+          bind:value={$settings.realtime.voice_stream_ai.language}
         >
           <option value="multilanguage">Auto-detect (multilingual)</option>
           <option value="en">English</option>
@@ -247,7 +247,7 @@
           <option value="ar">Arabic</option>
         </select>
       </div>
-    {:else if $settings.vosk.provider === "Speaches"}
+    {:else if $settings.realtime.provider === "Speaches"}
       <!-- ═══ Speaches-specific configuration ═══ -->
 
       <div>
@@ -257,7 +257,7 @@
         <input
           type="text"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.speaches.endpoint}
+          bind:value={$settings.realtime.speaches.endpoint}
           placeholder="ws://localhost:2701/v1/realtime"
         />
         <p class="text-xs text-text-muted mt-1">
@@ -271,7 +271,7 @@
         >
         <select
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.speaches.model}
+          bind:value={$settings.realtime.speaches.model}
         >
           <optgroup label="Standard Models">
             <option value="Systran/faster-whisper-tiny"
@@ -336,7 +336,7 @@
         >
         <select
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.speaches.sample_rate}
+          bind:value={$settings.realtime.speaches.sample_rate}
         >
           <option value={8000}>8000 Hz</option>
           <option value={16000}>16000 Hz (recommended)</option>
@@ -352,11 +352,11 @@
         <input
           type="password"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.speaches.api_key}
+          bind:value={$settings.realtime.speaches.api_key}
           placeholder="Only if your Speaches server requires auth"
         />
       </div>
-    {:else if $settings.vosk.provider === "SherpaOnnx"}
+    {:else if $settings.realtime.provider === "SherpaOnnx"}
       <!-- ═══ sherpa-onnx-specific configuration ═══ -->
 
       <!-- WebSocket Endpoint -->
@@ -367,7 +367,7 @@
         <input
           type="text"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.sherpa_onnx.endpoint}
+          bind:value={$settings.realtime.sherpa_onnx.endpoint}
           placeholder="ws://localhost:6006"
         />
         <p class="text-xs text-text-muted mt-1">
@@ -382,7 +382,7 @@
         >
         <select
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.sherpa_onnx.sample_rate}
+          bind:value={$settings.realtime.sherpa_onnx.sample_rate}
         >
           <option value={8000}>8000 Hz</option>
           <option value={16000}>16000 Hz (recommended)</option>
@@ -390,7 +390,7 @@
           <option value={48000}>48000 Hz</option>
         </select>
       </div>
-    {:else if $settings.vosk.provider === "Moonshine"}
+    {:else if $settings.realtime.provider === "Moonshine"}
       <!-- ═══ Moonshine-specific configuration ═══ -->
 
       <!-- WebSocket Endpoint -->
@@ -401,7 +401,7 @@
         <input
           type="text"
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.moonshine.endpoint}
+          bind:value={$settings.realtime.moonshine.endpoint}
           placeholder="ws://localhost:2702"
         />
         <p class="text-xs text-text-muted mt-1">
@@ -416,7 +416,7 @@
         >
         <select
           class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-          bind:value={$settings.vosk.moonshine.sample_rate}
+          bind:value={$settings.realtime.moonshine.sample_rate}
         >
           <option value={16000}>16000 Hz (recommended)</option>
           <option value={44100}>44100 Hz</option>
@@ -435,7 +435,7 @@
       <input
         type="checkbox"
         class="toggle"
-        bind:checked={$settings.vosk.show_realtime_transcript}
+        bind:checked={$settings.realtime.show_realtime_transcript}
       />
     </div>
 
@@ -453,7 +453,7 @@
       <input
         type="checkbox"
         class="toggle"
-        bind:checked={$settings.vosk.accumulate_transcript}
+        bind:checked={$settings.realtime.accumulate_transcript}
       />
     </div>
 
@@ -478,15 +478,15 @@
     </div>
 
     <!-- ═══ Docker Setup (provider-specific) ═══ -->
-    {#if $settings.vosk.provider === "Vosk"}
+    {#if $settings.realtime.provider === "Vosk"}
       {@const dockerCommand = (() => {
         const parts = ["docker run -d"];
-        if ($settings.vosk.docker.auto_restart) {
+        if ($settings.realtime.docker.auto_restart) {
           parts.push("--restart unless-stopped");
         }
         parts.push("-p 2700:2700");
-        if ($settings.vosk.docker.container_name) {
-          parts.push(`--name ${$settings.vosk.docker.container_name}`);
+        if ($settings.realtime.docker.container_name) {
+          parts.push(`--name ${$settings.realtime.docker.container_name}`);
         }
         parts.push("alphacep/kaldi-en:latest");
         return parts.join(" ");
@@ -509,14 +509,14 @@
           <input
             type="checkbox"
             class="toggle"
-            checked={$settings.vosk.docker.auto_restart}
+            checked={$settings.realtime.docker.auto_restart}
             onchange={(e) => {
               const checked = (e.target as HTMLInputElement).checked;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
-                  docker: { ...s.vosk.docker, auto_restart: checked },
+                realtime: {
+                  ...s.realtime,
+                  docker: { ...s.realtime.docker, auto_restart: checked },
                 },
               }));
             }}
@@ -531,14 +531,14 @@
           <input
             type="text"
             class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
-            value={$settings.vosk.docker.container_name}
+            value={$settings.realtime.docker.container_name}
             oninput={(e) => {
               const value = (e.target as HTMLInputElement).value;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
-                  docker: { ...s.vosk.docker, container_name: value },
+                realtime: {
+                  ...s.realtime,
+                  docker: { ...s.realtime.docker, container_name: value },
                 },
               }));
             }}
@@ -605,18 +605,18 @@
           <code class="bg-surface px-1 rounded">kaldi-de</code>
         </p>
       </div>
-    {:else if $settings.vosk.provider === "VoiceStreamAI"}
+    {:else if $settings.realtime.provider === "VoiceStreamAI"}
       {@const dockerCommand = (() => {
         const parts = ["docker run -d"];
-        if ($settings.vosk.voice_stream_ai.docker.auto_restart) {
+        if ($settings.realtime.voice_stream_ai.docker.auto_restart) {
           parts.push("--restart unless-stopped");
         }
         parts.push("-p 8765:8765");
-        if ($settings.vosk.voice_stream_ai.docker.compute_type === "GPU") {
+        if ($settings.realtime.voice_stream_ai.docker.compute_type === "GPU") {
           parts.push("--gpus all");
         }
-        if ($settings.vosk.voice_stream_ai.docker.container_name) {
-          parts.push(`--name ${$settings.vosk.voice_stream_ai.docker.container_name}`);
+        if ($settings.realtime.voice_stream_ai.docker.container_name) {
+          parts.push(`--name ${$settings.realtime.voice_stream_ai.docker.container_name}`);
         }
         parts.push("voicestreamai");
         return parts.join(" ");
@@ -638,16 +638,16 @@
           </div>
           <select
             class="px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-            value={$settings.vosk.voice_stream_ai.docker.compute_type}
+            value={$settings.realtime.voice_stream_ai.docker.compute_type}
             onchange={(e) => {
               const value = (e.target as HTMLSelectElement).value;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   voice_stream_ai: {
-                    ...s.vosk.voice_stream_ai,
-                    docker: { ...s.vosk.voice_stream_ai.docker, compute_type: value as "CPU" | "GPU" },
+                    ...s.realtime.voice_stream_ai,
+                    docker: { ...s.realtime.voice_stream_ai.docker, compute_type: value as "CPU" | "GPU" },
                   },
                 },
               }));
@@ -671,16 +671,16 @@
           <input
             type="checkbox"
             class="toggle"
-            checked={$settings.vosk.voice_stream_ai.docker.auto_restart}
+            checked={$settings.realtime.voice_stream_ai.docker.auto_restart}
             onchange={(e) => {
               const checked = (e.target as HTMLInputElement).checked;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   voice_stream_ai: {
-                    ...s.vosk.voice_stream_ai,
-                    docker: { ...s.vosk.voice_stream_ai.docker, auto_restart: checked },
+                    ...s.realtime.voice_stream_ai,
+                    docker: { ...s.realtime.voice_stream_ai.docker, auto_restart: checked },
                   },
                 },
               }));
@@ -696,16 +696,16 @@
           <input
             type="text"
             class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
-            value={$settings.vosk.voice_stream_ai.docker.container_name}
+            value={$settings.realtime.voice_stream_ai.docker.container_name}
             oninput={(e) => {
               const value = (e.target as HTMLInputElement).value;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   voice_stream_ai: {
-                    ...s.vosk.voice_stream_ai,
-                    docker: { ...s.vosk.voice_stream_ai.docker, container_name: value },
+                    ...s.realtime.voice_stream_ai,
+                    docker: { ...s.realtime.voice_stream_ai.docker, container_name: value },
                   },
                 },
               }));
@@ -770,23 +770,23 @@
           from the <a href="https://github.com/alesaccoia/VoiceStreamAI" target="_blank" class="text-accent hover:underline">VoiceStreamAI repo</a>
         </p>
       </div>
-    {:else if $settings.vosk.provider === "Speaches"}
+    {:else if $settings.realtime.provider === "Speaches"}
       {@const dockerCommand = (() => {
         const parts = ["docker run -d"];
-        if ($settings.vosk.speaches.docker.auto_restart) {
+        if ($settings.realtime.speaches.docker.auto_restart) {
           parts.push("--restart unless-stopped");
         }
         parts.push("-p 2701:8000");
-        if ($settings.vosk.speaches.docker.compute_type === "GPU") {
+        if ($settings.realtime.speaches.docker.compute_type === "GPU") {
           parts.push("--gpus all");
         }
-        if ($settings.vosk.speaches.docker.container_name) {
-          parts.push(`--name ${$settings.vosk.speaches.docker.container_name}`);
+        if ($settings.realtime.speaches.docker.container_name) {
+          parts.push(`--name ${$settings.realtime.speaches.docker.container_name}`);
         }
         // Required for realtime path so internal calls resolve to the local API server.
         parts.push("-e LOOPBACK_HOST_URL=http://localhost:8000");
         parts.push(
-          $settings.vosk.speaches.docker.compute_type === "GPU"
+          $settings.realtime.speaches.docker.compute_type === "GPU"
             ? "ghcr.io/speaches-ai/speaches:latest-cuda"
             : "ghcr.io/speaches-ai/speaches:latest-cpu"
         );
@@ -794,14 +794,14 @@
       })()}
       {@const speachesBaseUrl = (() => {
         try {
-          const url = new URL($settings.vosk.speaches.endpoint);
+          const url = new URL($settings.realtime.speaches.endpoint);
           const protocol = url.protocol === "wss:" ? "https:" : "http:";
           return `${protocol}//${url.host}`;
         } catch {
           return "http://localhost:2701";
         }
       })()}
-      {@const encodedModelId = encodeURIComponent($settings.vosk.speaches.model)}
+      {@const encodedModelId = encodeURIComponent($settings.realtime.speaches.model)}
       {@const installModelCommand = `curl -X POST "${speachesBaseUrl}/v1/models/${encodedModelId}"`}
       {@const listModelsCommand = `curl "${speachesBaseUrl}/v1/models"`}
       {@const listRegistryAsrCommand = `curl "${speachesBaseUrl}/v1/registry?task=automatic-speech-recognition"`}
@@ -817,17 +817,17 @@
           <div class="flex gap-2">
             <button
               class="flex-1 px-3 py-2 text-sm rounded border-2 transition-all flex items-center justify-center gap-2 {$settings
-                .vosk.speaches.docker.compute_type === 'CPU'
+                .realtime.speaches.docker.compute_type === 'CPU'
                 ? 'border-accent bg-accent/10'
                 : 'border-border'}"
               onclick={() =>
                 settings.update((s) => ({
                   ...s,
-                  vosk: {
-                    ...s.vosk,
+                  realtime: {
+                    ...s.realtime,
                     speaches: {
-                      ...s.vosk.speaches,
-                      docker: { ...s.vosk.speaches.docker, compute_type: "CPU" },
+                      ...s.realtime.speaches,
+                      docker: { ...s.realtime.speaches.docker, compute_type: "CPU" },
                     },
                   },
                 }))}
@@ -849,17 +849,17 @@
             </button>
             <button
               class="flex-1 px-3 py-2 text-sm rounded border-2 transition-all flex items-center justify-center gap-2 {$settings
-                .vosk.speaches.docker.compute_type === 'GPU'
+                .realtime.speaches.docker.compute_type === 'GPU'
                 ? 'border-accent bg-accent/10'
                 : 'border-border'}"
               onclick={() =>
                 settings.update((s) => ({
                   ...s,
-                  vosk: {
-                    ...s.vosk,
+                  realtime: {
+                    ...s.realtime,
                     speaches: {
-                      ...s.vosk.speaches,
-                      docker: { ...s.vosk.speaches.docker, compute_type: "GPU" },
+                      ...s.realtime.speaches,
+                      docker: { ...s.realtime.speaches.docker, compute_type: "GPU" },
                     },
                   },
                 }))}
@@ -881,7 +881,7 @@
             </button>
           </div>
           <p class="text-xs text-text-muted mt-1.5">
-            {#if $settings.vosk.speaches.docker.compute_type === "CPU"}
+            {#if $settings.realtime.speaches.docker.compute_type === "CPU"}
               Good for laptops and systems without NVIDIA GPUs. Slower but
               works everywhere.
             {:else}
@@ -903,16 +903,16 @@
           <input
             type="checkbox"
             class="toggle"
-            checked={$settings.vosk.speaches.docker.auto_restart}
+            checked={$settings.realtime.speaches.docker.auto_restart}
             onchange={(e) => {
               const checked = (e.target as HTMLInputElement).checked;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   speaches: {
-                    ...s.vosk.speaches,
-                    docker: { ...s.vosk.speaches.docker, auto_restart: checked },
+                    ...s.realtime.speaches,
+                    docker: { ...s.realtime.speaches.docker, auto_restart: checked },
                   },
                 },
               }));
@@ -927,16 +927,16 @@
           <input
             type="text"
             class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
-            value={$settings.vosk.speaches.docker.container_name}
+            value={$settings.realtime.speaches.docker.container_name}
             oninput={(e) => {
               const value = (e.target as HTMLInputElement).value;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   speaches: {
-                    ...s.vosk.speaches,
-                    docker: { ...s.vosk.speaches.docker, container_name: value },
+                    ...s.realtime.speaches,
+                    docker: { ...s.realtime.speaches.docker, container_name: value },
                   },
                 },
               }));
@@ -1127,18 +1127,18 @@
           and <code class="bg-surface px-1 rounded">ghcr.io/speaches-ai/speaches:latest-cuda</code>
         </p>
       </div>
-    {:else if $settings.vosk.provider === "SherpaOnnx"}
+    {:else if $settings.realtime.provider === "SherpaOnnx"}
       {@const dockerCommand = (() => {
         const parts = ["docker run -d"];
-        if ($settings.vosk.sherpa_onnx.docker.auto_restart) {
+        if ($settings.realtime.sherpa_onnx.docker.auto_restart) {
           parts.push("--restart unless-stopped");
         }
         parts.push("-p 6006:6006");
-        if ($settings.vosk.sherpa_onnx.docker.compute_type === "GPU") {
+        if ($settings.realtime.sherpa_onnx.docker.compute_type === "GPU") {
           parts.push("--gpus all");
         }
-        if ($settings.vosk.sherpa_onnx.docker.container_name) {
-          parts.push(`--name ${$settings.vosk.sherpa_onnx.docker.container_name}`);
+        if ($settings.realtime.sherpa_onnx.docker.container_name) {
+          parts.push(`--name ${$settings.realtime.sherpa_onnx.docker.container_name}`);
         }
         parts.push("open-whisperer-sherpa-onnx");
         return parts.join(" ");
@@ -1159,16 +1159,16 @@
           </div>
           <select
             class="px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-            value={$settings.vosk.sherpa_onnx.docker.compute_type}
+            value={$settings.realtime.sherpa_onnx.docker.compute_type}
             onchange={(e) => {
               const value = (e.target as HTMLSelectElement).value;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   sherpa_onnx: {
-                    ...s.vosk.sherpa_onnx,
-                    docker: { ...s.vosk.sherpa_onnx.docker, compute_type: value as "CPU" | "GPU" },
+                    ...s.realtime.sherpa_onnx,
+                    docker: { ...s.realtime.sherpa_onnx.docker, compute_type: value as "CPU" | "GPU" },
                   },
                 },
               }));
@@ -1191,16 +1191,16 @@
           <input
             type="checkbox"
             class="toggle"
-            checked={$settings.vosk.sherpa_onnx.docker.auto_restart}
+            checked={$settings.realtime.sherpa_onnx.docker.auto_restart}
             onchange={(e) => {
               const checked = (e.target as HTMLInputElement).checked;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   sherpa_onnx: {
-                    ...s.vosk.sherpa_onnx,
-                    docker: { ...s.vosk.sherpa_onnx.docker, auto_restart: checked },
+                    ...s.realtime.sherpa_onnx,
+                    docker: { ...s.realtime.sherpa_onnx.docker, auto_restart: checked },
                   },
                 },
               }));
@@ -1215,16 +1215,16 @@
           <input
             type="text"
             class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
-            value={$settings.vosk.sherpa_onnx.docker.container_name}
+            value={$settings.realtime.sherpa_onnx.docker.container_name}
             oninput={(e) => {
               const value = (e.target as HTMLInputElement).value;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   sherpa_onnx: {
-                    ...s.vosk.sherpa_onnx,
-                    docker: { ...s.vosk.sherpa_onnx.docker, container_name: value },
+                    ...s.realtime.sherpa_onnx,
+                    docker: { ...s.realtime.sherpa_onnx.docker, container_name: value },
                   },
                 },
               }));
@@ -1290,7 +1290,7 @@
               "sherpa-onnx",
               "open-whisperer-sherpa-onnx",
               dockerCommand,
-              $settings.vosk.sherpa_onnx.docker.container_name
+              $settings.realtime.sherpa_onnx.docker.container_name
             )}
         >
           Build &amp; Start Container
@@ -1305,15 +1305,15 @@
           faster than real time on CPU.
         </p>
       </div>
-    {:else if $settings.vosk.provider === "Moonshine"}
+    {:else if $settings.realtime.provider === "Moonshine"}
       {@const dockerCommand = (() => {
         const parts = ["docker run -d"];
-        if ($settings.vosk.moonshine.docker.auto_restart) {
+        if ($settings.realtime.moonshine.docker.auto_restart) {
           parts.push("--restart unless-stopped");
         }
         parts.push("-p 2702:2702");
-        if ($settings.vosk.moonshine.docker.container_name) {
-          parts.push(`--name ${$settings.vosk.moonshine.docker.container_name}`);
+        if ($settings.realtime.moonshine.docker.container_name) {
+          parts.push(`--name ${$settings.realtime.moonshine.docker.container_name}`);
         }
         parts.push("open-whisperer-moonshine");
         return parts.join(" ");
@@ -1335,16 +1335,16 @@
           <input
             type="checkbox"
             class="toggle"
-            checked={$settings.vosk.moonshine.docker.auto_restart}
+            checked={$settings.realtime.moonshine.docker.auto_restart}
             onchange={(e) => {
               const checked = (e.target as HTMLInputElement).checked;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   moonshine: {
-                    ...s.vosk.moonshine,
-                    docker: { ...s.vosk.moonshine.docker, auto_restart: checked },
+                    ...s.realtime.moonshine,
+                    docker: { ...s.realtime.moonshine.docker, auto_restart: checked },
                   },
                 },
               }));
@@ -1359,16 +1359,16 @@
           <input
             type="text"
             class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
-            value={$settings.vosk.moonshine.docker.container_name}
+            value={$settings.realtime.moonshine.docker.container_name}
             oninput={(e) => {
               const value = (e.target as HTMLInputElement).value;
               settings.update((s) => ({
                 ...s,
-                vosk: {
-                  ...s.vosk,
+                realtime: {
+                  ...s.realtime,
                   moonshine: {
-                    ...s.vosk.moonshine,
-                    docker: { ...s.vosk.moonshine.docker, container_name: value },
+                    ...s.realtime.moonshine,
+                    docker: { ...s.realtime.moonshine.docker, container_name: value },
                   },
                 },
               }));
@@ -1392,7 +1392,7 @@
               "moonshine",
               "open-whisperer-moonshine",
               dockerCommand,
-              $settings.vosk.moonshine.docker.container_name
+              $settings.realtime.moonshine.docker.container_name
             )}
         >
           Build &amp; Start Container

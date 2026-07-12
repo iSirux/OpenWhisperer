@@ -218,7 +218,7 @@ export interface PersistedPendingTranscriptionInfo {
   // audioData is NOT persisted (Uint8Array)
   transcript?: string;
   transcriptionError?: string;
-  voskTranscript?: string;
+  realtimeTranscript?: string;
   cleanedTranscript?: string;
   wasCleanedUp?: boolean;
   cleanupCorrections?: string[];

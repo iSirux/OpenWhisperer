@@ -21,7 +21,7 @@
 
   // Start listening for audio level when open mic is enabled
   $effect(() => {
-    const shouldListen = $settings.audio.open_mic.enabled && $settings.vosk?.enabled;
+    const shouldListen = $settings.audio.open_mic.enabled && $settings.realtime?.enabled;
     let unlistenFn: UnlistenFn | null = null;
     let cancelled = false;
 
@@ -855,11 +855,11 @@
         type="checkbox"
         class="toggle"
         bind:checked={$settings.audio.open_mic.enabled}
-        disabled={!$settings.vosk?.enabled}
+        disabled={!$settings.realtime?.enabled}
       />
     </div>
 
-    {#if !$settings.vosk?.enabled}
+    {#if !$settings.realtime?.enabled}
       <p class="text-xs text-yellow-500">
         Real-time transcription must be enabled for open mic mode. Enable it in the Real-time Transcription tab.
       </p>
@@ -970,7 +970,7 @@
             >Volume Threshold</label
           >
           <p class="text-xs text-text-muted mb-2">
-            Minimum audio level to send to Vosk. Higher values save resources but may miss quiet speech.
+            Minimum audio level to send to the realtime transcriber. Higher values save resources but may miss quiet speech.
           </p>
           <!-- Live audio level bar -->
           <div class="relative h-6 bg-surface rounded overflow-hidden mb-2">

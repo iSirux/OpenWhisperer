@@ -1,6 +1,6 @@
 <script lang="ts">
   import { settings, type TranscriptionMode } from "$lib/stores/settings";
-  import VoskTab from "./VoskTab.svelte";
+  import RealtimeTab from "./RealtimeTab.svelte";
   import WhisperTab from "./WhisperTab.svelte";
 
   const modes: { value: TranscriptionMode; label: string }[] = [
@@ -12,7 +12,7 @@
   function setMode(mode: TranscriptionMode) {
     settings.update((s) => ({
       ...s,
-      vosk: { ...s.vosk, transcription_mode: mode },
+      realtime: { ...s.realtime, transcription_mode: mode },
     }));
   }
 </script>
@@ -27,7 +27,7 @@
       {#each modes as mode}
         <button
           class="flex-1 px-3 py-2 text-sm rounded border-2 transition-all {$settings
-            .vosk.transcription_mode === mode.value
+            .realtime.transcription_mode === mode.value
             ? 'border-accent bg-accent/10'
             : 'border-border'}"
           onclick={() => setMode(mode.value)}
@@ -37,11 +37,11 @@
       {/each}
     </div>
     <p class="text-xs text-text-muted mt-1.5">
-      {#if $settings.vosk.transcription_mode === "Whisper"}
+      {#if $settings.realtime.transcription_mode === "Whisper"}
         The full recording is transcribed by Whisper after you stop. The live
         engine is optional — when enabled below, it only powers the overlay
         preview, voice commands, and open mic.
-      {:else if $settings.vosk.transcription_mode === "Realtime"}
+      {:else if $settings.realtime.transcription_mode === "Realtime"}
         The live engine's transcript is the final transcript — instant
         stop-to-prompt, and Whisper is never called. If the engine is down or
         hears nothing, the recording is treated as a failed transcription and
@@ -52,7 +52,7 @@
         when the engine is off, unreachable, or heard nothing. Recommended.
       {/if}
     </p>
-    {#if $settings.vosk.transcription_mode !== "Whisper"}
+    {#if $settings.realtime.transcription_mode !== "Whisper"}
       <p class="text-xs text-text-muted mt-1">
         In this mode the live engine runs during every recording (it produces
         the transcript), regardless of its enable toggle below. Works best
@@ -66,22 +66,22 @@
   <div class="border-t border-border pt-4">
     <h3 class="text-sm font-semibold text-text-primary mb-3">
       Live engine (real-time)
-      {#if $settings.vosk.transcription_mode !== "Whisper"}
+      {#if $settings.realtime.transcription_mode !== "Whisper"}
         <span class="font-normal text-text-muted">— produces the transcript</span>
       {:else}
         <span class="font-normal text-text-muted">— preview only</span>
       {/if}
     </h3>
-    <VoskTab />
+    <RealtimeTab />
   </div>
 
   <!-- Whisper -->
   <div class="border-t border-border pt-4">
     <h3 class="text-sm font-semibold text-text-primary mb-3">
       Whisper
-      {#if $settings.vosk.transcription_mode === "Whisper"}
+      {#if $settings.realtime.transcription_mode === "Whisper"}
         <span class="font-normal text-text-muted">— produces the transcript</span>
-      {:else if $settings.vosk.transcription_mode === "Both"}
+      {:else if $settings.realtime.transcription_mode === "Both"}
         <span class="font-normal text-text-muted">— fallback</span>
       {:else}
         <span class="font-normal text-text-muted">— not used for recordings (still used for pile retries)</span>

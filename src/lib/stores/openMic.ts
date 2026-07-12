@@ -80,7 +80,7 @@ function createOpenMicStore() {
 
   // Check if a transcript ends with any wake command, tolerating the
   // punctuation/casing transcribers add (Moonshine emits "Hey, Claude."
-  // where Vosk emits "hey claude")
+  // where the realtime engine emits "hey claude")
   function detectWakeCommand(transcript: string): string | null {
     const currentSettings = get(settings);
     const wakeCommands = currentSettings.audio.open_mic.wake_commands;
@@ -112,7 +112,7 @@ function createOpenMicStore() {
     const currentSettings = get(settings);
 
     // Check prerequisites
-    if (!currentSettings.vosk?.enabled) {
+    if (!currentSettings.realtime?.enabled) {
       update((s) => ({
         ...s,
         state: "error",
@@ -199,15 +199,15 @@ function createOpenMicStore() {
       runVisualization();
 
       // Create audio context at provider's required sample rate (16kHz)
-      const sampleRate = currentSettings.vosk.provider === 'VoiceStreamAI'
-        ? (currentSettings.vosk.voice_stream_ai?.sample_rate || 16000)
-        : currentSettings.vosk.provider === 'SherpaOnnx'
-          ? (currentSettings.vosk.sherpa_onnx?.sample_rate || 16000)
-          : currentSettings.vosk.provider === 'Speaches'
-            ? (currentSettings.vosk.speaches?.sample_rate || 16000)
-        : currentSettings.vosk.provider === 'Moonshine'
-            ? (currentSettings.vosk.moonshine?.sample_rate || 16000)
-          : (currentSettings.vosk.sample_rate || 16000);
+      const sampleRate = currentSettings.realtime.provider === 'VoiceStreamAI'
+        ? (currentSettings.realtime.voice_stream_ai?.sample_rate || 16000)
+        : currentSettings.realtime.provider === 'SherpaOnnx'
+          ? (currentSettings.realtime.sherpa_onnx?.sample_rate || 16000)
+          : currentSettings.realtime.provider === 'Speaches'
+            ? (currentSettings.realtime.speaches?.sample_rate || 16000)
+        : currentSettings.realtime.provider === 'Moonshine'
+            ? (currentSettings.realtime.moonshine?.sample_rate || 16000)
+          : (currentSettings.realtime.sample_rate || 16000);
       audioContext = new AudioContext({ sampleRate });
       audioSource = audioContext.createMediaStreamSource(mediaStream);
 
@@ -540,7 +540,7 @@ function createOpenMicStore() {
     const currentSettings = get(settings);
     if (
       currentSettings.audio.open_mic.enabled &&
-      currentSettings.vosk?.enabled
+      currentSettings.realtime?.enabled
     ) {
       await start();
     }
@@ -580,7 +580,7 @@ export function isOpenMicEnabled(): boolean {
   const currentSettings = get(settings);
   return (
     currentSettings.audio.open_mic.enabled &&
-    (currentSettings.vosk?.enabled ?? false)
+    (currentSettings.realtime?.enabled ?? false)
   );
 }
 

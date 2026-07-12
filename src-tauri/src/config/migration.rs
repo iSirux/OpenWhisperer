@@ -15,7 +15,12 @@ use super::ui::Theme;
 type Migration = fn(&mut Value);
 
 /// Ordered migration table. Index `i` upgrades a config from version `i` to `i + 1`.
-const MIGRATIONS: &[Migration] = &[migrate_v0_to_v1, migrate_v1_to_v2, migrate_v2_to_v3];
+const MIGRATIONS: &[Migration] = &[
+    migrate_v0_to_v1,
+    migrate_v1_to_v2,
+    migrate_v2_to_v3,
+    migrate_v3_to_v4,
+];
 
 /// The schema version the current build writes. Derived from the table length so
 /// it always matches the number of available migrations.
@@ -133,6 +138,23 @@ fn migrate_v1_to_v2(value: &mut Value) {
 fn migrate_v2_to_v3(value: &mut Value) {
     if let Some(obj) = value.as_object_mut() {
         obj.insert("onboarding_completed".to_string(), Value::Bool(true));
+    }
+}
+
+// ============================================================================
+// v3 -> v4: rename the real-time transcription config key `vosk` -> `realtime`.
+// Vosk was the original (and once only) realtime provider, so the container was
+// historically named after it; it now holds Moonshine/VoiceStreamAI/etc. Move
+// the existing object across so nothing is lost (a stale `realtime` never wins).
+// ============================================================================
+
+fn migrate_v3_to_v4(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if let Some(vosk) = obj.remove("vosk") {
+        log::error!("[config.migrate] Renaming config key 'vosk' -> 'realtime'");
+        obj.insert("realtime".to_string(), vosk);
     }
 }
 

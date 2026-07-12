@@ -232,9 +232,14 @@ impl Default for SpeachesConfig {
     }
 }
 
-/// Configuration for real-time transcription providers
+/// Configuration for real-time transcription providers.
+///
+/// Historically named `VoskConfig` (Vosk was the only provider); the on-disk
+/// key was `vosk` until the v4 config migration renamed it to `realtime`. The
+/// top-level `endpoint`/`sample_rate`/`docker` fields remain the Vosk
+/// provider's own settings (the other providers carry their own sub-configs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VoskConfig {
+pub struct RealtimeConfig {
     /// Whether real-time transcription is enabled. Default on to match the
     /// realtime-first default; a failed connect is graceful (recording
     /// proceeds, Whisper transcribes).
@@ -319,7 +324,7 @@ pub enum TranscriptionMode {
     Both,
 }
 
-impl Default for VoskConfig {
+impl Default for RealtimeConfig {
     fn default() -> Self {
         Self {
             enabled: default_realtime_enabled(),

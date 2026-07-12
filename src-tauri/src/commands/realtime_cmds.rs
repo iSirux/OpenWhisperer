@@ -18,28 +18,28 @@ pub async fn test_realtime_connection(
 ) -> Result<RealtimeConnectionTestResult, String> {
     let cfg = config.lock().clone();
 
-    if !cfg.vosk.enabled {
+    if !cfg.realtime.enabled {
         return Ok(RealtimeConnectionTestResult {
             connected: false,
             error: Some("Real-time transcription is not enabled".to_string()),
         });
     }
 
-    match cfg.vosk.provider {
+    match cfg.realtime.provider {
         RealtimeProvider::Vosk => {
-            Ok(test_vosk_connection(&cfg.vosk.endpoint, cfg.vosk.sample_rate).await)
+            Ok(test_vosk_connection(&cfg.realtime.endpoint, cfg.realtime.sample_rate).await)
         }
         RealtimeProvider::VoiceStreamAI => {
-            Ok(test_vsai_connection(&cfg.vosk.voice_stream_ai.endpoint).await)
+            Ok(test_vsai_connection(&cfg.realtime.voice_stream_ai.endpoint).await)
         }
         RealtimeProvider::SherpaOnnx => {
-            Ok(test_sherpa_connection(&cfg.vosk.sherpa_onnx.endpoint).await)
+            Ok(test_sherpa_connection(&cfg.realtime.sherpa_onnx.endpoint).await)
         }
-        RealtimeProvider::Speaches => Ok(test_speaches_connection(&cfg.vosk.speaches).await),
+        RealtimeProvider::Speaches => Ok(test_speaches_connection(&cfg.realtime.speaches).await),
         // Moonshine's shim server speaks the Vosk protocol
         RealtimeProvider::Moonshine => Ok(test_vosk_connection(
-            &cfg.vosk.moonshine.endpoint,
-            cfg.vosk.moonshine.sample_rate,
+            &cfg.realtime.moonshine.endpoint,
+            cfg.realtime.moonshine.sample_rate,
         )
         .await),
     }
@@ -54,7 +54,7 @@ pub async fn start_realtime_session(
 ) -> Result<(), String> {
     let cfg = config.lock().clone();
 
-    if !cfg.vosk.enabled {
+    if !cfg.realtime.enabled {
         return Err("Real-time transcription is not enabled".to_string());
     }
 
@@ -80,13 +80,13 @@ pub async fn start_realtime_session(
     let create = || {
         realtime_manager.create_session(
             session_id.clone(),
-            &cfg.vosk.provider,
-            &cfg.vosk.endpoint,
-            cfg.vosk.sample_rate,
-            &cfg.vosk.voice_stream_ai,
-            &cfg.vosk.sherpa_onnx,
-            &cfg.vosk.speaches,
-            &cfg.vosk.moonshine,
+            &cfg.realtime.provider,
+            &cfg.realtime.endpoint,
+            cfg.realtime.sample_rate,
+            &cfg.realtime.voice_stream_ai,
+            &cfg.realtime.sherpa_onnx,
+            &cfg.realtime.speaches,
+            &cfg.realtime.moonshine,
         )
     };
 
@@ -94,23 +94,23 @@ pub async fn start_realtime_session(
         // Local server unreachable: try starting its Docker container (start
         // only, no build/config), then retry while it comes up. The recording
         // flow doesn't await this command, so waiting here is safe.
-        let (endpoint, container_name) = match cfg.vosk.provider {
-            RealtimeProvider::Vosk => (&cfg.vosk.endpoint, &cfg.vosk.docker.container_name),
+        let (endpoint, container_name) = match cfg.realtime.provider {
+            RealtimeProvider::Vosk => (&cfg.realtime.endpoint, &cfg.realtime.docker.container_name),
             RealtimeProvider::VoiceStreamAI => (
-                &cfg.vosk.voice_stream_ai.endpoint,
-                &cfg.vosk.voice_stream_ai.docker.container_name,
+                &cfg.realtime.voice_stream_ai.endpoint,
+                &cfg.realtime.voice_stream_ai.docker.container_name,
             ),
             RealtimeProvider::SherpaOnnx => (
-                &cfg.vosk.sherpa_onnx.endpoint,
-                &cfg.vosk.sherpa_onnx.docker.container_name,
+                &cfg.realtime.sherpa_onnx.endpoint,
+                &cfg.realtime.sherpa_onnx.docker.container_name,
             ),
             RealtimeProvider::Speaches => (
-                &cfg.vosk.speaches.endpoint,
-                &cfg.vosk.speaches.docker.container_name,
+                &cfg.realtime.speaches.endpoint,
+                &cfg.realtime.speaches.docker.container_name,
             ),
             RealtimeProvider::Moonshine => (
-                &cfg.vosk.moonshine.endpoint,
-                &cfg.vosk.moonshine.docker.container_name,
+                &cfg.realtime.moonshine.endpoint,
+                &cfg.realtime.moonshine.docker.container_name,
             ),
         };
 

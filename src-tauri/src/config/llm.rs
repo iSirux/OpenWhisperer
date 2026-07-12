@@ -110,7 +110,7 @@ pub struct LlmFeaturesConfig {
     pub generate_quick_actions: bool,
     #[serde(default = "default_true")]
     pub clean_transcription: bool,
-    /// Use both Vosk and Whisper transcriptions for cleanup (requires both to be enabled)
+    /// Use both realtime and Whisper transcriptions for cleanup (requires both to be enabled)
     #[serde(default = "default_true")]
     pub use_dual_transcription: bool,
     #[serde(default = "default_true")]

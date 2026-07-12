@@ -3,7 +3,7 @@
  *
  * A bounded, "rolling" log of the most recent recordings, captured purely for
  * debugging. For every recording it keeps the audio plus all transcription
- * stages — Vosk real-time, Whisper raw, and the LLM cleanup result — so a
+ * stages — realtime, Whisper raw, and the LLM cleanup result — so a
  * developer can replay the audio and inspect exactly what each stage produced.
  *
  * The list is trimmed to the {@link MAX_RECORDINGS} newest entries; audio for
@@ -44,8 +44,8 @@ export interface DebugRecording {
 
   /** Whisper batch transcription (raw). */
   whisperTranscript?: string;
-  /** Vosk real-time harvest. */
-  voskTranscript?: string;
+  /** Real-time harvest. */
+  realtimeTranscript?: string;
   /** LLM-cleaned transcript. */
   cleanedTranscript?: string;
   wasCleanedUp?: boolean;
@@ -72,7 +72,7 @@ export interface CaptureInput {
   transcriptionMode?: string;
   destination?: string;
   whisperTranscript?: string;
-  voskTranscript?: string;
+  realtimeTranscript?: string;
   error?: string;
 }
 
@@ -154,7 +154,7 @@ function createDebugRecordingsStore() {
       transcriptionMode: input.transcriptionMode,
       destination: input.destination,
       whisperTranscript: input.whisperTranscript,
-      voskTranscript: input.voskTranscript,
+      realtimeTranscript: input.realtimeTranscript,
       error: input.error,
       hasAudio: !!input.audioData && input.audioData.length > 0,
     };

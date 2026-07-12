@@ -92,16 +92,16 @@ function createCockpitMic() {
   /** Provider-specific sample rate (same selection as openMic.ts). */
   function providerSampleRate(): number {
     const s = get(settings);
-    const vosk = s.vosk;
-    return vosk.provider === 'VoiceStreamAI'
-      ? (vosk.voice_stream_ai?.sample_rate || 16000)
-      : vosk.provider === 'SherpaOnnx'
-        ? (vosk.sherpa_onnx?.sample_rate || 16000)
-        : vosk.provider === 'Speaches'
-          ? (vosk.speaches?.sample_rate || 16000)
-          : vosk.provider === 'Moonshine'
-            ? (vosk.moonshine?.sample_rate || 16000)
-            : (vosk.sample_rate || 16000);
+    const realtime = s.realtime;
+    return realtime.provider === 'VoiceStreamAI'
+      ? (realtime.voice_stream_ai?.sample_rate || 16000)
+      : realtime.provider === 'SherpaOnnx'
+        ? (realtime.sherpa_onnx?.sample_rate || 16000)
+        : realtime.provider === 'Speaches'
+          ? (realtime.speaches?.sample_rate || 16000)
+          : realtime.provider === 'Moonshine'
+            ? (realtime.moonshine?.sample_rate || 16000)
+            : (realtime.sample_rate || 16000);
   }
 
   /** Register the sink for finalized utterances. Replaces any previous one. */
@@ -120,7 +120,7 @@ function createCockpitMic() {
     }
 
     const currentSettings = get(settings);
-    if (!currentSettings.vosk?.enabled) {
+    if (!currentSettings.realtime?.enabled) {
       update((s) => ({
         ...s,
         state: 'error',

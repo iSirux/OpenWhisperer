@@ -21,8 +21,8 @@
   } from "$lib/utils/modelColors";
   import type { OverlayMode, OverlayActivityInfo } from "$lib/stores/overlay";
 
-  // Check if Vosk real-time transcription should be shown
-  $: showRealtimeTranscript = $settings.vosk?.enabled ?? false;
+  // Check if real-time transcription should be shown
+  $: showRealtimeTranscript = $settings.realtime?.enabled ?? false;
 
   // Check if active sessions should be shown in overlay
   $: showActiveSessions = $settings.overlay?.show_active_sessions ?? true;
@@ -224,7 +224,7 @@
       />
     </div>
 
-    <!-- Real-time transcript from Vosk -->
+    <!-- Real-time transcript -->
     {#if showRealtimeTranscript}
       <div class="mb-2">
         <TranscriptMarquee />

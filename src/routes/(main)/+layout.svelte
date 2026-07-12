@@ -110,15 +110,15 @@
   // Effect to manage open mic lifecycle
   $effect(() => {
     const openMicEnabled = $settings.audio.open_mic.enabled && !$settings.system.voice_mode_disabled;
-    const voskEnabled = $settings.vosk?.enabled ?? false;
-    const vosk = $settings.vosk;
-    const provider = vosk?.provider ?? "Vosk";
+    const realtimeEnabled = $settings.realtime?.enabled ?? false;
+    const realtime = $settings.realtime;
+    const provider = realtime?.provider ?? "Vosk";
     const providerConfig =
-      provider === "VoiceStreamAI" ? vosk?.voice_stream_ai
-      : provider === "SherpaOnnx" ? vosk?.sherpa_onnx
-      : provider === "Speaches" ? vosk?.speaches
-      : provider === "Moonshine" ? vosk?.moonshine
-      : vosk;
+      provider === "VoiceStreamAI" ? realtime?.voice_stream_ai
+      : provider === "SherpaOnnx" ? realtime?.sherpa_onnx
+      : provider === "Speaches" ? realtime?.speaches
+      : provider === "Moonshine" ? realtime?.moonshine
+      : realtime;
     const realtimeConfigFingerprint = JSON.stringify({
       provider,
       endpoint: providerConfig?.endpoint,
@@ -128,7 +128,7 @@
     const currentlyListening = $isOpenMicListening;
     const currentlyPaused = $isOpenMicPaused;
 
-    openMicLifecycle.update(openMicEnabled, voskEnabled, realtimeConfigFingerprint, currentlyRecording, currentlyListening, currentlyPaused);
+    openMicLifecycle.update(openMicEnabled, realtimeEnabled, realtimeConfigFingerprint, currentlyRecording, currentlyListening, currentlyPaused);
   });
 
   // Effect to emit active session/sequence counts to the overlay

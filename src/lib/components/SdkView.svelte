@@ -584,8 +584,8 @@
     if (status === "querying") {
       // Deferred completion: the main turn is done, we're just waiting on background
       // subagents and/or background commands.
-      if (completionDeferred && liveSubagentCount > 0) {
-        return { status: "subagents", detail: String(liveSubagentCount) };
+      if (completionDeferred && liveAgentCount > 0) {
+        return { status: "subagents", detail: String(liveAgentCount) };
       }
       if (completionDeferred && liveCommandTasks.length > 0) {
         return { status: "background_commands", detail: String(liveCommandTasks.length) };
@@ -914,8 +914,8 @@
   async function handleStopRecording() {
     if (!$isRecording) return;
 
-    // Capture Vosk transcript before stopping (for dual-source cleanup)
-    const capturedVoskTranscript = get(recording).realtimeTranscript;
+    // Capture realtime transcript before stopping (for dual-source cleanup)
+    const capturedRealtimeTranscript = get(recording).realtimeTranscript;
 
     // Own the debug-recordings id so the LLM cleanup stage lands in the log.
     const debugId = recording.newRecordingId();
@@ -932,8 +932,9 @@
       isRecordingForCurrentSession = false;
       await salvageInSessionRecording(
         "send",
-        capturedVoskTranscript,
+        capturedRealtimeTranscript,
         error instanceof Error ? error.message : "Transcription failed",
+        debugId,
       );
       return;
     }
@@ -956,7 +957,7 @@
       // Process voice commands first
       const processed = processVoiceCommands(
         whisperTranscript,
-        capturedVoskTranscript,
+        capturedRealtimeTranscript,
       );
 
       // Handle cancel command
@@ -996,7 +997,7 @@
         try {
           const cleanupResult = await cleanupTranscript(
             processed.transcript,
-            processed.voskTranscript,
+            processed.realtimeTranscript,
             repoContext,
           );
           finalTranscript = cleanupResult.text;
@@ -1051,8 +1052,8 @@
   async function transcribeInlineToText(): Promise<string | null> {
     if (!$isRecording) return null;
 
-    // Capture Vosk transcript before stopping (for dual-source cleanup)
-    const capturedVoskTranscript = get(recording).realtimeTranscript;
+    // Capture realtime transcript before stopping (for dual-source cleanup)
+    const capturedRealtimeTranscript = get(recording).realtimeTranscript;
 
     // Own the debug-recordings id so the LLM cleanup stage lands in the log.
     const debugId = recording.newRecordingId();
@@ -1069,8 +1070,9 @@
         // durable, retriable failed recording (it was meant for this conversation).
         await salvageInSessionRecording(
           "append",
-          capturedVoskTranscript,
+          capturedRealtimeTranscript,
           error instanceof Error ? error.message : "Transcription failed",
+          debugId,
         );
         return null;
       }
@@ -1092,7 +1094,7 @@
         try {
           const cleanupResult = await cleanupTranscript(
             whisperTranscript,
-            capturedVoskTranscript,
+            capturedRealtimeTranscript,
             repoContext,
           );
           finalTranscript = cleanupResult.text;
@@ -1142,8 +1144,9 @@
    */
   async function salvageInSessionRecording(
     mode: "send" | "append",
-    voskTranscript: string | undefined,
+    realtimeTranscript: string | undefined,
     error: string,
+    debugRecordingId?: string,
   ) {
     const audioData = get(recording).audioData;
     if (!audioData) return;
@@ -1156,9 +1159,10 @@
       sdkSessions.setFailedRecording(sessionId, {
         audioId,
         mode,
-        voskTranscript,
+        realtimeTranscript,
         error,
         createdAt: Date.now(),
+        debugRecordingId,
       });
     } catch (e) {
       console.error("[SdkView] Failed to store failed-recording audio:", e);
@@ -1183,6 +1187,14 @@
         return;
       }
 
+      // Attach the successful retry to the original recording's log entry
+      if (fr.debugRecordingId) {
+        debugRecordings.update(fr.debugRecordingId, {
+          whisperTranscript: transcript,
+          error: undefined,
+        });
+      }
+
       // Apply LLM transcription cleanup (same as the live recording flow)
       let finalTranscript = transcript;
       if (isTranscriptionCleanupEnabled()) {
@@ -1194,10 +1206,18 @@
         try {
           const cleanupResult = await cleanupTranscript(
             transcript,
-            fr.voskTranscript,
+            fr.realtimeTranscript,
             repoContext,
           );
           finalTranscript = cleanupResult.text;
+          if (fr.debugRecordingId) {
+            debugRecordings.update(fr.debugRecordingId, {
+              cleanedTranscript: finalTranscript,
+              wasCleanedUp: cleanupResult.wasCleanedUp,
+              cleanupCorrections: cleanupResult.corrections,
+              usedDualSource: cleanupResult.usedDualSource,
+            });
+          }
         } catch (e) {
           console.error("[SdkView] Retry cleanup failed, using original:", e);
         }
@@ -1373,7 +1393,7 @@
       transcript: prompt.trim(),
       process: false,
       rawTranscript: pending?.transcript,
-      voskTranscript: pending?.voskTranscript,
+      realtimeTranscript: pending?.realtimeTranscript,
       wasCleanedUp: pending?.wasCleanedUp,
       cleanupCorrections: pending?.cleanupCorrections,
       usedDualSource: pending?.usedDualSource,

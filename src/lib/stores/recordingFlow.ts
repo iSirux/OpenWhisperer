@@ -19,7 +19,12 @@ import { recording, isRecording } from '$lib/stores/recording';
 import { debugRecordings } from '$lib/stores/debugRecordings';
 import { sdkSessions, settingsToStoreEffort } from '$lib/stores/sdkSessions';
 import { settings } from '$lib/stores/settings';
-import { activeRepo } from '$lib/stores/repos';
+import { activeRepo, repos, isRepoActive } from '$lib/stores/repos';
+import { isTranscriptionCleanupEnabled } from '$lib/utils/llm';
+import {
+  cleanupTranscript,
+  buildAllReposContext,
+} from '$lib/composables/useTranscriptionProcessor.svelte';
 import { overlay } from '$lib/stores/overlay';
 import { openMic } from '$lib/stores/openMic';
 import { DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
@@ -190,7 +195,7 @@ function createRecordingFlowStore() {
 
   function handleRecordingStop(
     sessionIdToProcess: string | null,
-    capturedVoskTranscript: string | undefined,
+    capturedRealtimeTranscript: string | undefined,
     forceAction?: RecordAndSendAction
   ) {
     const currentSettings = get(settings);
@@ -224,7 +229,7 @@ function createRecordingFlowStore() {
           await handlePileTranscriptReady(
             transcript || '',
             sessionIdToProcess,
-            capturedVoskTranscript,
+            capturedRealtimeTranscript,
             transcript ? undefined : 'No transcription returned',
             debugId
           );
@@ -233,14 +238,14 @@ function createRecordingFlowStore() {
             await handlePrepareTranscriptReady(
               transcript,
               sessionIdToProcess,
-              capturedVoskTranscript,
+              capturedRealtimeTranscript,
               debugId
             );
           } else {
             await handleTranscriptReady(
               transcript,
               sessionIdToProcess,
-              capturedVoskTranscript,
+              capturedRealtimeTranscript,
               debugId
             );
           }
@@ -251,8 +256,9 @@ function createRecordingFlowStore() {
           await handlePileTranscriptReady(
             '',
             sessionIdToProcess,
-            capturedVoskTranscript,
-            'No transcription returned'
+            capturedRealtimeTranscript,
+            'No transcription returned',
+            debugId
           );
         }
 
@@ -266,8 +272,9 @@ function createRecordingFlowStore() {
         await handlePileTranscriptReady(
           '',
           sessionIdToProcess,
-          capturedVoskTranscript,
-          error?.message || 'Transcription failed'
+          capturedRealtimeTranscript,
+          error?.message || 'Transcription failed',
+          debugId
         );
         if (pendingTranscriptionSessionId === sessionIdToProcess) {
           pendingTranscriptionSessionId = null;
@@ -328,8 +335,8 @@ function createRecordingFlowStore() {
       sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
     }
 
-    const capturedVoskTranscript = get(recording).realtimeTranscript;
-    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript);
+    const capturedRealtimeTranscript = get(recording).realtimeTranscript;
+    handleRecordingStop(sessionIdToProcess, capturedRealtimeTranscript);
   }
 
   /** Start recording from hotkey (standard toggle). */
@@ -374,8 +381,8 @@ function createRecordingFlowStore() {
       sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
     }
 
-    const capturedVoskTranscript = get(recording).realtimeTranscript;
-    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript, forceAction);
+    const capturedRealtimeTranscript = get(recording).realtimeTranscript;
+    handleRecordingStop(sessionIdToProcess, capturedRealtimeTranscript, forceAction);
   }
 
   /** Stop recording and always send (overlay Go button), regardless of the stop-mode setting. */
@@ -397,14 +404,14 @@ function createRecordingFlowStore() {
       sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
     }
 
-    const capturedVoskTranscript = get(recording).realtimeTranscript;
+    const capturedRealtimeTranscript = get(recording).realtimeTranscript;
 
     update((s) => ({
       ...s,
       isRecordingForNewSession: false,
     }));
 
-    handleRecordingStop(sessionIdToProcess, capturedVoskTranscript, 'pile');
+    handleRecordingStop(sessionIdToProcess, capturedRealtimeTranscript, 'pile');
   }
 
   /** Start recording from open mic wake command. */
@@ -468,19 +475,40 @@ function createRecordingFlowStore() {
   /** Stop recording for session setup view. Returns the transcript (null on failure). */
   async function stopRecordingForSetup(): Promise<string | null> {
     update((s) => ({ ...s, isRecordingForSetup: false }));
-    const capturedVoskTranscript = get(recording).realtimeTranscript;
+    const capturedRealtimeTranscript = get(recording).realtimeTranscript;
+
+    // Own the debug id so the destination tag and LLM cleanup stage land in the log.
+    const debugId = recording.newRecordingId();
+
+    let transcript: string | null;
     try {
-      return await recording.stopRecording();
+      transcript = await recording.stopRecording(true, debugId);
     } catch (error) {
       // Transcription failed — salvage the recording to the pile so it isn't lost.
       await handlePileTranscriptReady(
         '',
         null,
-        capturedVoskTranscript,
-        error instanceof Error ? error.message : 'Transcription failed'
+        capturedRealtimeTranscript,
+        error instanceof Error ? error.message : 'Transcription failed',
+        debugId
       );
       return null;
     }
+
+    debugRecordings.update(debugId, { destination: 'setup' });
+    if (!transcript || !isTranscriptionCleanupEnabled()) return transcript;
+
+    // Apply LLM cleanup (dual-source when a realtime transcript exists), same as
+    // every other dictation path, and attach the result to the recordings log.
+    const repoContext = buildAllReposContext(get(repos).list.filter(isRepoActive));
+    const cleanupResult = await cleanupTranscript(transcript, capturedRealtimeTranscript, repoContext);
+    debugRecordings.update(debugId, {
+      cleanedTranscript: cleanupResult.text,
+      wasCleanedUp: cleanupResult.wasCleanedUp,
+      cleanupCorrections: cleanupResult.corrections,
+      usedDualSource: cleanupResult.usedDualSource,
+    });
+    return cleanupResult.text;
   }
 
   /** Handle transcribe-to-input hotkey. */
@@ -509,7 +537,7 @@ function createRecordingFlowStore() {
           await invoke('paste_text', { text: transcript });
         } else {
           // Nothing transcribed — keep the recording in the pile so it isn't lost.
-          await handlePileTranscriptReady('', null, undefined, 'No transcription returned');
+          await handlePileTranscriptReady('', null, undefined, 'No transcription returned', debugId);
         }
       })
       .catch(async (error) => {
@@ -518,7 +546,8 @@ function createRecordingFlowStore() {
           '',
           null,
           undefined,
-          error?.message || 'Transcription failed'
+          error?.message || 'Transcription failed',
+          debugId
         );
       });
   }

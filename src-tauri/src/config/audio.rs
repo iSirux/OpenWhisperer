@@ -91,7 +91,7 @@ pub struct OpenMicConfig {
     /// List of active wake commands that will trigger recording
     #[serde(default = "default_wake_commands")]
     pub wake_commands: Vec<String>,
-    /// Minimum volume threshold (0.0-1.0) to send audio to Vosk (saves resources when silent)
+    /// Minimum volume threshold (0.0-1.0) to send audio to the realtime transcriber (saves resources when silent)
     #[serde(default = "default_volume_threshold")]
     pub volume_threshold: f32,
 }
