@@ -45,13 +45,11 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 - **Split panes** — up to four sessions side by side
 - **Multimodal prompts** — paste or drop images; they're compressed and attached automatically
 - **Session persistence** — sessions survive restarts with full conversation history; an archive keeps searchable records of finished work
-- **PTY mode** — prefer the raw CLI? Sessions can run the `claude` CLI in an embedded xterm.js terminal instead
 
 **Flow management**
 
 - **Recording pile** — an inbox for thoughts captured now and launched later; items get LLM-cleaned transcripts, titles, and repo/model recommendations in the background, and can be batch-launched
 - **Smart Queue** — when a provider's usage window is exhausted, new sessions and rate-limited turns queue automatically and dispatch when the window resets
-- **Sequences** — node-based automation graphs (AI, git, GitHub, control nodes) with schedules and triggers, edited on a visual canvas
 - **Multi-repo aware** — a repository rail with per-repo settings (vocabulary, default models, MCP servers, launch profiles) and changed-file badges
 - **Usage dashboard** — sessions, tokens, costs, and streaks over time
 - **MCP support** — global or per-repo MCP servers (stdio/HTTP/SSE, with OAuth)
@@ -63,7 +61,7 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 
 ![Whole app](screenshots/whole-app.png)
 
-**Recording overlay** — floating always-on-top window with live waveform and transcription; prepare, send, or discard without leaving your current app:
+**Recording overlay** — appears when you hit the record hotkey, with live waveform and transcription; prepare, send, or discard without leaving your current app:
 
 ![Recording overlay](screenshots/recording-overlay.png)
 
