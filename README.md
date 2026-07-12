@@ -8,6 +8,8 @@
 [![License: MIT + Commons Clause](https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-blue)](LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB)](https://v2.tauri.app/)
 
+![OpenWhisperer main window](screenshots/whole-app.png)
+
 ## Why
 
 Terminal agents scale badly: more parallel work means more terminals, more `/clear`, more babysitting. OpenWhisperer puts every session in one window — split panes, per-session provider/model/effort, worktree automation with launch profiles, and a Smart Queue that parks work when you hit a rate limit and resumes it when your usage window resets.
@@ -18,14 +20,11 @@ And when typing is the slow part, speak instead: a global hotkey records from an
 
 - [Features](#features)
 - [Screenshots](#screenshots)
-- [Installation](#installation)
-- [Transcription Setup](#transcription-setup)
-- [Quick Start](#quick-start)
+- [Getting Started](#getting-started)
 - [Hotkeys](#hotkeys)
 - [Voice Commands](#voice-commands)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
-- [Development](#development)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -58,10 +57,6 @@ And when typing is the slow part, speak instead: a global hotkey records from an
 - **Screenshot context** — optionally capture the screen when recording starts and attach it to the prompt
 
 ## Screenshots
-
-**The whole app** — repository rail, session list, and an active agent session:
-
-![Whole app](screenshots/whole-app.png)
 
 **Split panes** — multiple sessions side by side, each with its own model:
 
@@ -97,9 +92,14 @@ And when typing is the slow part, speak instead: a global hotkey records from an
 
 ![Subscription usage](screenshots/usage.png)
 
-## Installation
+## Getting Started
 
-### Download (recommended)
+**Prerequisites**
+
+- At least one agent: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated, and/or an OpenAI Codex login or API key
+- [Docker](https://www.docker.com/) — only if you want voice with local transcription; the first-run setup builds and starts the transcription containers for you with one click (hosted Whisper via OpenAI/Groq works without Docker, and text-only use needs neither)
+
+**Install**
 
 Grab the latest installer from the [Releases page](https://github.com/iSirux/OpenWhisperer/releases/latest). The app keeps itself up to date afterwards (configurable in Settings → System).
 
@@ -112,50 +112,17 @@ Grab the latest installer from the [Releases page](https://github.com/iSirux/Ope
 
 - **Linux** — `.AppImage` (supports in-app updates), `.deb`, or `.rpm`
 
-### Build from source
+**First steps**
 
-**Prerequisites**
-
-- [Rust](https://rustup.rs/) (latest stable)
-- [Node.js](https://nodejs.org/) v18+ with **npm** (`package-lock.json` is the only lockfile — don't use pnpm or yarn; a second lockfile breaks the Tauri build)
-- [Docker](https://www.docker.com/) — optional, for local transcription servers
-- **Windows**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload
-- **macOS**: Xcode Command Line Tools (`xcode-select --install`)
-- **Linux**: `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libxdo-dev libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev` (Debian/Ubuntu package names)
-
-**Agent access** — at least one of:
-
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
-- An OpenAI Codex login or API key
-
-```bash
-git clone https://github.com/iSirux/OpenWhisperer.git
-cd OpenWhisperer
-npm install
-
-npm run tauri:dev     # development (builds the sidecar first)
-npm run tauri:build   # production build
-```
-
-## Transcription Setup
-
-Only needed if you use voice — text-only users can skip this section entirely.
-
-Everything lives in **Settings → Transcription**. Two engines run side by side — batch Whisper for the final transcript and a streaming provider for live partials — and you choose which one produces the final text (Whisper, Realtime, or Both).
-
-**One-click Docker setup:** for local providers, the settings page has a **Build & Start Container** button that builds and launches the server for you — no manual Docker commands needed. Moonshine (streaming, Whisper-level accuracy, CPU-only) is the recommended realtime provider.
-
-Prefer manual setup, or hosted transcription? See [`docker/README.md`](docker/README.md) for the container details, or point the Whisper provider at OpenAI, Groq, or any compatible endpoint.
-
-## Quick Start
-
-1. Launch OpenWhisperer and run through the first-run setup — choose voice, text, or both (you can change this later)
+1. Launch OpenWhisperer and run through the first-run setup — choose voice, text, or both (you can change this later; voice setup includes the one-click Docker transcription containers)
 2. Add a repository from the repository rail (descriptions are auto-generated so prompts can be routed to it)
 3. **By text:** press `Ctrl/Cmd + N` for a new session — pick provider, model, effort, and repository, type your prompt, and start
 4. **By voice:** press `Ctrl/Cmd + Shift + Space` from anywhere, speak, and press it again (or say "send it"); the prompt is transcribed, cleaned, and launched as an agent session
 5. Watch the session stream in — tool calls, subagents, usage, and all
 
 Recording but not ready to send? Configure the stop action (Settings → Audio) to **prepare** a draft for review instead of sending, or **pile** it for later. The overlay chip cycles between the three while recording.
+
+Transcription options live in **Settings → Transcription** (providers, Whisper/Realtime/Both mode, one-click container setup); see [`docker/README.md`](docker/README.md) for manual container details.
 
 ## Hotkeys
 
@@ -222,38 +189,16 @@ Three processes, one app:
 | Sidecar   | Node.js + TypeScript, @anthropic-ai/claude-agent-sdk, @openai/codex-sdk |
 | Speech    | Whisper (batch) + Moonshine / Vosk / Speaches / sherpa-onnx (streaming) |
 
-## Development
-
-```bash
-npm run tauri:dev        # full dev with hot reload (builds sidecar first)
-npm run dev              # frontend only, no Tauri
-npm run check            # type checking
-npm run check:watch      # ... in watch mode
-npm run sidecar:build    # rebuild the sidecar bundle
-```
-
-Key directories:
-
-```
-src/                 # SvelteKit frontend (components, stores, composables, utils)
-src-tauri/src/       # Rust backend (commands/, config/, llm/, sequences/, ...)
-src-tauri/sidecar/   # Node.js agent-SDK sidecar
-docker/              # Local transcription server build contexts
-docs/                # Provider SDK references and design notes
-```
-
-`CLAUDE.md` at the repo root is the detailed architecture map (it doubles as the Claude Code project guide). Logs land in the app config dir under `logs/`.
-
 ## Contributing
 
 Issues and pull requests are welcome.
 
 1. Fork and create a feature branch
-2. `npm install && npm run tauri:dev` to get running
+2. Install [Rust](https://rustup.rs/) and [Node.js](https://nodejs.org/) v18+, then `npm install && npm run tauri:dev` to get running (**npm only** — a pnpm/yarn lockfile breaks the Tauri build)
 3. `npm run check` must pass before submitting
 4. Open a PR with a clear description of the change
 
-For larger features, please open an issue first to discuss the direction.
+For larger features, please open an issue first to discuss the direction. `CLAUDE.md` at the repo root is the detailed architecture map.
 
 ## License
 
