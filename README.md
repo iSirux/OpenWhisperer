@@ -1,16 +1,18 @@
 # OpenWhisperer
 
-**Talk to your coding agents.** OpenWhisperer is a desktop app that turns voice into running Claude Code and Codex sessions — press a hotkey, speak, and watch the agent work. It transcribes locally, cleans up your prompt with an LLM, routes it to the right repository, and manages every session from one cockpit.
+![Recording overlay](screenshots/recording-overlay.png)
+
+**One cockpit for your coding agents.** OpenWhisperer is a desktop app that runs Claude Code and Codex sessions side by side — parallel sessions across repos and worktrees, smart queueing around usage limits, one-click launch profiles, and per-session models and effort. Work by typing, by voice, or any mix of the two — the voice layer is entirely optional.
 
 [![Release](https://img.shields.io/github/v/release/iSirux/OpenWhisperer)](https://github.com/iSirux/OpenWhisperer/releases/latest)
 [![License: MIT + Commons Clause](https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-blue)](LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB)](https://v2.tauri.app/)
 
-![OpenWhisperer main window](screenshots/whole-app.png)
-
 ## Why
 
-Typing prompts is the slow part of working with coding agents. OpenWhisperer removes it: speak from anywhere (a global hotkey works even when the app isn't focused), get live transcription as you talk, and have the prompt cleaned up, routed to the right repo, and dispatched to a fresh agent session — hands never leaving whatever you were doing. Ideas you can't act on yet go to a pile for later; work that hits a rate limit queues itself and resumes when your usage window resets.
+Terminal agents scale badly: more parallel work means more terminals, more `/clear`, more babysitting. OpenWhisperer puts every session in one window — split panes, per-session provider/model/effort, worktree automation with launch profiles, and a Smart Queue that parks work when you hit a rate limit and resumes it when your usage window resets.
+
+And when typing is the slow part, speak instead: a global hotkey records from anywhere (even inside a fullscreen app), transcription runs locally, an LLM cleans up the prompt and routes it to the right repository, and a fresh agent session picks it up. Ideas you can't act on yet go to a pile for later. Prefer to never touch a microphone? Everything works without one.
 
 ## Table of Contents
 
@@ -29,15 +31,6 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 
 ## Features
 
-**Voice-first workflow**
-
-- **Global push-to-talk** — record from anywhere with a hotkey; a floating overlay shows live transcription while you speak
-- **Real-time + batch transcription** — live partials via Moonshine (recommended), Vosk, Speaches, or sherpa-onnx; final transcripts via Whisper (local Docker, OpenAI, Groq, or custom endpoint)
-- **LLM prompt cleanup** — an optional secondary LLM (Gemini, OpenAI, Groq, or any local OpenAI-compatible server) fixes transcription errors, recommends a model and effort level, and auto-routes the prompt to the right repository
-- **Voice commands & open mic** — "send it", "cancel that", "pile it"; or a wake phrase that starts recording hands-free
-- **Inline dictation** — hold Space inside any text input to dictate into it
-- **Screenshot context** — optionally capture the screen when recording starts and attach it to the prompt
-
 **Agent sessions**
 
 - **Two providers** — Claude (Claude Agent SDK) and OpenAI Codex (app-server), with per-session model and effort selection, live model switching, and an Auto model picker
@@ -55,19 +48,20 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 - **MCP support** — global or per-repo MCP servers (stdio/HTTP/SSE, with OAuth)
 - **In-app updates** — signed updates delivered straight from GitHub releases
 
+**Voice (all optional)**
+
+- **Global push-to-talk** — record from anywhere with a hotkey; a floating overlay shows live transcription while you speak
+- **Real-time + batch transcription** — live partials via Moonshine (recommended), Vosk, Speaches, or sherpa-onnx; final transcripts via Whisper (local Docker, OpenAI, Groq, or custom endpoint)
+- **LLM prompt cleanup** — an optional secondary LLM (Gemini, OpenAI, Groq, or any local OpenAI-compatible server) fixes transcription errors, recommends a model and effort level, and auto-routes the prompt to the right repository
+- **Voice commands & open mic** — "send it", "cancel that", "pile it"; or a wake phrase that starts recording hands-free
+- **Inline dictation** — hold Space inside any text input to dictate into it
+- **Screenshot context** — optionally capture the screen when recording starts and attach it to the prompt
+
 ## Screenshots
 
 **The whole app** — repository rail, session list, and an active agent session:
 
 ![Whole app](screenshots/whole-app.png)
-
-**Recording overlay** — appears when you hit the record hotkey, with live waveform and transcription; prepare, send, or discard without leaving your current app:
-
-![Recording overlay](screenshots/recording-overlay.png)
-
-**Dual-provider transcription** — realtime (Moonshine) and Whisper transcripts merged and cleaned by an LLM, with every correction logged:
-
-![Dual transcription](screenshots/dual-transcription.png)
 
 **Split panes** — multiple sessions side by side, each with its own model:
 
@@ -94,6 +88,10 @@ Typing prompts is the slow part of working with coding agents. OpenWhisperer rem
 **Worktree setup** — auto-named branches, file copying, and setup commands:
 
 ![Worktree setup](screenshots/worktree-setup.png)
+
+**Dual-provider transcription** — realtime (Moonshine) and Whisper transcripts merged and cleaned by an LLM, with every correction logged:
+
+![Dual transcription](screenshots/dual-transcription.png)
 
 **Subscription usage** — live rate-limit utilization of your Claude/Codex subscription (5h and weekly windows):
 
@@ -141,6 +139,8 @@ npm run tauri:build   # production build
 
 ## Transcription Setup
 
+Only needed if you use voice — text-only users can skip this section entirely.
+
 Everything lives in **Settings → Transcription**. Two engines run side by side — batch Whisper for the final transcript and a streaming provider for live partials — and you choose which one produces the final text (Whisper, Realtime, or Both).
 
 **One-click Docker setup:** for local providers, the settings page has a **Build & Start Container** button that builds and launches the server for you — no manual Docker commands needed. Moonshine (streaming, Whisper-level accuracy, CPU-only) is the recommended realtime provider.
@@ -149,15 +149,13 @@ Prefer manual setup, or hosted transcription? See [`docker/README.md`](docker/RE
 
 ## Quick Start
 
-1. Launch OpenWhisperer and pick a microphone on the welcome screen
-2. Add a repository from the repository rail (descriptions are auto-generated so voice prompts can be routed to it)
-3. Press the record hotkey — `Ctrl/Cmd + Shift + Space` — and speak your prompt
-4. Press it again to stop (or say "send it"); the prompt is transcribed, cleaned, and launched as an agent session
+1. Launch OpenWhisperer and run through the first-run setup — choose voice, text, or both (you can change this later)
+2. Add a repository from the repository rail (descriptions are auto-generated so prompts can be routed to it)
+3. **By text:** press `Ctrl/Cmd + N` for a new session — pick provider, model, effort, and repository, type your prompt, and start
+4. **By voice:** press `Ctrl/Cmd + Shift + Space` from anywhere, speak, and press it again (or say "send it"); the prompt is transcribed, cleaned, and launched as an agent session
 5. Watch the session stream in — tool calls, subagents, usage, and all
 
-Not ready to send? Configure the stop action (Settings → Audio) to **prepare** a draft for review instead of sending, or **pile** it for later. The overlay chip cycles between the three while recording.
-
-You can also skip voice entirely: **New Session** (`Ctrl/Cmd + N`) opens a manual form with provider, model, effort, repository, and a prompt box.
+Recording but not ready to send? Configure the stop action (Settings → Audio) to **prepare** a draft for review instead of sending, or **pile** it for later. The overlay chip cycles between the three while recording.
 
 ## Hotkeys
 
