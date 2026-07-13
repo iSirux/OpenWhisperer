@@ -512,6 +512,8 @@ export interface SdkSession {
   pileItem?: { id: string; title: string };
   /** GitHub issue this session was launched from (repo Issues view) */
   githubIssue?: { number: number; title: string; url: string };
+  /** Spare Tokens library prompt this session was launched from (auto = fired by auto-mode) */
+  spareTokens?: { promptId: string; auto: boolean };
   /** Skip project/local hooks (lint, build, etc.) for non-implementation sessions */
   disableHooks?: boolean;
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */

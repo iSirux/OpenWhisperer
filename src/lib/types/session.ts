@@ -73,6 +73,9 @@ export interface DisplaySession {
   // Pile item this session was launched from
   pileItem?: { id: string; title: string };
 
+  // Spare Tokens library prompt this session was launched from
+  spareTokens?: { promptId: string; auto: boolean };
+
   // Smart Queue: a never-launched session parked until its provider's usage
   // window resets or a scheduled window boundary (status === 'queued').
   queueInfo?: QueueInfo | null;

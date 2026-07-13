@@ -20,4 +20,5 @@ pub mod sdk_cmds;
 pub mod sequence_cmds;
 pub mod session_cmds;
 pub mod settings_cmds;
+pub mod spare_tokens_cmds;
 pub mod usage_cmds;

@@ -32,6 +32,7 @@ export interface SessionTag {
   notionCard?: { id: string; title: string };
   pileItem?: { id: string; title: string };
   githubIssue?: { number: number; title: string; url: string };
+  spareTokens?: { promptId: string; auto: boolean };
 }
 
 /**

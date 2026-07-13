@@ -21,7 +21,7 @@ use commands::{
     archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
     launch_cmds, llm_cmds, log_cmds,
     mcp_cmds, no_mistakes_cmds, notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds,
-    sequence_cmds, session_cmds, settings_cmds, usage_cmds,
+    sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds,
 };
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -469,6 +469,8 @@ pub fn run() {
             pile_cmds::read_capture,
             pile_cmds::delete_capture,
             pile_cmds::list_captures,
+            spare_tokens_cmds::load_spare_tokens,
+            spare_tokens_cmds::save_spare_tokens,
             debug_recordings_cmds::get_debug_recordings,
             debug_recordings_cmds::save_debug_recordings,
             debug_recordings_cmds::save_debug_audio,

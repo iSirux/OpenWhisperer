@@ -386,6 +386,7 @@ export function transformToDisplaySessions(
         notionCard: s.notionCard,
         githubIssue: s.githubIssue,
         pileItem: s.pileItem,
+        spareTokens: s.spareTokens,
         queueInfo: s.queueInfo,
         rateLimited: s.rateLimited,
       };

@@ -10,6 +10,7 @@
   import PileList from '$lib/components/PileList.svelte';
   import PileDetailView from '$lib/components/PileDetailView.svelte';
   import CockpitView from '$lib/components/cockpit/CockpitView.svelte';
+  import SpareTokensView from '$lib/components/SpareTokensView.svelte';
 
   // Refactored components
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
@@ -324,6 +325,16 @@
     </div>
     <main class="flex-1 flex flex-col overflow-hidden">
       <NotionKanban />
+    </main>
+  {:else if currentView === 'sparetokens'}
+    <div class="border-r border-border bg-surface flex shrink-0 overflow-hidden">
+      <RepositoryRail
+        currentRepoId={null}
+        {currentView}
+      />
+    </div>
+    <main class="flex-1 flex flex-col overflow-hidden">
+      <SpareTokensView />
     </main>
   {:else}
     <aside

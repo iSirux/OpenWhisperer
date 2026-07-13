@@ -10,6 +10,7 @@
   import { repos } from '$lib/stores/repos';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { startSmartQueue } from '$lib/stores/smartQueue';
+  import { spareTokens, startSpareTokens } from '$lib/stores/spareTokens';
   import { updater } from '$lib/stores/updater';
   import { isRecording } from '$lib/stores/recording';
   import { isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
@@ -83,6 +84,7 @@
   let cleanupAutoSave: (() => void) | null = null;
   let cleanupPeriodicSave: (() => void) | null = null;
   let cleanupSmartQueue: (() => void) | null = null;
+  let cleanupSpareTokens: (() => void) | null = null;
 
   // Wire the recording flow store to the hotkey manager
   recordingFlow.setHotkeyCallbacks({
@@ -345,6 +347,11 @@
     // any queued/rate-limited sessions whose window already reset dispatch promptly).
     cleanupSmartQueue = startSmartQueue();
 
+    // Spare Tokens: load persisted auto state, then start the auto driver
+    // (dev-mode + enabled gating happens inside each evaluation).
+    await spareTokens.load();
+    cleanupSpareTokens = startSpareTokens();
+
     // If there are existing sessions, show sessions view
     if ($sdkSessions.length > 0 && $navigation.mainView === 'start') {
       navigation.setView('sessions');
@@ -427,6 +434,7 @@
     if (cleanupAutoSave) cleanupAutoSave();
     if (cleanupPeriodicSave) cleanupPeriodicSave();
     if (cleanupSmartQueue) cleanupSmartQueue();
+    if (cleanupSpareTokens) cleanupSpareTokens();
     cleanupSequenceExecutionListeners();
 
     saveSessionsToDisk();
