@@ -68,6 +68,18 @@ export function getModelButtonClasses(
   return `${base} text-text-secondary ${getModelHoverBgColor(id)}`;
 }
 
+/**
+ * Compare two filesystem paths for equality, ignoring separator style and a
+ * trailing slash. Needed on Windows, where session `cwd`s are stored with
+ * backslashes but `git worktree list --porcelain` reports forward slashes — a
+ * raw `===` would fail to match the two forms of the same worktree path.
+ */
+export function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+  return norm(a) === norm(b);
+}
+
 export function getWorktreeLabel(wt: WorktreeInfo): string {
   const branch = wt.branch || '(detached)';
   const parts = wt.path.replace(/\\/g, '/').split('/');

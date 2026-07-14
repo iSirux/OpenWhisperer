@@ -273,6 +273,8 @@ export interface PersistedSdkSession {
   draftPrompt?: string;
   draftImages?: SdkImageContent[];
   sdkSessionId?: string;
+  pinned?: boolean;
+  pinnedAt?: number | null;
 }
 
 export interface PersistedSessions {

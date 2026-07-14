@@ -36,9 +36,18 @@
     toSdkImageContent,
     getModelButtonClasses,
     getWorktreeLabel,
+    samePath,
     type WorktreeInfo,
     type WorktreeCreationResult,
   } from '$lib/components/session-setup/sessionSetupHelpers';
+  import {
+    accountsForProvider,
+    allowedAccountsForRepo,
+    defaultAccountIdForRepo,
+    isDefaultAccountId,
+  } from '$lib/utils/accounts';
+  import { rateLimitData, codexRateLimitData, accountRateLimits } from '$lib/stores/rateLimits';
+  import type { AgentAccount } from '$lib/stores/settings';
 
   interface SetupLaunchConfig {
     prompt: string;
@@ -47,6 +56,8 @@
     effortLevel: EffortLevel;
     cwd: string;
     provider?: SdkProvider;
+    /** Agent account to pin the session to (undefined = machine default). */
+    accountId?: string;
     worktreeMode?: 'main' | 'new' | 'existing';
     worktreeBranch?: string;
     worktreeRepoPath?: string;
@@ -63,6 +74,8 @@
     initialWorktreePath?: string;
     initialDraftPrompt?: string;
     initialDraftImages?: SdkImageContent[];
+    /** Agent account pinned on the session (undefined = machine default). */
+    initialAccountId?: string;
     providerLocked?: boolean;
     forkedFromLabel?: string;
     isRecordingForSetup?: boolean;
@@ -92,6 +105,7 @@
     initialWorktreePath = '',
     initialDraftPrompt = '',
     initialDraftImages = [],
+    initialAccountId = undefined,
     providerLocked = false,
     forkedFromLabel = '',
     isRecordingForSetup = false,
@@ -151,6 +165,38 @@
   const currentRepoIndex = $derived($repos.list.findIndex(r => r.path === cwd));
   const canStart = $derived(prompt.trim() || pendingImages.length > 0);
 
+  // Agent account selection. Account helpers use the config-format SdkProvider
+  // ("Claude"/"OpenAI"); the local `provider` here is lowercase ("claude"/"openai").
+  let selectedAccountId = $state<string | undefined>(initialAccountId);
+  // Whether the selection is explicit (a restored session pin or a user pick) vs. an
+  // auto-derived default. Explicit selections aren't re-derived while they stay allowed.
+  let userPickedAccount = $state(initialAccountId !== undefined);
+  const accountProvider = $derived(provider === 'openai' ? 'OpenAI' : 'Claude');
+  // The account picker only renders when more than one account exists for the provider
+  // (mirrors how the provider picker is gated on multiple providers).
+  const showAccountChoice = $derived(
+    accountsForProvider($settings.accounts, accountProvider).length > 1
+  );
+  const allowedAccounts = $derived(
+    allowedAccountsForRepo($settings.accounts, currentRepo ?? null, accountProvider)
+  );
+
+  /** Subtle 5h capacity hint for an account option, e.g. "· 43% 5h" (empty when no data). */
+  function accountCapacityHint(acct: AgentAccount): string {
+    const data = isDefaultAccountId(acct.id)
+      ? acct.provider === 'OpenAI'
+        ? $codexRateLimitData
+        : $rateLimitData
+      : $accountRateLimits[acct.id]?.data ?? null;
+    if (!data) return '';
+    return `· ${Math.round(data.five_hour.utilization)}% 5h`;
+  }
+  // Concrete select value for the machine default: the virtual default's id (not undefined).
+  const derivedDefaultAccountId = $derived(
+    defaultAccountIdForRepo($settings.accounts, currentRepo ?? null, accountProvider)
+      ?? allowedAccounts[0]?.id
+  );
+
   // Focus textarea on mount
   $effect(() => {
     if (textareaEl) {
@@ -170,8 +216,20 @@
       prompt = initialDraftPrompt;
       pendingImages = toImageData(initialDraftImages);
       selectedChips = [];
+      selectedAccountId = initialAccountId;
+      userPickedAccount = initialAccountId !== undefined;
       prevSessionId = sessionId;
     }
+  });
+
+  // Keep the selected account valid for the current repo/provider. Re-derive the
+  // default when the current selection isn't allowed, unless the user explicitly
+  // chose an account that is still allowed.
+  $effect(() => {
+    const allowedIds = allowedAccounts.map((a) => a.id);
+    if (userPickedAccount && selectedAccountId && allowedIds.includes(selectedAccountId)) return;
+    if (selectedAccountId !== derivedDefaultAccountId) selectedAccountId = derivedDefaultAccountId;
+    if (userPickedAccount) userPickedAccount = false;
   });
 
   // Check if OpenAI Codex is available (auth exists AND the provider is
@@ -251,6 +309,8 @@
       setupWorktreePath: selectedWorktreePath,
       currentBranch: null,
       provider,
+      // Persist a concrete account choice; the machine default stays undefined.
+      accountId: selectedAccountId && !isDefaultAccountId(selectedAccountId) ? selectedAccountId : undefined,
     });
   });
 
@@ -304,7 +364,7 @@
     } else if (worktreeMode === 'existing' && selectedWorktreePath) {
       worktreeRepoPath = cwd;
       effectiveCwd = selectedWorktreePath;
-      const selectedWt = existingWorktrees.find(w => w.path === selectedWorktreePath);
+      const selectedWt = existingWorktrees.find(w => samePath(w.path, selectedWorktreePath));
       worktreeBranch = selectedWt?.branch || undefined;
     }
 
@@ -315,6 +375,7 @@
       effortLevel,
       cwd: effectiveCwd,
       provider,
+      accountId: selectedAccountId && !isDefaultAccountId(selectedAccountId) ? selectedAccountId : undefined,
       worktreeMode: worktreeMode !== 'main' ? worktreeMode : undefined,
       worktreeBranch,
       worktreeRepoPath,
@@ -386,6 +447,7 @@
       effortLevel,
       cwd,
       provider,
+      accountId: selectedAccountId && !isDefaultAccountId(selectedAccountId) ? selectedAccountId : undefined,
     });
   }
 
@@ -633,6 +695,31 @@
         </div>
       </div>
 
+      <!-- Agent Account picker (only when >1 account exists for this provider) -->
+      {#if showAccountChoice}
+        <div class="option-row option-row--wide">
+          <div class="option-cell option-cell--grow">
+            <label class="option-label">Account</label>
+            <div class="account-selector">
+              {#each allowedAccounts as acct (acct.id)}
+                <button
+                  class="account-btn"
+                  class:active={selectedAccountId === acct.id}
+                  onclick={() => { selectedAccountId = acct.id; userPickedAccount = true; }}
+                  title={acct.label}
+                >
+                  <span class="account-dot" style="background: {acct.color}"></span>
+                  {acct.label}
+                  {#if accountCapacityHint(acct)}
+                    <span class="account-cap">{accountCapacityHint(acct)}</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      {/if}
+
       <!-- Repository Selector -->
       <div class="option-row option-row--wide">
         <div class="repo-selector-cell">
@@ -690,7 +777,7 @@
                     {#if isLoadingWorktrees}
                       <span class="text-text-muted">Loading worktrees...</span>
                     {:else if selectedWorktreePath}
-                      {@const selectedWt = existingWorktrees.find(w => w.path === selectedWorktreePath)}
+                      {@const selectedWt = existingWorktrees.find(w => samePath(w.path, selectedWorktreePath))}
                       <span>{selectedWt ? getWorktreeLabel(selectedWt) : 'Select worktree'}</span>
                     {:else}
                       <span class="text-text-muted">Select a worktree</span>
@@ -708,7 +795,7 @@
                         </div>
                       {:else}
                         {#each existingWorktrees as wt}
-                          {@const isSelected = wt.path === selectedWorktreePath}
+                          {@const isSelected = samePath(wt.path, selectedWorktreePath)}
                           <button
                             class="worktree-option"
                             class:selected={isSelected}
@@ -1126,6 +1213,51 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  /* Account Selector */
+  .account-selector {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0.25rem;
+    background: var(--color-surface);
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-border);
+  }
+
+  .account-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 0.375rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    transition: all 0.15s ease;
+  }
+
+  .account-btn:hover {
+    background: var(--color-surface-elevated);
+  }
+
+  .account-btn.active {
+    background: var(--color-accent);
+    color: white;
+  }
+
+  .account-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .account-cap {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    opacity: 0.85;
   }
 
   /* Effort Option Button */

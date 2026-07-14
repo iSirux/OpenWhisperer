@@ -12,8 +12,14 @@
 // =============================================================================
 
 import { get } from 'svelte/store';
-import { rateLimitData, codexRateLimitData, type ProviderRateLimits } from './rateLimits';
+import {
+  rateLimitData,
+  codexRateLimitData,
+  accountRateLimits,
+  type ProviderRateLimits
+} from './rateLimits';
 import { settings } from './settings';
+import { isDefaultAccountId } from '$lib/utils/accounts';
 import type { SdkProvider } from '$lib/utils/models';
 
 export type QueueWindow = '5h' | '7d';
@@ -22,10 +28,18 @@ export type QueueWindow = '5h' | '7d';
 const EXHAUSTION_THRESHOLD = 100;
 
 /**
- * Pick the live rate-limit snapshot for a provider.
- * Codex (OpenAI) waits on its own store; everything else uses Claude's.
+ * Pick the live rate-limit snapshot for a provider (optionally for a specific account).
+ * - A configured (non-default) account reads its own window from the `accountRateLimits`
+ *   mirror.
+ * - Otherwise Codex (OpenAI) waits on its own store; everything else uses Claude's.
  */
-function storeForProvider(provider: SdkProvider): ProviderRateLimits | null {
+function storeForProvider(
+  provider: SdkProvider,
+  accountId?: string
+): ProviderRateLimits | null {
+  if (accountId && !isDefaultAccountId(accountId)) {
+    return get(accountRateLimits)[accountId]?.data ?? null;
+  }
   return provider === 'openai' ? get(codexRateLimitData) : get(rateLimitData);
 }
 
@@ -45,9 +59,10 @@ function parseResetMs(iso: string | undefined | null): number | undefined {
  * Returns `{ exhausted: false }` when the store is null or nothing is exhausted.
  */
 export function providerExhaustion(
-  provider: SdkProvider
+  provider: SdkProvider,
+  accountId?: string
 ): { exhausted: boolean; window?: QueueWindow; resetsAt?: number } {
-  const data = storeForProvider(provider);
+  const data = storeForProvider(provider, accountId);
   if (!data) return { exhausted: false };
 
   const fiveHourExhausted = data.five_hour.utilization >= EXHAUSTION_THRESHOLD;
@@ -73,9 +88,9 @@ export function providerExhaustion(
   return { exhausted: false };
 }
 
-/** True when the smart queue is enabled AND the provider is currently exhausted. */
-export function shouldQueue(provider: SdkProvider): boolean {
-  return get(settings).queue.enabled && providerExhaustion(provider).exhausted;
+/** True when the smart queue is enabled AND the provider (for this account) is currently exhausted. */
+export function shouldQueue(provider: SdkProvider, accountId?: string): boolean {
+  return get(settings).queue.enabled && providerExhaustion(provider, accountId).exhausted;
 }
 
 /**
@@ -83,8 +98,12 @@ export function shouldQueue(provider: SdkProvider): boolean {
  * undefined if unavailable. Used by the scheduling feature to snapshot a target
  * start time for a fire-and-forget "next window" launch.
  */
-export function nextWindowResetAt(provider: SdkProvider, window: QueueWindow): number | undefined {
-  const data = storeForProvider(provider);
+export function nextWindowResetAt(
+  provider: SdkProvider,
+  window: QueueWindow,
+  accountId?: string
+): number | undefined {
+  const data = storeForProvider(provider, accountId);
   if (!data) return undefined;
   return window === '5h'
     ? parseResetMs(data.five_hour.resets_at)

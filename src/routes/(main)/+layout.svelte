@@ -5,7 +5,7 @@
   import { get } from 'svelte/store';
   import AppHeader from '$lib/components/AppHeader.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-  import { settings, configLoadedOk, configLoadReport, nextRecordStopMode } from '$lib/stores/settings';
+  import { settings, configLoadedOk, configLoadReport } from '$lib/stores/settings';
   import { pile } from '$lib/stores/pile';
   import { repos } from '$lib/stores/repos';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
@@ -34,7 +34,7 @@
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import { type VoiceCommandType } from '$lib/utils/voiceCommands';
   import { eventMatchesHotkey } from '$lib/utils/hotkeys';
-  import { cycleModel, cycleRepo } from '$lib/utils/recordingCycles';
+  import { cycleModel, selectRepo } from '$lib/utils/recordingCycles';
   import { createAndActivateNewSession, createSessionInSameRepo } from '$lib/utils/sessionCreation';
   import { selectDisplaySession } from '$lib/utils/sessionSelection';
   import { transformToDisplaySessions, getSdkSmartStatus } from '$lib/composables/useDisplaySessions.svelte';
@@ -231,6 +231,15 @@
     ctrlHintKeydown(event);
     if (event.repeat) return;
 
+    // Esc while recording — discard the recording (same as the overlay's
+    // Discard button). Only reachable while the app is focused, since window
+    // keydown events don't fire otherwise.
+    if (event.key === 'Escape' && get(isRecording)) {
+      event.preventDefault();
+      void recordingFlow.cancelRecording();
+      return;
+    }
+
     // Ctrl+1..9 — jump to the Nth session in the sidebar. Uses the same transform
     // (and therefore the same order) as SessionList, which renders the number badges.
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
@@ -348,7 +357,7 @@
     cleanupSmartQueue = startSmartQueue();
 
     // Spare Tokens: load persisted auto state, then start the auto driver
-    // (dev-mode + enabled gating happens inside each evaluation).
+    // (enabled gating happens inside each evaluation).
     await spareTokens.load();
     cleanupSpareTokens = startSpareTokens();
 
@@ -379,7 +388,10 @@
       },
       onSwitchToSession: handleSwitchToSession,
       onCancelRecording: recordingFlow.cancelRecording,
-      onSendRecording: recordingFlow.stopRecordingAndSend,
+      onSendRecording: (action) =>
+        action === 'pile'
+          ? recordingFlow.stopRecordingToPile()
+          : recordingFlow.stopRecordingFromHotkey(action ?? 'send'),
       onStartRecordingFromOpenMic: recordingFlow.startRecordingFromOpenMic,
       onVoiceCommand: (
         commandType: VoiceCommandType,
@@ -395,15 +407,15 @@
           recordingFlow.cleanupAudioVisualizationListener,
         ),
       onUnregisterRecordingHotkeys: () => hotkeyManager.unregisterRecordingHotkeys(),
-      onCycleStopMode: async () => {
+      onSetStopMode: async (mode) => {
         const current = get(settings);
-        const next = nextRecordStopMode(current.audio.record_and_send_action);
+        if (current.audio.record_and_send_action === mode) return;
         await settings.save({
           ...current,
-          audio: { ...current.audio, record_and_send_action: next },
+          audio: { ...current.audio, record_and_send_action: mode },
         });
       },
-      onCycleRepo: cycleRepo,
+      onSelectRepo: selectRepo,
       onCycleModel: cycleModel,
     });
 

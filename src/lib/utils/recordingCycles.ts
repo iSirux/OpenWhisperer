@@ -21,6 +21,54 @@ export function getSelectedToolbarModel(): string {
 }
 
 /**
+ * Select a specific repository option: 'auto' (auto-repo mode) or a repo index.
+ * Updates the overlay session info with the new repo's branch.
+ */
+async function selectRepoOption(option: 'auto' | number): Promise<void> {
+  if (option === 'auto') {
+    // Switch to auto-repo mode
+    await repos.setAutoRepoMode(true);
+    overlay.setSessionInfo(null, getSelectedToolbarModel(), false);
+    return;
+  }
+
+  // Switch to specific repo
+  if (get(repos).autoMode) {
+    await repos.setAutoRepoMode(false);
+  }
+  await repos.setActiveRepo(option);
+
+  // Update overlay with new repo info
+  const newRepo = get(repos).list[option];
+  if (newRepo) {
+    let branch: string | null = null;
+    try {
+      branch = await invoke<string>('get_git_branch', { repoPath: newRepo.path });
+    } catch (e) {
+      console.error('Failed to get git branch:', e);
+    }
+    overlay.setSessionInfo(branch, getSelectedToolbarModel(), false);
+  }
+}
+
+/**
+ * Select the active repository by option: 'auto' or a repo id
+ * (used by the overlay repo dropdown; events cross windows, so repos are
+ * addressed by id rather than index).
+ */
+export async function selectRepo(option: 'auto' | string): Promise<void> {
+  if (option === 'auto') {
+    if (!isRepoAutoSelectEnabled()) return;
+    await selectRepoOption('auto');
+    return;
+  }
+
+  const index = get(repos).list.findIndex((r) => r.id === option);
+  if (index < 0) return;
+  await selectRepoOption(index);
+}
+
+/**
  * Cycle the active repository: auto-repo mode (if enabled) → each active repo → back.
  * Updates the overlay session info with the new repo's branch.
  */
@@ -49,29 +97,7 @@ export async function cycleRepo(): Promise<void> {
 
   console.log('[Cycle] Cycling repo from', currentOption, 'to', nextOption);
 
-  if (nextOption === 'auto') {
-    // Switch to auto-repo mode
-    await repos.setAutoRepoMode(true);
-    overlay.setSessionInfo(null, getSelectedToolbarModel(), false);
-  } else {
-    // Switch to specific repo
-    if (get(repos).autoMode) {
-      await repos.setAutoRepoMode(false);
-    }
-    await repos.setActiveRepo(nextOption);
-
-    // Update overlay with new repo info
-    const newRepo = get(repos).list[nextOption];
-    if (newRepo) {
-      let branch: string | null = null;
-      try {
-        branch = await invoke<string>('get_git_branch', { repoPath: newRepo.path });
-      } catch (e) {
-        console.error('Failed to get git branch:', e);
-      }
-      overlay.setSessionInfo(branch, getSelectedToolbarModel(), false);
-    }
-  }
+  await selectRepoOption(nextOption);
 }
 
 /**

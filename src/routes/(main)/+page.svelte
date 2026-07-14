@@ -418,6 +418,7 @@
           initialWorktreePath={activeSession.setupWorktreePath || ''}
           initialDraftPrompt={activeSession.draftPrompt || ''}
           initialDraftImages={activeSession.draftImages || []}
+          initialAccountId={activeSession.accountId}
           providerLocked={!!activeSession.forkedFromSessionId}
           forkedFromLabel={activeSession.forkedFromSessionLabel || ''}
           isRecordingForSetup={$isRecordingForSetup}
@@ -450,6 +451,7 @@
           model={activeSession.model}
           effortLevel={activeSession.effortLevel}
           provider={activeSession.provider}
+          accountId={activeSession.accountId}
           autocompactEnabled={activeSession.autocompactEnabled ?? true}
           disableHooks={activeSession.disableHooks ?? false}
           createdBranch={activeSession.createdBranch}
@@ -486,6 +488,7 @@
             model={activeSession.model}
             effortLevel={activeSession.effortLevel}
             provider={activeSession.provider}
+            accountId={activeSession.accountId}
             autocompactEnabled={activeSession.autocompactEnabled ?? true}
             disableHooks={activeSession.disableHooks ?? false}
             createdBranch={activeSession.createdBranch}

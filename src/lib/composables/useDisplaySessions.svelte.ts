@@ -375,6 +375,7 @@ export function transformToDisplaySessions(
         pendingPlanApproval: !!s.pendingPlanApproval,
         askUserQuestion: !!(s.askUserQuestion?.questions?.length),
         provider: s.provider,
+        accountId: s.accountId,
         todoProgress,
         forkInfo: s.forkedFromSessionId
           ? {

@@ -43,6 +43,8 @@ export interface RepoConfig {
   github_url?: string;
   /** GitHub CLI account (username) to use for sessions in this repo. Unset = gh's active account */
   gh_user?: string;
+  /** Whitelist of agent account IDs allowed for sessions in this repo. Empty/missing = all allowed. */
+  account_ids?: string[];
 }
 
 /** Helper: treat undefined/missing active field as true for backward compatibility */

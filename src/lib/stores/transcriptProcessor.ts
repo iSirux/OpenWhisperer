@@ -1037,6 +1037,8 @@ export async function handleSetupSessionStart(
     effortLevel: EffortLevel;
     cwd: string;
     provider?: import('$lib/utils/models').SdkProvider;
+    /** Agent account to pin the session to (undefined = machine default). */
+    accountId?: string;
     worktreeRepoPath?: string;
     worktreeBranch?: string;
     worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
@@ -1102,6 +1104,7 @@ export async function handleSetupSessionStart(
     model: finalModel,
     effortLevel: finalEffort,
     provider: config.provider,
+    accountId: config.accountId,
     createdBranch: config.worktreeBranch,
     worktreePostSetup: config.worktreePostSetup,
     schedule: config.schedule,

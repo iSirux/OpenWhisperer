@@ -14,6 +14,7 @@ import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screens
 import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
 import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
+import { defaultAccountIdForRepo } from '$lib/utils/accounts';
 
 // =============================================================================
 // Debounced Save
@@ -446,6 +447,8 @@ export interface SdkSession {
   changedFileCount?: number;
   model: string;
   provider?: SdkProvider;
+  /** Agent account this session is pinned to (isolated login profile). Undefined = machine default. */
+  accountId?: string;
   autoModelRequested?: boolean;
   effortLevel: EffortLevel;
   /** @deprecated Use effortLevel */
@@ -555,6 +558,10 @@ export interface SdkSession {
   /** Runtime-only. Set when sdk-done arrived while subagents were still live and completion was
    *  deferred; the final subagent_stop consumes this to run the real completion. Not persisted. */
   completionDeferred?: boolean;
+  /** Actual model used by each subagent, keyed by the Task/Agent tool's toolUseId. Reported by the
+   *  sidecar from the subagent's own assistant messages (Claude only — Codex collab agents inherit
+   *  the parent thread's model). Persisted so restored sessions keep their task model badges. */
+  subagentModels?: Record<string, string>;
 }
 
 export type BackgroundTaskKind = 'agent' | 'command' | 'server';
@@ -1409,7 +1416,7 @@ function createSdkSessionsStore() {
           sessions.map(s => {
             if (s.id !== id) return s;
             const provider = s.provider ?? getProviderForModel(s.model);
-            const exhaustion = providerExhaustion(provider);
+            const exhaustion = providerExhaustion(provider, s.accountId);
             // Prefer the explicit event reset time (normalized to ms); fall back to the store-derived one.
             const eventReset = normalizeEpochMs(e.payload.resetsAt);
             const resetsAt = eventReset ?? exhaustion.resetsAt;
@@ -1526,6 +1533,19 @@ function createSdkSessionsStore() {
           console.log(`[sdkSessions] last subagent stopped — running deferred completion (session: ${id})`);
           finalizeCompletion(id, false);
         }
+      })
+    );
+
+    // Subagent model events — the subagent's actual model, reported once per Task toolUseId
+    // from the subagent's first assistant message. Drives the model badge on task blocks.
+    unlisteners.push(
+      await listen<{ toolUseId: string; model: string }>(`sdk-subagent-model-${id}`, (e) => {
+        update(sessions =>
+          sessions.map(s => s.id === id
+            ? { ...s, subagentModels: { ...(s.subagentModels ?? {}), [e.payload.toolUseId]: e.payload.model } }
+            : s)
+        );
+        debouncedSave(id);
       })
     );
 
@@ -1819,7 +1839,24 @@ function createSdkSessionsStore() {
 
     // Pin gh to the repo's configured GitHub account (backend resolves the token).
     const sessionRepoId = resolveRepoId(cwd);
-    const ghUser = findRepoById(get(repos).list, sessionRepoId)?.gh_user ?? null;
+    const repoForSession = findRepoById(get(repos).list, sessionRepoId);
+    const ghUser = repoForSession?.gh_user ?? null;
+
+    // Pin the session to an agent account (the backend injects the profile env var).
+    // Prefer an id already set on the session (explicit setup/fork choice); otherwise
+    // derive from the repo whitelist/preference. Store it before invoking so restores,
+    // rate-limit re-sends and forks stay pinned to the same account.
+    const existingAccountId = get({ subscribe }).find((s) => s.id === id)?.accountId;
+    const resolvedAccountId =
+      existingAccountId ??
+      defaultAccountIdForRepo(
+        currentSettings.accounts,
+        repoForSession,
+        resolvedProvider === 'openai' ? 'OpenAI' : 'Claude',
+      );
+    if (resolvedAccountId && resolvedAccountId !== existingAccountId) {
+      update((all) => all.map((s) => (s.id === id ? { ...s, accountId: resolvedAccountId } : s)));
+    }
 
     // Prefer SDK session ID for proper resume, fall back to history messages
     // The SDK session ID allows proper conversation continuation without re-sending all history
@@ -1853,6 +1890,7 @@ function createSdkSessionsStore() {
         resolvedProvider === 'claude' && autocompactEnabled === false ? 0 : null,
       disableHooks: disableHooks || null,
       ghUser,
+      accountId: resolvedAccountId ?? null,
     });
 
     if (effortLevel && modelSupportsEffort(model)) {
@@ -2144,6 +2182,8 @@ function createSdkSessionsStore() {
         repoId: sourceSession.repoId,
         model: sourceSession.model,
         provider: sourceSession.provider,
+        // Resumability is account-locked: a fork inherits its source's account.
+        accountId: sourceSession.accountId,
         effortLevel: sourceSession.effortLevel,
         messages: parentMessages,
         status: 'setup',
@@ -2178,12 +2218,14 @@ function createSdkSessionsStore() {
 
       let sessionCwd: string | undefined;
       let sessionProvider: SdkProvider = 'claude';
+      let sessionAccountId: string | undefined;
       let needsNameGeneration = false;
       let recordingScreenshots: SdkImageContent[] | undefined;
       subscribe(sessions => {
         const session = sessions.find(s => s.id === id);
         sessionCwd = session?.cwd;
         sessionProvider = session?.provider ?? getProviderForModel(session?.model ?? '');
+        sessionAccountId = session?.accountId;
         const isFirstUserMessage = session?.messages.filter(m => m.type === 'user').length === 0;
         needsNameGeneration = !session?.aiMetadata?.name && isFirstUserMessage;
         // Recording screenshots ride on the pending session until the first prompt goes out
@@ -2269,8 +2311,8 @@ function createSdkSessionsStore() {
       // Smart Queue (follow-up gate): if the provider's usage window is exhausted, don't dispatch.
       // The user message stays in the transcript so the queued turn is visible; the turn itself is
       // parked in `rateLimited` and re-sent later by the driver (or manually via "Continue now").
-      if (shouldQueue(sessionProvider)) {
-        const { window: rlWindow, resetsAt } = providerExhaustion(sessionProvider);
+      if (shouldQueue(sessionProvider, sessionAccountId)) {
+        const { window: rlWindow, resetsAt } = providerExhaustion(sessionProvider, sessionAccountId);
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -2531,6 +2573,7 @@ function createSdkSessionsStore() {
 
     togglePin(id: string): void {
       update(sessions => sessions.map(s => s.id === id ? { ...s, pinned: !s.pinned, pinnedAt: !s.pinned ? Date.now() : undefined } : s));
+      debouncedSave(id);
     },
 
     /**
@@ -2548,10 +2591,12 @@ function createSdkSessionsStore() {
       repoId?: string;
       currentBranch?: string | null;
       provider?: SdkProvider;
+      accountId?: string;
     }): void {
       update(sessions => sessions.map(s => {
         if (s.id !== id || s.status !== 'setup') return s;
         const updated = { ...s };
+        if ('accountId' in config) updated.accountId = config.accountId;
         if (config.model !== undefined) {
           updated.model = config.model;
           updated.provider = normalizeSdkProvider(config.provider ?? s.provider, config.model);
@@ -2617,7 +2662,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; schedule?: QueueWindow | 'after_sessions' }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; accountId?: string; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; schedule?: QueueWindow | 'after_sessions' }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -2629,9 +2674,9 @@ function createSdkSessionsStore() {
       // either the user explicitly scheduled it for a later window (`config.schedule`, fire-and-forget
       // from the New Session view) or the provider's usage window is currently exhausted. Its prompt
       // is baked onto the prepared fields; the driver later dispatches it via launchPrepared.
-      if (hasPrompt && (config.schedule || shouldQueue(gatedProvider))) {
+      if (hasPrompt && (config.schedule || shouldQueue(gatedProvider, config.accountId))) {
         const finalSystemPrompt = config.systemPrompt;
-        const exhaustion = providerExhaustion(gatedProvider);
+        const exhaustion = providerExhaustion(gatedProvider, config.accountId);
         const queuedAt = Date.now();
         // Scheduled launches target the user-chosen window boundary; rate-limit queueing targets
         // the current exhausted window's reset time. 'after_sessions' has no time target — it
@@ -2646,7 +2691,7 @@ function createSdkSessionsStore() {
         const targetStartAt = isAfterSessions
           ? undefined
           : config.schedule
-            ? nextWindowResetAt(gatedProvider, config.schedule as QueueWindow)
+            ? nextWindowResetAt(gatedProvider, config.schedule as QueueWindow, config.accountId)
             : exhaustion.resetsAt;
         update(sessions =>
           sessions.map(s =>
@@ -2658,6 +2703,7 @@ function createSdkSessionsStore() {
                   model: gatedModel,
                   effortLevel: config.effortLevel,
                   provider: gatedProvider,
+                  ...(config.accountId ? { accountId: config.accountId } : {}),
                   status: 'queued' as const,
                   preparedPrompt: config.prompt,
                   preparedSystemPrompt: finalSystemPrompt,
@@ -2687,6 +2733,7 @@ function createSdkSessionsStore() {
                 repoId: config.repoId ?? resolveRepoId(config.cwd),
                 model: config.model,
                 effortLevel: config.effortLevel,
+                ...(config.accountId ? { accountId: config.accountId } : {}),
                 status: 'initializing' as const,
                 // Setup drafts should not carry into the live SDK composer.
                 // If they remain on the session while SdkView mounts, the prompt input
@@ -3105,13 +3152,15 @@ function createSdkSessionsStore() {
     },
 
     async initializeSession(id: string, cwd: string, model: string, effortLevel: EffortLevel, systemPrompt?: string, pendingPrompt?: string, provider?: SdkProvider): Promise<void> {
-      const sessionProvider = provider ?? get({ subscribe }).find(s => s.id === id)?.provider ?? getProviderForModel(model);
+      const sessionForInit = get({ subscribe }).find(s => s.id === id);
+      const sessionProvider = provider ?? sessionForInit?.provider ?? getProviderForModel(model);
+      const sessionAccountId = sessionForInit?.accountId;
 
       // Smart Queue (first-launch gate): only a prompt-bearing launch consumes the rate limit, so
       // only defer when there is a pending prompt. Park as `queued` (prompt on prepared fields) so
       // launchPrepared can dispatch it later, then return before registering/sending.
-      if (pendingPrompt && pendingPrompt.trim().length > 0 && shouldQueue(sessionProvider)) {
-        const { window: rlWindow, resetsAt } = providerExhaustion(sessionProvider);
+      if (pendingPrompt && pendingPrompt.trim().length > 0 && shouldQueue(sessionProvider, sessionAccountId)) {
+        const { window: rlWindow, resetsAt } = providerExhaustion(sessionProvider, sessionAccountId);
         const queuedAt = Date.now();
         update(sessions =>
           sessions.map(s =>
@@ -3172,7 +3221,7 @@ function createSdkSessionsStore() {
       if (!session) return;
 
       const provider = session.provider ?? getProviderForModel(session.model);
-      const targetStartAt = nextWindowResetAt(provider, window);
+      const targetStartAt = nextWindowResetAt(provider, window, session.accountId);
       const now = Date.now();
 
       update(sessions =>

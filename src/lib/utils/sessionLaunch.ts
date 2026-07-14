@@ -14,12 +14,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { sdkSessions, settingsToStoreEffort, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
 import { settings } from '$lib/stores/settings';
 import { activeRepo, type RepoConfig } from '$lib/stores/repos';
+import { defaultAccountIdForRepo } from '$lib/utils/accounts';
 
 export interface LaunchConfig {
   repo: RepoConfig;
   model: string;
   effortLevel: EffortLevel;
   provider: 'claude' | 'openai';
+  /** Agent account to pin the launched session to (undefined = machine default). */
+  accountId?: string;
 }
 
 interface WorktreeCreationResult {
@@ -44,7 +47,8 @@ export function snapshotLaunchConfigForRepo(repo: RepoConfig): LaunchConfig {
   const provider = s.sdk_provider === 'OpenAI' ? 'openai' : ('claude' as const);
   const model = provider === 'openai' ? s.openai_model : s.default_model;
   const effortLevel = settingsToStoreEffort(s.default_effort_level);
-  return { repo, model, effortLevel, provider };
+  const accountId = defaultAccountIdForRepo(s.accounts, repo, provider === 'openai' ? 'OpenAI' : 'Claude');
+  return { repo, model, effortLevel, provider, accountId };
 }
 
 /**
@@ -65,6 +69,8 @@ export interface LaunchSessionOptions {
   model: string;
   effortLevel: EffortLevel;
   provider: 'claude' | 'openai';
+  /** Agent account to pin the launched session to (undefined = machine default). */
+  accountId?: string;
   /** Create a fresh git worktree for the session (branch name generated from `branchNameHint`). */
   useWorktree?: boolean;
   /** Hint used to generate the worktree branch name (defaults to the prompt). */
@@ -130,6 +136,7 @@ export async function launchSession(opts: LaunchSessionOptions): Promise<string>
     model,
     effortLevel,
     provider,
+    accountId: opts.accountId,
     systemPrompt: opts.systemPrompt,
     createdBranch,
     worktreePostSetup,

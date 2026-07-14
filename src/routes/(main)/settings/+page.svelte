@@ -9,6 +9,7 @@
     GeneralTab,
     ClaudeTab,
     CodexTab,
+    AccountsTab,
     ThemesTab,
     SystemTab,
     DeveloperTab,
@@ -127,6 +128,7 @@
     [
       { id: "claude", label: "Claude" },
       { id: "codex", label: "Codex" },
+      { id: "accounts", label: "Accounts" },
       { id: "sessions", label: "Sessions" },
       { id: "themes", label: "Themes" },
       { id: "system", label: "System" },
@@ -190,6 +192,8 @@
         <ClaudeTab />
       {:else if activeTab === "codex"}
         <CodexTab />
+      {:else if activeTab === "accounts"}
+        <AccountsTab />
       {:else if activeTab === "themes"}
         <ThemesTab />
       {:else if activeTab === "system"}

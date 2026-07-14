@@ -1,6 +1,7 @@
 export { default as GeneralTab } from "./GeneralTab.svelte";
 export { default as ClaudeTab } from "./ClaudeTab.svelte";
 export { default as CodexTab } from "./CodexTab.svelte";
+export { default as AccountsTab } from "./AccountsTab.svelte";
 export { default as ThemesTab } from "./ThemesTab.svelte";
 export { default as SystemTab } from "./SystemTab.svelte";
 export { default as DeveloperTab } from "./DeveloperTab.svelte";

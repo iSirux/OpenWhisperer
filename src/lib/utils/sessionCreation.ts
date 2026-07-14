@@ -53,6 +53,11 @@ export async function createSessionInSameRepo(sourceSessionId?: string): Promise
     repoPath
   );
 
+  // Clone the source session's agent account onto the new setup session.
+  if (source.accountId) {
+    sdkSessions.updateSetupConfig(sessionId, { accountId: source.accountId });
+  }
+
   if (repoPath !== source.cwd) {
     // Source runs in a worktree — preselect that worktree in the setup form.
     sdkSessions.updateSetupConfig(sessionId, {

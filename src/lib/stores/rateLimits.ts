@@ -1,5 +1,7 @@
 import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
+import type { AgentAccount } from './settings';
+import { isDefaultAccountId } from '$lib/utils/accounts';
 
 export interface RateLimitWindow {
 	utilization: number; // 0-100
@@ -23,7 +25,7 @@ export interface ProviderRateLimits {
 // Keep backward compat alias
 export type ClaudeRateLimits = ProviderRateLimits;
 
-interface RateLimitState {
+export interface RateLimitState {
 	data: ProviderRateLimits | null;
 	loading: boolean;
 	error: string | null;
@@ -52,10 +54,16 @@ const STALE_AFTER_MS = 5 * 60_000; // don't show stale until data is 5+ minutes 
 interface RateLimitStoreOptions {
 	refreshIntervalMs?: number;
 	maxBackoffMs?: number;
+	/** Extra invoke args threaded into every fetch (e.g. `{ accountId }` for per-account stores). */
+	invokeArgs?: Record<string, unknown>;
 }
 
 /** Wrap an invoke call with a timeout so it never hangs forever */
-function invokeWithTimeout<T>(command: string, timeoutMs: number): Promise<T> {
+function invokeWithTimeout<T>(
+	command: string,
+	timeoutMs: number,
+	args?: Record<string, unknown>
+): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		let settled = false;
 		const timer = setTimeout(() => {
@@ -65,7 +73,7 @@ function invokeWithTimeout<T>(command: string, timeoutMs: number): Promise<T> {
 			}
 		}, timeoutMs);
 
-		invoke<T>(command)
+		invoke<T>(command, args)
 			.then((result) => {
 				if (!settled) {
 					settled = true;
@@ -89,6 +97,7 @@ function createProviderRateLimitStore(
 ) {
 	const baseRefreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
 	const maxBackoffMs = Math.max(options.maxBackoffMs ?? baseRefreshIntervalMs, baseRefreshIntervalMs);
+	const invokeArgs = options.invokeArgs;
 
 	const { subscribe, set, update } = writable<RateLimitState>({
 		data: null,
@@ -134,7 +143,8 @@ function createProviderRateLimitStore(
 			try {
 				const data = await invokeWithTimeout<ProviderRateLimits>(
 					commandName,
-					INVOKE_TIMEOUT_MS
+					INVOKE_TIMEOUT_MS,
+					invokeArgs
 				);
 				currentRefreshIntervalMs = baseRefreshIntervalMs;
 				console.log(`[RateLimits] ${commandName} OK:`, data);
@@ -264,6 +274,100 @@ export const codexRateLimitError = derived(codexRateLimits, ($rl) => $rl.error);
 export const isCodexRateLimitLoading = derived(codexRateLimits, ($rl) => $rl.loading);
 export const codexRateLimitAuthExpired = derived(codexRateLimits, ($rl) => $rl.authExpired);
 
+// --- Per-account rate-limit stores ---
+//
+// Rate limits are per-account. Sessions with `accountId` undefined or a virtual
+// `default-*` id use the provider singletons above (identical pre-feature
+// behavior). Each configured, non-disabled account gets its own lazily-created
+// store that fetches THAT account's usage (backend reads the profile's creds via
+// the `accountId` invoke arg). `accountRateLimits` is a reactive mirror of every
+// account store's state, keyed by account id, so components can subscribe once.
+
+export const accountRateLimits = writable<Record<string, RateLimitState>>({});
+
+interface AccountStoreEntry {
+	store: ReturnType<typeof createProviderRateLimitStore>;
+	unsub: () => void;
+}
+
+const accountStores = new Map<string, AccountStoreEntry>();
+
+function commandForAccountProvider(provider: AgentAccount['provider']): string {
+	return provider === 'OpenAI' ? 'fetch_codex_rate_limits' : 'fetch_claude_rate_limits';
+}
+
+function refreshOptionsForProvider(provider: AgentAccount['provider']): RateLimitStoreOptions {
+	return provider === 'OpenAI'
+		? { refreshIntervalMs: CODEX_BASE_REFRESH_INTERVAL_MS, maxBackoffMs: CODEX_MAX_BACKOFF_MS }
+		: { refreshIntervalMs: CLAUDE_BASE_REFRESH_INTERVAL_MS, maxBackoffMs: CLAUDE_MAX_BACKOFF_MS };
+}
+
+/** Get (or lazily create) the per-account store for a configured account id. */
+function getOrCreateAccountStore(accountId: string, provider: AgentAccount['provider']) {
+	let entry = accountStores.get(accountId);
+	if (!entry) {
+		const store = createProviderRateLimitStore(commandForAccountProvider(provider), {
+			...refreshOptionsForProvider(provider),
+			invokeArgs: { accountId }
+		});
+		// Mirror this store's state into the reactive registry on every change.
+		const unsub = store.subscribe((state) => {
+			accountRateLimits.update((rec) => ({ ...rec, [accountId]: state }));
+		});
+		entry = { store, unsub };
+		accountStores.set(accountId, entry);
+	}
+	return entry.store;
+}
+
+/** Stop, unsubscribe, and forget a per-account store (account disabled/removed). */
+function retireAccountStore(accountId: string): void {
+	const entry = accountStores.get(accountId);
+	if (!entry) return;
+	entry.store.stopAutoRefresh();
+	entry.unsub();
+	accountStores.delete(accountId);
+	accountRateLimits.update((rec) => {
+		if (!(accountId in rec)) return rec;
+		const next = { ...rec };
+		delete next[accountId];
+		return next;
+	});
+}
+
+/**
+ * Resolve the rate-limit store a session should read/poll:
+ * - undefined/null/`default-*` account → the provider singleton (unchanged behavior).
+ * - a configured account id → its lazily-created per-account store.
+ */
+export function rateLimitStoreForAccount(
+	accountId: string | null | undefined,
+	provider: 'claude' | 'openai'
+): ReturnType<typeof createProviderRateLimitStore> {
+	if (!accountId || isDefaultAccountId(accountId)) {
+		return provider === 'openai' ? codexRateLimits : rateLimits;
+	}
+	return getOrCreateAccountStore(accountId, provider === 'openai' ? 'OpenAI' : 'Claude');
+}
+
+/**
+ * Reconcile the per-account store registry against the configured accounts:
+ * create + auto-refresh a store for every configured, non-disabled account, and
+ * retire stores for accounts that disappeared or became disabled. Cheap to call
+ * repeatedly (`startAutoRefresh` is idempotent).
+ */
+export function syncAccountRateLimitStores(accounts: AgentAccount[]): void {
+	const active = new Set<string>();
+	for (const account of accounts) {
+		if (account.disabled || isDefaultAccountId(account.id)) continue;
+		active.add(account.id);
+		getOrCreateAccountStore(account.id, account.provider).startAutoRefresh();
+	}
+	for (const id of [...accountStores.keys()]) {
+		if (!active.has(id)) retireAccountStore(id);
+	}
+}
+
 // --- Visibility change handler ---
 // When the app regains focus (e.g. after sleep/wake or tab switch), restart
 // the refresh timers and force an immediate fetch so data is never stale.
@@ -279,6 +383,7 @@ export function registerVisibilityHandler() {
 			console.log('[RateLimits] App became visible — restarting auto-refresh');
 			rateLimits.restartAutoRefresh();
 			codexRateLimits.restartAutoRefresh();
+			for (const entry of accountStores.values()) entry.store.restartAutoRefresh();
 		}
 	});
 }

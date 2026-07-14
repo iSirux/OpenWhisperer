@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod accounts;
 pub mod audio;
 pub mod hotkeys;
 pub mod llm;
@@ -21,6 +22,7 @@ pub mod ui;
 pub mod whisper;
 
 // Re-export all schema types so `crate::config::X` paths keep working.
+pub use accounts::*;
 pub use audio::*;
 pub use hotkeys::*;
 pub use llm::*;
@@ -124,6 +126,11 @@ pub struct AppConfig {
     pub audio: AudioConfig,
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
+    /// Registered agent accounts (multi-account / multi-boxing). The reserved
+    /// virtual ids `default-claude` / `default-openai` are never stored here —
+    /// the frontend synthesizes them.
+    #[serde(default)]
+    pub accounts: Vec<AgentAccount>,
     #[serde(default)]
     pub active_repo_index: usize,
     /// When true, repo is auto-selected based on prompt content (if Gemini auto_select_repo is enabled)
@@ -350,6 +357,7 @@ impl Default for AppConfig {
             overlay: OverlayConfig::default(),
             audio: AudioConfig::default(),
             repos: vec![],
+            accounts: vec![],
             active_repo_index: 0,
             auto_repo_mode: false,
             default_model: default_model(),

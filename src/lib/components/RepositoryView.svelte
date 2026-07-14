@@ -9,6 +9,7 @@
   import { navigation } from '$lib/stores/navigation';
   import { repos, type RepoConfig } from '$lib/stores/repos';
   import { settings } from '$lib/stores/settings';
+  import { accountsForProvider } from '$lib/utils/accounts';
   import type { LaunchCommand, LaunchProfile } from '$lib/types/launch';
   import { startRepoExploreSession } from '$lib/utils/repoExplore';
   import { REPO_ICON_NAMES, getDefaultRepoColor } from '$lib/utils/repoIcons';
@@ -76,6 +77,21 @@
   );
   const selectedWorktree = $derived(worktrees.find((worktree) => worktree.path === selectedWorktreePath) ?? null);
   const enabledMcpServers = $derived(($settings.mcp?.servers ?? []).filter((server) => server.enabled));
+
+  // Agent accounts: only show the whitelist when at least one configured account exists.
+  const hasConfiguredAccounts = $derived(($settings.accounts ?? []).length > 0);
+  // All selectable accounts (virtual defaults + configured) across enabled providers.
+  const accountOptions = $derived([
+    ...(($settings.enabled_providers?.claude ?? true) ? accountsForProvider($settings.accounts, 'Claude') : []),
+    ...(($settings.enabled_providers?.openai ?? true) ? accountsForProvider($settings.accounts, 'OpenAI') : []),
+  ]);
+
+  function toggleRepoAccount(id: string) {
+    if (!selectedRepo) return;
+    const current = selectedRepo.account_ids ?? [];
+    const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    updateRepo({ account_ids: next });
+  }
 
   onMount(async () => {
     const enabledProviders = $settings.enabled_providers ?? { claude: true, openai: true };
@@ -776,6 +792,30 @@
           {/if}
         {/if}
       </div>
+
+      {#if hasConfiguredAccounts}
+        <div class="field">
+          <div class="field-title">Agent accounts</div>
+          <div class="chip-list chip-list-wrap">
+            {#each accountOptions as acct (acct.id)}
+              {@const selected = selectedRepo.account_ids?.includes(acct.id)}
+              <button
+                class="chip-button"
+                class:is-selected={selected}
+                onclick={() => toggleRepoAccount(acct.id)}
+                title={`${acct.label} · ${acct.provider === 'OpenAI' ? 'Codex' : 'Claude'}`}
+              >
+                <span class="account-swatch" style="background: {acct.color};"></span>
+                {acct.label}
+                <span class="account-provider-tag">{acct.provider === 'OpenAI' ? 'Codex' : 'Claude'}</span>
+              </button>
+            {/each}
+          </div>
+          {#if !selectedRepo.account_ids || selectedRepo.account_ids.length === 0}
+            <p class="field-help">All accounts allowed. Select accounts to restrict sessions in this repo.</p>
+          {/if}
+        </div>
+      {/if}
 
       {#if enabledMcpServers.length > 0}
         <div class="field">
@@ -1560,6 +1600,20 @@
 
   .chip-editable {
     padding-right: 0.3rem;
+  }
+
+  .account-swatch {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 999px;
+    flex-shrink: 0;
+  }
+
+  .account-provider-tag {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--color-text-muted);
   }
 
   .chip-remove,

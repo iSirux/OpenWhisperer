@@ -6,7 +6,28 @@
         "windows": [
             {
                 "label": "main",
-                "title": "OpenWhisperer (Dev)"
+                "title": "OpenWhisperer (Dev)",
+                "width": 1200,
+                "height": 800,
+                "minWidth": 800,
+                "minHeight": 600,
+                "decorations": true,
+                "transparent": false
+            },
+            {
+                "label": "overlay",
+                "title": "Recording",
+                "url": "/overlay",
+                "width": 380,
+                "height": 140,
+                "center": false,
+                "decorations": false,
+                "transparent": false,
+                "alwaysOnTop": true,
+                "visible": false,
+                "skipTaskbar": true,
+                "resizable": false,
+                "focus": false
             }
         ]
     }

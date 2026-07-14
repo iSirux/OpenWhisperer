@@ -216,6 +216,7 @@ pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Resul
         launch_profiles: Vec::new(),
         github_url: None,
         gh_user: None,
+        account_ids: Vec::new(),
     });
     log::info!(
         "[add_repo] Repo added to config, total repos: {}",

@@ -266,13 +266,8 @@ export const OPEN_MIC_PRESETS = [
 
 export type RecordAndSendAction = "send" | "prepare" | "pile";
 
-/** Cycle order for the recording stop-mode (what happens when the recording hotkey stops a recording) */
+/** Display order for the recording stop-modes (what happens when the recording hotkey stops a recording) */
 export const RECORD_STOP_MODES: RecordAndSendAction[] = ["send", "prepare", "pile"];
-
-export function nextRecordStopMode(current: RecordAndSendAction): RecordAndSendAction {
-  const idx = RECORD_STOP_MODES.indexOf(current);
-  return RECORD_STOP_MODES[(idx + 1) % RECORD_STOP_MODES.length];
-}
 
 export interface AudioConfig {
   device_id: string | null;
@@ -340,6 +335,26 @@ export type ClaudeAuthMethod = "OAuth" | "ApiKey";
 export interface EnabledProviders {
   claude: boolean;
   openai: boolean;
+}
+
+/** A registered "agent account": an isolated provider login profile.
+ *  Each account is an isolated login profile directory (Claude → CLAUDE_CONFIG_DIR,
+ *  Codex → CODEX_HOME); the backend injects the env var at session creation.
+ *  The machine's existing default login is synthesized as a virtual account in the
+ *  frontend and is NOT stored here. */
+export interface AgentAccount {
+  /** Stable unique identifier */
+  id: string;
+  /** User-chosen display label (e.g. "Personal", "Work") */
+  label: string;
+  /** Visual identity color as a hex string (e.g. "#6366f1") */
+  color: string;
+  /** Provider this account logs into (same values as sdk_provider) */
+  provider: SdkProvider;
+  /** Absolute path to the isolated login profile directory (null/undefined = machine default) */
+  config_dir?: string | null;
+  /** When true, the account is hidden from pickers */
+  disabled?: boolean;
 }
 
 export type CodexMode = "Sdk" | "AppServer";
@@ -525,6 +540,8 @@ export interface AppConfig {
   sdk_provider: SdkProvider;
   /** Which SDK providers are surfaced in the UI (chosen during onboarding) */
   enabled_providers: EnabledProviders;
+  /** Registered agent accounts (isolated provider login profiles). Empty = feature invisible. */
+  accounts: AgentAccount[];
   /** Whether the first-run onboarding wizard has been completed (or skipped) */
   onboarding_completed: boolean;
   /** Default OpenAI model for Codex SDK sessions */
@@ -718,6 +735,7 @@ const defaultConfig: AppConfig = {
   codex_mode: "AppServer",
   sdk_provider: "Claude",
   enabled_providers: { claude: true, openai: true },
+  accounts: [],
   onboarding_completed: false,
   openai_model: "gpt-5.6-terra",
   enabled_openai_models: [

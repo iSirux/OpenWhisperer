@@ -276,6 +276,12 @@ pub struct PersistedSdkSession {
     /// Rate-limited / scheduled pending-turn state for a live session (opaque JSON)
     #[serde(default)]
     pub rate_limited: Option<serde_json::Value>,
+    /// Whether the session is pinned in the sidebar
+    #[serde(default)]
+    pub pinned: bool,
+    /// When the session was pinned (epoch ms); pins sort by this
+    #[serde(default)]
+    pub pinned_at: Option<u64>,
 }
 
 /// Transport container for all persisted sessions (used for frontend ↔ backend IPC).

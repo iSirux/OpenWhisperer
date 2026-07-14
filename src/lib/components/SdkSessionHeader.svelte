@@ -11,6 +11,7 @@
   import { nmRuns, noMistakes } from '$lib/stores/noMistakes';
   import { buildIntent } from '$lib/utils/noMistakesIntent';
   import { settings } from '$lib/stores/settings';
+  import { accountById, isDefaultAccountId } from '$lib/utils/accounts';
   import { ctrlHeld } from '$lib/stores/ctrlHint';
   import { createSessionInSameRepo } from '$lib/utils/sessionCreation';
   import { formatHotkeyForDisplay, getHotkeyKeyLabel } from '$lib/utils/hotkeys';
@@ -40,6 +41,8 @@
     model?: string | null;
     effortLevel?: EffortLevel;
     provider?: SdkProvider;
+    /** Agent account this session is pinned to (undefined = machine default). */
+    accountId?: string;
     /** Claude auto-compaction toggle. Off -> DISABLE_AUTO_COMPACT=1.
      *  On -> no override; Claude's built-in default (~83.5% trigger, 33K-token reserved buffer) applies.
      *  That default IS the optimum — the PCT_OVERRIDE env var is clamped to it, so we can't go higher, and
@@ -70,6 +73,7 @@
     model = null,
     effortLevel = null,
     provider = 'claude',
+    accountId = undefined,
     autocompactEnabled = true,
     disableHooks = false,
     createdBranch = null,
@@ -115,6 +119,14 @@
     const labels: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHigh', max: 'Max' };
     return effortLevel ? labels[effortLevel] ?? null : null;
   });
+
+  // Resolve the pinned agent account. Only configured accounts get a pill;
+  // the machine-default (virtual) account renders nothing.
+  const accountBadge = $derived(
+    accountId && !isDefaultAccountId(accountId)
+      ? accountById($settings.accounts, accountId)
+      : undefined
+  );
 
   // --- No mistakes (validation pipeline) ---
   const nmHasCwd = $derived(!!repoPath && repoPath !== '.');
@@ -291,6 +303,16 @@
       {#if effortLabel}
         <span class="px-1.5 py-0.5 text-[10px] font-medium bg-cyan-600/20 text-cyan-400 rounded flex-shrink-0">
           {effortLabel}
+        </span>
+      {/if}
+      {#if accountBadge}
+        <span
+          class="px-1.5 py-0.5 text-[10px] font-medium rounded flex items-center gap-1 flex-shrink-0"
+          style="background: color-mix(in srgb, {accountBadge.color} 18%, transparent); color: {accountBadge.color};"
+          title="Account: {accountBadge.label}"
+        >
+          <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" style="background: {accountBadge.color};"></span>
+          {accountBadge.label}
         </span>
       {/if}
     </div>

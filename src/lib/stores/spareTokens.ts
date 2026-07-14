@@ -30,7 +30,6 @@ import {
   formatTimeRemaining,
   type ProviderRateLimits,
 } from './rateLimits';
-import { settings } from './settings';
 import { repos, findRepoById } from './repos';
 import { sdkSessions, hasBusySessionsInScope } from './sdkSessions';
 import { isFinishedStatus } from '$lib/utils/sessionStatus';
@@ -45,10 +44,14 @@ export type SpareTokensAggressiveness = 'conservative' | 'normal' | 'aggressive'
 
 export interface SpareTokensItemState {
   autoEnabled: boolean;
-  repoId: string | null;
+  /** Repositories this prompt runs against (one session per repo). */
+  repoIds: string[];
   lastRunAt: number | null;
-  /** `resets_at` ISO of the window that justified the last auto run. */
-  lastRunWindow: string | null;
+  /**
+   * Per-repo `resets_at` ISO of the window that justified the last auto run,
+   * keyed by repo id — auto mode fires each repo at most once per window.
+   */
+  lastRunWindows: Record<string, string>;
   lastRunSessionId: string | null;
 }
 
@@ -67,10 +70,30 @@ function defaultState(): SpareTokensState {
 function defaultItemState(): SpareTokensItemState {
   return {
     autoEnabled: false,
-    repoId: null,
+    repoIds: [],
     lastRunAt: null,
-    lastRunWindow: null,
+    lastRunWindows: {},
     lastRunSessionId: null,
+  };
+}
+
+/** Legacy single-repo shape (pre multi-select) still found in persisted state. */
+interface LegacyItemFields {
+  repoId?: string | null;
+  lastRunWindow?: string | null;
+}
+
+function normalizeItemState(raw: Partial<SpareTokensItemState> & LegacyItemFields): SpareTokensItemState {
+  const repoIds = raw.repoIds ?? (raw.repoId ? [raw.repoId] : []);
+  const lastRunWindows =
+    raw.lastRunWindows ??
+    (raw.repoId && raw.lastRunWindow ? { [raw.repoId]: raw.lastRunWindow } : {});
+  return {
+    autoEnabled: raw.autoEnabled ?? false,
+    repoIds,
+    lastRunAt: raw.lastRunAt ?? null,
+    lastRunWindows,
+    lastRunSessionId: raw.lastRunSessionId ?? null,
   };
 }
 
@@ -212,10 +235,14 @@ function createSpareTokensStore() {
       const raw = await invoke<string | null | undefined>('load_spare_tokens');
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<SpareTokensState>;
+        const items: Record<string, SpareTokensItemState> = {};
+        for (const [id, item] of Object.entries(parsed.items ?? {})) {
+          items[id] = normalizeItemState(item);
+        }
         set({
           enabled: parsed.enabled ?? false,
           aggressiveness: parsed.aggressiveness ?? 'normal',
-          items: parsed.items ?? {},
+          items,
         });
       }
       loaded = true;
@@ -243,46 +270,52 @@ function createSpareTokensStore() {
   }
 
   /**
-   * Launch a library item immediately, ignoring burn tiers and the active-auto
-   * guard. Records lastRun* (with `lastRunWindow: null`, since no window
-   * justified it). Returns the new session id, or null if it couldn't launch.
+   * Launch a library item immediately against every selected repository (one
+   * session per repo), ignoring burn tiers and the active-auto guard. Records
+   * lastRun* (without touching `lastRunWindows`, since no window justified it).
+   * Returns the new session ids (empty if nothing could launch).
    */
   async function runNow(
     promptId: string,
-    opts?: { repoId?: string }
-  ): Promise<string | null> {
+    opts?: { repoIds?: string[] }
+  ): Promise<string[]> {
     const prompt = SPARE_TOKENS_LIBRARY.find((p) => p.id === promptId);
-    if (!prompt) return null;
+    if (!prompt) return [];
 
     const state = get({ subscribe });
-    const repoId = opts?.repoId ?? state.items[promptId]?.repoId ?? null;
-    const repo = findRepoById(get(repos).list, repoId ?? undefined);
-    if (!repo) return null;
+    const repoIds = opts?.repoIds ?? state.items[promptId]?.repoIds ?? [];
+    const reposList = get(repos).list;
 
-    const cfg = snapshotLaunchConfigForRepo(repo);
-    let sessionId: string;
-    try {
-      sessionId = await launchSession({
-        prompt: `${SPARE_TOKENS_PREAMBLE}\n\n${prompt.prompt}`,
-        repo,
-        model: cfg.model,
-        effortLevel: cfg.effortLevel,
-        provider: cfg.provider,
-        useWorktree: !prompt.readOnly,
-        branchNameHint: prompt.title,
-        tag: { spareTokens: { promptId, auto: false } },
-      });
-    } catch (error) {
-      console.error('[spareTokens] runNow launch failed:', error);
-      return null;
+    const sessionIds: string[] = [];
+    for (const repoId of repoIds) {
+      const repo = findRepoById(reposList, repoId);
+      if (!repo) continue;
+
+      const cfg = snapshotLaunchConfigForRepo(repo);
+      try {
+        sessionIds.push(
+          await launchSession({
+            prompt: `${SPARE_TOKENS_PREAMBLE}\n\n${prompt.prompt}`,
+            repo,
+            model: cfg.model,
+            effortLevel: cfg.effortLevel,
+            provider: cfg.provider,
+            useWorktree: !prompt.readOnly,
+            branchNameHint: prompt.title,
+            tag: { spareTokens: { promptId, auto: false } },
+          })
+        );
+      } catch (error) {
+        console.error('[spareTokens] runNow launch failed:', error);
+      }
     }
+    if (sessionIds.length === 0) return [];
 
     updateItem(promptId, {
       lastRunAt: Date.now(),
-      lastRunWindow: null,
-      lastRunSessionId: sessionId,
+      lastRunSessionId: sessionIds[sessionIds.length - 1],
     });
-    return sessionId;
+    return sessionIds;
   }
 
   return {
@@ -327,9 +360,6 @@ async function evaluateAuto(): Promise<void> {
 }
 
 async function evaluateAutoInner(): Promise<void> {
-  const s = get(settings);
-  if (!s.system.dev_mode) return;
-
   const state = get(spareTokens);
   if (!state.enabled) return;
 
@@ -351,42 +381,46 @@ async function evaluateAutoInner(): Promise<void> {
     if (!itemState?.autoEnabled) continue;
     if (!prompt.readOnly) continue; // write items are never auto-fired
 
-    const repo = findRepoById(reposList, itemState.repoId ?? undefined);
-    if (!repo) continue;
+    for (const repoId of itemState.repoIds) {
+      const repo = findRepoById(reposList, repoId);
+      if (!repo) continue;
 
-    const cfg = snapshotLaunchConfigForRepo(repo);
-    const limits = cfg.provider === 'openai' ? get(codexRateLimitData) : get(rateLimitData);
-    const burn = evaluateBurn(limits, state.aggressiveness, now);
-    if (burn.tier === null || burn.window === null) continue;
+      const cfg = snapshotLaunchConfigForRepo(repo);
+      const limits = cfg.provider === 'openai' ? get(codexRateLimitData) : get(rateLimitData);
+      const burn = evaluateBurn(limits, state.aggressiveness, now);
+      if (burn.tier === null || burn.window === null) continue;
 
-    const windowResetsAt =
-      burn.window === '7d' ? limits?.seven_day.resets_at : limits?.five_hour.resets_at;
-    // Already ran for this exact window — don't fire again until it resets.
-    if (windowResetsAt && itemState.lastRunWindow === windowResetsAt) continue;
+      const windowResetsAt =
+        burn.window === '7d' ? limits?.seven_day.resets_at : limits?.five_hour.resets_at;
+      // Already ran this repo for this exact window — wait until it resets.
+      if (windowResetsAt && itemState.lastRunWindows[repoId] === windowResetsAt) continue;
 
-    // Never compete with the user's live work in this repo scope.
-    if (hasBusySessionsInScope(sessions, repo.path)) continue;
+      // Never compete with the user's live work in this repo scope.
+      if (hasBusySessionsInScope(sessions, repo.path)) continue;
 
-    try {
-      const sessionId = await launchSession({
-        prompt: `${SPARE_TOKENS_PREAMBLE}\n\n${prompt.prompt}`,
-        repo,
-        model: cfg.model,
-        effortLevel: cfg.effortLevel,
-        provider: cfg.provider,
-        tag: { spareTokens: { promptId: prompt.id, auto: true } },
-      });
-      spareTokens.updateItem(prompt.id, {
-        lastRunAt: Date.now(),
-        lastRunWindow: windowResetsAt ?? null,
-        lastRunSessionId: sessionId,
-      });
-      activeAutoSessionId = sessionId;
-    } catch (error) {
-      console.error('[spareTokens] auto launch failed:', error);
+      try {
+        const sessionId = await launchSession({
+          prompt: `${SPARE_TOKENS_PREAMBLE}\n\n${prompt.prompt}`,
+          repo,
+          model: cfg.model,
+          effortLevel: cfg.effortLevel,
+          provider: cfg.provider,
+          tag: { spareTokens: { promptId: prompt.id, auto: true } },
+        });
+        spareTokens.updateItem(prompt.id, {
+          lastRunAt: Date.now(),
+          lastRunWindows: windowResetsAt
+            ? { ...itemState.lastRunWindows, [repoId]: windowResetsAt }
+            : itemState.lastRunWindows,
+          lastRunSessionId: sessionId,
+        });
+        activeAutoSessionId = sessionId;
+      } catch (error) {
+        console.error('[spareTokens] auto launch failed:', error);
+      }
+
+      return; // at most one session per evaluation
     }
-
-    return; // at most one item per evaluation
   }
 }
 

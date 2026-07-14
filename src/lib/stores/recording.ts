@@ -6,8 +6,19 @@ import { settings } from './settings';
 import { debugRecordings } from './debugRecordings';
 import { processVoiceCommand } from '$lib/utils/voiceCommands';
 import { acquireMicStream, type MicLease } from './micStream';
+import { openMic } from './openMic';
 
 export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 'error';
+
+/**
+ * Who started the current recording.
+ * - 'global': the app-wide flows (recordingFlow: hotkey / header button / open
+ *   mic wake) — the global voice-command handler owns stop-and-process.
+ * - 'view':   a view-scoped recording (in-session follow-up, New Session form,
+ *   inline dictation) — the owning view processes the transcript itself and
+ *   the global voice-command handler must NOT hijack it.
+ */
+export type RecordingOwner = 'global' | 'view';
 
 interface QueuedRecording {
   id: string;
@@ -57,6 +68,8 @@ function createRecordingStore() {
   // Lease on the shared mic stream — released (never track-stopped) on stop/cancel.
   let micLease: MicLease | null = null;
   let audioChunks: Blob[] = [];
+  // Owner of the current recording (see RecordingOwner); null when idle.
+  let recordingOwner: RecordingOwner | null = null;
   let audioContext: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
   let audioSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
@@ -571,8 +584,17 @@ function createRecordingStore() {
      * async transcription window (pass it into stopRecording). */
     newRecordingId: generateId,
 
-    async startRecording(deviceId?: string) {
+    async startRecording(deviceId?: string, owner: RecordingOwner = 'view') {
       let stream: MediaStream | null = null;
+      recordingOwner = owner;
+
+      // Choke point for open-mic teardown: EVERY recording (including
+      // view-owned ones that never go through recordingFlow) must silence the
+      // passive wake-word listener, or it keeps transcribing the dictation and
+      // wake phrases can spawn new sessions. Fire-and-forget — teardown must
+      // not delay recording start (the lifecycle effect restarts open mic
+      // after the recording stops).
+      openMic.stop().catch((e) => console.error('Failed to stop open mic:', e));
 
       try {
         // Shared mic stream: when open mic (or a recent recording) already has
@@ -628,6 +650,7 @@ function createRecordingStore() {
         }
         mediaRecorder = null;
         audioChunks = [];
+        recordingOwner = null;
 
         update((s) => ({
           ...s,
@@ -643,6 +666,9 @@ function createRecordingStore() {
       providedDebugId?: string
     ): Promise<string | null> {
       return new Promise((resolve, reject) => {
+        // The recording is over as far as live voice/wake command routing is
+        // concerned, even though transcription may still be in flight.
+        recordingOwner = null;
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
           // Still need to clean up visualization and realtime transcription even if mediaRecorder is inactive
           stopVisualizationBroadcast().catch(console.error);
@@ -929,7 +955,13 @@ function createRecordingStore() {
       }
     },
 
+    /** Owner of the current recording (null when idle). */
+    getOwner(): RecordingOwner | null {
+      return recordingOwner;
+    },
+
     async cancelRecording() {
+      recordingOwner = null;
       stopVisualizationBroadcast();
       await settleRealtimeStart();
       await stopRealtimeSessionShared();

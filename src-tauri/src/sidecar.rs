@@ -295,6 +295,12 @@ pub enum InboundMessage {
         #[serde(rename = "transcriptPath")]
         transcript_path: String,
     },
+    SubagentModel {
+        id: String,
+        #[serde(rename = "toolUseId")]
+        tool_use_id: String,
+        model: String,
+    },
     TaskStarted {
         id: String,
         #[serde(rename = "taskId")]
@@ -558,6 +564,13 @@ struct SubagentStopPayload {
 }
 
 #[derive(Serialize, Clone)]
+struct SubagentModelPayload {
+    #[serde(rename = "toolUseId")]
+    tool_use_id: String,
+    model: String,
+}
+
+#[derive(Serialize, Clone)]
 struct TaskStartedPayload {
     #[serde(rename = "taskId")]
     task_id: String,
@@ -626,6 +639,7 @@ impl InboundMessage {
             InboundMessage::Debug { .. } => "",
             InboundMessage::SubagentStart { .. } => "sdk-subagent-start",
             InboundMessage::SubagentStop { .. } => "sdk-subagent-stop",
+            InboundMessage::SubagentModel { .. } => "sdk-subagent-model",
             InboundMessage::TaskStarted { .. } => "sdk-task-started",
             InboundMessage::TaskCompleted { .. } => "sdk-task-completed",
             InboundMessage::AskUserQuestions { .. } => "sdk-ask-user-questions",
@@ -1081,6 +1095,24 @@ impl SidecarManager {
                         agent_id,
                         transcript_path,
                     },
+                );
+            }
+            InboundMessage::SubagentModel {
+                id,
+                tool_use_id,
+                model,
+            } => {
+                log::info!(
+                    "[sidecar] Subagent model: {} (toolUseId: {}) for session {}",
+                    model,
+                    tool_use_id,
+                    id
+                );
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    SubagentModelPayload { tool_use_id, model },
                 );
             }
             InboundMessage::TaskStarted {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import RepoSelector from '$lib/components/RepoSelector.svelte';
+  import RepoIcon from '$lib/components/RepoIcon.svelte';
   import {
     spareTokens,
     evaluateBurn,
@@ -15,13 +15,24 @@
     type ProviderRateLimits,
   } from '$lib/stores/rateLimits';
   import { settings } from '$lib/stores/settings';
-  import { repos, findRepoById } from '$lib/stores/repos';
+  import { repos, isRepoActive, type RepoConfig } from '$lib/stores/repos';
   import { activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { navigation } from '$lib/stores/navigation';
   import { formatRelativeTime } from '$lib/stores/usageStats';
+  import './settings/toggle.css';
 
   const SEVEN_DAY_HOURS = 24 * 7;
   const AGGRESSIVENESS: SpareTokensAggressiveness[] = ['conservative', 'normal', 'aggressive'];
+
+  // What each level actually means, grounded in BURN_THRESHOLDS in spareTokens.ts.
+  const AGGRESSIVENESS_HELP: Record<SpareTokensAggressiveness, string> = {
+    conservative:
+      'Only spends capacity that is clearly about to go to waste: the 7-day window must be within 12h of reset with under 75% used, or the 5-hour window within 45m with under 70% used — and only while the week is comfortably under pace.',
+    normal:
+      'Balanced: fires when the 7-day window is within 24h of reset with under 85% used, or the 5-hour window within 90m with under 85% used while the week is at or under pace.',
+    aggressive:
+      'Spends early and tolerates tighter windows: the 7-day window within 36h of reset with under 92% used, or the 5-hour window within 2.5h with under 95% used, even when slightly ahead of pace.',
+  };
 
   // A live tick so countdowns, pace, and burn evaluation stay fresh.
   let now = $state(Date.now());
@@ -68,24 +79,26 @@
     return (
       $spareTokens.items[promptId] ?? {
         autoEnabled: false,
-        repoId: null,
+        repoIds: [],
         lastRunAt: null,
-        lastRunWindow: null,
+        lastRunWindows: {},
         lastRunSessionId: null,
       }
     );
   }
 
-  // RepoSelector works in paths; map to/from the stored repoId.
-  function repoPathFor(promptId: string): string {
-    const repoId = itemState(promptId).repoId;
-    if (!repoId) return '';
-    return findRepoById($repos.list, repoId)?.path ?? '';
-  }
+  const selectableRepos = $derived(
+    ($repos.list || []).filter(
+      (r): r is RepoConfig & { id: string } => isRepoActive(r) && typeof r.id === 'string'
+    )
+  );
 
-  function handleRepoChange(promptId: string, cwd: string) {
-    const repo = cwd ? $repos.list.find((r) => r.path === cwd) : null;
-    spareTokens.updateItem(promptId, { repoId: repo?.id ?? null });
+  function toggleRepo(promptId: string, repoId: string) {
+    const current = itemState(promptId).repoIds;
+    const next = current.includes(repoId)
+      ? current.filter((id) => id !== repoId)
+      : [...current, repoId];
+    spareTokens.updateItem(promptId, { repoIds: next });
   }
 
   let runningId = $state<string | null>(null);
@@ -94,9 +107,9 @@
     if (runningId) return;
     runningId = promptId;
     try {
-      const sessionId = await spareTokens.runNow(promptId);
-      if (sessionId) {
-        activeSdkSessionId.set(sessionId);
+      const sessionIds = await spareTokens.runNow(promptId);
+      if (sessionIds.length > 0) {
+        activeSdkSessionId.set(sessionIds[0]);
         navigation.showSessions();
       }
     } finally {
@@ -122,28 +135,36 @@
         </p>
       </div>
       <label class="auto-toggle" title="Auto mode fires pinned read-only prompts when there's expiring headroom">
+        <span>Auto mode</span>
         <input
           type="checkbox"
+          class="toggle"
           checked={$spareTokens.enabled}
           onchange={(e) => spareTokens.setEnabled((e.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Auto mode</span>
       </label>
     </div>
 
-    <div class="field-inline">
-      <span class="field-label">Aggressiveness</span>
-      <div class="segmented-control" role="tablist" aria-label="Aggressiveness">
-        {#each AGGRESSIVENESS as level}
-          <button
-            class="segment-btn"
-            class:is-selected={$spareTokens.aggressiveness === level}
-            onclick={() => spareTokens.setAggressiveness(level)}
-          >
-            {level}
-          </button>
-        {/each}
+    <div class="aggressiveness-field">
+      <div class="field-inline">
+        <span class="field-label">Aggressiveness</span>
+        <div class="segmented-control" role="tablist" aria-label="Aggressiveness">
+          {#each AGGRESSIVENESS as level}
+            <button
+              class="segment-btn"
+              class:is-selected={$spareTokens.aggressiveness === level}
+              onclick={() => spareTokens.setAggressiveness(level)}
+            >
+              {level}
+            </button>
+          {/each}
+        </div>
       </div>
+      <p class="aggressiveness-help">
+        How eagerly auto mode spends: how close to reset a usage window must be, and how much of
+        it may already be used, before pinned prompts fire.
+        <span class="aggressiveness-detail">{AGGRESSIVENESS_HELP[$spareTokens.aggressiveness]}</span>
+      </p>
     </div>
   </section>
 
@@ -235,27 +256,48 @@
           <button
             class="btn btn-primary"
             onclick={() => handleRunNow(prompt.id)}
-            disabled={!state.repoId || runningId !== null}
-            title={state.repoId ? 'Launch this prompt now' : 'Select a repository first'}
+            disabled={state.repoIds.length === 0 || runningId !== null}
+            title={state.repoIds.length > 0
+              ? state.repoIds.length === 1
+                ? 'Launch this prompt now'
+                : `Launch this prompt now in ${state.repoIds.length} repositories`
+              : 'Select at least one repository first'}
           >
-            {runningId === prompt.id ? 'Launching…' : 'Run now'}
+            {runningId === prompt.id
+              ? 'Launching…'
+              : state.repoIds.length > 1
+                ? `Run now (${state.repoIds.length})`
+                : 'Run now'}
           </button>
         </div>
 
         <div class="item-controls">
           <div class="control-field">
-            <span class="field-label">Repository</span>
-            <RepoSelector
-              cwd={repoPathFor(prompt.id)}
-              onchange={(cwd) => handleRepoChange(prompt.id, cwd)}
-              emptyOption="none"
-              dropdownDirection="down"
-            />
+            <span class="field-label">Repositories</span>
+            <div class="repo-chips">
+              {#each selectableRepos as repo (repo.id)}
+                {@const selected = state.repoIds.includes(repo.id)}
+                <button
+                  class="repo-chip"
+                  class:is-selected={selected}
+                  onclick={() => toggleRepo(prompt.id, repo.id)}
+                  title={repo.path}
+                >
+                  <RepoIcon {repo} size="xs" />
+                  <span class="repo-chip-name">{repo.name}</span>
+                </button>
+              {/each}
+              {#if selectableRepos.length === 0}
+                <span class="muted">No repositories configured</span>
+              {/if}
+            </div>
           </div>
 
           <label class="auto-toggle" class:is-disabled={!canAuto}>
+            <span>Auto</span>
             <input
               type="checkbox"
+              class="toggle"
               checked={state.autoEnabled}
               disabled={!canAuto}
               onchange={(e) =>
@@ -263,7 +305,6 @@
                   autoEnabled: (e.currentTarget as HTMLInputElement).checked,
                 })}
             />
-            <span>Auto</span>
           </label>
 
           {#if state.lastRunAt}
@@ -273,8 +314,8 @@
 
         {#if !canAuto}
           <p class="hint">Write task — Run now only (launched in a worktree); never auto-fired.</p>
-        {:else if state.autoEnabled && !state.repoId}
-          <p class="hint">Select a repository for auto mode to fire this prompt.</p>
+        {:else if state.autoEnabled && state.repoIds.length === 0}
+          <p class="hint">Select at least one repository for auto mode to fire this prompt.</p>
         {/if}
       </div>
     {/each}
@@ -400,11 +441,57 @@
     cursor: not-allowed;
   }
 
-  .auto-toggle input {
-    width: 0.9rem;
-    height: 0.9rem;
-    margin: 0;
-    accent-color: var(--color-accent);
+  .aggressiveness-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .aggressiveness-help {
+    font-size: 0.7rem;
+    max-width: 60rem;
+  }
+
+  .aggressiveness-detail {
+    color: var(--color-text-secondary);
+  }
+
+  .repo-chips {
+    display: inline-flex;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+  }
+
+  .repo-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-background);
+    color: var(--color-text-secondary);
+    font-size: 0.7rem;
+    font-weight: 500;
+    transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  }
+
+  .repo-chip:hover {
+    border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+    color: var(--color-text-primary);
+  }
+
+  .repo-chip.is-selected {
+    background: color-mix(in srgb, var(--color-accent) 16%, var(--color-background));
+    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+    color: var(--color-text-primary);
+  }
+
+  .repo-chip-name {
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .headroom-grid {
@@ -578,8 +665,12 @@
 
   .control-field {
     display: inline-flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 0.4rem;
+  }
+
+  .control-field .field-label {
+    padding-top: 0.3rem;
   }
 
   .last-run {

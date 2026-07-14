@@ -315,7 +315,7 @@ function createRecordingFlowStore() {
     await Promise.all([
       openMicStopped,
       overlayShown,
-      recording.startRecording(currentSettings.audio.device_id || undefined),
+      recording.startRecording(currentSettings.audio.device_id || undefined, 'global'),
     ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
   }
@@ -364,7 +364,7 @@ function createRecordingFlowStore() {
     await Promise.all([
       openMicStopped,
       overlayShown,
-      recording.startRecording(currentSettings.audio.device_id || undefined),
+      recording.startRecording(currentSettings.audio.device_id || undefined, 'global'),
     ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
   }
@@ -435,7 +435,7 @@ function createRecordingFlowStore() {
     await Promise.all([
       openMicStopped,
       overlayShown,
-      recording.startRecording(currentSettings.audio.device_id || undefined),
+      recording.startRecording(currentSettings.audio.device_id || undefined, 'global'),
     ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
 
@@ -444,6 +444,7 @@ function createRecordingFlowStore() {
 
   /** Cancel the current recording and any pending session. */
   async function cancelRecording() {
+    await hotkeyCallbacks?.unregisterRecordingHotkeys();
     await recording.cancelRecording();
     await overlay.hide();
     clearOverlayRecordingInfo();

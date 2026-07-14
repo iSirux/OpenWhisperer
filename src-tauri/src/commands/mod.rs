@@ -1,3 +1,4 @@
+pub mod account_cmds;
 pub mod archive_cmds;
 pub mod audio_cmds;
 pub mod debug_recordings_cmds;

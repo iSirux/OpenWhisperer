@@ -6,8 +6,12 @@
     isProcessing,
     type RecordingState,
   } from "$lib/stores/recording";
-  import { settings } from "$lib/stores/settings";
-  import { activeRepo, isAutoRepoSelected } from "$lib/stores/repos";
+  import {
+    settings,
+    RECORD_STOP_MODES,
+    type RecordAndSendAction,
+  } from "$lib/stores/settings";
+  import { repos, activeRepo, isAutoRepoSelected } from "$lib/stores/repos";
   import { isRepoAutoSelectEnabled } from "$lib/utils/llm";
   import { overlay } from "$lib/stores/overlay";
   import RepoIcon from "./RepoIcon.svelte";
@@ -78,6 +82,7 @@
           event.payload.state
         );
         remoteRecordingState = event.payload.state;
+        showRepoDropdown = false;
         // Notify parent to resize after state change renders
         setTimeout(notifyResize, 10);
         setTimeout(notifyResize, 50);
@@ -160,22 +165,50 @@
     overlay.clearSessionInfo();
   }
 
-  function handleGo(event: MouseEvent) {
+  function handleStopWith(event: MouseEvent, action: RecordAndSendAction) {
     event.stopPropagation();
-    // Emit event to send recording in main window
-    emit("send-recording");
+    // Emit event to stop + process the recording in the main window
+    emit("send-recording", { action });
   }
 
-  function handleCycleStopMode(event: MouseEvent) {
+  function handleSetStopMode(event: MouseEvent, mode: RecordAndSendAction) {
     event.stopPropagation();
     // Handled by the main window (updates + saves settings, then re-emits settings-changed)
-    emit("cycle-stop-mode");
+    emit("set-stop-mode", { mode });
   }
 
-  function handleCycleRepo(event: MouseEvent) {
+  // Repo dropdown (opened by clicking the repo chip, like the in-app repo picker)
+  let showRepoDropdown = false;
+  let repoTrigger: HTMLElement | null = null;
+
+  function toggleRepoDropdown(event: MouseEvent) {
     event.stopPropagation();
-    // Handled by the main window (cycles auto/repos, then re-emits settings-changed)
-    emit("cycle-repo");
+    showRepoDropdown = !showRepoDropdown;
+    setTimeout(notifyResize, 10);
+  }
+
+  function closeRepoDropdown() {
+    if (!showRepoDropdown) return;
+    showRepoDropdown = false;
+    setTimeout(notifyResize, 10);
+  }
+
+  function handleRepoPick(event: MouseEvent, option: "auto" | string) {
+    event.stopPropagation();
+    showRepoDropdown = false;
+    // Handled by the main window (sets auto mode / active repo, then re-emits settings-changed)
+    emit("select-repo", { option });
+    setTimeout(notifyResize, 10);
+  }
+
+  function handleWindowClick(event: MouseEvent) {
+    if (
+      showRepoDropdown &&
+      repoTrigger &&
+      !repoTrigger.contains(event.target as Node)
+    ) {
+      closeRepoDropdown();
+    }
   }
 
   function handleCycleModel(event: MouseEvent) {
@@ -192,24 +225,48 @@
 
   $: stopMode = $settings.audio.record_and_send_action;
 
-  const STOP_MODE_DISPLAY: Record<string, { label: string; cls: string; title: string }> = {
+  // Repos selectable in the overlay dropdown (active repos, plus the current
+  // one even if it was deactivated, so the select always shows a valid value)
+  $: repoOptions = $repos.list.filter(
+    (r) => r.active !== false || r.id === $activeRepo?.id
+  );
+  $: repoSelectValue =
+    $isAutoRepoSelected && isRepoAutoSelectEnabled()
+      ? "auto"
+      : ($activeRepo?.id ?? "");
+
+  const STOP_MODE_DISPLAY: Record<
+    RecordAndSendAction,
+    { label: string; cls: string; hoverCls: string; title: string; stopTitle: string }
+  > = {
     send: {
-      label: "Send",
+      label: "Go",
       cls: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-      title: "Stopping a recording sends it as a session. Click to cycle.",
+      hoverCls: "hover:bg-emerald-500/30",
+      title: "Stopping a recording sends it as a session",
+      stopTitle: "Stop and send as a session",
     },
     prepare: {
-      label: "Prepare",
+      label: "Draft",
       cls: "bg-sky-500/20 text-sky-400 border-sky-500/30",
-      title: "Stopping a recording prepares a session for review. Click to cycle.",
+      hoverCls: "hover:bg-sky-500/30",
+      title: "Stopping a recording prepares a draft session for review",
+      stopTitle: "Stop and prepare a draft session for review",
     },
     pile: {
       label: "Pile",
       cls: "bg-amber-500/20 text-amber-400 border-amber-500/30",
-      title: "Stopping a recording saves it to the pile for later. Click to cycle.",
+      hoverCls: "hover:bg-amber-500/30",
+      title: "Stopping a recording saves it to the pile for later",
+      stopTitle: "Stop and save to the pile for later",
     },
   };
+
+  const STOP_MODE_INACTIVE_CLS =
+    "bg-surface text-text-muted border-transparent hover:text-text-secondary";
 </script>
+
+<svelte:window onclick={handleWindowClick} />
 
 <div class="overlay-window px-3 pt-3 pb-2">
   <!-- Waveform visualization when recording -->
@@ -280,14 +337,21 @@
       {:else}
         <div class="w-3 h-3 bg-text-muted rounded-full"></div>
         <span class="text-sm text-text-secondary">Ready</span>
-        {@const modeDisplay = STOP_MODE_DISPLAY[stopMode] ?? STOP_MODE_DISPLAY.send}
-        <button
-          class="stop-mode-btn px-2 py-0.5 text-xs font-medium border rounded transition-colors {modeDisplay.cls}"
-          onclick={handleCycleStopMode}
-          title={modeDisplay.title}
-        >
-          {modeDisplay.label}
-        </button>
+        <div class="flex items-center gap-0.5">
+          {#each RECORD_STOP_MODES as mode}
+            {@const modeDisplay = STOP_MODE_DISPLAY[mode]}
+            <button
+              class="stop-mode-btn px-1.5 py-0.5 text-xs font-medium border rounded transition-colors {mode ===
+              stopMode
+                ? modeDisplay.cls
+                : STOP_MODE_INACTIVE_CLS}"
+              onclick={(e) => handleSetStopMode(e, mode)}
+              title={modeDisplay.title}
+            >
+              {modeDisplay.label}
+            </button>
+          {/each}
+        </div>
         {#if toolbarModel}
           <button
             class="text-xs px-1.5 py-0.5 rounded cursor-pointer hover:opacity-80 transition-opacity {getModelBadgeBgColor(
@@ -320,23 +384,40 @@
         </div>
       {:else if $overlay.mode !== "paste"}
         <div class="flex items-center gap-2 text-xs justify-end">
-          {#if $isAutoRepoSelected && isRepoAutoSelectEnabled()}
+          {#if repoSelectValue === "auto"}
             <button
+              bind:this={repoTrigger}
               class="px-2 py-0.5 rounded bg-gradient-to-r from-purple-500 to-amber-500 text-white font-medium shadow-sm flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
-              onclick={handleCycleRepo}
-              title="Repository is auto-selected. Click to cycle."
+              onclick={toggleRepoDropdown}
+              title="Repository is auto-selected. Click to choose."
               >Auto</button
             >
           {:else if $activeRepo}
             <button
-              class="flex items-center gap-2 min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
-              onclick={handleCycleRepo}
-              title="Active repository. Click to cycle."
+              bind:this={repoTrigger}
+              class="flex items-center gap-1.5 min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
+              onclick={toggleRepoDropdown}
+              title="Active repository. Click to choose."
             >
               <RepoIcon repo={$activeRepo} size="xs" />
               <span class="text-text-secondary truncate"
                 >{$activeRepo.name}</span
               >
+              <svg
+                class="w-3 h-3 text-text-muted flex-shrink-0 transition-transform {showRepoDropdown
+                  ? 'rotate-180'
+                  : ''}"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
             </button>
           {/if}
         </div>
@@ -345,24 +426,27 @@
 
     <!-- Right section: Action buttons (fixed width) -->
     {#if isRecordingActive}
-      <div class="flex items-center gap-2 flex-shrink-0">
+      <div class="flex items-center gap-1.5 flex-shrink-0">
         {#if $overlay.mode === "session"}
-          {@const modeDisplay = STOP_MODE_DISPLAY[stopMode] ?? STOP_MODE_DISPLAY.send}
+          {#each RECORD_STOP_MODES as mode}
+            {@const modeDisplay = STOP_MODE_DISPLAY[mode]}
+            <button
+              class="stop-mode-btn px-2 py-1 text-xs font-medium border rounded transition-colors {modeDisplay.cls} {modeDisplay.hoverCls}"
+              onclick={(e) => handleStopWith(e, mode)}
+              title={modeDisplay.stopTitle}
+            >
+              {modeDisplay.label}
+            </button>
+          {/each}
+        {:else}
           <button
-            class="stop-mode-btn px-2 py-1 text-xs font-medium border rounded transition-colors {modeDisplay.cls}"
-            onclick={handleCycleStopMode}
-            title={modeDisplay.title}
+            class="go-btn px-2 py-1 text-xs font-medium bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30 rounded transition-colors"
+            onclick={(e) => handleStopWith(e, "send")}
+            title="Stop and send"
           >
-            {modeDisplay.label}
+            Go
           </button>
         {/if}
-        <button
-          class="go-btn px-2 py-1 text-xs font-medium bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30 rounded transition-colors"
-          onclick={handleGo}
-          title="Stop and send"
-        >
-          Go
-        </button>
         <button
           class="discard-btn px-2 py-1 text-xs font-medium bg-error/20 hover:bg-error/30 text-error border border-error/30 rounded transition-colors"
           onclick={handleDiscard}
@@ -373,6 +457,47 @@
       </div>
     {/if}
   </div>
+
+  <!-- Repo dropdown panel (in-flow so the overlay window grows to fit it) -->
+  {#if showRepoDropdown && $overlay.mode !== "paste" && $overlay.mode !== "inline"}
+    <div
+      class="mt-2 bg-surface-elevated border border-border rounded max-h-48 overflow-y-auto"
+    >
+      {#if isRepoAutoSelectEnabled()}
+        <button
+          class="w-full px-3 py-2 text-left text-xs hover:bg-border transition-colors flex items-center gap-2"
+          onclick={(e) => handleRepoPick(e, "auto")}
+          title="Automatically select repository based on prompt"
+        >
+          <span
+            class="font-medium text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500"
+            >Auto</span
+          >
+          {#if repoSelectValue === "auto"}
+            <span class="ml-auto text-accent">✓</span>
+          {/if}
+        </button>
+      {/if}
+      {#each repoOptions as repo (repo.id)}
+        <button
+          class="w-full px-3 py-2 text-left text-xs hover:bg-border transition-colors flex items-center gap-2"
+          onclick={(e) => handleRepoPick(e, repo.id ?? "")}
+          title={repo.path}
+        >
+          <RepoIcon {repo} size="xs" />
+          <span class="font-medium truncate text-text-primary">{repo.name}</span>
+          {#if repo.id === repoSelectValue}
+            <span class="ml-auto text-accent flex-shrink-0">✓</span>
+          {/if}
+        </button>
+      {/each}
+      {#if repoOptions.length === 0}
+        <div class="px-3 py-2 text-xs text-text-muted">
+          No repositories configured
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <!-- Show SDK session info when available (only show branch here, model is shown inline when recording) -->
   {#if $overlay.sessionInfo.branch && !isRecordingActive && $overlay.mode !== "paste" && $overlay.mode !== "inline"}

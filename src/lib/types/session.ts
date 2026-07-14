@@ -18,6 +18,7 @@ export interface DisplaySession {
   repoId?: string; // Stable repo entity reference for icon/color/name resolution
   model?: string; // model name for SDK sessions
   provider?: SdkProvider; // SDK provider (claude or openai)
+  accountId?: string; // agent account this session is pinned to (undefined = machine default)
   createdAt: number; // When the session was created
   lastActivityAt: number; // When the session last had activity (for sorting)
   branch?: string; // git branch name

@@ -18,6 +18,8 @@
   import RepoIcon from "$lib/components/RepoIcon.svelte";
   import { findRepoByPath } from "$lib/utils/repoIcons";
   import { repos, findRepoById } from "$lib/stores/repos";
+  import { settings } from "$lib/stores/settings";
+  import { accountById, isDefaultAccountId } from "$lib/utils/accounts";
   import { visibleSessionIds, focusedPaneSessionId } from "$lib/stores/panes";
   import { ctrlHeld } from "$lib/stores/ctrlHint";
   import { SPARE_TOKENS_LIBRARY } from "$lib/spareTokens/library";
@@ -56,6 +58,13 @@
     ontogglepin = undefined,
     oncontextmenu = undefined,
   }: Props = $props();
+
+  // Pinned agent account (configured accounts only; machine default shows nothing).
+  const accountBadge = $derived(
+    session.type === "sdk" && session.accountId && !isDefaultAccountId(session.accountId)
+      ? accountById($settings.accounts, session.accountId)
+      : undefined,
+  );
 
   // Cap the length of the session summary/description so a runaway AI outcome
   // can't blow out the list item. Full text stays available via the title attr.
@@ -199,6 +208,13 @@
         >
           {getShortModelName(session.model)}
         </span>
+      {/if}
+      {#if accountBadge}
+        <span
+          class="w-2 h-2 rounded-full flex-shrink-0"
+          style="background: {accountBadge.color};"
+          title="Account: {accountBadge.label}"
+        ></span>
       {/if}
       {#if !session.aiMetadata?.needsInteraction}
         <div class="relative">

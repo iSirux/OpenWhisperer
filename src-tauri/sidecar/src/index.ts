@@ -543,6 +543,11 @@ const toolUseIdToName = new Map<string, string>();
 // Uses composite key to support concurrent thinking in main thread and subagents
 const thinkingState = new Map<string, { startTime: number; content: string }>();
 
+// Subagent Task toolUseIds whose model has already been reported (key: "session_id-parentToolUseId").
+// The subagent's actual model only surfaces on its assistant messages, so we forward it once
+// from the first assistant message scoped to that task.
+const subagentModelSent = new Set<string>();
+
 // Track last main-agent-only usage per session for accurate context bar (excludes subagent usage)
 const lastMainAgentUsage = new Map<string, {
   inputTokens: number;
@@ -682,6 +687,14 @@ function sendSubagentStop(
   transcriptPath: string
 ): void {
   send({ type: "subagent_stop", id, agentId, transcriptPath });
+}
+
+function sendSubagentModel(
+  id: string,
+  toolUseId: string,
+  model: string
+): void {
+  send({ type: "subagent_model", id, toolUseId, model });
 }
 
 function sendTaskStarted(
@@ -1694,6 +1707,15 @@ async function ensureCodexAppServer(
   if (session.appServer) return session.appServer;
 
   const codexExecutable = resolveCodexExecutable();
+  const spawnEnv: NodeJS.ProcessEnv = {
+    ...globalThis.process.env,
+    ...(session.extraEnv ?? {}),
+  };
+  // A session pinned to a Codex account profile (CODEX_HOME) must not be
+  // overridden by the process-global OPENAI_API_KEY, which outranks auth.json.
+  if (session.extraEnv?.CODEX_HOME && !session.extraEnv.OPENAI_API_KEY) {
+    delete spawnEnv.OPENAI_API_KEY;
+  }
   let child: ChildProcessWithoutNullStreams;
   if (globalThis.process.platform === "win32") {
     // On Windows, .cmd shims require launching via cmd.exe.
@@ -1703,13 +1725,13 @@ async function ensureCodexAppServer(
     child = spawn("cmd.exe", ["/d", "/s", "/c", cmd], {
       cwd: session.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...globalThis.process.env, ...(session.extraEnv ?? {}) },
+      env: spawnEnv,
     });
   } else {
     child = spawn(codexExecutable, ["app-server"], {
       cwd: session.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...globalThis.process.env, ...(session.extraEnv ?? {}) },
+      env: spawnEnv,
     });
   }
   const rl = readline.createInterface({
@@ -3188,6 +3210,12 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     ...(msg.env ?? {}),
     CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "120000",
   };
+  // A session pinned to a Claude account profile (CLAUDE_CONFIG_DIR) must not
+  // fall back to the process-global ANTHROPIC_API_KEY — API-key auth outranks
+  // the profile's OAuth credentials in Claude Code's precedence chain.
+  if (msg.env?.CLAUDE_CONFIG_DIR && !msg.env.ANTHROPIC_API_KEY) {
+    delete options.env.ANTHROPIC_API_KEY;
+  }
 
   // Apply auto-compaction policy. Claude Code reads these env vars at process spawn.
   //   0            -> DISABLE_AUTO_COMPACT=1 (the PCT_OVERRIDE cannot disable — values >83 are clamped to default).
@@ -3992,6 +4020,22 @@ async function runClaudeQueryItem(
       if (sessions.get(msg.id) !== session) {
         return;
       }
+      // Zombie guard: if a newer query has taken over this session (user
+      // stopped this turn and sent a new prompt), this process must neither
+      // keep streaming events into the shared transcript nor keep running
+      // turns against the same on-disk Claude session — that produces two
+      // interleaved agents in one session. Kill the process and drop the
+      // message.
+      if (session.currentQueryId !== queryId) {
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `Query ${queryId} superseded by ${session.currentQueryId} mid-stream — aborting stale process`,
+        });
+        inputQueue.done();
+        abortController.abort();
+        return;
+      }
       messageCount++;
       send({
         type: "debug",
@@ -4179,6 +4223,16 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       const session = sessions.get(id);
       if (session && turnUuid) {
         session.lastAssistantTurnUuid = turnUuid;
+      }
+      // Subagent messages carry the subagent's own model — forward it once per task
+      // so the frontend can badge the task block with the model actually used.
+      if (parentToolUseId) {
+        const subagentModel = (message.message as { model?: string }).model;
+        const modelKey = `${id}-${parentToolUseId}`;
+        if (subagentModel && !subagentModelSent.has(modelKey)) {
+          subagentModelSent.add(modelKey);
+          sendSubagentModel(id, parentToolUseId, subagentModel);
+        }
       }
       const thinkingKey = `${id}-${parentToolUseId || "main"}`;
       send({
@@ -4621,23 +4675,42 @@ async function handleStop(msg: StopMessage): Promise<void> {
       id: msg.id,
       message: "Interrupting query via iterator.interrupt()...",
     });
-    try {
-      await iterator.interrupt();
+    const interruptPromise = iterator.interrupt().then(
+      () => true,
+      (err: unknown) => {
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `Error interrupting query: ${err}`,
+        });
+        return false;
+      }
+    );
+    // Don't let a hung interrupt() stall the sidecar's message loop forever.
+    const landed = await Promise.race([
+      interruptPromise,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 5000)),
+    ]);
+    if (landed === true) {
       send({
         type: "debug",
         id: msg.id,
         message: "Query interrupted successfully",
       });
-    } catch (err) {
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `Error interrupting query: ${err}`,
-      });
-      // Fall back to abort controller if interrupt fails
-      if (abortController) {
-        abortController.abort();
-      }
+    } else if (abortController) {
+      // Interrupt failed or hung — hard-kill the process instead.
+      abortController.abort();
+    }
+    // interrupt() only ends the current turn — the CLI process stays alive
+    // waiting on stdin, and a follow-up prompt stream-injected before the
+    // stop may already sit in its stdin buffer, ready to start a rogue turn
+    // in a process we no longer track (which then runs concurrently with the
+    // user's next query in the same session). Give the interrupt a moment to
+    // wind down cleanly (so the final result/usage message still lands),
+    // then hard-kill the process. Aborting a query whose process already
+    // exited is a no-op.
+    if (abortController) {
+      setTimeout(() => abortController.abort(), 3000);
     }
   } else if (abortController) {
     send({

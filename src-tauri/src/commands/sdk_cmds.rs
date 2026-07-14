@@ -1,3 +1,4 @@
+use crate::commands::settings_cmds::ConfigState;
 use crate::config::McpServerConfig;
 use crate::sidecar::{HistoryMessage, ImageData, OutboundMessage, SidecarManager};
 use std::sync::Arc;
@@ -11,6 +12,7 @@ pub fn start_sidecar(app: AppHandle, sidecar: State<Arc<SidecarManager>>) -> Res
 #[tauri::command]
 pub async fn create_sdk_session(
     sidecar: State<'_, Arc<SidecarManager>>,
+    config: State<'_, ConfigState>,
     id: String,
     cwd: String,
     model: String,                             // Per-session model (required)
@@ -25,14 +27,20 @@ pub async fn create_sdk_session(
     autocompact_pct: Option<u32>, // Claude-only: 0=DISABLE_AUTO_COMPACT, 1..=99=PCT_OVERRIDE, None/100=default
     disable_hooks: Option<bool>,  // Skip project/local settings to disable filesystem hooks
     gh_user: Option<String>,      // GitHub CLI account to pin this session to (via GH_TOKEN)
+    account_id: Option<String>,   // Agent account to pin this session to (CLAUDE_CONFIG_DIR / CODEX_HOME)
 ) -> Result<(), String> {
     // Pin gh to a specific account for this session by injecting its token.
     // Best-effort: a resolution failure falls back to gh's active account.
     let gh_env = crate::commands::github_cmds::gh_session_env(gh_user.as_deref()).await;
-    let env = if gh_env.is_empty() {
+    // Pin the session to an agent account by injecting its login-profile env var
+    // (rides the same rail as gh). Reserved/unknown ids inject nothing.
+    let account_env = crate::config::account_session_env(&config.lock(), account_id.as_deref());
+    let mut env_pairs = gh_env;
+    env_pairs.extend(account_env);
+    let env = if env_pairs.is_empty() {
         None
     } else {
-        Some(gh_env.into_iter().collect())
+        Some(env_pairs.into_iter().collect())
     };
 
     // Started/alive guard is folded into `SidecarManager::send` (I3).
@@ -557,9 +565,25 @@ async fn refresh_claude_oauth(
 
 /// Fetch Claude Code rate limit usage from Anthropic OAuth API
 #[tauri::command]
-pub async fn fetch_claude_rate_limits() -> Result<ClaudeRateLimits, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let credentials_path = home.join(".claude").join(".credentials.json");
+pub async fn fetch_claude_rate_limits(
+    account_id: Option<String>,
+    config: State<'_, ConfigState>,
+) -> Result<ClaudeRateLimits, String> {
+    // Resolve the credentials path from the pinned account (default/None keeps the
+    // machine-default login). Clone the path out before any await — never hold the
+    // parking_lot guard across a suspension point.
+    let account_path = crate::config::account_credentials_path(
+        &config.lock(),
+        account_id.as_deref(),
+        crate::config::SdkProvider::Claude,
+    )?;
+    let credentials_path = match account_path {
+        Some(p) => p,
+        None => {
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            home.join(".claude").join(".credentials.json")
+        }
+    };
 
     let (mut token, refresh_token, expires_at) = read_claude_oauth(&credentials_path)?;
 
@@ -635,9 +659,24 @@ fn epoch_to_iso(epoch: f64) -> String {
 /// Fetch OpenAI Codex rate limit usage from ChatGPT API
 /// Reuses the same ClaudeRateLimits struct (normalized to the same shape)
 #[tauri::command]
-pub async fn fetch_codex_rate_limits() -> Result<ClaudeRateLimits, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let auth_path = home.join(".codex").join("auth.json");
+pub async fn fetch_codex_rate_limits(
+    account_id: Option<String>,
+    config: State<'_, ConfigState>,
+) -> Result<ClaudeRateLimits, String> {
+    // Resolve the auth path from the pinned account (default/None keeps the
+    // machine-default login). Clone the path out before any await.
+    let account_path = crate::config::account_credentials_path(
+        &config.lock(),
+        account_id.as_deref(),
+        crate::config::SdkProvider::OpenAI,
+    )?;
+    let auth_path = match account_path {
+        Some(p) => p,
+        None => {
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            home.join(".codex").join("auth.json")
+        }
+    };
 
     // Try common token locations: tokens.access_token (codex login), or top-level fields
     let token = read_bearer_token(

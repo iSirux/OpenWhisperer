@@ -11,7 +11,8 @@
     type ImageData,
   } from "$lib/utils/image";
   import { nextWindowResetAt, type QueueWindow } from "$lib/stores/queueDetection";
-  import { rateLimitData, codexRateLimitData } from "$lib/stores/rateLimits";
+  import { rateLimitData, codexRateLimitData, accountRateLimits } from "$lib/stores/rateLimits";
+  import { isDefaultAccountId } from "$lib/utils/accounts";
   import type { SdkProvider } from "$lib/utils/models";
   import { settings } from "$lib/stores/settings";
   import { ctrlHeld } from "$lib/stores/ctrlHint";
@@ -28,6 +29,7 @@
     draftPrompt = "",
     draftImages = [],
     provider = "claude",
+    accountId = undefined,
     showScheduleSend = false,
     onSendPrompt,
     onScheduleSend,
@@ -51,6 +53,8 @@
     draftImages?: SdkImageContent[];
     /** Provider of the current session, used to label the "send on next reset" countdowns. */
     provider?: SdkProvider;
+    /** Agent account the session is pinned to; countdowns read that account's windows. */
+    accountId?: string;
     /** Whether to expose the "send on next reset" dropdown (only for live/active sessions). */
     showScheduleSend?: boolean;
     onSendPrompt: (prompt: string, images?: SdkImageContent[]) => void;
@@ -295,17 +299,25 @@
   });
 
   let scheduleProvider = $derived(provider ?? "claude");
-  // Re-read the reset times whenever the provider's rate-limit store updates.
+  // Countdowns read the session's pinned account window when configured,
+  // else the provider default. Re-read whenever the relevant store updates.
+  let scheduleAccountId = $derived(
+    accountId && !isDefaultAccountId(accountId) ? accountId : undefined,
+  );
   let providerRateData = $derived(
-    scheduleProvider === "openai" ? $codexRateLimitData : $rateLimitData,
+    scheduleAccountId
+      ? ($accountRateLimits[scheduleAccountId]?.data ?? null)
+      : scheduleProvider === "openai"
+        ? $codexRateLimitData
+        : $rateLimitData,
   );
   let reset5hMs = $derived.by(() => {
     void providerRateData;
-    return nextWindowResetAt(scheduleProvider, "5h");
+    return nextWindowResetAt(scheduleProvider, "5h", scheduleAccountId);
   });
   let reset7dMs = $derived.by(() => {
     void providerRateData;
-    return nextWindowResetAt(scheduleProvider, "7d");
+    return nextWindowResetAt(scheduleProvider, "7d", scheduleAccountId);
   });
 
   function formatCountdown(ms: number | undefined): string {

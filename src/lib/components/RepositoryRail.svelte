@@ -164,25 +164,21 @@
         </span>
       </button>
     {/if}
-    {#if $settings.system.dev_mode}
-      <button
-        class="rail-btn"
-        class:is-active={currentView === 'sparetokens'}
-        onclick={toggleSpareTokens}
-        title="Spare Tokens"
-      >
-        <span class="icon-wrap">
-          <svg class="sparetokens-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-            <rect x="2" y="7" width="18" height="10" rx="2" stroke-width="2" />
-            <path stroke-linecap="round" stroke-width="2" d="M22 10v4" />
-            <rect x="5" y="10" width="6" height="4" rx="1" fill="currentColor" stroke="none" />
-          </svg>
-        </span>
-      </button>
-    {/if}
-    {#if $settings.system.dev_mode}
-      <div class="rail-divider"></div>
-    {/if}
+    <button
+      class="rail-btn"
+      class:is-active={currentView === 'sparetokens'}
+      onclick={toggleSpareTokens}
+      title="Spare Tokens"
+    >
+      <span class="icon-wrap">
+        <svg class="sparetokens-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <rect x="2" y="7" width="18" height="10" rx="2" stroke-width="2" />
+          <path stroke-linecap="round" stroke-width="2" d="M22 10v4" />
+          <rect x="5" y="10" width="6" height="4" rx="1" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
+    </button>
+    <div class="rail-divider"></div>
     {#each $repos.list as repo, index (repo.id ?? repo.path)}
       <button
         class="rail-btn"

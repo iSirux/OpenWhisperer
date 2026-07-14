@@ -18,7 +18,7 @@ mod util;
 mod whisper;
 
 use commands::{
-    archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
+    account_cmds, archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
     launch_cmds, llm_cmds, log_cmds,
     mcp_cmds, no_mistakes_cmds, notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds,
     sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds,
@@ -421,6 +421,12 @@ pub fn run() {
             github_cmds::list_gh_accounts,
             github_cmds::fetch_github_issues,
             github_cmds::fetch_github_issue,
+            // --- Agent accounts (multi-account) ---
+            account_cmds::create_agent_account,
+            account_cmds::update_agent_account,
+            account_cmds::remove_agent_account,
+            account_cmds::login_agent_account,
+            account_cmds::check_agent_account_auth,
             // --- Audio & transcription ---
             audio_cmds::transcribe_audio,
             audio_cmds::test_whisper_connection,

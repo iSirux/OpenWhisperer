@@ -64,6 +64,11 @@ pub struct RepoConfig {
     /// None = gh's currently active account.
     #[serde(default)]
     pub gh_user: Option<String>,
+    /// Whitelist of agent account ids allowed for sessions in this repo.
+    /// May include the reserved `default-claude` / `default-openai` virtual ids.
+    /// Empty = all accounts allowed.
+    #[serde(default)]
+    pub account_ids: Vec<String>,
 }
 
 /// A single runnable command/service for a repository (e.g., "npm run dev")

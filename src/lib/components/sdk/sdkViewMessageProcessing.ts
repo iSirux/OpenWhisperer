@@ -24,6 +24,9 @@ export type RenderItem =
       taskCompleted?: SdkMessage;
       /** Direct nested subagents of this task, keyed by toolUseId (compact rows). */
       nestedSummaries?: Map<string, NestedTaskSummary>;
+      /** Model requested in the Task/Agent tool input (may be an alias like "sonnet" or "inherit").
+       *  The actual model, when known, comes from SdkSession.subagentModels and takes precedence. */
+      taskModel?: string;
     };
 
 // Process messages to merge tool_start/tool_result pairs
@@ -391,6 +394,7 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
         children: taskChildrenMap.get(toolUseId) || [],
         taskCompleted: effectiveTaskCompleted,
         nestedSummaries: nestedByParent.get(toolUseId),
+        taskModel: taskInput?.model as string | undefined,
       });
     } else if (isGridMode) {
       const isToolMessage =

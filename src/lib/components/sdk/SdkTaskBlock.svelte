@@ -5,6 +5,7 @@
   import { settings } from "$lib/stores/settings";
   import SdkMessageComponent from "./SdkMessage.svelte";
   import SdkToolGrid from "./SdkToolGrid.svelte";
+  import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from "$lib/utils/modelColors";
 
   let {
     taskStarted,
@@ -16,6 +17,7 @@
     sessionCwd = "",
     sessionModel = "",
     sessionEffortLevel = null,
+    taskModel = "",
   }: {
     taskStarted: SdkMessage;
     children: SdkMessage[];
@@ -26,6 +28,8 @@
     sessionCwd?: string;
     sessionModel?: string;
     sessionEffortLevel?: EffortLevel;
+    /** The subagent's model (actual model id, or a Task-input alias like "sonnet"). */
+    taskModel?: string;
   } = $props();
 
   // Nested subagents (spawned by this subagent) are folded into compact summary
@@ -136,6 +140,12 @@
   // Derive the display label: use taskType if available (e.g. "Explore"), else "Task"
   let taskLabel = $derived(taskStarted.taskType || 'Task');
 
+  // Model to badge: the subagent's own model when known, else the session model
+  // (subagents inherit it by default — true for Claude "inherit" and Codex collab agents).
+  let badgeModel = $derived(
+    !taskModel || taskModel === 'inherit' || taskModel === 'default' ? sessionModel : taskModel
+  );
+
   // Count this subagent's own tool calls (excluding nested-subagent launchers,
   // which report their own counts on their compact rows).
   let toolCallCount = $derived(
@@ -233,6 +243,11 @@
         <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
       </svg>
       <span class="task-label">{taskLabel}</span>
+      {#if badgeModel}
+        <span class="px-1.5 py-0.5 text-[10px] font-medium {getModelBadgeBgColor(badgeModel)} {getModelTextColor(badgeModel)} rounded flex-shrink-0">
+          {getShortModelName(badgeModel)}
+        </span>
+      {/if}
       {#if taskStarted.description}
         <span class="task-description">{taskStarted.description}</span>
       {/if}

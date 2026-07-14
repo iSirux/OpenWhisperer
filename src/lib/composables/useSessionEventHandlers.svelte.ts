@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { recording, isRecording } from '$lib/stores/recording';
 import { sdkSessions } from '$lib/stores/sdkSessions';
-import { settings } from '$lib/stores/settings';
+import { settings, type RecordAndSendAction } from '$lib/stores/settings';
 import { overlay } from '$lib/stores/overlay';
 import { processVoiceCommand, type VoiceCommandType } from '$lib/utils/voiceCommands';
 import { playOpenMicTriggerSound, playVoiceCommandSound } from '$lib/utils/sound';
@@ -32,8 +32,8 @@ export interface EventHandlerCallbacks {
   onSwitchToSession: (sessionId: string) => void;
   /** Cancel the current recording */
   onCancelRecording: () => Promise<void>;
-  /** Send the current recording (stop and process) */
-  onSendRecording: () => Promise<void>;
+  /** Stop the current recording and process it (optionally forcing a stop action) */
+  onSendRecording: (action?: RecordAndSendAction) => Promise<void>;
   /** Start recording from open mic */
   onStartRecordingFromOpenMic: () => Promise<void>;
   /** Handle voice command (stop recording and process) */
@@ -44,10 +44,10 @@ export interface EventHandlerCallbacks {
   ) => Promise<void>;
   /** Unregister recording hotkeys */
   onUnregisterRecordingHotkeys: () => Promise<void>;
-  /** Cycle the recording stop mode (send → prepare → pile), e.g. from the overlay */
-  onCycleStopMode?: () => Promise<void>;
-  /** Cycle the active repository, e.g. from the overlay repo chip */
-  onCycleRepo?: () => Promise<void>;
+  /** Set the recording stop mode (send / prepare / pile), e.g. from the overlay */
+  onSetStopMode?: (mode: RecordAndSendAction) => Promise<void>;
+  /** Select the active repository ('auto' or a repo id), e.g. from the overlay dropdown */
+  onSelectRepo?: (option: 'auto' | string) => Promise<void>;
   /** Cycle the default model, e.g. from the overlay model chip */
   onCycleModel?: () => Promise<void>;
 }
@@ -58,8 +58,8 @@ export function useSessionEventHandlers() {
   let unlistenSendRecording: UnlistenFn | null = null;
   let unlistenOpenMicTriggered: UnlistenFn | null = null;
   let unlistenVoiceCommandTriggered: UnlistenFn | null = null;
-  let unlistenCycleStopMode: UnlistenFn | null = null;
-  let unlistenCycleRepo: UnlistenFn | null = null;
+  let unlistenSetStopMode: UnlistenFn | null = null;
+  let unlistenSelectRepo: UnlistenFn | null = null;
   let unlistenCycleModel: UnlistenFn | null = null;
 
   // Window event handlers
@@ -151,21 +151,30 @@ export function useSessionEventHandlers() {
       await callbacks?.onCancelRecording();
     });
 
-    // Listen for send-recording events from overlay (Go button)
-    unlistenSendRecording = await listen('send-recording', async () => {
-      console.log('[Recording] Send recording event received');
-      await callbacks?.onSendRecording();
-    });
+    // Listen for send-recording events from overlay (Go / Draft / Pile buttons)
+    unlistenSendRecording = await listen<{ action?: RecordAndSendAction } | null>(
+      'send-recording',
+      async (event) => {
+        console.log('[Recording] Send recording event received', event.payload?.action);
+        await callbacks?.onSendRecording(event.payload?.action);
+      }
+    );
 
-    // Listen for cycle-stop-mode events from overlay (stop-mode chip click)
-    unlistenCycleStopMode = await listen('cycle-stop-mode', async () => {
-      await callbacks?.onCycleStopMode?.();
-    });
+    // Listen for set-stop-mode events from overlay (idle mode selector click)
+    unlistenSetStopMode = await listen<{ mode: RecordAndSendAction }>(
+      'set-stop-mode',
+      async (event) => {
+        await callbacks?.onSetStopMode?.(event.payload.mode);
+      }
+    );
 
-    // Listen for cycle-repo events from overlay (repo chip click)
-    unlistenCycleRepo = await listen('cycle-repo', async () => {
-      await callbacks?.onCycleRepo?.();
-    });
+    // Listen for select-repo events from overlay (repo dropdown)
+    unlistenSelectRepo = await listen<{ option: 'auto' | string }>(
+      'select-repo',
+      async (event) => {
+        await callbacks?.onSelectRepo?.(event.payload.option);
+      }
+    );
 
     // Listen for cycle-model events from overlay (model chip click)
     unlistenCycleModel = await listen('cycle-model', async () => {
@@ -178,7 +187,11 @@ export function useSessionEventHandlers() {
       async (event) => {
         console.log('[open-mic] Wake command triggered:', event.payload?.command);
 
-        if (get(isRecording)) {
+        // getOwner() is set synchronously when a recording starts, before mic
+        // acquisition completes and isRecording flips true — checking it too
+        // closes the startup window where a stale wake trigger could race a
+        // just-started recording and spawn a second session.
+        if (get(isRecording) || recording.getOwner() !== null) {
           console.log('[open-mic] Already recording, ignoring trigger');
           return;
         }
@@ -204,6 +217,16 @@ export function useSessionEventHandlers() {
 
       if (!get(isRecording)) {
         console.log('[voice-command] Not recording, ignoring trigger');
+        return;
+      }
+
+      // Scope guard: only recordings started by the global flow (hotkey /
+      // header button / open mic wake) are stopped-and-processed here.
+      // View-owned recordings (in-session follow-ups, the New Session form,
+      // inline dictation) process their own transcript — handling them here
+      // would rip the recording out of its session and spawn a new one.
+      if (recording.getOwner() !== 'global') {
+        console.log('[voice-command] Recording is view-owned, leaving it to its owner');
         return;
       }
 
@@ -248,14 +271,14 @@ export function useSessionEventHandlers() {
       unlistenVoiceCommandTriggered = null;
     }
 
-    if (unlistenCycleStopMode) {
-      unlistenCycleStopMode();
-      unlistenCycleStopMode = null;
+    if (unlistenSetStopMode) {
+      unlistenSetStopMode();
+      unlistenSetStopMode = null;
     }
 
-    if (unlistenCycleRepo) {
-      unlistenCycleRepo();
-      unlistenCycleRepo = null;
+    if (unlistenSelectRepo) {
+      unlistenSelectRepo();
+      unlistenSelectRepo = null;
     }
 
     if (unlistenCycleModel) {

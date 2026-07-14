@@ -17,6 +17,8 @@
   import { repos, isAutoRepoSelected } from "$lib/stores/repos";
   import { overlay } from "$lib/stores/overlay";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { playVoiceCommandSound } from "$lib/utils/sound";
   import SdkUsageBar from "./sdk/SdkUsageBar.svelte";
   import SdkMessageComponent from "./sdk/SdkMessage.svelte";
   import SdkLoadingIndicator from "./sdk/SdkLoadingIndicator.svelte";
@@ -391,8 +393,29 @@
     return firstUserMessage.content.trim() || null;
   });
 
+  // Scoped voice commands: while THIS view owns the live recording, a spoken
+  // command ("send it", "cancel that", ...) stops the recording here — the
+  // stop path's transcript processing routes cancel/transcribe/send within
+  // this session. The global voice-command handler deliberately ignores
+  // view-owned recordings (recording.getOwner() !== 'global'), so without
+  // this listener spoken commands would only apply on manual stop.
+  let unlistenVoiceCommand: UnlistenFn | null = null;
+
   onMount(() => {
     console.log(`[SdkView] Mount (session: ${sessionId})`);
+
+    listen("voice-command-triggered", async () => {
+      // Only the pane that started the recording reacts (multiple SdkViews
+      // can be mounted in split panes).
+      if (!isRecordingForCurrentSession || !get(isRecording)) return;
+      if (get(settings).audio.play_sound_on_voice_command) {
+        playVoiceCommandSound();
+      }
+      await handleStopRecording();
+    }).then((unlisten) => {
+      unlistenVoiceCommand = unlisten;
+    });
+
     unsubscribe = sdkSessions.subscribe((sessions) => {
       const found = sessions.find((s) => s.id === sessionId);
       if (!session && found?.pendingPlanApproval) {
@@ -490,6 +513,8 @@
     console.log(`[SdkView] Destroy (session: ${sessionId}, hasPlanApproval: ${hasPlanApproval})`);
     persistCurrentScrollState(sessionId);
     unsubscribe?.();
+    unlistenVoiceCommand?.();
+    unlistenVoiceCommand = null;
   });
 
   // Keep bottom lock behavior when new content arrives.
@@ -1661,6 +1686,10 @@
             sessionCwd={cwd}
             {sessionModel}
             {sessionEffortLevel}
+            taskModel={(item.taskStarted.toolUseId &&
+              session?.subagentModels?.[item.taskStarted.toolUseId]) ||
+              item.taskModel ||
+              ""}
           />
           </div>
         {/if}
@@ -1860,6 +1889,7 @@
       {draftPrompt}
       {draftImages}
       provider={sessionProvider}
+      accountId={session?.accountId}
       showScheduleSend={canScheduleSend}
       onSendPrompt={handleSendPrompt}
       onScheduleSend={handleScheduleSend}

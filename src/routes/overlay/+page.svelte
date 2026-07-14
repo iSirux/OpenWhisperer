@@ -173,10 +173,11 @@
   }
 
   async function startDrag(event: MouseEvent) {
-    // Don't start drag when clicking any button (Go, Discard, cycle chips) —
-    // startDragging() on mousedown would swallow the click
+    // Don't start drag when clicking any button (Go/Draft/Pile, Discard, model
+    // chip) or the repo dropdown — startDragging() on mousedown would swallow
+    // the click
     const target = event.target as HTMLElement;
-    if (target.closest('button')) {
+    if (target.closest('button, select')) {
       return;
     }
 

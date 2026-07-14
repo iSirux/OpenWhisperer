@@ -39,6 +39,8 @@ const TICK_MS = 30_000;
 interface PendingItem {
   id: string;
   provider: SdkProvider;
+  /** The session's agent account (undefined/`default-*` = machine-default login). */
+  accountId?: string;
   reason: QueueReason;
   kind: 'queued' | 'rateLimited';
   /** FIFO ordering key. */
@@ -93,6 +95,7 @@ function toPendingItem(session: SdkSession): PendingItem | null {
     return {
       id: session.id,
       provider,
+      accountId: session.accountId,
       reason: session.queueInfo.reason,
       kind: 'queued',
       queuedAt: session.queueInfo.queuedAt ?? session.createdAt ?? 0,
@@ -104,6 +107,7 @@ function toPendingItem(session: SdkSession): PendingItem | null {
     return {
       id: session.id,
       provider,
+      accountId: session.accountId,
       reason: session.rateLimited.reason,
       kind: 'rateLimited',
       queuedAt: session.rateLimited.queuedAt ?? session.lastActivityAt ?? 0,
@@ -142,7 +146,7 @@ function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider):
  *   session may still be mid-query, and the turn should fire only after it finishes.
  */
 function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolean {
-  const exhausted = providerExhaustion(item.provider).exhausted;
+  const exhausted = providerExhaustion(item.provider, item.accountId).exhausted;
 
   if (item.reason === 'rate_limit') {
     if (rateLimitStoreValue(item.provider) == null) return false; // limit state unknown yet
