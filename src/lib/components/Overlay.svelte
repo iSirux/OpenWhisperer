@@ -66,7 +66,6 @@
 
   // Dispatch resize event to notify parent page
   function notifyResize() {
-    console.log("[Overlay] notifyResize dispatching event");
     window.dispatchEvent(new CustomEvent("overlay-content-changed"));
   }
 

@@ -88,15 +88,11 @@
     lastWidth = width;
     lastHeight = height;
 
-    console.log('[overlay] resizeWindow called:', { width, height });
     try {
       const overlayWindow = await WebviewWindow.getByLabel('overlay');
-      console.log('[overlay] got window:', !!overlayWindow);
       if (overlayWindow) {
         const newSize = new LogicalSize(Math.ceil(width), Math.ceil(height));
-        console.log('[overlay] setting size to:', newSize);
         await overlayWindow.setSize(newSize);
-        console.log('[overlay] setSize completed');
       }
     } catch (error) {
       console.error('[overlay] Failed to resize overlay window:', error);
@@ -106,15 +102,8 @@
   function measureAndResize() {
     // Measure the actual overlay-window element, not the wrapper
     const overlayWindowEl = document.querySelector('.overlay-window');
-    console.log('[overlay] measureAndResize - found element:', !!overlayWindowEl);
     if (overlayWindowEl) {
       const rect = overlayWindowEl.getBoundingClientRect();
-      console.log('[overlay] measured rect:', { width: rect.width, height: rect.height, top: rect.top, left: rect.left });
-
-      // Also log the element's scroll dimensions
-      const el = overlayWindowEl as HTMLElement;
-      console.log('[overlay] scroll dimensions:', { scrollWidth: el.scrollWidth, scrollHeight: el.scrollHeight, offsetHeight: el.offsetHeight });
-
       if (rect.width > 0 && rect.height > 0) {
         resizeWindow(rect.width, rect.height);
       }
@@ -218,14 +207,12 @@
     });
 
     // Use ResizeObserver to detect size changes
-    resizeObserver = new ResizeObserver((entries) => {
-      console.log('[overlay] ResizeObserver triggered, entries:', entries.length);
+    resizeObserver = new ResizeObserver(() => {
       measureAndResize();
     });
 
     // Use MutationObserver to detect DOM changes (elements added/removed)
-    mutationObserver = new MutationObserver((mutations) => {
-      console.log('[overlay] MutationObserver triggered, mutations:', mutations.length);
+    mutationObserver = new MutationObserver(() => {
       // Multiple resize attempts to catch layout settling
       requestAnimationFrame(measureAndResize);
       setTimeout(measureAndResize, 50);
@@ -233,14 +220,11 @@
     });
 
     // Observe both the wrapper and the actual overlay-window element
-    console.log('[overlay] setting up observers, overlayElement:', !!overlayElement);
     if (overlayElement) {
       resizeObserver.observe(overlayElement);
-      console.log('[overlay] observing overlayElement');
     }
 
     const overlayWindowEl = document.querySelector('.overlay-window');
-    console.log('[overlay] found .overlay-window:', !!overlayWindowEl);
     if (overlayWindowEl) {
       resizeObserver.observe(overlayWindowEl);
       mutationObserver.observe(overlayWindowEl, {
@@ -249,14 +233,10 @@
         attributes: true,
         characterData: true
       });
-      console.log('[overlay] observing .overlay-window for resize and mutations');
     }
 
     // Listen for custom resize events from Overlay component
-    window.addEventListener('overlay-content-changed', () => {
-      console.log('[overlay] overlay-content-changed event received');
-      measureAndResize();
-    });
+    window.addEventListener('overlay-content-changed', measureAndResize);
 
     // Initial resize after a short delay
     setTimeout(measureAndResize, 100);

@@ -110,6 +110,30 @@
     hiddenItemCount > 0 ? renderItems.slice(hiddenItemCount) : renderItems,
   );
 
+  // Collision-free keys for the message {#each}. Raw values are NOT unique:
+  // message timestamps (ms) can collide within an event burst, and continuing a
+  // background agent via SendMessage re-emits task_started with the SAME taskId
+  // as the original Agent launch. Duplicate keys hang Svelte's keyed-each
+  // reconciliation — observed as a whole-app freeze on any session containing a
+  // continued agent. The occurrence counter is deterministic because item order
+  // is stable across recomputes.
+  let keyedVisibleItems = $derived.by(() => {
+    const seen = new Map<string, number>();
+    return visibleRenderItems.map((item) => {
+      let base: string;
+      if (item.type === "message") {
+        base = `msg-${item.message.timestamp}`;
+      } else if (item.type === "task") {
+        base = `task-${item.taskStarted.toolUseId || item.taskStarted.taskId || item.taskStarted.timestamp}`;
+      } else {
+        base = `tool-group-${item.tools[0]?.timestamp ?? 0}`;
+      }
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return { item, key: n === 0 ? base : `${base}#${n}` };
+    });
+  });
+
   let status = $derived(session?.status ?? "idle");
   let isQuerying = $derived(status === "querying");
   let isPendingRepo = $derived(status === "pending_repo");
@@ -1629,7 +1653,8 @@
         </button>
       {/if}
 
-      {#each visibleRenderItems as item, visibleIndex (item.type === "message" ? item.message.timestamp : item.type === "task" ? `task-${item.taskStarted.taskId || item.taskStarted.toolUseId || (visibleIndex + hiddenItemCount)}` : `tool-group-${visibleIndex + hiddenItemCount}`)}
+      {#each keyedVisibleItems as keyed, visibleIndex (keyed.key)}
+        {@const item = keyed.item}
         {@const index = visibleIndex + hiddenItemCount}
         {@const isForked = isForkedContextItem(item)}
         {@const showForkDivider = !isForked && forkedMessageCount > 0 && index > 0 && (() => { const prevItem = renderItems[index - 1]; return prevItem ? isForkedContextItem(prevItem) : false; })()}
