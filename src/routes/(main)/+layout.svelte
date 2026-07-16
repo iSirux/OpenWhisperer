@@ -38,6 +38,7 @@
   import { createAndActivateNewSession, createSessionInSameRepo } from '$lib/utils/sessionCreation';
   import { selectDisplaySession } from '$lib/utils/sessionSelection';
   import { transformToDisplaySessions, getSdkSmartStatus } from '$lib/composables/useDisplaySessions.svelte';
+  import { sessionRepoFilter, filterDisplaySessions } from '$lib/stores/sessionRepoFilter';
   import { ctrlHintKeydown, ctrlHintKeyup, ctrlHintReset } from '$lib/stores/ctrlHint';
   import { popRecentlyClosed, recentlyClosedSessions } from '$lib/stores/recentlyClosed';
   import { archive } from '$lib/stores/archive';
@@ -149,12 +150,16 @@
   function performActiveClose(sessionId: string) {
     // Was the closing session the active one? If so, advance to the next session
     // in the sidebar rather than dropping the user on an empty view — matching
-    // SessionList's close behaviour. Uses the same transform/order as the list.
+    // SessionList's close behaviour. Uses the same transform/order (and repo
+    // filter) as the list.
     const wasActive = get(activeSdkSessionId) === sessionId;
-    const ordered = transformToDisplaySessions(
-      get(sdkSessions),
-      get(settings).session_sort_order,
-      get(sequenceExecutions)
+    const ordered = filterDisplaySessions(
+      transformToDisplaySessions(
+        get(sdkSessions),
+        get(settings).session_sort_order,
+        get(sequenceExecutions)
+      ),
+      get(sessionRepoFilter)
     );
     const idx = ordered.findIndex((s) => s.id === sessionId);
     let nextSession = null;
@@ -241,14 +246,18 @@
     }
 
     // Ctrl+1..9 — jump to the Nth session in the sidebar. Uses the same transform
-    // (and therefore the same order) as SessionList, which renders the number badges.
+    // and repo filter (and therefore the same order) as SessionList, which
+    // renders the number badges.
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
       const digitMatch = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
       if (digitMatch) {
-        const ordered = transformToDisplaySessions(
-          $sdkSessions,
-          $settings.session_sort_order,
-          $sequenceExecutions
+        const ordered = filterDisplaySessions(
+          transformToDisplaySessions(
+            $sdkSessions,
+            $settings.session_sort_order,
+            $sequenceExecutions
+          ),
+          $sessionRepoFilter
         );
         const target = ordered[Number(digitMatch[1]) - 1];
         if (target) {

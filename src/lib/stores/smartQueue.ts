@@ -192,28 +192,49 @@ async function drain(provider: SdkProvider): Promise<void> {
 
   try {
     const cfg = get(settings).queue;
-    const ordered = [...readyNow].sort((a, b) => a.queuedAt - b.queuedAt);
+    // FIFO by queue time, but hoist explicit `after_sessions` items ahead of
+    // reset-driven ones so an "start when idle" dispatch is never held behind a
+    // rate-limit stagger delay.
+    const ordered = [...readyNow].sort((a, b) => {
+      const aImmediate = a.reason === 'after_sessions' ? 0 : 1;
+      const bImmediate = b.reason === 'after_sessions' ? 0 : 1;
+      if (aImmediate !== bImmediate) return aImmediate - bImmediate;
+      return a.queuedAt - b.queuedAt;
+    });
     const dispatched = new Set<string>();
     let dispatchedCount = 0;
-
-    // "After reset" fuzzy delay — applied once, before the first dispatch.
-    if (cfg.fuzzy_delay_after_reset) {
-      await sleep(
-        randomDelayMs(cfg.fuzzy_delay_after_reset_min_secs, cfg.fuzzy_delay_after_reset_max_secs)
-      );
-    }
+    // Whether the once-per-drain "after reset" stagger has been applied yet. Only
+    // reset-driven items (rate_limit / scheduled) trigger it.
+    let appliedAfterResetDelay = false;
 
     for (const item of ordered) {
       if (dispatched.has(item.id)) continue;
 
-      // "Between runs" fuzzy delay — before every dispatch after the first.
-      if (dispatchedCount > 0 && cfg.fuzzy_delay_between_runs) {
-        await sleep(
-          randomDelayMs(
-            cfg.fuzzy_delay_between_runs_min_secs,
-            cfg.fuzzy_delay_between_runs_max_secs
-          )
-        );
+      // Fuzzy stagger applies only to reset-driven items (rate_limit / scheduled),
+      // which fire on a usage-window boundary and want to be spread out. An
+      // `after_sessions` item is an explicit "start when the repo is idle" action —
+      // when the scope is already idle it must dispatch immediately, with no delay.
+      if (item.reason !== 'after_sessions') {
+        if (!appliedAfterResetDelay) {
+          // "After reset" fuzzy delay — once, before the first reset-driven dispatch.
+          if (cfg.fuzzy_delay_after_reset) {
+            await sleep(
+              randomDelayMs(
+                cfg.fuzzy_delay_after_reset_min_secs,
+                cfg.fuzzy_delay_after_reset_max_secs
+              )
+            );
+          }
+          appliedAfterResetDelay = true;
+        } else if (dispatchedCount > 0 && cfg.fuzzy_delay_between_runs) {
+          // "Between runs" fuzzy delay — before every dispatch after the first.
+          await sleep(
+            randomDelayMs(
+              cfg.fuzzy_delay_between_runs_min_secs,
+              cfg.fuzzy_delay_between_runs_max_secs
+            )
+          );
+        }
       }
 
       // Re-read the session — it may have been removed, launched, or re-exhausted

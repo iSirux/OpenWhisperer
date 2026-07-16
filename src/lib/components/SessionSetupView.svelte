@@ -1211,8 +1211,11 @@
   .effort-options {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
+    gap: 0.25rem;
+    padding: 0.25rem;
+    background: var(--color-surface);
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-border);
   }
 
   /* Account Selector */
@@ -1260,27 +1263,23 @@
     opacity: 0.85;
   }
 
-  /* Effort Option Button */
+  /* Effort Option Button — segment inside the grouped .effort-options toggle */
   .effort-option-btn {
     padding: 0.35rem 0.75rem;
     border-radius: 0.375rem;
     font-size: 0.8rem;
     font-weight: 500;
     color: var(--color-text-secondary);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
     transition: all 0.15s ease;
   }
 
   .effort-option-btn:hover {
     background: var(--color-surface-elevated);
-    border-color: var(--color-accent);
   }
 
   .effort-option-btn.active {
     background: #0891b2;
     color: white;
-    border-color: #06b6d4;
   }
 
   /* Prompt Section */

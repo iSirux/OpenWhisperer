@@ -20,9 +20,16 @@
   } from '$lib/stores/sequenceExecutions';
   import { navigation } from '$lib/stores/navigation';
   import { archive } from '$lib/stores/archive';
+  import {
+    sessionRepoFilter,
+    filterDisplaySessions,
+    clearRepoFilter,
+  } from '$lib/stores/sessionRepoFilter';
+  import { repos } from '$lib/stores/repos';
 
   const archiveCount = archive.archiveCount;
   import SessionListItem from './SessionListItem.svelte';
+  import SessionRepoFilter from './SessionRepoFilter.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
 
   interface Props {
@@ -54,6 +61,23 @@
 
   // Unified session list
   let allSessions = $state<DisplaySession[]>([]);
+
+  // Repo filter applied to the rendered list. The Ctrl+1..9 hotkey in the main
+  // layout applies the same filter so the number badges stay accurate.
+  const visibleSessions = $derived(
+    filterDisplaySessions(allSessions, $sessionRepoFilter, $repos.list)
+  );
+  const hiddenByFilterCount = $derived(allSessions.length - visibleSessions.length);
+
+  // Index of the first unpinned session, used to draw a divider between the
+  // pinned group (which floats to the top) and the rest. Only meaningful when
+  // there is at least one pinned session above it.
+  const firstUnpinnedIndex = $derived.by(() => {
+    const hasPinned = visibleSessions.length > 0 && visibleSessions[0].pinned;
+    if (!hasPinned) return -1;
+    const idx = visibleSessions.findIndex((s) => !s.pinned);
+    return idx > 0 ? idx : -1;
+  });
 
   // Track session IDs and repo paths to detect when sessions are added/removed or cwd changes
   let lastSessionKey = '';
@@ -170,15 +194,15 @@
   }
 
   // Pick the session to activate after closing the one at `sessionId`:
-  // prefer the next one down the list, falling back to the previous.
+  // prefer the next one down the (filtered) list, falling back to the previous.
   function findNextSession(sessionId: string): DisplaySession | null {
-    const idx = allSessions.findIndex((s) => s.id === sessionId);
+    const idx = visibleSessions.findIndex((s) => s.id === sessionId);
     if (idx === -1) return null;
-    for (let i = idx + 1; i < allSessions.length; i++) {
-      if (allSessions[i].id !== sessionId) return allSessions[i];
+    for (let i = idx + 1; i < visibleSessions.length; i++) {
+      if (visibleSessions[i].id !== sessionId) return visibleSessions[i];
     }
     for (let i = idx - 1; i >= 0; i--) {
-      if (allSessions[i].id !== sessionId) return allSessions[i];
+      if (visibleSessions[i].id !== sessionId) return visibleSessions[i];
     }
     return null;
   }
@@ -255,6 +279,9 @@
       </span>
     </button>
 
+    <!-- Repository filter (toggle chips; only repos with open sessions) -->
+    <SessionRepoFilter sessions={allSessions} />
+
     <!-- Sessions (SDK + Sequences mixed) -->
     {#if allSessions.length === 0}
       <div class="p-4 text-center text-text-muted text-sm">
@@ -273,8 +300,18 @@
         </svg>
         No sessions yet
       </div>
+    {:else if visibleSessions.length === 0}
+      <div class="p-4 text-center text-text-muted text-sm">
+        All {allSessions.length} session{allSessions.length === 1 ? '' : 's'} hidden by the repository filter
+        <button class="block mx-auto mt-2 text-xs text-accent hover:underline" onclick={clearRepoFilter}>
+          Show all
+        </button>
+      </div>
     {:else}
-      {#each allSessions as session, index (session.id)}
+      {#each visibleSessions as session, index (session.id)}
+        {#if index === firstUnpinnedIndex}
+          <div class="pin-divider" role="separator" aria-label="Pinned sessions above"></div>
+        {/if}
         <SessionListItem
           {session}
           hotkeyNumber={index < 9 ? index + 1 : undefined}
@@ -290,6 +327,11 @@
           oncontextmenu={(e) => openContextMenu(session, e)}
         />
       {/each}
+      {#if hiddenByFilterCount > 0}
+        <div class="p-2 text-center text-[11px] text-text-muted">
+          {hiddenByFilterCount} session{hiddenByFilterCount === 1 ? '' : 's'} hidden by repository filter
+        </div>
+      {/if}
     {/if}
   </div>
 
@@ -363,6 +405,13 @@
   .session-list {
     scrollbar-width: thin;
     scrollbar-color: var(--color-border) transparent;
+  }
+
+  /* Separates the pinned group (floated to the top) from the rest of the list */
+  .pin-divider {
+    height: 0;
+    margin: 0.25rem 0.75rem;
+    border-top: 1px solid var(--color-border);
   }
 
   .context-overlay {
