@@ -69,6 +69,10 @@ pub struct RepoConfig {
     /// Empty = all accounts allowed.
     #[serde(default)]
     pub account_ids: Vec<String>,
+    /// Last PR merge strategy used in this repo ("squash" | "merge" | "rebase").
+    /// Remembered so the PR panel defaults to it next time.
+    #[serde(default)]
+    pub last_merge_strategy: Option<String>,
 }
 
 /// A single runnable command/service for a repository (e.g., "npm run dev")

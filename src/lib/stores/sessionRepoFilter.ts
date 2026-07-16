@@ -53,7 +53,7 @@ export function clearRepoFilter(): void {
   sessionRepoFilter.set([]);
 }
 
-function normalizePath(value: string): string {
+export function normalizePath(value: string): string {
   return value.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
 }
 

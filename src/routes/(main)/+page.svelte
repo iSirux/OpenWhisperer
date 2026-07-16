@@ -452,11 +452,10 @@
           effortLevel={activeSession.effortLevel}
           provider={activeSession.provider}
           accountId={activeSession.accountId}
-          autocompactEnabled={activeSession.autocompactEnabled ?? true}
-          disableHooks={activeSession.disableHooks ?? false}
           createdBranch={activeSession.createdBranch}
           currentBranch={activeSession.currentBranch}
           changedFileCount={activeSession.changedFileCount}
+          pr={activeSession.pr}
           firstPrompt={activeSdkFirstPrompt()}
           nickname={activeSession.aiMetadata?.nickname}
           onClose={handleSessionClose}
@@ -489,11 +488,10 @@
             effortLevel={activeSession.effortLevel}
             provider={activeSession.provider}
             accountId={activeSession.accountId}
-            autocompactEnabled={activeSession.autocompactEnabled ?? true}
-            disableHooks={activeSession.disableHooks ?? false}
             createdBranch={activeSession.createdBranch}
             currentBranch={activeSession.currentBranch}
             changedFileCount={activeSession.changedFileCount}
+            pr={activeSession.pr}
             firstPrompt={activeSdkFirstPrompt()}
             nickname={activeSession.aiMetadata?.nickname}
             onClose={handleSessionClose}

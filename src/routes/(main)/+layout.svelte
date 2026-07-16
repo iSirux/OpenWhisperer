@@ -39,6 +39,7 @@
   import { selectDisplaySession } from '$lib/utils/sessionSelection';
   import { transformToDisplaySessions, getSdkSmartStatus } from '$lib/composables/useDisplaySessions.svelte';
   import { sessionRepoFilter, filterDisplaySessions } from '$lib/stores/sessionRepoFilter';
+  import { sessionListGrouped, applySessionGrouping } from '$lib/stores/sessionGrouping';
   import { ctrlHintKeydown, ctrlHintKeyup, ctrlHintReset } from '$lib/stores/ctrlHint';
   import { popRecentlyClosed, recentlyClosedSessions } from '$lib/stores/recentlyClosed';
   import { archive } from '$lib/stores/archive';
@@ -153,13 +154,16 @@
     // SessionList's close behaviour. Uses the same transform/order (and repo
     // filter) as the list.
     const wasActive = get(activeSdkSessionId) === sessionId;
-    const ordered = filterDisplaySessions(
-      transformToDisplaySessions(
-        get(sdkSessions),
-        get(settings).session_sort_order,
-        get(sequenceExecutions)
+    const ordered = applySessionGrouping(
+      filterDisplaySessions(
+        transformToDisplaySessions(
+          get(sdkSessions),
+          get(settings).session_sort_order,
+          get(sequenceExecutions)
+        ),
+        get(sessionRepoFilter)
       ),
-      get(sessionRepoFilter)
+      get(sessionListGrouped)
     );
     const idx = ordered.findIndex((s) => s.id === sessionId);
     let nextSession = null;
@@ -251,13 +255,16 @@
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
       const digitMatch = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
       if (digitMatch) {
-        const ordered = filterDisplaySessions(
-          transformToDisplaySessions(
-            $sdkSessions,
-            $settings.session_sort_order,
-            $sequenceExecutions
+        const ordered = applySessionGrouping(
+          filterDisplaySessions(
+            transformToDisplaySessions(
+              $sdkSessions,
+              $settings.session_sort_order,
+              $sequenceExecutions
+            ),
+            $sessionRepoFilter
           ),
-          $sessionRepoFilter
+          $sessionListGrouped
         );
         const target = ordered[Number(digitMatch[1]) - 1];
         if (target) {

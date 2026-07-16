@@ -30,6 +30,14 @@ pub async fn get_git_changed_count_all_worktrees(repo_path: String) -> Result<us
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
+/// Detect the default remote branch of a repo (e.g. "origin/main").
+#[tauri::command]
+pub async fn get_git_default_branch(repo_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || GitManager::get_default_remote_branch(&repo_path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
 /// Create a new worktree with full setup (copy files, run post-create commands)
 #[tauri::command]
 pub async fn create_git_worktree_with_setup(

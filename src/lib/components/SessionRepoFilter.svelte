@@ -8,6 +8,7 @@
     repoFilterKey,
     reposWithSessions,
   } from '$lib/stores/sessionRepoFilter';
+  import { sessionListGrouped, toggleSessionGrouping } from '$lib/stores/sessionGrouping';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import type { DisplaySession } from '$lib/types/session';
 
@@ -71,6 +72,11 @@
     return selectedKeys.has(repoFilterKey(repo));
   }
 
+  // The filter chips need >1 repo to be useful; the grouped-view toggle only
+  // needs sessions to exist. The row renders when either has something to show.
+  const showChips = $derived(availableRepos.length > 1 || selectedKeys.size > 0);
+  const showRow = $derived(showChips || sessions.length > 0);
+
   function handleClickOutside(event: MouseEvent) {
     if (showDropdown && container && !container.contains(event.target as Node)) {
       showDropdown = false;
@@ -80,52 +86,72 @@
 
 <svelte:window onclick={handleClickOutside} />
 
-{#if availableRepos.length > 1 || selectedKeys.size > 0}
+{#if showRow}
   <div class="relative border-b border-border" bind:this={container}>
-    <div
-      class="flex items-center gap-0.5 px-1.5 py-1 overflow-hidden"
-      bind:clientWidth={rowWidth}
-      role="group"
-      aria-label="Filter sessions by repository"
-    >
-      <button
-        class="px-2 py-1 text-[10px] rounded font-medium transition-colors shrink-0 {selectedKeys.size === 0
-          ? 'bg-border text-text-primary'
-          : 'text-text-muted hover:bg-border hover:text-text-primary'}"
-        onclick={clearRepoFilter}
-        title="Show sessions from all repositories"
+    <div class="flex items-center gap-1 px-1.5 py-1">
+      <div
+        class="flex items-center gap-0.5 overflow-hidden flex-1 min-w-0"
+        bind:clientWidth={rowWidth}
+        role="group"
+        aria-label="Filter sessions by repository"
       >
-        All
+        {#if showChips}
+          <button
+            class="px-2 py-1 text-[10px] rounded font-medium transition-colors shrink-0 {selectedKeys.size === 0
+              ? 'bg-border text-text-primary'
+              : 'text-text-muted hover:bg-border hover:text-text-primary'}"
+            onclick={clearRepoFilter}
+            title="Show sessions from all repositories"
+          >
+            All
+          </button>
+
+          {#each visibleRepos as repo (repo.path)}
+            <button
+              class="px-2 py-1 rounded transition-colors shrink-0 flex items-center {isSelected(repo)
+                ? 'filter-chip-selected'
+                : 'text-text-secondary hover:bg-border hover:text-text-primary'}"
+              onclick={() => toggleRepoFilter(repoFilterKey(repo))}
+              title={isSelected(repo)
+                ? `${repo.name} — click to remove from filter`
+                : `${repo.name} — click to show only these sessions`}
+              aria-pressed={isSelected(repo)}
+            >
+              <RepoIcon {repo} size="xs" />
+            </button>
+          {/each}
+
+          {#if overflowRepos.length > 0}
+            <button
+              class="px-2 py-1 text-[10px] rounded font-medium transition-colors shrink-0 relative {overflowSelectedCount > 0
+                ? 'text-accent hover:bg-border'
+                : 'text-text-muted hover:bg-border hover:text-text-primary'}"
+              onclick={() => (showDropdown = !showDropdown)}
+              title="{overflowRepos.length} more repositories{overflowSelectedCount > 0
+                ? ` (${overflowSelectedCount} in filter)`
+                : ''}"
+            >
+              +{overflowRepos.length}
+            </button>
+          {/if}
+        {/if}
+      </div>
+
+      <button
+        class="px-1.5 py-1 rounded transition-colors shrink-0 {$sessionListGrouped
+          ? 'filter-chip-selected'
+          : 'text-text-muted hover:bg-border hover:text-text-primary'}"
+        onclick={toggleSessionGrouping}
+        title={$sessionListGrouped
+          ? 'Grouped by repository and worktree — click for flat list'
+          : 'Group sessions by repository and worktree'}
+        aria-pressed={$sessionListGrouped}
+        aria-label="Group sessions by repository and worktree"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+          <path d="M21 12h-8M21 6H8M21 18h-8M3 6v4c0 1.1.9 2 2 2h3M3 10v6c0 1.1.9 2 2 2h3" />
+        </svg>
       </button>
-
-      {#each visibleRepos as repo (repo.path)}
-        <button
-          class="px-2 py-1 rounded transition-colors shrink-0 flex items-center {isSelected(repo)
-            ? 'filter-chip-selected'
-            : 'text-text-secondary hover:bg-border hover:text-text-primary'}"
-          onclick={() => toggleRepoFilter(repoFilterKey(repo))}
-          title={isSelected(repo)
-            ? `${repo.name} — click to remove from filter`
-            : `${repo.name} — click to show only these sessions`}
-          aria-pressed={isSelected(repo)}
-        >
-          <RepoIcon {repo} size="xs" />
-        </button>
-      {/each}
-
-      {#if overflowRepos.length > 0}
-        <button
-          class="px-2 py-1 text-[10px] rounded font-medium transition-colors shrink-0 relative {overflowSelectedCount > 0
-            ? 'text-accent hover:bg-border'
-            : 'text-text-muted hover:bg-border hover:text-text-primary'}"
-          onclick={() => (showDropdown = !showDropdown)}
-          title="{overflowRepos.length} more repositories{overflowSelectedCount > 0
-            ? ` (${overflowSelectedCount} in filter)`
-            : ''}"
-        >
-          +{overflowRepos.length}
-        </button>
-      {/if}
     </div>
 
     {#if showDropdown}

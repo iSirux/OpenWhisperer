@@ -386,6 +386,7 @@ export function transformToDisplaySessions(
           : undefined,
         notionCard: s.notionCard,
         githubIssue: s.githubIssue,
+        pr: s.pr ?? undefined,
         pileItem: s.pileItem,
         spareTokens: s.spareTokens,
         queueInfo: s.queueInfo,

@@ -295,7 +295,6 @@ interface CreateMessage {
   fork_from_sdk_session_id?: string; // SDK session ID to fork from
   fork_at_message_uuid?: string; // Message UUID to fork at (resumeSessionAt)
   autocompact_pct?: number; // Claude-only: 0 = DISABLE_AUTO_COMPACT=1; 1-99 = CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; null/undefined/100 = Claude default
-  disable_hooks?: boolean; // Set DISABLE_HOOKS=1 env var so hook scripts can early-exit
   env?: Record<string, string>; // Extra env vars for the session's agent process (e.g., GH_TOKEN to pin a gh account per repo)
 }
 
@@ -336,19 +335,6 @@ interface UpdateEffortMessage {
   // The Claude SDK accepts the full range natively; OpenAI clamps per model
   // (GPT-5.6 caps at 'xhigh', older Codex models at 'high').
   effortLevel: string | null;
-}
-
-interface UpdateAutocompactPctMessage {
-  type: "update_autocompact_pct";
-  id: string;
-  /** Threshold percent (1-100). null disables the override. */
-  pct: number | null;
-}
-
-interface UpdateDisableHooksMessage {
-  type: "update_disable_hooks";
-  id: string;
-  disable: boolean;
 }
 
 /**
@@ -432,8 +418,6 @@ type InboundMessage =
   | StopMessage
   | UpdateModelMessage
   | UpdateEffortMessage
-  | UpdateAutocompactPctMessage
-  | UpdateDisableHooksMessage
   | GenerateRepoDescriptionMessage
   | GenerateRepoDescriptionWithCodexMessage
   | GenerateLaunchProfileMessage
@@ -3238,14 +3222,6 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     options.env = nextEnv;
   }
 
-  if (msg.disable_hooks) {
-    options.env = {
-      ...process.env,
-      ...(options.env ?? {}),
-      DISABLE_HOOKS: "1",
-    };
-  }
-
   // Preserve Claude Code's built-in prompt and tool setup so repo/global Skills
   // can load, while still appending session-specific instructions from the app.
   options.systemPrompt = buildClaudeSystemPrompt(
@@ -4795,75 +4771,6 @@ async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
   });
 }
 
-async function handleUpdateAutocompactPct(
-  msg: UpdateAutocompactPctMessage
-): Promise<void> {
-  const session = sessions.get(msg.id);
-  if (!session) {
-    sendError(msg.id, "Session not found");
-    return;
-  }
-
-  // Only Claude respects these vars; skip silently for other providers.
-  if (session.provider !== "claude") return;
-
-  // Seed from process.env so we don't wipe the spawn environment when the session
-  // had no prior options.env set.
-  const nextEnv: Record<string, string | undefined> = {
-    ...process.env,
-    ...(session.options.env ?? {}),
-  };
-  delete nextEnv.DISABLE_AUTO_COMPACT;
-  delete nextEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
-
-  if (msg.pct !== null && msg.pct !== undefined) {
-    const pct = Math.round(msg.pct);
-    if (pct <= 0) {
-      nextEnv.DISABLE_AUTO_COMPACT = "1";
-    } else if (pct < 100) {
-      nextEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(Math.max(1, pct));
-    }
-    // pct >= 100 falls through -> both vars cleared (Claude default).
-  }
-  session.options.env = nextEnv;
-
-  send({
-    type: "debug",
-    id: msg.id,
-    message: `autocompact updated to ${
-      msg.pct ?? "(cleared)"
-    } — applies on next Claude Code process spawn`,
-  });
-}
-
-async function handleUpdateDisableHooks(
-  msg: UpdateDisableHooksMessage
-): Promise<void> {
-  const session = sessions.get(msg.id);
-  if (!session) {
-    sendError(msg.id, "Session not found");
-    return;
-  }
-
-  const nextEnv: Record<string, string | undefined> = {
-    ...process.env,
-    ...(session.options.env ?? {}),
-  };
-
-  if (msg.disable) {
-    nextEnv.DISABLE_HOOKS = "1";
-  } else {
-    delete nextEnv.DISABLE_HOOKS;
-  }
-  session.options.env = nextEnv;
-
-  send({
-    type: "debug",
-    id: msg.id,
-    message: `hooks ${msg.disable ? "disabled" : "enabled"} — applies on next Claude Code process spawn`,
-  });
-}
-
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (session) {
@@ -4924,12 +4831,6 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "update_effort":
       await handleUpdateEffort(msg);
-      break;
-    case "update_autocompact_pct":
-      await handleUpdateAutocompactPct(msg);
-      break;
-    case "update_disable_hooks":
-      await handleUpdateDisableHooks(msg);
       break;
     case "close":
       await handleClose(msg);

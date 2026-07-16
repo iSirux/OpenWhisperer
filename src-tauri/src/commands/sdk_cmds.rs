@@ -25,7 +25,6 @@ pub async fn create_sdk_session(
     fork_from_sdk_session_id: Option<String>, // SDK session ID to fork from (creates a new branch)
     fork_at_message_uuid: Option<String>, // Message UUID to fork at (resumeSessionAt)
     autocompact_pct: Option<u32>, // Claude-only: 0=DISABLE_AUTO_COMPACT, 1..=99=PCT_OVERRIDE, None/100=default
-    disable_hooks: Option<bool>,  // Skip project/local settings to disable filesystem hooks
     gh_user: Option<String>,      // GitHub CLI account to pin this session to (via GH_TOKEN)
     account_id: Option<String>,   // Agent account to pin this session to (CLAUDE_CONFIG_DIR / CODEX_HOME)
 ) -> Result<(), String> {
@@ -57,7 +56,6 @@ pub async fn create_sdk_session(
         fork_from_sdk_session_id,
         fork_at_message_uuid,
         autocompact_pct,
-        disable_hooks,
         env,
     })
 }
@@ -93,24 +91,6 @@ pub fn update_sdk_effort(
     effort_level: Option<String>,
 ) -> Result<(), String> {
     sidecar.send(OutboundMessage::UpdateEffort { id, effort_level })
-}
-
-#[tauri::command]
-pub fn update_sdk_autocompact_pct(
-    sidecar: State<Arc<SidecarManager>>,
-    id: String,
-    pct: Option<u32>,
-) -> Result<(), String> {
-    sidecar.send(OutboundMessage::UpdateAutocompactPct { id, pct })
-}
-
-#[tauri::command]
-pub fn update_sdk_disable_hooks(
-    sidecar: State<Arc<SidecarManager>>,
-    id: String,
-    disable: bool,
-) -> Result<(), String> {
-    sidecar.send(OutboundMessage::UpdateDisableHooks { id, disable })
 }
 
 #[tauri::command]

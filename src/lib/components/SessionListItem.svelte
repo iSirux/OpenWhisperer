@@ -499,6 +499,18 @@
           {session.branch}
         </span>
       {/if}
+      {#if session.type === "sdk" && session.pr}
+        {@const prState = session.pr.isDraft && session.pr.state === "open" ? "draft" : session.pr.state}
+        <span
+          class="pr-badge pr-{prState}"
+          title="PR #{session.pr.number}: {session.pr.title} ({prState})"
+        >
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z" />
+          </svg>
+          #{session.pr.number}
+        </span>
+      {/if}
     </div>
   {/if}
 </div>
@@ -577,6 +589,43 @@
   .session-text-wrap {
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+
+  .pr-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    font-size: 0.65rem;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    padding: 0.02rem 0.3rem;
+    border-radius: 0.25rem;
+    flex-shrink: 0;
+  }
+
+  .pr-badge svg {
+    width: 0.65rem;
+    height: 0.65rem;
+  }
+
+  .pr-badge.pr-open {
+    color: rgb(74, 222, 128);
+    background: rgba(74, 222, 128, 0.12);
+  }
+
+  .pr-badge.pr-draft {
+    color: rgb(148, 163, 184);
+    background: rgba(148, 163, 184, 0.12);
+  }
+
+  .pr-badge.pr-merged {
+    color: rgb(192, 132, 252);
+    background: rgba(192, 132, 252, 0.12);
+  }
+
+  .pr-badge.pr-closed {
+    color: rgb(248, 113, 113);
+    background: rgba(248, 113, 113, 0.12);
   }
 
   /* Active/focused session - white background */

@@ -26,6 +26,8 @@
   import SessionRecordingHeader from "./sdk/SessionRecordingHeader.svelte";
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
   import NoMistakesPanel from "./sdk/NoMistakesPanel.svelte";
+  import PrPanel from "./sdk/PrPanel.svelte";
+  import { sessionPrs, getDefaultBranch, defaultBranchTail } from "$lib/stores/sessionPrs";
   import { nmRuns, noMistakes } from "$lib/stores/noMistakes";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
@@ -388,6 +390,50 @@
   let repoLaunchProfiles = $derived(sessionRepo?.launch_profiles ?? []);
   let repoLaunchCommands = $derived(sessionRepo?.launch_commands ?? []);
   let hasLaunchProfiles = $derived(repoLaunchProfiles.length > 0);
+
+  // --- PR lifecycle (detect / view / merge) ---------------------------------
+  let prEntry = $derived($sessionPrs.get(sessionId));
+  // Detect the session branch's PR when idle; force-refresh right after a turn
+  // ends (the agent may have just pushed/created the PR).
+  let wasQuerying = false;
+  $effect(() => {
+    const s = session;
+    const querying = isQuerying;
+    const justFinished = wasQuerying && !querying;
+    wasQuerying = querying;
+    if (!s || querying) return;
+    if (!(s.currentBranch || s.createdBranch)) return;
+    void sessionPrs.detectIfStale(s, justFinished);
+  });
+
+  // Built-in "ship it" quick action, shown for sessions on a non-default branch
+  // of a GitHub-linked repo. Uses the repo's actual default branch name.
+  let prQuickActionPrompt = $state<string | null>(null);
+  $effect(() => {
+    const s = session;
+    const repo = sessionRepo;
+    const sessionBranch = s?.currentBranch || s?.createdBranch;
+    if (!s || !repo?.github_url || !sessionBranch) {
+      prQuickActionPrompt = null;
+      return;
+    }
+    let cancelled = false;
+    void getDefaultBranch(repo.path).then((defaultBranch) => {
+      if (cancelled) return;
+      const tail = defaultBranchTail(defaultBranch);
+      prQuickActionPrompt =
+        tail && sessionBranch !== tail
+          ? `Commit, push, create PR, merge from ${defaultBranch} if needed`
+          : null;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  let builtinQuickActions = $derived(
+    prQuickActionPrompt ? [{ prompt: prQuickActionPrompt }] : [],
+  );
+
   let branch = $state<string | null>(null);
   let lastFetchedBranchCwd = "";
 
@@ -1785,6 +1831,7 @@
           onSendPrompt={(prompt) => handleSendPrompt(prompt)}
           onSendAfterIdle={(prompt) => handleSendAfterIdle(prompt)}
           generatedActions={generatedQuickActions}
+          builtinActions={builtinQuickActions}
           hasOutcomeAbove={!!sessionOutcome}
         />
       {/if}
@@ -1829,6 +1876,10 @@
     {/if}
   </div>
 
+  {#if session && prEntry?.panelOpen}
+    <PrPanel {session} entry={prEntry} repo={sessionRepo ?? undefined} />
+  {/if}
+
   {#if nmRun}
     {@const nmRunId = nmRun.runId}
     <NoMistakesPanel
@@ -1837,6 +1888,9 @@
       onCancel={() => noMistakes.cancel(nmRunId)}
       onDismiss={() => noMistakes.dismiss(nmRunId)}
       onSelectFindings={(findingIds) => noMistakes.selectFindings(nmRunId, findingIds)}
+      onInstall={() => noMistakes.install(nmRunId)}
+      onInit={() => noMistakes.initRepo(nmRunId)}
+      onRecheck={() => noMistakes.recheck(nmRunId)}
     />
   {/if}
 

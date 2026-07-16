@@ -7,12 +7,15 @@
     onSendPrompt,
     onSendAfterIdle,
     generatedActions,
+    builtinActions,
     hasOutcomeAbove = false,
   }: {
     onSendPrompt: (prompt: string) => void;
     /** Ctrl+click routes the action here: defer until the repo/worktree scope is idle. */
     onSendAfterIdle?: (prompt: string) => void;
     generatedActions?: QuickAction[];
+    /** App-provided actions (e.g. the PR "commit, push, create PR" chip), shown before custom ones. */
+    builtinActions?: QuickAction[];
     hasOutcomeAbove?: boolean;
   } = $props();
 
@@ -34,14 +37,41 @@
     generatedActions && generatedActions.length > 0 ? generatedActions : []
   );
 
+  const appActions = $derived(builtinActions ?? []);
+
   // Whether we have any actions to show at all
   const hasAnyActions = $derived(
-    customActions.length > 0 || contextualActions.length > 0
+    customActions.length > 0 || contextualActions.length > 0 || appActions.length > 0
   );
 </script>
 
 {#if hasAnyActions}
 <div class="quick-actions" class:no-border={hasOutcomeAbove}>
+  {#if appActions.length > 0}
+    <div class="quick-actions-buttons">
+      {#each appActions as action}
+        <button
+          class="quick-action-button builtin"
+          onclick={(e) => handleClick(e, action.prompt)}
+          title={[
+            action.label ? action.prompt : undefined,
+            onSendAfterIdle ? 'Ctrl+click: run when this repo/worktree is idle' : undefined,
+          ].filter(Boolean).join(' — ') || undefined}
+        >
+          {action.label ?? action.prompt}
+          {#if $ctrlHeld && onSendAfterIdle}
+            <span class="ctrl-hint-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   {#if customActions.length > 0}
     <div class="quick-actions-buttons">
       {#each customActions as action}
@@ -144,6 +174,14 @@
 
   .quick-action-button.contextual:hover {
     border-color: var(--color-accent);
+  }
+
+  .quick-action-button.builtin {
+    border-color: color-mix(in srgb, rgb(74, 222, 128) 30%, var(--color-border));
+  }
+
+  .quick-action-button.builtin:hover {
+    border-color: rgb(74, 222, 128);
   }
 
   .ctrl-hint-badge {

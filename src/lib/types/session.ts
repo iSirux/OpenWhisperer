@@ -71,6 +71,9 @@ export interface DisplaySession {
   // GitHub issue linked to this session
   githubIssue?: { number: number; title: string; url: string };
 
+  // PR detected for this session's branch (SDK sessions)
+  pr?: { number: number; url: string; state: string; title: string; isDraft?: boolean };
+
   // Pile item this session was launched from
   pileItem?: { id: string; title: string };
 

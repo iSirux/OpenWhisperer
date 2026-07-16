@@ -426,6 +426,17 @@ export function hasBusySessionsInScope(sessions: SdkSession[], cwd: string, excl
   );
 }
 
+/** Summary of the PR detected for a session's branch (badges in header/list).
+ *  Live detail (checks, mergeability) lives in the sessionPrs store. */
+export interface SessionPrSummary {
+  number: number;
+  url: string;
+  /** "open" | "merged" | "closed" */
+  state: string;
+  title: string;
+  isDraft?: boolean;
+}
+
 export interface SdkSession {
   id: string;
   cwd: string;
@@ -445,6 +456,8 @@ export interface SdkSession {
   /** Number of uncommitted changed files in this session's cwd (working-tree, like VS Code).
    *  Refreshed alongside branch metadata. Undefined until first sync. */
   changedFileCount?: number;
+  /** PR detected for this session's branch. Null = checked, none found; undefined = never checked. Persisted. */
+  pr?: SessionPrSummary | null;
   model: string;
   provider?: SdkProvider;
   /** Agent account this session is pinned to (isolated login profile). Undefined = machine default. */
@@ -517,8 +530,6 @@ export interface SdkSession {
   githubIssue?: { number: number; title: string; url: string };
   /** Spare Tokens library prompt this session was launched from (auto = fired by auto-mode) */
   spareTokens?: { promptId: string; auto: boolean };
-  /** Skip project/local hooks (lint, build, etc.) for non-implementation sessions */
-  disableHooks?: boolean;
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
   contextOverflow?: boolean;
   /** Active auto-recovery from a "prompt is too long" overflow: fire /compact, then re-send the prompt that overflowed.
@@ -1767,8 +1778,7 @@ function createSdkSessionsStore() {
     provider?: string,
     forkFromSdkSessionId?: string | null, // SDK session ID to fork from
     forkAtMessageUuid?: string | null, // Message UUID to fork at (resumeSessionAt)
-    autocompactEnabled?: boolean | null,
-    disableHooks?: boolean
+    autocompactEnabled?: boolean | null
   ): Promise<void> {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
@@ -1888,7 +1898,6 @@ function createSdkSessionsStore() {
       //                   tool-result overflows (those require the full 33K buffer regardless).
       autocompactPct:
         resolvedProvider === 'claude' && autocompactEnabled === false ? 0 : null,
-      disableHooks: disableHooks || null,
       ghUser,
       accountId: resolvedAccountId ?? null,
     });
@@ -2517,37 +2526,6 @@ function createSdkSessionsStore() {
       return this.updateSessionEffort(id, effortLevel);
     },
 
-    async updateSessionDisableHooks(id: string, disable: boolean): Promise<void> {
-      update(sessions => sessions.map(s => s.id === id ? { ...s, disableHooks: disable } : s));
-
-      if (!liveSessions.has(id)) return;
-
-      try {
-        await invoke('update_sdk_disable_hooks', { id, disable });
-      } catch (error) {
-        console.error('Failed to update SDK disable hooks:', error);
-      }
-    },
-
-    async updateSessionAutocompactEnabled(id: string, enabled: boolean): Promise<void> {
-      update(sessions => sessions.map(s => s.id === id ? { ...s, autocompactEnabled: enabled } : s));
-
-      if (!liveSessions.has(id)) return;
-
-      const session = get({ subscribe }).find(s => s.id === id);
-      if (!session || session.provider === 'openai') return;
-
-      try {
-        // Translate boolean to pct at the IPC boundary:
-        //   enabled=true  -> null (clear override; use Claude's built-in default ~83.5%, the optimal value).
-        //   enabled=false -> 0    (sidecar sets DISABLE_AUTO_COMPACT=1 — PCT_OVERRIDE cannot disable).
-        // Takes effect on the next Claude Code process spawn, not mid-query.
-        await invoke('update_sdk_autocompact_pct', { id, pct: enabled ? null : 0 });
-      } catch (error) {
-        console.error('Failed to update SDK autocompact enabled:', error);
-      }
-    },
-
     async updateSessionCwd(id: string, cwd: string): Promise<void> {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
@@ -2624,6 +2602,12 @@ function createSdkSessionsStore() {
       debouncedSave();
     },
 
+    /** Set the PR summary detected for a session's branch (drives header/list badges). */
+    setSessionPr(id: string, pr: SessionPrSummary | null): void {
+      update(sessions => sessions.map(s => s.id === id ? { ...s, pr } : s));
+      debouncedSave();
+    },
+
     clearAiCompletionMetadata(id: string): void {
       update(sessions =>
         sessions.map(s =>
@@ -2662,7 +2646,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; accountId?: string; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; disableHooks?: boolean; schedule?: QueueWindow | 'after_sessions' }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; accountId?: string; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; schedule?: QueueWindow | 'after_sessions' }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -2712,7 +2696,6 @@ function createSdkSessionsStore() {
                   setupRepoPath: undefined,
                   setupWorktreeMode: undefined,
                   setupWorktreePath: undefined,
-                  disableHooks: config.disableHooks || undefined,
                   ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),
                   queueInfo: { reason: queueReason, provider: gatedProvider, window: queueWindow, queuedAt, targetStartAt },
                 }
@@ -2744,7 +2727,6 @@ function createSdkSessionsStore() {
                 setupRepoPath: undefined,
                 setupWorktreeMode: undefined,
                 setupWorktreePath: undefined,
-                disableHooks: config.disableHooks || undefined,
                 // Pre-populate createdBranch from worktree creation so the header shows the correct
                 // branch immediately, without waiting for (or being overwritten by) the git query.
                 ...(config.createdBranch ? { createdBranch: config.createdBranch } : {}),
@@ -2776,8 +2758,7 @@ function createSdkSessionsStore() {
           finalProvider,
           session.forkFromSdkSessionId,
           session.forkAtMessageUuid,
-          undefined,
-          config.disableHooks
+          undefined
         );
         await syncSessionBranchMetadata(id, config.cwd);
 

@@ -37,6 +37,7 @@ export interface NmFinding {
 
 export type NmRunStatus =
   | 'starting'
+  | 'setup'
   | 'running'
   | 'gate'
   | 'passed'
@@ -44,11 +45,16 @@ export type NmRunStatus =
   | 'cancelled'
   | 'error';
 
+/** Why a run is parked in the `setup` state. */
+export type NmSetupReason = 'not-installed' | 'not-initialized';
+
 export interface NmRun {
   runId: string;
   sessionId: string;
   cwd: string;
+  intent: string;
   status: NmRunStatus;
+  setupReason?: NmSetupReason;
   steps: NmStep[];
   findings: NmFinding[];
   selectedFindingIds: string[];
@@ -87,6 +93,14 @@ interface NmDonePayload {
   outcome: 'checks-passed' | 'passed' | 'failed' | 'cancelled' | 'error';
   message: string;
   raw: string;
+}
+/** Result of the backend `nm_check` environment probe. */
+interface NmCheckResult {
+  installed: boolean;
+  version: string | null;
+  initialized: boolean;
+  status_ok: boolean;
+  raw_status: string;
 }
 
 const MAX_LOG_LINES = 500;
@@ -158,6 +172,7 @@ async function startRun(
     runId,
     sessionId,
     cwd,
+    intent,
     status: 'starting',
     steps: [],
     findings: [],
@@ -241,6 +256,36 @@ async function startRun(
   );
   listeners.set(runId, unlistens);
 
+  // Preflight: don't launch when the CLI isn't installed or the repo isn't
+  // initialized — surface a setup state with one-click fixes instead of a
+  // cryptic runtime failure.
+  const reason = await checkSetupNeeded(cwd);
+  if (reason) {
+    patchRun(runId, { status: 'setup', setupReason: reason });
+  } else {
+    await launch(runId, cwd, intent);
+  }
+
+  return runId;
+}
+
+/**
+ * What setup step is still missing for `cwd`, if any. A failed probe counts
+ * as not installed.
+ */
+async function checkSetupNeeded(cwd: string): Promise<NmSetupReason | null> {
+  try {
+    const check = await invoke<NmCheckResult>('nm_check', { cwd });
+    if (!check.installed) return 'not-installed';
+    if (!check.initialized) return 'not-initialized';
+    return null;
+  } catch {
+    return 'not-installed';
+  }
+}
+
+/** Kick off the backend run; failure turns the run into an error state. */
+async function launch(runId: string, cwd: string, intent: string): Promise<void> {
   try {
     await invoke('nm_start_run', { runId, cwd, intent });
   } catch (err) {
@@ -252,8 +297,80 @@ async function startRun(
     });
     detachListeners(runId);
   }
+}
 
-  return runId;
+/** Open a terminal running the official no-mistakes installer. */
+async function install(runId: string): Promise<void> {
+  try {
+    await invoke('nm_install');
+    patchRun(runId, (r) => ({
+      log: [...r.log, 'Installer opened in a terminal window — finish it there, then click "Check again".'],
+    }));
+  } catch (err) {
+    patchRun(runId, (r) => ({
+      log: [
+        ...r.log,
+        `install failed: ${err instanceof Error ? err.message : String(err)}`,
+      ],
+    }));
+  }
+}
+
+/**
+ * Run `no-mistakes init` in the run's repo, then re-check; the run starts
+ * automatically once everything is in place.
+ */
+async function initRepo(runId: string): Promise<void> {
+  const run = get(nmRuns).get(runId);
+  if (!run || run.status !== 'setup') return;
+  patchRun(runId, { responding: true });
+  try {
+    const out = await invoke<string>('nm_init', { cwd: run.cwd });
+    patchRun(runId, (r) => ({
+      log: [...r.log, '$ no-mistakes init', ...out.trim().split('\n').filter(Boolean)],
+    }));
+  } catch (err) {
+    patchRun(runId, (r) => ({
+      responding: false,
+      log: [
+        ...r.log,
+        `init failed: ${err instanceof Error ? err.message : String(err)}`,
+      ],
+    }));
+    return;
+  }
+  patchRun(runId, { responding: false });
+  await recheck(runId);
+}
+
+/**
+ * Re-probe the environment for a run in setup; starts the run once the CLI is
+ * installed and the repo is initialized, otherwise advances the setup reason.
+ */
+async function recheck(runId: string): Promise<void> {
+  const run = get(nmRuns).get(runId);
+  if (!run || run.status !== 'setup') return;
+  patchRun(runId, { responding: true });
+  const reason = await checkSetupNeeded(run.cwd);
+  if (!reason) {
+    // Reset the clock — setup wait time isn't run time.
+    patchRun(runId, {
+      status: 'starting',
+      setupReason: undefined,
+      responding: false,
+      startedAt: Date.now(),
+    });
+    await launch(runId, run.cwd, run.intent);
+  } else {
+    patchRun(runId, (r) => ({
+      setupReason: reason,
+      responding: false,
+      log:
+        reason === r.setupReason && reason === 'not-installed'
+          ? [...r.log, 'no-mistakes still not found — did the installer finish?']
+          : r.log,
+    }));
+  }
 }
 
 async function respond(
@@ -315,4 +432,7 @@ export const noMistakes = {
   cancel,
   dismiss,
   selectFindings,
+  install,
+  initRepo,
+  recheck,
 };

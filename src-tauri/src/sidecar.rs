@@ -76,9 +76,6 @@ pub enum OutboundMessage {
         ///   None/100 -> neither var set; Claude's built-in default (~83%) applies
         #[serde(skip_serializing_if = "Option::is_none")]
         autocompact_pct: Option<u32>,
-        /// Skip project/local settings to disable filesystem hooks (lint, build, etc.)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        disable_hooks: Option<bool>,
         /// Extra env vars for the session's agent process (e.g., GH_TOKEN to pin
         /// a gh account per repo)
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,15 +98,6 @@ pub enum OutboundMessage {
         id: String,
         #[serde(rename = "effortLevel")]
         effort_level: Option<String>,
-    },
-    UpdateAutocompactPct {
-        id: String,
-        /// 1-100 percent threshold, or null to clear the override.
-        pct: Option<u32>,
-    },
-    UpdateDisableHooks {
-        id: String,
-        disable: bool,
     },
     Close {
         id: String,

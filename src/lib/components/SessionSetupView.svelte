@@ -523,6 +523,112 @@
     }
   }
 
+  /** Shift+hold-Space: stop the recording, append its transcript, then start the session. */
+  async function recordAndStart() {
+    await handleStopRecording();
+    await handleStart();
+  }
+
+  // --- Global hold-Space (works without focusing the prompt) ---
+  // The textarea's own use:holdSpaceRecord owns the gesture while the prompt (or
+  // any input) is focused, with leaked-space retraction. This window-level
+  // handler mirrors it for the case where nothing editable is focused, so the
+  // user can hold Space from anywhere in the New Session view. Plain Space
+  // dictates into the prompt; Shift+Space records and starts the session.
+  const holdSpaceEnabled = $derived(
+    $settings.audio.hold_space_to_record_inline && !noVoice
+  );
+  let globalHoldPhase: 'idle' | 'warmup' | 'recording' = 'idle';
+  let globalHoldVariant: 'plain' | 'shift' = 'plain';
+  let globalHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let globalHoldStartSettled: Promise<void> = Promise.resolve();
+
+  function isEditableElement(el: Element | null): boolean {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || (el as HTMLElement).isContentEditable;
+  }
+
+  function globalHoldReset() {
+    if (globalHoldTimer !== null) {
+      clearTimeout(globalHoldTimer);
+      globalHoldTimer = null;
+    }
+    globalHoldPhase = 'idle';
+  }
+
+  async function globalHoldActivate() {
+    if (globalHoldPhase !== 'warmup') return;
+    if (globalHoldTimer !== null) {
+      clearTimeout(globalHoldTimer);
+      globalHoldTimer = null;
+    }
+    // Never start a second concurrent recording.
+    if ($isRecording || $isTranscribing || isAwaitingTranscript) {
+      globalHoldReset();
+      return;
+    }
+    globalHoldPhase = 'recording';
+    globalHoldStartSettled = Promise.resolve()
+      .then(() => onStartRecording())
+      .catch((err) => {
+        console.error('[SessionSetupView] Failed to start hold-Space recording:', err);
+        globalHoldReset();
+      });
+    await globalHoldStartSettled;
+  }
+
+  async function globalHoldFinish() {
+    if (globalHoldPhase !== 'recording') return;
+    const variant = globalHoldVariant;
+    globalHoldPhase = 'idle';
+    // Ensure the recorder actually started before we stop it (fast release).
+    await globalHoldStartSettled;
+    try {
+      if (variant === 'shift') await recordAndStart();
+      else await handleStopRecording();
+    } catch (err) {
+      console.error('[SessionSetupView] hold-Space finish failed:', err);
+    }
+    globalHoldReset();
+  }
+
+  function handleGlobalKeydown(e: KeyboardEvent) {
+    if (e.code !== 'Space' || !holdSpaceEnabled) return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+    // While the prompt (or any input) is focused, the textarea's own gesture
+    // owns the hold — don't double-handle.
+    if (isEditableElement(document.activeElement)) return;
+
+    // While a gesture is live, swallow the OS key-repeat so Space can't scroll.
+    if (globalHoldPhase === 'warmup' || globalHoldPhase === 'recording') {
+      e.preventDefault();
+      // The first key-repeat is a reliable "held" signal — activate immediately.
+      if (globalHoldPhase === 'warmup' && e.repeat) void globalHoldActivate();
+      return;
+    }
+
+    // Nothing editable is focused, so Space would otherwise scroll — suppress it
+    // and arm the hold. A quick release (tap) resets without recording.
+    e.preventDefault();
+    if ($isRecording || $isTranscribing || isAwaitingTranscript) return;
+    globalHoldVariant = e.shiftKey ? 'shift' : 'plain';
+    globalHoldPhase = 'warmup';
+    if (globalHoldTimer !== null) clearTimeout(globalHoldTimer);
+    globalHoldTimer = setTimeout(() => void globalHoldActivate(), 280);
+  }
+
+  function handleGlobalKeyup(e: KeyboardEvent) {
+    if (e.code !== 'Space') return;
+    if (globalHoldPhase === 'recording') void globalHoldFinish();
+    else if (globalHoldPhase === 'warmup') globalHoldReset();
+  }
+
+  function handleGlobalBlur() {
+    if (globalHoldPhase === 'recording') void globalHoldFinish();
+    else if (globalHoldPhase === 'warmup') globalHoldReset();
+  }
+
   // Model handling
   function handleModelClick(id: string) {
     if (isAutoModel(id) && !isSmartModelEnabled) {
@@ -593,7 +699,12 @@
   }
 </script>
 
-<svelte:window onclick={handleClickOutside} />
+<svelte:window
+  onclick={handleClickOutside}
+  onkeydown={handleGlobalKeydown}
+  onkeyup={handleGlobalKeyup}
+  onblur={handleGlobalBlur}
+/>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="setup-view" ondragover={handleDragOver} ondrop={handleDrop}>
@@ -873,8 +984,15 @@
           start: onStartRecording,
           stop: onStopRecording,
           onState: (s) => (isAwaitingTranscript = s === 'transcribing'),
+          // Shift+Space: record and start the session immediately (mirrors the
+          // session view's record-and-send) instead of inserting at the caret.
+          shift: {
+            canStart: () => !$isRecording && !$isTranscribing && !isAwaitingTranscript,
+            start: onStartRecording,
+            stop: recordAndStart,
+          },
         }}
-        placeholder={`Enter your prompt... (Ctrl+V to paste images${$settings.audio.hold_space_to_record_inline && !noVoice ? ', hold Space to dictate' : ''})`}
+        placeholder={`Enter your prompt... (Ctrl+V to paste images${$settings.audio.hold_space_to_record_inline && !noVoice ? ', hold Space to dictate, +Shift to start' : ''})`}
         rows="1"
       ></textarea>
 

@@ -353,9 +353,9 @@ const ISSUE_LIST_FIELDS: &str =
     "number,title,state,stateReason,labels,assignees,milestone,author,url,createdAt,updatedAt";
 const ISSUE_LIST_PR_REFS_FIELD: &str = "closedByPullRequestsReferences";
 
-/// Run a `gh issue ...` command in the repo directory, pinned to `gh_user`
+/// Run a `gh ...` command in the repo directory, pinned to `gh_user`
 /// when set (same GH_TOKEN mechanism as sessions). Returns stdout on success.
-async fn run_gh_issue(
+async fn run_gh(
     repo_path: &str,
     gh_user: Option<&str>,
     args: &[String],
@@ -409,12 +409,11 @@ pub async fn fetch_github_issues(
     };
 
     let full_fields = format!("{},{}", ISSUE_LIST_FIELDS, ISSUE_LIST_PR_REFS_FIELD);
-    let stdout = match run_gh_issue(&repo_path, gh_user.as_deref(), &build_args(&full_fields)).await
-    {
+    let stdout = match run_gh(&repo_path, gh_user.as_deref(), &build_args(&full_fields)).await {
         Ok(out) => out,
         // Older gh versions reject the linked-PR field — retry without it.
         Err(e) if e.contains(ISSUE_LIST_PR_REFS_FIELD) => {
-            run_gh_issue(&repo_path, gh_user.as_deref(), &build_args(ISSUE_LIST_FIELDS)).await?
+            run_gh(&repo_path, gh_user.as_deref(), &build_args(ISSUE_LIST_FIELDS)).await?
         }
         Err(e) => return Err(e),
     };
@@ -438,7 +437,7 @@ pub async fn fetch_github_issue(
         "--json".into(),
         "number,title,state,url,body,comments".into(),
     ];
-    let stdout = run_gh_issue(&repo_path, gh_user.as_deref(), &args).await?;
+    let stdout = run_gh(&repo_path, gh_user.as_deref(), &args).await?;
     let raw: GhRawIssue = serde_json::from_str(stdout.trim())
         .map_err(|e| format!("Failed to parse gh issue view output: {}", e))?;
     Ok(GitHubIssueDetail {
@@ -458,6 +457,209 @@ pub async fn fetch_github_issue(
             })
             .collect(),
     })
+}
+
+// ---- Pull requests (session PR lifecycle: detect / view / merge) ----
+
+/// A single CI check or commit status on a PR.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubPrCheck {
+    pub name: String,
+    /// Normalized: "pass" | "fail" | "pending" | "skipped" | "neutral"
+    pub status: String,
+    pub url: Option<String>,
+}
+
+/// Status of the PR whose head branch is a session's branch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubPrStatus {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    /// Normalized to lowercase: "open" | "merged" | "closed"
+    pub state: String,
+    pub is_draft: bool,
+    /// Lowercased gh value: "mergeable" | "conflicting" | "unknown"
+    pub mergeable: String,
+    /// Lowercased gh value: "clean" | "blocked" | "behind" | "dirty" | "unstable" | ...
+    pub merge_state_status: String,
+    /// Lowercased: "" | "approved" | "changes_requested" | "review_required"
+    pub review_decision: String,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    pub checks: Vec<GitHubPrCheck>,
+}
+
+/// Raw `statusCheckRollup` entry: either a CheckRun (name/status/conclusion)
+/// or a StatusContext (context/state) — distinguished by which fields are set.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhRawCheck {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    details_url: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    target_url: Option<String>,
+}
+
+impl GhRawCheck {
+    fn into_check(self) -> GitHubPrCheck {
+        // StatusContext: has `state` (SUCCESS | FAILURE | ERROR | PENDING | EXPECTED)
+        if let Some(state) = self.state.as_deref() {
+            let status = match state {
+                "SUCCESS" => "pass",
+                "FAILURE" | "ERROR" => "fail",
+                _ => "pending",
+            };
+            return GitHubPrCheck {
+                name: self.context.unwrap_or_default(),
+                status: status.to_string(),
+                url: self.target_url,
+            };
+        }
+        // CheckRun: status (QUEUED | IN_PROGRESS | COMPLETED) + conclusion
+        let status = match (self.status.as_deref(), self.conclusion.as_deref()) {
+            (Some("COMPLETED"), Some("SUCCESS")) => "pass",
+            (Some("COMPLETED"), Some("SKIPPED")) => "skipped",
+            (Some("COMPLETED"), Some("NEUTRAL")) => "neutral",
+            // FAILURE | CANCELLED | TIMED_OUT | ACTION_REQUIRED | STALE
+            (Some("COMPLETED"), _) => "fail",
+            _ => "pending",
+        };
+        GitHubPrCheck {
+            name: self.name.unwrap_or_default(),
+            status: status.to_string(),
+            url: self.details_url,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhRawPr {
+    number: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    is_draft: bool,
+    #[serde(default)]
+    mergeable: Option<String>,
+    #[serde(default)]
+    merge_state_status: Option<String>,
+    #[serde(default)]
+    review_decision: Option<String>,
+    #[serde(default)]
+    base_ref_name: String,
+    #[serde(default)]
+    head_ref_name: String,
+    #[serde(default)]
+    additions: u64,
+    #[serde(default)]
+    deletions: u64,
+    #[serde(default)]
+    changed_files: u64,
+    #[serde(default)]
+    status_check_rollup: Option<Vec<GhRawCheck>>,
+}
+
+impl GhRawPr {
+    fn into_status(self) -> GitHubPrStatus {
+        GitHubPrStatus {
+            number: self.number,
+            title: self.title,
+            url: self.url,
+            state: self.state.to_lowercase(),
+            is_draft: self.is_draft,
+            mergeable: self.mergeable.unwrap_or_default().to_lowercase(),
+            merge_state_status: self.merge_state_status.unwrap_or_default().to_lowercase(),
+            review_decision: self.review_decision.unwrap_or_default().to_lowercase(),
+            base_ref: self.base_ref_name,
+            head_ref: self.head_ref_name,
+            additions: self.additions,
+            deletions: self.deletions,
+            changed_files: self.changed_files,
+            checks: self
+                .status_check_rollup
+                .unwrap_or_default()
+                .into_iter()
+                .map(GhRawCheck::into_check)
+                .collect(),
+        }
+    }
+}
+
+const PR_VIEW_FIELDS: &str = "number,title,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup";
+
+/// gh errors when no PR exists for the branch — that's a normal "none" result.
+fn is_no_pr_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+    e.contains("no pull requests found") || e.contains("could not find pull request")
+}
+
+/// Fetch the PR whose head is `branch` (open preferred by gh), or None when the
+/// branch has no PR. Runs in the repo/worktree directory so gh resolves the remote.
+#[tauri::command]
+pub async fn fetch_branch_pr(
+    repo_path: String,
+    gh_user: Option<String>,
+    branch: String,
+) -> Result<Option<GitHubPrStatus>, String> {
+    let args: Vec<String> = vec![
+        "pr".into(),
+        "view".into(),
+        branch,
+        "--json".into(),
+        PR_VIEW_FIELDS.into(),
+    ];
+    let stdout = match run_gh(&repo_path, gh_user.as_deref(), &args).await {
+        Ok(out) => out,
+        Err(e) if is_no_pr_error(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let raw: GhRawPr = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("Failed to parse gh pr view output: {}", e))?;
+    Ok(Some(raw.into_status()))
+}
+
+/// Merge a PR via `gh pr merge`. Strategy: "squash" | "merge" | "rebase".
+/// Deliberately no `--delete-branch`: cleanup (branch/worktree) is a separate,
+/// user-driven step — and gh would try to delete a branch that may be checked
+/// out in this session's worktree.
+#[tauri::command]
+pub async fn merge_github_pr(
+    repo_path: String,
+    gh_user: Option<String>,
+    number: u64,
+    strategy: String,
+) -> Result<(), String> {
+    let flag = match strategy.as_str() {
+        "merge" => "--merge",
+        "rebase" => "--rebase",
+        _ => "--squash",
+    };
+    let args: Vec<String> = vec![
+        "pr".into(),
+        "merge".into(),
+        number.to_string(),
+        flag.into(),
+    ];
+    run_gh(&repo_path, gh_user.as_deref(), &args).await.map(|_| ())
 }
 
 /// Build the extra env pairs for a session pinned to a gh account.
@@ -593,6 +795,83 @@ github.com
         assert_eq!(issue.milestone.as_deref(), Some("v1.0"));
         assert_eq!(issue.author, "bob");
         assert_eq!(issue.linked_pr_numbers, vec![99]);
+    }
+
+    #[test]
+    fn parses_gh_pr_view_json() {
+        let json = r#"{
+            "number": 12,
+            "title": "Add PR panel",
+            "url": "https://github.com/owner/repo/pull/12",
+            "state": "OPEN",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "reviewDecision": "APPROVED",
+            "baseRefName": "main",
+            "headRefName": "feature-pr-panel",
+            "additions": 120,
+            "deletions": 8,
+            "changedFiles": 5,
+            "statusCheckRollup": [
+                {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://ci/1"},
+                {"__typename": "CheckRun", "name": "test", "status": "IN_PROGRESS", "conclusion": "", "detailsUrl": null},
+                {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "StatusContext", "context": "deploy/preview", "state": "PENDING", "targetUrl": "https://vercel/1"}
+            ]
+        }"#;
+        let raw: GhRawPr = serde_json::from_str(json).unwrap();
+        let pr = raw.into_status();
+        assert_eq!(pr.number, 12);
+        assert_eq!(pr.state, "open");
+        assert!(!pr.is_draft);
+        assert_eq!(pr.mergeable, "mergeable");
+        assert_eq!(pr.merge_state_status, "clean");
+        assert_eq!(pr.review_decision, "approved");
+        assert_eq!(pr.base_ref, "main");
+        assert_eq!(pr.head_ref, "feature-pr-panel");
+        assert_eq!(pr.changed_files, 5);
+        assert_eq!(pr.checks.len(), 4);
+        assert_eq!((pr.checks[0].name.as_str(), pr.checks[0].status.as_str()), ("build", "pass"));
+        assert_eq!(pr.checks[1].status, "pending");
+        assert_eq!(pr.checks[2].status, "fail");
+        assert_eq!((pr.checks[3].name.as_str(), pr.checks[3].status.as_str()), ("deploy/preview", "pending"));
+    }
+
+    #[test]
+    fn parses_gh_pr_view_json_minimal_merged() {
+        // Merged PRs come back with null mergeable/reviewDecision and no rollup.
+        let json = r#"{
+            "number": 3,
+            "title": "Old work",
+            "url": "https://github.com/owner/repo/pull/3",
+            "state": "MERGED",
+            "isDraft": false,
+            "mergeable": null,
+            "mergeStateStatus": null,
+            "reviewDecision": null,
+            "baseRefName": "main",
+            "headRefName": "old-work",
+            "additions": 1,
+            "deletions": 1,
+            "changedFiles": 1,
+            "statusCheckRollup": null
+        }"#;
+        let raw: GhRawPr = serde_json::from_str(json).unwrap();
+        let pr = raw.into_status();
+        assert_eq!(pr.state, "merged");
+        assert_eq!(pr.mergeable, "");
+        assert_eq!(pr.review_decision, "");
+        assert!(pr.checks.is_empty());
+    }
+
+    #[test]
+    fn detects_no_pr_error() {
+        assert!(is_no_pr_error(
+            "no pull requests found for branch \"feature-x\""
+        ));
+        assert!(is_no_pr_error("GraphQL: Could not find Pull Request"));
+        assert!(!is_no_pr_error("gh: authentication failed"));
     }
 
     #[test]

@@ -28,6 +28,44 @@ use tokio::task::AbortHandle;
 
 /// Name of the CLI binary (assumed to be on PATH).
 const NM_BIN: &str = "no-mistakes";
+
+/// Resolve the CLI binary: prefer the official installer's location when it
+/// exists (a freshly installed binary isn't visible via the PATH this process
+/// inherited at launch), otherwise fall back to PATH lookup by name.
+pub fn nm_bin() -> String {
+    for candidate in nm_install_candidates() {
+        if candidate.is_file() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+    NM_BIN.to_string()
+}
+
+/// Known locations the official install scripts place the binary.
+fn nm_install_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    #[cfg(windows)]
+    {
+        // install.ps1 → %LOCALAPPDATA%\no-mistakes\no-mistakes.exe
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            candidates.push(
+                std::path::PathBuf::from(local)
+                    .join("no-mistakes")
+                    .join("no-mistakes.exe"),
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // install.sh → $HOME/.no-mistakes/bin/no-mistakes (+ ~/.local/bin symlink)
+        if let Ok(home) = std::env::var("HOME") {
+            let home = std::path::PathBuf::from(home);
+            candidates.push(home.join(".no-mistakes").join("bin").join("no-mistakes"));
+            candidates.push(home.join(".local").join("bin").join("no-mistakes"));
+        }
+    }
+    candidates
+}
 /// How often the status poller runs `axi status` while a run is live.
 const STATUS_POLL_MS: u64 = 2500;
 
@@ -84,6 +122,9 @@ struct DonePayload {
 pub struct NmCheckResult {
     pub installed: bool,
     pub version: Option<String>,
+    /// Whether the repo has been set up with `no-mistakes init` (detected via
+    /// the `no-mistakes` git remote that init adds to the working repo).
+    pub initialized: bool,
     pub status_ok: bool,
     pub raw_status: String,
 }
@@ -130,9 +171,11 @@ impl NoMistakesManager {
         let dir = cwd.clone();
         let path = Path::new(&dir);
 
+        let bin = nm_bin();
+
         // Installed + version from `no-mistakes --version`.
         let (installed, version) =
-            match run_command_async(NM_BIN, &["--version".to_string()], Some(path), &[]).await {
+            match run_command_async(&bin, &["--version".to_string()], Some(path), &[]).await {
                 Ok(out) => {
                     let combined = format!("{}{}", out.stdout, out.stderr);
                     (true, extract_version(&combined))
@@ -140,9 +183,26 @@ impl NoMistakesManager {
                 Err(_) => (false, None),
             };
 
+        // Initialized: `no-mistakes init` adds a `no-mistakes` git remote to the
+        // working repo, so its presence is the marker.
+        let initialized = matches!(
+            run_command_async(
+                "git",
+                &[
+                    "remote".to_string(),
+                    "get-url".to_string(),
+                    "no-mistakes".to_string(),
+                ],
+                Some(path),
+                &[],
+            )
+            .await,
+            Ok(out) if out.success
+        );
+
         // Status probe from `no-mistakes axi status`.
         let (status_ok, raw_status) = match run_command_async(
-            NM_BIN,
+            &bin,
             &["axi".to_string(), "status".to_string()],
             Some(path),
             &[],
@@ -156,8 +216,29 @@ impl NoMistakesManager {
         NmCheckResult {
             installed,
             version,
+            initialized,
             status_ok,
             raw_status,
+        }
+    }
+
+    /// Run `no-mistakes init` in `cwd` (non-interactive; sets up the gate repo,
+    /// hooks, and the `no-mistakes` git remote). Returns the combined output.
+    pub async fn init_repo(&self, cwd: String) -> Result<String, String> {
+        let out = run_command_async(
+            &nm_bin(),
+            &["init".to_string()],
+            Some(Path::new(&cwd)),
+            &[],
+        )
+        .await?;
+        let combined = format!("{}{}", out.stdout, out.stderr);
+        if out.success {
+            Ok(combined)
+        } else if combined.trim().is_empty() {
+            Err("no-mistakes init failed".to_string())
+        } else {
+            Err(combined)
         }
     }
 
@@ -307,9 +388,10 @@ async fn drive_run(
     cwd: String,
     args: Vec<String>,
 ) {
-    log::info!("[no-mistakes] run '{}' starting: {} {:?}", run_id, NM_BIN, args);
+    let bin = nm_bin();
+    log::info!("[no-mistakes] run '{}' starting: {} {:?}", run_id, bin, args);
 
-    let mut cmd = tokio::process::Command::new(NM_BIN);
+    let mut cmd = tokio::process::Command::new(&bin);
     cmd.args(&args)
         .current_dir(&cwd)
         .stdout(std::process::Stdio::piped())
@@ -321,7 +403,10 @@ async fn drive_run(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!("Failed to start {}: {}", NM_BIN, e);
+            let msg = format!(
+                "Failed to start {}: {}. Is the no-mistakes CLI installed?",
+                bin, e
+            );
             log::error!("[no-mistakes] {}", msg);
             finish_run(&manager, &app, &run_id, "error", &msg, "");
             return;
@@ -488,10 +573,11 @@ async fn stream_lines<R>(
 /// until aborted by the driver (child exit) or by cancel.
 async fn poll_status(app: AppHandle, run_id: String, cwd: String) {
     let path = Path::new(&cwd);
+    let bin = nm_bin();
     loop {
         tokio::time::sleep(tokio::time::Duration::from_millis(STATUS_POLL_MS)).await;
         let raw = match run_command_async(
-            NM_BIN,
+            &bin,
             &["axi".to_string(), "status".to_string()],
             Some(path),
             &[],

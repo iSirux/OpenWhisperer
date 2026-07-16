@@ -25,7 +25,17 @@
     filterDisplaySessions,
     clearRepoFilter,
   } from '$lib/stores/sessionRepoFilter';
+  import {
+    sessionListGrouped,
+    groupDisplaySessions,
+    flattenSessionGroups,
+    collapsedSessionGroups,
+    toggleGroupCollapsed,
+    worktreeCollapseKey,
+    worktreeHasHeader,
+  } from '$lib/stores/sessionGrouping';
   import { repos } from '$lib/stores/repos';
+  import RepoIcon from './RepoIcon.svelte';
 
   const archiveCount = archive.archiveCount;
   import SessionListItem from './SessionListItem.svelte';
@@ -64,15 +74,31 @@
 
   // Repo filter applied to the rendered list. The Ctrl+1..9 hotkey in the main
   // layout applies the same filter so the number badges stay accurate.
-  const visibleSessions = $derived(
+  const filteredSessions = $derived(
     filterDisplaySessions(allSessions, $sessionRepoFilter, $repos.list)
   );
-  const hiddenByFilterCount = $derived(allSessions.length - visibleSessions.length);
+
+  // Grouped view mode: repo groups with worktree subgroups. The flattened
+  // order — collapsed groups excluded — is what the number badges (and the
+  // layout's Ctrl+1..9) run through.
+  const sessionGroups = $derived(
+    $sessionListGrouped ? groupDisplaySessions(filteredSessions, $repos.list) : null
+  );
+  const collapsedKeys = $derived(new Set($collapsedSessionGroups));
+  const visibleSessions = $derived(
+    sessionGroups ? flattenSessionGroups(sessionGroups, collapsedKeys) : filteredSessions
+  );
+  const hotkeyNumberById = $derived(
+    new Map(visibleSessions.slice(0, 9).map((s, i) => [s.id, i + 1]))
+  );
+  const hiddenByFilterCount = $derived(allSessions.length - filteredSessions.length);
 
   // Index of the first unpinned session, used to draw a divider between the
   // pinned group (which floats to the top) and the rest. Only meaningful when
-  // there is at least one pinned session above it.
+  // there is at least one pinned session above it (flat view only — grouping
+  // supersedes the pinned block).
   const firstUnpinnedIndex = $derived.by(() => {
+    if (sessionGroups) return -1;
     const hasPinned = visibleSessions.length > 0 && visibleSessions[0].pinned;
     if (!hasPinned) return -1;
     const idx = visibleSessions.findIndex((s) => !s.pinned);
@@ -300,7 +326,7 @@
         </svg>
         No sessions yet
       </div>
-    {:else if visibleSessions.length === 0}
+    {:else if filteredSessions.length === 0}
       <div class="p-4 text-center text-text-muted text-sm">
         All {allSessions.length} session{allSessions.length === 1 ? '' : 's'} hidden by the repository filter
         <button class="block mx-auto mt-2 text-xs text-accent hover:underline" onclick={clearRepoFilter}>
@@ -308,13 +334,10 @@
         </button>
       </div>
     {:else}
-      {#each visibleSessions as session, index (session.id)}
-        {#if index === firstUnpinnedIndex}
-          <div class="pin-divider" role="separator" aria-label="Pinned sessions above"></div>
-        {/if}
+      {#snippet sessionItem(session: DisplaySession)}
         <SessionListItem
           {session}
-          hotkeyNumber={index < 9 ? index + 1 : undefined}
+          hotkeyNumber={hotkeyNumberById.get(session.id)}
           isActive={isSessionActive(session)}
           {now}
           showLatestMessage={$settings.show_latest_message_preview}
@@ -326,7 +349,98 @@
           ontogglepin={session.type === 'sdk' ? () => togglePin(session.id) : undefined}
           oncontextmenu={(e) => openContextMenu(session, e)}
         />
-      {/each}
+      {/snippet}
+
+      {#if sessionGroups}
+        {#each sessionGroups as group (group.key)}
+          {@const groupCollapsed = collapsedKeys.has(group.key)}
+          {@const groupSessions = group.worktrees.flatMap((w) => w.sessions)}
+          {@const groupActiveCount = groupSessions.filter((s) => isActivelyWorking(s.status)).length}
+          {@const groupUnreadCount = groupSessions.filter((s) => s.unread).length}
+          <button
+            class="group-header"
+            title={group.repo?.path}
+            aria-expanded={!groupCollapsed}
+            onclick={() => toggleGroupCollapsed(group.key)}
+          >
+            <svg class="w-3 h-3 shrink-0 chevron {groupCollapsed ? 'chevron-collapsed' : ''}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+            <RepoIcon repo={group.repo} size="xs" />
+            <span class="truncate">{group.name}</span>
+            <span class="ml-auto flex items-center gap-1.5 shrink-0">
+              {#if groupActiveCount > 0}
+                <span class="flex items-center gap-1">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  <span class="text-[11px] text-emerald-400 font-medium">{groupActiveCount}</span>
+                </span>
+              {/if}
+              {#if $settings.mark_sessions_unread && groupUnreadCount > 0}
+                <span class="px-1.5 py-0.5 text-[10px] font-medium bg-blue-500 text-white rounded-full">
+                  {groupUnreadCount}
+                </span>
+              {/if}
+              <span class="group-count">{group.sessionCount}</span>
+            </span>
+          </button>
+          {#if !groupCollapsed}
+            {#each group.worktrees as worktree (worktree.key)}
+              <!-- Subheader (and collapsibility) only when there's something to
+                   distinguish: several checkouts, or a lone non-main one -->
+              {@const hasHeader = worktreeHasHeader(group, worktree)}
+              {@const wtKey = worktreeCollapseKey(group.key, worktree.key)}
+              {@const wtCollapsed = hasHeader && collapsedKeys.has(wtKey)}
+              {#if hasHeader}
+                {@const wtActiveCount = worktree.sessions.filter((s) => isActivelyWorking(s.status)).length}
+                {@const wtUnreadCount = worktree.sessions.filter((s) => s.unread).length}
+                <button
+                  class="worktree-header"
+                  title={worktree.path || group.repo?.path}
+                  aria-expanded={!wtCollapsed}
+                  onclick={() => toggleGroupCollapsed(wtKey)}
+                >
+                  <svg class="w-2.5 h-2.5 shrink-0 chevron {wtCollapsed ? 'chevron-collapsed' : ''}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                  <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+                    <path d="M6 3v12" />
+                    <circle cx="18" cy="6" r="3" />
+                    <circle cx="6" cy="18" r="3" />
+                    <path d="M18 9a9 9 0 0 1-9 9" />
+                  </svg>
+                  <span class="truncate">{worktree.label}</span>
+                  <span class="ml-auto flex items-center gap-1.5 shrink-0">
+                    {#if wtActiveCount > 0}
+                      <span class="flex items-center gap-1">
+                        <span class="w-1 h-1 rounded-full bg-emerald-400"></span>
+                        <span class="text-[10px] text-emerald-400 font-medium">{wtActiveCount}</span>
+                      </span>
+                    {/if}
+                    {#if $settings.mark_sessions_unread && wtUnreadCount > 0}
+                      <span class="px-1 py-px text-[9px] font-medium bg-blue-500 text-white rounded-full">
+                        {wtUnreadCount}
+                      </span>
+                    {/if}
+                    <span class="group-count">{worktree.sessions.length}</span>
+                  </span>
+                </button>
+              {/if}
+              {#if !wtCollapsed}
+                {#each worktree.sessions as session (session.id)}
+                  {@render sessionItem(session)}
+                {/each}
+              {/if}
+            {/each}
+          {/if}
+        {/each}
+      {:else}
+        {#each visibleSessions as session, index (session.id)}
+          {#if index === firstUnpinnedIndex}
+            <div class="pin-divider" role="separator" aria-label="Pinned sessions above"></div>
+          {/if}
+          {@render sessionItem(session)}
+        {/each}
+      {/if}
       {#if hiddenByFilterCount > 0}
         <div class="p-2 text-center text-[11px] text-text-muted">
           {hiddenByFilterCount} session{hiddenByFilterCount === 1 ? '' : 's'} hidden by repository filter
@@ -405,6 +519,58 @@
   .session-list {
     scrollbar-width: thin;
     scrollbar-color: var(--color-border) transparent;
+  }
+
+  /* Grouped view: repository group header (click to collapse/expand) */
+  .group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    width: 100%;
+    padding: 0.375rem 0.75rem 0.25rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface-elevated);
+    transition: color 0.1s;
+  }
+
+  .group-header:hover {
+    color: var(--color-text-primary);
+  }
+
+  .group-count {
+    font-weight: 500;
+    color: var(--color-text-muted);
+  }
+
+  /* Grouped view: worktree subheader within a repository group */
+  .worktree-header {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+    padding: 0.3rem 0.75rem 0.15rem 1.25rem;
+    font-size: 0.65rem;
+    text-align: left;
+    cursor: pointer;
+    color: var(--color-text-muted);
+    transition: color 0.1s;
+  }
+
+  .worktree-header:hover {
+    color: var(--color-text-secondary);
+  }
+
+  .chevron {
+    transition: transform 0.15s;
+  }
+
+  .chevron-collapsed {
+    transform: rotate(-90deg);
   }
 
   /* Separates the pinned group (floated to the top) from the rest of the list */

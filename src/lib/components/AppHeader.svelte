@@ -10,7 +10,8 @@
   import { repos, activeRepo, isAutoRepoSelected } from '$lib/stores/repos';
   import { isRecording, pendingTranscriptions } from '$lib/stores/recording';
   import { recordingFlow, isRecordingForNewSession } from '$lib/stores/recordingFlow';
-  import { settingsToStoreEffort, type EffortLevel } from '$lib/stores/sdkSessions';
+  import { settingsToStoreEffort, sdkSessions, activeSdkSessionId, type EffortLevel } from '$lib/stores/sdkSessions';
+  import { activeExecutionId } from '$lib/stores/sequenceExecutions';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { DEFAULT_OPENAI_MODEL_ID, isAutoModel } from '$lib/utils/models';
@@ -127,11 +128,35 @@
     });
   }
 
-  function handleShowStart() {
+  // Clicking the wordmark jumps back to the most recently opened session:
+  // the still-active one when set, otherwise the most recently active session.
+  // Falls back to the start page when no sessions exist. Activation mirrors
+  // selectDisplaySession (the layout-level 'switch-to-sessions' listener
+  // survives route changes, so this works from /settings etc. too).
+  function handleLogoClick() {
     if (currentPath !== '/') {
       goto('/');
     }
-    navigation.setView('start');
+
+    const sessions = $sdkSessions;
+    let targetId = $activeSdkSessionId;
+    if (!targetId || !sessions.some((s) => s.id === targetId)) {
+      let mostRecent: (typeof sessions)[number] | undefined;
+      for (const s of sessions) {
+        if (!mostRecent || s.lastActivityAt > mostRecent.lastActivityAt) mostRecent = s;
+      }
+      targetId = mostRecent?.id ?? null;
+    }
+
+    if (!targetId) {
+      navigation.setView('start');
+      return;
+    }
+
+    activeExecutionId.set(null);
+    activeSdkSessionId.set(targetId);
+    sdkSessions.markAsRead(targetId);
+    window.dispatchEvent(new CustomEvent('switch-to-sessions'));
   }
 
   function handleToggleSettings() {
@@ -155,8 +180,8 @@
   <div class="flex items-center gap-4 flex-shrink-0">
     <button
       class="text-lg font-semibold text-text-primary hover:text-accent transition-colors"
-      onclick={handleShowStart}
-      title="Go to start page"
+      onclick={handleLogoClick}
+      title="Go to most recent session"
     >
       OpenWhisperer
     </button>

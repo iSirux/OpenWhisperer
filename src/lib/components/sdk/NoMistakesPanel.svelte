@@ -11,12 +11,18 @@
     onCancel,
     onDismiss,
     onSelectFindings,
+    onInstall,
+    onInit,
+    onRecheck,
   }: {
     run: NmRun;
     onRespond: (action: 'approve' | 'fix' | 'skip', findingIds: string[]) => void;
     onCancel: () => void;
     onDismiss: () => void;
     onSelectFindings?: (findingIds: string[]) => void;
+    onInstall?: () => void;
+    onInit?: () => void;
+    onRecheck?: () => void;
   } = $props();
 
   const STEP_LABELS: Record<string, string> = {
@@ -85,6 +91,10 @@
     switch (run.status) {
       case 'starting':
         return 'Starting…';
+      case 'setup':
+        return run.setupReason === 'not-initialized'
+          ? 'Repo not initialized'
+          : 'Not installed';
       case 'running':
         return 'Running…';
       case 'gate':
@@ -182,7 +192,9 @@
       </span>
       <span class="nm-title">No mistakes</span>
       <span class="nm-status">{statusText}</span>
-      <span class="nm-elapsed">{formatElapsed(displayElapsed)}</span>
+      {#if run.status !== 'setup'}
+        <span class="nm-elapsed">{formatElapsed(displayElapsed)}</span>
+      {/if}
     </div>
     <div class="nm-header-right">
       {#if isRunningLike}
@@ -194,7 +206,7 @@
           Cancel
         </button>
       {/if}
-      {#if isFinished}
+      {#if isFinished || run.status === 'setup'}
         <button
           class="nm-dismiss"
           onclick={onDismiss}
@@ -209,7 +221,63 @@
     </div>
   </div>
 
+  <!-- Setup: CLI not installed / repo not initialized -->
+  {#if run.status === 'setup'}
+    <div class="nm-setup">
+      {#if run.setupReason === 'not-initialized'}
+        <p class="nm-setup-text">
+          This repository hasn't been set up for no-mistakes yet. A one-off
+          <code>no-mistakes init</code> creates the local gate (a
+          <code>no-mistakes</code> git remote and validation worktree) —
+          run it below and the validation will start automatically.
+        </p>
+        <div class="nm-gate-actions">
+          <button
+            class="nm-btn nm-btn-primary"
+            onclick={() => onInit?.()}
+            disabled={run.responding}
+            title="Run `no-mistakes init` in this repository, then start the run"
+          >
+            {run.responding ? 'Initializing…' : 'Initialize repo'}
+          </button>
+          <button
+            class="nm-btn nm-btn-ghost"
+            onclick={() => onRecheck?.()}
+            disabled={run.responding}
+            title="Re-check the setup and start the run"
+          >
+            Check again
+          </button>
+        </div>
+      {:else}
+        <p class="nm-setup-text">
+          The <code>no-mistakes</code> CLI isn't installed on this machine.
+          Install it below (opens a terminal running the official installer),
+          then click "Check again".
+        </p>
+        <div class="nm-gate-actions">
+          <button
+            class="nm-btn nm-btn-primary"
+            onclick={() => onInstall?.()}
+            title="Open a terminal running the official no-mistakes installer"
+          >
+            Install no-mistakes
+          </button>
+          <button
+            class="nm-btn"
+            onclick={() => onRecheck?.()}
+            disabled={run.responding}
+            title="Re-check whether no-mistakes is installed and start the run"
+          >
+            {run.responding ? 'Checking…' : 'Check again'}
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Stepper -->
+  {#if run.status !== 'setup'}
   <div class="nm-stepper" class:shimmer={!hasReportedSteps && run.status === 'running'}>
     {#each steps as step (step.name)}
       <div class="nm-step" data-status={step.status} title={`${step.label}: ${step.status}`}>
@@ -228,6 +296,7 @@
       </div>
     {/each}
   </div>
+  {/if}
 
   <!-- Gate -->
   {#if run.status === 'gate'}
@@ -324,6 +393,7 @@
     border-radius: 10px;
     font-size: 0.8rem;
   }
+  .nm-panel[data-status='setup'],
   .nm-panel[data-status='gate'] {
     border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
   }
@@ -523,6 +593,26 @@
   @keyframes nm-shimmer {
     0% { transform: translateX(-100%); }
     100% { transform: translateX(100%); }
+  }
+
+  /* Setup */
+  .nm-setup {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .nm-setup-text {
+    margin: 0;
+    color: var(--color-text-secondary);
+    line-height: 1.45;
+  }
+  .nm-setup-text code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    padding: 0.05rem 0.3rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
   }
 
   /* Gate */

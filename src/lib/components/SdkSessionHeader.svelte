@@ -10,6 +10,8 @@
   import { get } from 'svelte/store';
   import { nmRuns, noMistakes } from '$lib/stores/noMistakes';
   import { buildIntent } from '$lib/utils/noMistakesIntent';
+  import { sessionPrs } from '$lib/stores/sessionPrs';
+  import type { SessionPrSummary } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import { accountById, isDefaultAccountId } from '$lib/utils/accounts';
   import { ctrlHeld } from '$lib/stores/ctrlHint';
@@ -43,16 +45,12 @@
     provider?: SdkProvider;
     /** Agent account this session is pinned to (undefined = machine default). */
     accountId?: string;
-    /** Claude auto-compaction toggle. Off -> DISABLE_AUTO_COMPACT=1.
-     *  On -> no override; Claude's built-in default (~83.5% trigger, 33K-token reserved buffer) applies.
-     *  That default IS the optimum — the PCT_OVERRIDE env var is clamped to it, so we can't go higher, and
-     *  going lower just wastes context without preventing single-turn tool-result overflows. */
-    autocompactEnabled?: boolean;
-    disableHooks?: boolean;
     createdBranch?: string | null;
     currentBranch?: string | null;
     /** Number of files changed in this session's cwd. Badge hidden when 0/undefined. */
     changedFileCount?: number;
+    /** PR detected for this session's branch; badge opens the PR panel. */
+    pr?: SessionPrSummary | null;
     firstPrompt?: string | null;
     /** Short speakable voice callsign for this session (e.g. "Falcon") */
     nickname?: string | null;
@@ -74,11 +72,10 @@
     effortLevel = null,
     provider = 'claude',
     accountId = undefined,
-    autocompactEnabled = true,
-    disableHooks = false,
     createdBranch = null,
     currentBranch = null,
     changedFileCount = undefined,
+    pr = null,
     firstPrompt = null,
     nickname = null,
     onClose,
@@ -150,22 +147,6 @@
     });
   }
 
-  const showAutocompactToggle = $derived(provider !== 'openai' && !isPending && !!sessionId);
-  const showHooksToggle = $derived(!isPending && !!sessionId);
-
-  function toggleAutocompact() {
-    if (!sessionId) return;
-    sdkSessions.updateSessionAutocompactEnabled(sessionId, !autocompactEnabled).catch(err => {
-      console.error('[SdkSessionHeader] autocompact update failed:', err);
-    });
-  }
-
-  function toggleHooks() {
-    if (!sessionId) return;
-    sdkSessions.updateSessionDisableHooks(sessionId, !disableHooks).catch(err => {
-      console.error('[SdkSessionHeader] hooks update failed:', err);
-    });
-  }
 
   let isChatCopied = $state(false);
 
@@ -293,6 +274,19 @@
             {changedFileCount} changed
           </span>
         {/if}
+        {#if pr && sessionId}
+          <span class="separator">·</span>
+          <button
+            class="pr-badge pr-{pr.isDraft && pr.state === 'open' ? 'draft' : pr.state}"
+            onclick={() => sessionPrs.togglePanel(sessionId)}
+            title="PR #{pr.number}: {pr.title} ({pr.isDraft && pr.state === 'open' ? 'draft' : pr.state}) — click for status & merge"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z" />
+            </svg>
+            #{pr.number}
+          </button>
+        {/if}
       {/if}
       {#if model}
         {#if sessionTime || repoName}<span class="separator">·</span>{/if}
@@ -346,56 +340,6 @@
           <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
-        </button>
-      {/if}
-      {#if showAutocompactToggle}
-        <button
-          type="button"
-          class="action-icon-btn autocompact-toggle"
-          class:autocompact-on={autocompactEnabled}
-          class:autocompact-off={!autocompactEnabled}
-          onclick={toggleAutocompact}
-          title={`Auto-compaction: ${autocompactEnabled ? "on (Claude's default ~83.5% trigger; 33K-token reserved buffer)" : 'off (DISABLE_AUTO_COMPACT=1 — may hit "prompt is too long")'}. Applies on next Claude process spawn.`}
-          aria-label="Toggle auto-compaction"
-          aria-pressed={autocompactEnabled}
-        >
-          <span class="autocompact-label">AC</span>
-          <span class="autocompact-indicator" aria-hidden="true">
-            {#if autocompactEnabled}
-              <svg class="w-3 h-3" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-              </svg>
-            {:else}
-              <svg class="w-3 h-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                <line x1="4" y1="16" x2="16" y2="4" />
-              </svg>
-            {/if}
-          </span>
-        </button>
-      {/if}
-      {#if showHooksToggle}
-        <button
-          type="button"
-          class="action-icon-btn autocompact-toggle"
-          class:hooks-on={!disableHooks}
-          class:hooks-off={disableHooks}
-          onclick={toggleHooks}
-          title={`Hooks: ${disableHooks ? 'disabled (DISABLE_HOOKS=1 — skips lint, build, etc.)' : 'enabled (project hooks will run)'}. Applies on next Claude process spawn.`}
-          aria-label="Toggle hooks"
-          aria-pressed={!disableHooks}
-        >
-          <span class="autocompact-label">HK</span>
-          <span class="autocompact-indicator" aria-hidden="true">
-            {#if !disableHooks}
-              <svg class="w-3 h-3" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-              </svg>
-            {:else}
-              <svg class="w-3 h-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                <line x1="4" y1="16" x2="16" y2="4" />
-              </svg>
-            {/if}
-          </span>
         </button>
       {/if}
       {#if !isPending && sessionId && repoPath && repoPath !== '.'}
@@ -558,6 +502,49 @@
     flex-shrink: 0;
   }
 
+  .pr-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    padding: 0.05rem 0.35rem;
+    border-radius: 0.25rem;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+
+  .pr-badge:hover {
+    filter: brightness(1.25);
+  }
+
+  .pr-badge svg {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
+  .pr-badge.pr-open {
+    color: rgb(74, 222, 128);
+    background: rgba(74, 222, 128, 0.12);
+  }
+
+  .pr-badge.pr-draft {
+    color: rgb(148, 163, 184);
+    background: rgba(148, 163, 184, 0.12);
+  }
+
+  .pr-badge.pr-merged {
+    color: rgb(192, 132, 252);
+    background: rgba(192, 132, 252, 0.12);
+  }
+
+  .pr-badge.pr-closed {
+    color: rgb(248, 113, 113);
+    background: rgba(248, 113, 113, 0.12);
+  }
+
   .prompt-preview {
     font-size: 0.8rem;
     color: var(--color-text-muted);
@@ -596,51 +583,6 @@
   .no-mistakes-btn.active {
     background: color-mix(in srgb, var(--color-accent) 18%, transparent);
     color: var(--color-accent);
-  }
-
-  .autocompact-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.125rem 0.375rem;
-    border-radius: 0.25rem;
-    font-size: 10px;
-    line-height: 1;
-    flex-shrink: 0;
-    transition: background-color 0.15s, color 0.15s;
-  }
-
-  .autocompact-toggle:hover {
-    background: var(--color-border);
-  }
-
-  .autocompact-label {
-    font-weight: 600;
-    letter-spacing: 0.05em;
-  }
-
-  .autocompact-indicator {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .autocompact-on {
-    color: var(--color-accent, rgb(96, 165, 250));
-  }
-
-  .autocompact-off {
-    color: var(--color-text-muted);
-    opacity: 0.75;
-  }
-
-  .hooks-on {
-    color: var(--color-accent, rgb(96, 165, 250));
-  }
-
-  .hooks-off {
-    color: var(--color-text-muted);
-    opacity: 0.75;
   }
 
   .same-repo-btn {

@@ -45,6 +45,8 @@ export interface RepoConfig {
   gh_user?: string;
   /** Whitelist of agent account IDs allowed for sessions in this repo. Empty/missing = all allowed. */
   account_ids?: string[];
+  /** Last PR merge strategy used in this repo; the PR panel defaults to it. */
+  last_merge_strategy?: 'squash' | 'merge' | 'rebase';
 }
 
 /** Helper: treat undefined/missing active field as true for backward compatibility */
