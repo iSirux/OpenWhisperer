@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
 import { repos, findRepoById } from './repos';
 import { touchRepoForCwd } from './repoRecency';
-import { playCompletionSound } from '$lib/utils/sound';
+import { playCompletionSound, playQuestionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { rateLimits, codexRateLimits } from './rateLimits';
 import { saveSessionsToDisk, saveSdkSessionsPartial } from './sessionPersistence';
@@ -1163,11 +1163,16 @@ function createSdkSessionsStore() {
 
           // Fresh agent activity cancels a pending deferred-completion grace finalize.
           cancelDeferredFinalize(id);
+          // Track whether this event newly raises a question, so we alert once.
+          let raisedQuestion = false;
           update(sessions =>
             sessions.map(s => {
               if (s.id !== id) return s;
               const now = Date.now();
               const base = reactivateOnActivity(s, now);
+              if (isAskUserQuestion && askQuestions && askQuestions.length > 0 && !s.askUserQuestion) {
+                raisedQuestion = true;
+              }
               return {
                 ...base,
                 startedAt: base.startedAt || now,
@@ -1202,6 +1207,9 @@ function createSdkSessionsStore() {
               };
             })
           );
+          if (raisedQuestion && get(settings).audio.play_sound_on_question) {
+            playQuestionSound();
+          }
           debouncedSave(id);
         }
       )
@@ -1770,9 +1778,13 @@ function createSdkSessionsStore() {
     // AskUserQuestion events - interactive questions from Claude
     unlisteners.push(
       await listen<PlanningQuestion[]>(`sdk-ask-user-questions-${id}`, (e) => {
+        let raisedQuestion = false;
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
+            if (!s.askUserQuestion && e.payload.length > 0) {
+              raisedQuestion = true;
+            }
             return {
               ...s,
               askUserQuestion: {
@@ -1783,6 +1795,9 @@ function createSdkSessionsStore() {
             };
           })
         );
+        if (raisedQuestion && get(settings).audio.play_sound_on_question) {
+          playQuestionSound();
+        }
       })
     );
 

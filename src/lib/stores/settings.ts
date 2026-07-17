@@ -280,6 +280,8 @@ export interface AudioConfig {
   play_sound_on_open_mic_trigger: boolean;
   /** Play sound when a voice command (like "send it") is detected */
   play_sound_on_voice_command: boolean;
+  /** Play sound when the agent asks a question (AskUserQuestion tool) */
+  play_sound_on_question: boolean;
   recording_linger_ms: number;
   include_transcription_notice: boolean;
   require_transcription_approval: boolean;
@@ -731,6 +733,7 @@ const defaultConfig: AppConfig = {
     play_sound_on_repo_select: true,
     play_sound_on_open_mic_trigger: true,
     play_sound_on_voice_command: true,
+    play_sound_on_question: true,
     recording_linger_ms: 500,
     include_transcription_notice: true,
     require_transcription_approval: false,

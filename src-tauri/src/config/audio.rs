@@ -141,6 +141,9 @@ pub struct AudioConfig {
     /// Play sound when a voice command (like "send it") is detected
     #[serde(default = "default_play_sound_on_voice_command")]
     pub play_sound_on_voice_command: bool,
+    /// Play sound when the agent asks a question (AskUserQuestion tool)
+    #[serde(default = "default_play_sound_on_question")]
+    pub play_sound_on_question: bool,
     #[serde(default = "default_recording_linger_ms")]
     pub recording_linger_ms: u32,
     #[serde(default = "default_include_transcription_notice")]
@@ -184,6 +187,10 @@ fn default_play_sound_on_voice_command() -> bool {
     true
 }
 
+fn default_play_sound_on_question() -> bool {
+    true
+}
+
 fn default_include_transcription_notice() -> bool {
     true
 }
@@ -198,6 +205,7 @@ impl Default for AudioConfig {
             play_sound_on_repo_select: default_play_sound_on_repo_select(),
             play_sound_on_open_mic_trigger: default_play_sound_on_open_mic_trigger(),
             play_sound_on_voice_command: default_play_sound_on_voice_command(),
+            play_sound_on_question: default_play_sound_on_question(),
             recording_linger_ms: default_recording_linger_ms(),
             include_transcription_notice: default_include_transcription_notice(),
             require_transcription_approval: false,

@@ -94,6 +94,54 @@ export function playQueueResume(): void {
 }
 
 /**
+ * Plays a distinct "question" chime when the agent asks the user a question
+ * (the AskUserQuestion tool). Rising two-note motif with a questioning
+ * up-inflection (perfect-fifth climb) played twice, so it clearly stands apart
+ * from the completion / resume / repo / open-mic / voice-command sounds and
+ * reads as "your input is needed".
+ * Side-effect safe: no-op under SSR or when AudioContext is unavailable.
+ */
+export function playQuestionSound(): void {
+  try {
+    if (typeof AudioContext === 'undefined') return;
+
+    const ctx = getAudioContext();
+    const now = ctx.currentTime;
+
+    // Rising fifth E5 -> B5, repeated — an interrogative "ba-ding? ba-ding?"
+    const motif = [659.25, 987.77]; // E5, B5
+    const noteDuration = 0.12;
+    const noteGap = 0.05;
+    const phraseGap = 0.14;
+    const phrase = noteDuration * motif.length + noteGap;
+
+    for (let rep = 0; rep < 2; rep++) {
+      motif.forEach((freq, i) => {
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(freq, now);
+
+        const startTime = now + rep * (phrase + phraseGap) + i * (noteDuration + noteGap);
+
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(0.28, startTime + 0.01);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + noteDuration);
+
+        oscillator.start(startTime);
+        oscillator.stop(startTime + noteDuration);
+      });
+    }
+  } catch (error) {
+    console.warn('Failed to play question sound:', error);
+  }
+}
+
+/**
  * Plays a quick confirmation sound when a repo is selected
  * Creates a short ascending two-note "boop-beep" sound
  */

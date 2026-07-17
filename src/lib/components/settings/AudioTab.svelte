@@ -91,6 +91,21 @@
           bind:checked={$settings.audio.play_sound_on_voice_command}
         />
       </div>
+      <div class="flex items-center justify-between">
+        <div>
+          <label class="text-sm font-medium text-text-secondary"
+            >Play Sound on Question</label
+          >
+          <p class="text-xs text-text-muted mt-0.5">
+            Play a distinct sound when the agent asks a question and needs your input
+          </p>
+        </div>
+        <input
+          type="checkbox"
+          class="toggle"
+          bind:checked={$settings.audio.play_sound_on_question}
+        />
+      </div>
     </div>
   </div>
 </div>
