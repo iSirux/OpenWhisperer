@@ -1,6 +1,5 @@
-//! Validation run orchestration. Mirrors `NoMistakesManager`'s shape (a runs map
-//! with per-run abort handles and a tokio task per run) but replaces the external
-//! child-process orchestration with native, sequential step execution driving the
+//! Validation run orchestration: a runs map with per-run abort handles and a
+//! tokio task per run, executing steps natively and sequentially, driving the
 //! sidecar one-shot agents and streaming typed events.
 
 use std::collections::HashMap;
@@ -1674,6 +1673,7 @@ fn command_finding(
 ) -> ValidationFinding {
     ValidationFinding {
         id: String::new(),
+        title: None,
         severity,
         file: None,
         line: None,

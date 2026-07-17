@@ -4,8 +4,14 @@
     type SessionPrEntry,
     type MergeStrategy,
   } from '$lib/stores/sessionPrs';
-  import type { SdkSession } from '$lib/stores/sdkSessions';
+  import {
+    sdkSessions,
+    hasBusySessionsInScope,
+    normalizeScopePath,
+    type SdkSession,
+  } from '$lib/stores/sdkSessions';
   import type { RepoConfig } from '$lib/stores/repos';
+  import { renderMarkdown } from '$lib/utils/markdown';
 
   let {
     session,
@@ -21,6 +27,19 @@
   let effectiveState = $derived(
     pr ? (pr.is_draft && pr.state === 'open' ? 'draft' : pr.state) : null
   );
+
+  let descriptionOpen = $state(true);
+
+  /** Session runs in a linked worktree (vs directly in the main repo checkout). */
+  let isWorktree = $derived(
+    !!repo?.path &&
+      !!session.cwd &&
+      normalizeScopePath(session.cwd) !== normalizeScopePath(repo.path)
+  );
+
+  /** Any agent still working in this session's repo+worktree scope — don't rip
+   *  the worktree out from under it. */
+  let scopeBusy = $derived(hasBusySessionsInScope($sdkSessions, session.cwd));
 
   let strategy = $state<MergeStrategy>('squash');
   // Seed from the repo's remembered strategy once (user changes win afterwards).
@@ -167,6 +186,26 @@
       {/if}
     </div>
 
+    {#if pr.body?.trim()}
+      <div class="pr-description">
+        <button
+          class="pr-desc-toggle"
+          onclick={() => (descriptionOpen = !descriptionOpen)}
+          aria-expanded={descriptionOpen}
+        >
+          <svg class="pr-desc-chevron" class:open={descriptionOpen} viewBox="0 0 16 16" fill="currentColor">
+            <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
+          </svg>
+          Description
+        </button>
+        {#if descriptionOpen}
+          <div class="pr-desc-body">
+            {@html renderMarkdown(pr.body)}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if pr.checks.length > 0}
       <div class="pr-checks">
         <div class="pr-checks-summary">
@@ -227,8 +266,56 @@
       {/if}
     {:else if pr.state === 'merged'}
       <div class="pr-merged-banner">
-        Merged. You can now clean up: delete the branch/worktree and archive this session when you're done.
+        {#if entry.cleanupResult}
+          Cleaned up:
+          {[
+            entry.cleanupResult.worktree_removed ? 'worktree removed' : null,
+            entry.cleanupResult.local_branch_deleted ? 'local branch deleted' : null,
+            entry.cleanupResult.remote_branch_deleted ? 'remote branch deleted' : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'nothing to do'}.
+          Archive the session when you're done.
+        {:else}
+          Merged. You can now clean up: delete the branch/worktree and archive this session when you're done.
+        {/if}
       </div>
+      {#if entry.cleanupResult?.warnings.length}
+        <div class="pr-cleanup-warnings">
+          {#each entry.cleanupResult.warnings as warning (warning)}
+            <div>{warning}</div>
+          {/each}
+        </div>
+      {/if}
+      <div class="pr-cleanup-row">
+        {#if !entry.cleanupResult}
+          <button
+            class="pr-cleanup-btn"
+            onclick={() => sessionPrs.cleanup(session)}
+            disabled={entry.cleaning || scopeBusy}
+            title={scopeBusy
+              ? 'An agent is still working in this worktree — wait for it to finish'
+              : 'Only proceeds when there are no uncommitted changes or unpushed commits'}
+          >
+            {entry.cleaning
+              ? 'Cleaning up…'
+              : isWorktree
+                ? 'Delete branch & worktree'
+                : 'Delete branch'}
+          </button>
+        {/if}
+        <button
+          class="pr-archive-btn"
+          onclick={() => sdkSessions.closeSession(session.id)}
+          disabled={entry.cleaning}
+          title="Close this session and move it to the archive"
+        >
+          Archive session
+        </button>
+      </div>
+      {#if entry.cleanupError}
+        <div class="pr-error">{entry.cleanupError}</div>
+      {/if}
     {/if}
   {/if}
 </div>
@@ -498,6 +585,97 @@
     cursor: not-allowed;
   }
 
+  .pr-description {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .pr-desc-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    align-self: flex-start;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    padding: 0.1rem 0.2rem;
+    border-radius: 4px;
+  }
+
+  .pr-desc-toggle:hover {
+    color: var(--color-text-primary);
+  }
+
+  .pr-desc-chevron {
+    width: 0.7rem;
+    height: 0.7rem;
+    transition: transform 0.15s ease;
+  }
+
+  .pr-desc-chevron.open {
+    transform: rotate(90deg);
+  }
+
+  .pr-desc-body {
+    font-size: 0.74rem;
+    line-height: 1.45;
+    color: var(--color-text-secondary);
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 0.45rem 0.6rem;
+    max-height: 11rem;
+    overflow-y: auto;
+    word-break: break-word;
+  }
+
+  .pr-desc-body :global(p),
+  .pr-desc-body :global(ul),
+  .pr-desc-body :global(ol),
+  .pr-desc-body :global(pre) {
+    margin: 0 0 0.45rem;
+  }
+
+  .pr-desc-body :global(> *:last-child) {
+    margin-bottom: 0;
+  }
+
+  .pr-desc-body :global(h1),
+  .pr-desc-body :global(h2),
+  .pr-desc-body :global(h3),
+  .pr-desc-body :global(h4) {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--color-text-primary);
+    margin: 0.5rem 0 0.3rem;
+  }
+
+  .pr-desc-body :global(ul),
+  .pr-desc-body :global(ol) {
+    padding-left: 1.1rem;
+  }
+
+  .pr-desc-body :global(code) {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.68rem;
+    background: var(--color-surface);
+    border-radius: 3px;
+    padding: 0.05rem 0.25rem;
+  }
+
+  .pr-desc-body :global(pre) {
+    background: var(--color-surface);
+    border-radius: 4px;
+    padding: 0.4rem 0.5rem;
+    overflow-x: auto;
+  }
+
+  .pr-desc-body :global(a) {
+    color: rgb(96, 165, 250);
+  }
+
   .pr-merged-banner {
     font-size: 0.75rem;
     color: rgb(192, 132, 252);
@@ -505,6 +683,55 @@
     border: 1px solid rgba(192, 132, 252, 0.25);
     border-radius: 6px;
     padding: 0.4rem 0.6rem;
+  }
+
+  .pr-cleanup-warnings {
+    font-size: 0.72rem;
+    color: rgb(251, 191, 36);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    border-radius: 6px;
+    padding: 0.35rem 0.55rem;
+  }
+
+  .pr-cleanup-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .pr-cleanup-btn,
+  .pr-archive-btn {
+    padding: 0.3rem 0.9rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .pr-cleanup-btn {
+    color: rgb(248, 113, 113);
+    border-color: rgba(248, 113, 113, 0.35);
+  }
+
+  .pr-archive-btn {
+    color: rgb(192, 132, 252);
+    border-color: rgba(192, 132, 252, 0.35);
+  }
+
+  .pr-cleanup-btn:hover:not(:disabled),
+  .pr-archive-btn:hover:not(:disabled) {
+    filter: brightness(1.2);
+  }
+
+  .pr-cleanup-btn:disabled,
+  .pr-archive-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .pr-error,

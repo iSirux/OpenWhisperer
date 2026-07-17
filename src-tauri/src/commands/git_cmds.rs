@@ -1,6 +1,8 @@
 use crate::commands::usage_cmds::UsageStatsState;
 use crate::config::AppConfig;
-use crate::git::{GitManager, WorktreeCreationResult, WorktreeInfo, WorktreeSetupStepResult};
+use crate::git::{
+    BranchCleanupResult, GitManager, WorktreeCreationResult, WorktreeInfo, WorktreeSetupStepResult,
+};
 use parking_lot::Mutex;
 use tauri::{AppHandle, State};
 
@@ -36,6 +38,22 @@ pub async fn get_git_default_branch(repo_path: String) -> Result<String, String>
     tokio::task::spawn_blocking(move || GitManager::get_default_remote_branch(&repo_path))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Clean up after a merged PR: remove the session's worktree (when given),
+/// delete the local branch, best-effort delete the remote branch. Errors when
+/// unsafe (uncommitted changes, unpushed commits, default branch).
+#[tauri::command]
+pub async fn cleanup_merged_branch(
+    repo_path: String,
+    branch: String,
+    worktree_path: Option<String>,
+) -> Result<BranchCleanupResult, String> {
+    tokio::task::spawn_blocking(move || {
+        GitManager::cleanup_merged_branch(&repo_path, &branch, worktree_path.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Create a new worktree with full setup (copy files, run post-create commands)

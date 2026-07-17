@@ -1,8 +1,7 @@
 //! Native Validation pipeline: a per-session run (review → test → docs → lint →
-//! ship → ci) orchestrated natively in Rust. The successor to the external
-//! No Mistakes integration — same concept layer (Finding model, gate semantics,
-//! prompt discipline, intent grounding) with a fully typed, in-process transport
-//! (sidecar one-shot agents + native git/gh) and no parsing layer.
+//! ship → ci) orchestrated natively in Rust: a typed Finding model, gate
+//! semantics, prompt discipline, and intent grounding over a fully in-process
+//! transport (sidecar one-shot agents + native git/gh) with no parsing layer.
 //!
 //! - [`types`]: the data model, emitted verbatim on `validation-update-{run_id}`.
 //! - [`prompts`]: reviewer/verify/evidence/docs/lint prompt construction.

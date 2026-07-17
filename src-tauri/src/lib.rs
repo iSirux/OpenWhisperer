@@ -5,7 +5,6 @@ mod docker;
 mod git;
 mod launch;
 mod llm;
-mod no_mistakes;
 mod notion;
 mod persist;
 mod proc;
@@ -21,7 +20,7 @@ mod whisper;
 use commands::{
     account_cmds, archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
     launch_cmds, llm_cmds, log_cmds,
-    mcp_cmds, no_mistakes_cmds, notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds,
+    mcp_cmds, notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds,
     sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds, validation_cmds,
 };
 use config::{AppConfig, UsageStats};
@@ -252,7 +251,6 @@ pub fn run() {
     let sidecar_manager = Arc::new(SidecarManager::new());
     let realtime_manager = Arc::new(RealtimeSessionManager::new());
     let launch_manager = Arc::new(launch::LaunchManager::new());
-    let no_mistakes_manager = Arc::new(no_mistakes::NoMistakesManager::new());
     let validation_manager = Arc::new(validation::ValidationManager::new());
     let config_load_status = ConfigLoadStatus(Mutex::new(config_load_report));
 
@@ -316,7 +314,6 @@ pub fn run() {
         .manage(sidecar_manager)
         .manage(realtime_manager)
         .manage(launch_manager)
-        .manage(no_mistakes_manager)
         .manage(validation_manager)
         .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
@@ -417,6 +414,7 @@ pub fn run() {
             git_cmds::run_worktree_post_setup,
             git_cmds::generate_worktree_branch_name,
             git_cmds::get_git_default_branch,
+            git_cmds::cleanup_merged_branch,
             git_cmds::open_in_vscode,
             git_cmds::open_in_terminal,
             git_cmds::open_in_explorer,
@@ -538,13 +536,6 @@ pub fn run() {
             launch_cmds::launch_commands,
             launch_cmds::stop_launch_profile,
             launch_cmds::get_launch_status,
-            // --- No-mistakes validation ---
-            no_mistakes_cmds::nm_check,
-            no_mistakes_cmds::nm_install,
-            no_mistakes_cmds::nm_init,
-            no_mistakes_cmds::nm_start_run,
-            no_mistakes_cmds::nm_respond,
-            no_mistakes_cmds::nm_cancel,
             // --- Validation pipeline ---
             validation_cmds::validation_start_run,
             validation_cmds::validation_get_run,

@@ -3180,6 +3180,9 @@ const VALIDATION_MCP_SERVER_NAME = "validation-tools";
 // Shared finding shape used by review/evidence/housekeeping submit tools.
 // severity: error|warning|info; action: auto-fix|ask-user|no-op.
 const validationFindingShape = {
+  title: z
+    .string()
+    .describe("Short imperative title for the finding (a few words, no file paths)"),
   severity: z.enum(["error", "warning", "info"]),
   file: z.string().optional(),
   line: z.number().optional(),

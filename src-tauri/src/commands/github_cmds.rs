@@ -478,6 +478,8 @@ pub struct GitHubPrCheck {
 pub struct GitHubPrStatus {
     pub number: u64,
     pub title: String,
+    /// PR description (markdown body).
+    pub body: String,
     pub url: String,
     /// Normalized to lowercase: "open" | "merged" | "closed"
     pub state: String,
@@ -556,6 +558,8 @@ struct GhRawPr {
     #[serde(default)]
     title: String,
     #[serde(default)]
+    body: String,
+    #[serde(default)]
     url: String,
     #[serde(default)]
     state: String,
@@ -586,6 +590,7 @@ impl GhRawPr {
         GitHubPrStatus {
             number: self.number,
             title: self.title,
+            body: self.body,
             url: self.url,
             state: self.state.to_lowercase(),
             is_draft: self.is_draft,
@@ -607,7 +612,7 @@ impl GhRawPr {
     }
 }
 
-const PR_VIEW_FIELDS: &str = "number,title,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup";
+const PR_VIEW_FIELDS: &str = "number,title,body,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup";
 
 /// gh errors when no PR exists for the branch — that's a normal "none" result.
 fn is_no_pr_error(err: &str) -> bool {
@@ -813,9 +818,11 @@ github.com
 
     #[test]
     fn parses_gh_pr_view_json() {
-        let json = r#"{
+        // r### because the body value starts with `"##` (markdown heading in JSON).
+        let json = r###"{
             "number": 12,
             "title": "Add PR panel",
+            "body": "## Summary\nAdds the PR panel.",
             "url": "https://github.com/owner/repo/pull/12",
             "state": "OPEN",
             "isDraft": false,
@@ -833,10 +840,11 @@ github.com
                 {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"},
                 {"__typename": "StatusContext", "context": "deploy/preview", "state": "PENDING", "targetUrl": "https://vercel/1"}
             ]
-        }"#;
+        }"###;
         let raw: GhRawPr = serde_json::from_str(json).unwrap();
         let pr = raw.into_status();
         assert_eq!(pr.number, 12);
+        assert_eq!(pr.body, "## Summary\nAdds the PR panel.");
         assert_eq!(pr.state, "open");
         assert!(!pr.is_draft);
         assert_eq!(pr.mergeable, "mergeable");

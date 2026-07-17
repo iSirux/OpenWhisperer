@@ -67,9 +67,10 @@ Their docs deliberately gloss over git mechanics — there is **no manual commit
 ### Phasing
 
 1. **v1 (SHIPPED 2026-07-16): detect / view / merge — no native creation.** PR badge (icon + #number) right of the branch in the session header and list items; PR panel (state/review chips, checks with links, strategy chooser remembered per repo, Merge, 15s polling, post-merge manual-cleanup hint); creation happens via the built-in quick-action chip that sends "Commit, push, create PR, merge from origin/<default> if needed" to the session's agent (default branch resolved per repo).
-2. **v2:** native creation modes — manual (VS Code parity: user-written commit message + PR title/body, app runs git/gh deterministically) and LLM-assisted (LLM layer drafts, editable before executing); guided cleanup buttons after merge (delete branch & remove worktree, archive session).
-3. **v3:** forward failing checks / review comments to the agent as composed prompts; sync review threads.
-4. **v4:** conflict resolution assist; "open existing PR as session" (`gh pr checkout` into a fresh worktree — fork/cross-repo refs are the hard part).
+2. **v1.1 (SHIPPED 2026-07-17): PR description + guided post-merge cleanup.** Panel shows the PR body (collapsible rendered markdown). Merged banner gains "Delete branch & worktree" → `cleanup_merged_branch` (refuses unless safe: clean working tree, no unpushed commits, never the default branch; removes the worktree, deletes local branch, best-effort deletes remote branch) and "Archive session" buttons. Cleanup disabled while an agent is busy in the same cwd scope.
+3. **v2:** native creation modes — manual (VS Code parity: user-written commit message + PR title/body, app runs git/gh deterministically) and LLM-assisted (LLM layer drafts, editable before executing).
+4. **v3:** forward failing checks / review comments to the agent as composed prompts; sync review threads.
+5. **v4:** conflict resolution assist; "open existing PR as session" (`gh pr checkout` into a fresh worktree — fork/cross-repo refs are the hard part).
 
 ### Remaining open questions
 

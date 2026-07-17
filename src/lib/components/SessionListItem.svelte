@@ -74,11 +74,12 @@
     return text.slice(0, max).trimEnd() + "…";
   }
 
-  // Live countdown to an epoch-ms target, driven by the `now` prop so it stays
-  // fresh. Mirrors the formatting of `formatTimeRemaining` in rateLimits.ts.
-  function formatMsRemaining(target: number | undefined | null, ref: number): string {
+  // Live countdown to an epoch-ms target. `refMs` must be in milliseconds — note
+  // the `now` prop is in SECONDS (it drives getElapsedTime), so callers multiply.
+  // Mirrors the formatting of `formatTimeRemaining` in rateLimits.ts.
+  function formatMsRemaining(target: number | undefined | null, refMs: number): string {
     if (target == null) return "";
-    const diff = target - ref;
+    const diff = target - refMs;
     if (diff <= 0) return "now";
     const days = Math.floor(diff / 86_400_000);
     const hours = Math.floor((diff % 86_400_000) / 3_600_000);
@@ -465,7 +466,7 @@
   {#if session.status === "queued"}
     {@const qi = session.queueInfo}
     {@const qWindow = qi?.window === "7d" ? "7d" : "5h"}
-    {@const qCountdown = formatMsRemaining(qi?.targetStartAt, now)}
+    {@const qCountdown = formatMsRemaining(qi?.targetStartAt, now * 1000)}
     <div
       class="schedule-row"
       title={qi?.reason === "scheduled"

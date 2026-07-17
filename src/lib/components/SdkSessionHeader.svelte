@@ -7,9 +7,6 @@
   import { sdkSessions, type EffortLevel } from '$lib/stores/sdkSessions';
   import type { SdkProvider } from '$lib/utils/models';
   import { panes, paneLayout, MAX_PANES } from '$lib/stores/panes';
-  import { get } from 'svelte/store';
-  import { nmRuns, noMistakes } from '$lib/stores/noMistakes';
-  import { buildIntent } from '$lib/utils/noMistakesIntent';
   import { validationRuns } from '$lib/stores/validation';
   import ValidationStartPopover from '$lib/components/sdk/ValidationStartPopover.svelte';
   import { sessionPrs } from '$lib/stores/sessionPrs';
@@ -127,29 +124,8 @@
       : undefined
   );
 
-  // --- No mistakes (validation pipeline) ---
-  const nmHasCwd = $derived(!!repoPath && repoPath !== '.');
-  const nmRun = $derived(
-    sessionId ? [...$nmRuns.values()].find((r) => r.sessionId === sessionId) : undefined,
-  );
-  const nmActive = $derived(
-    !!nmRun &&
-      (nmRun.status === 'starting' || nmRun.status === 'running' || nmRun.status === 'gate'),
-  );
-  // Enabled only with a real cwd, not pending, not querying, and no active run.
-  const nmCanStart = $derived(nmHasCwd && !isPending && !isQuerying && !nmActive);
-  const showNoMistakes = $derived(!isPending && !!sessionId && $settings.system.dev_mode);
-
-  function startNoMistakes() {
-    if (!sessionId || !nmCanStart) return;
-    const session = get(sdkSessions).find((s) => s.id === sessionId);
-    if (!session) return;
-    noMistakes.startRun(sessionId, repoPath, buildIntent(session)).catch((err) => {
-      console.error('[SdkSessionHeader] no-mistakes start failed:', err);
-    });
-  }
-
-  // --- Validation pipeline (native; NOT dev-mode gated) ---
+  // --- Validation pipeline ---
+  const hasRealCwd = $derived(!!repoPath && repoPath !== '.');
   const validationSession = $derived(
     sessionId ? $sdkSessions.find((s) => s.id === sessionId) : undefined,
   );
@@ -161,7 +137,7 @@
   );
   // Enabled with a real cwd, not pending, not querying, and no active run.
   const validationCanStart = $derived(
-    nmHasCwd && !isPending && !isQuerying && !validationActive && !!validationSession,
+    hasRealCwd && !isPending && !isQuerying && !validationActive && !!validationSession,
   );
   const showValidate = $derived(!isPending && !!sessionId);
   let showValidatePopover = $state(false);
@@ -445,21 +421,6 @@
           {/if}
         </div>
       {/if}
-      {#if showNoMistakes}
-        <button
-          class="no-mistakes-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
-          class:active={!!nmRun}
-          onclick={startNoMistakes}
-          disabled={!nmCanStart}
-          title="Run the no-mistakes validation pipeline (review, test, docs, lint) on this session's branch — only pushes and opens a PR when everything is green."
-        >
-          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-            <path d="M9 12l2 2 4-4" />
-          </svg>
-          No mistakes
-        </button>
-      {/if}
       {#if !isPending}
         <button
           class="copy-all-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
@@ -659,24 +620,6 @@
     top: calc(100% + 0.4rem);
     right: 0;
     z-index: 50;
-  }
-
-  .no-mistakes-btn {
-    color: var(--color-text-muted);
-  }
-
-  .no-mistakes-btn:hover:not(:disabled) {
-    color: var(--color-text-primary);
-  }
-
-  .no-mistakes-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .no-mistakes-btn.active {
-    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
-    color: var(--color-accent);
   }
 
   .same-repo-btn {

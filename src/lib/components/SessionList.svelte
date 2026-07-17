@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import type { DisplaySession } from '$lib/types/session';
@@ -92,6 +93,55 @@
     new Map(visibleSessions.slice(0, 9).map((s, i) => [s.id, i + 1]))
   );
   const hiddenByFilterCount = $derived(allSessions.length - filteredSessions.length);
+
+  // Git changed-file count per worktree checkout dir, shown as a badge on the
+  // worktree subheaders (same badge as the repository rail, but per-worktree
+  // instead of summed). Main checkouts resolve to the repo path.
+  let changedCounts = $state<Record<string, number>>({});
+
+  const worktreePaths = $derived.by(() => {
+    if (!sessionGroups) return [] as string[];
+    const paths = new Set<string>();
+    for (const group of sessionGroups) {
+      for (const worktree of group.worktrees) {
+        const path = worktree.path || group.repo?.path;
+        if (path) paths.add(path);
+      }
+    }
+    return [...paths];
+  });
+
+  async function refreshChangedCounts(paths: string[]) {
+    await Promise.all(
+      paths.map(async (path) => {
+        try {
+          changedCounts[path] = await invoke<number>('get_git_changed_count', {
+            repoPath: path,
+          });
+        } catch {
+          changedCounts[path] = 0;
+        }
+      })
+    );
+  }
+
+  // Refetch when the set of visible worktree paths changes (session streaming
+  // rebuilds the groups constantly, so key on the joined paths, not identity),
+  // then poll so the badges stay live.
+  let lastWorktreePathsKey = '';
+  $effect(() => {
+    const key = worktreePaths.join('\n');
+    if (key === lastWorktreePathsKey) return;
+    lastWorktreePathsKey = key;
+    void refreshChangedCounts(untrack(() => worktreePaths));
+  });
+
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (worktreePaths.length > 0) void refreshChangedCounts(worktreePaths);
+    }, 15000);
+    return () => clearInterval(timer);
+  });
 
   // Index of the first unpinned session, used to draw a divider between the
   // pinned group (which floats to the top) and the rest. Only meaningful when
@@ -393,6 +443,7 @@
               {#if hasHeader}
                 {@const wtActiveCount = worktree.sessions.filter((s) => isActivelyWorking(s.status)).length}
                 {@const wtUnreadCount = worktree.sessions.filter((s) => s.unread).length}
+                {@const wtChangedCount = changedCounts[worktree.path || group.repo?.path || ''] ?? 0}
                 <button
                   class="worktree-header"
                   title={worktree.path || group.repo?.path}
@@ -410,6 +461,14 @@
                   </svg>
                   <span class="truncate">{worktree.label}</span>
                   <span class="ml-auto flex items-center gap-1.5 shrink-0">
+                    {#if wtChangedCount > 0}
+                      <span
+                        class="wt-change-badge"
+                        title="{wtChangedCount} file{wtChangedCount === 1 ? '' : 's'} changed"
+                      >
+                        {wtChangedCount > 99 ? '99+' : wtChangedCount}
+                      </span>
+                    {/if}
                     {#if wtActiveCount > 0}
                       <span class="flex items-center gap-1">
                         <span class="w-1 h-1 rounded-full bg-emerald-400"></span>
@@ -563,6 +622,23 @@
 
   .worktree-header:hover {
     color: var(--color-text-secondary);
+  }
+
+  /* Same amber changed-files badge as the repository rail, inline-sized */
+  .wt-change-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0.9rem;
+    height: 0.9rem;
+    padding: 0 0.2rem;
+    box-sizing: border-box;
+    font-size: 0.58rem;
+    font-weight: 700;
+    line-height: 1;
+    color: #1a1205;
+    background: rgb(251, 191, 36);
+    border-radius: 999px;
   }
 
   .chevron {

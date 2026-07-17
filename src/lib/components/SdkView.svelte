@@ -25,11 +25,9 @@
   import SdkPromptInput from "./sdk/SdkPromptInput.svelte";
   import SessionRecordingHeader from "./sdk/SessionRecordingHeader.svelte";
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
-  import NoMistakesPanel from "./sdk/NoMistakesPanel.svelte";
   import ValidationPanel from "./sdk/ValidationPanel.svelte";
   import PrPanel from "./sdk/PrPanel.svelte";
   import { sessionPrs, getDefaultBranch, defaultBranchTail } from "$lib/stores/sessionPrs";
-  import { nmRuns, noMistakes } from "$lib/stores/noMistakes";
   import { validationRuns } from "$lib/stores/validation";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
@@ -1555,12 +1553,7 @@
     sdkSessions.clearAskUserQuestion(sessionId);
   }
 
-  // No mistakes (validation pipeline) run for this session, if any.
-  let nmRun = $derived(
-    [...$nmRuns.values()].find((r) => r.sessionId === sessionId),
-  );
-
-  // Native Validation pipeline run for this session, if any.
+  // Validation pipeline run for this session, if any.
   let validationRun = $derived(
     [...$validationRuns.values()].find((r) => r.sessionId === sessionId),
   );
@@ -1887,19 +1880,6 @@
     <PrPanel {session} entry={prEntry} repo={sessionRepo ?? undefined} />
   {/if}
 
-  {#if nmRun}
-    {@const nmRunId = nmRun.runId}
-    <NoMistakesPanel
-      run={nmRun}
-      onRespond={(action, findingIds) => noMistakes.respond(nmRunId, action, findingIds)}
-      onCancel={() => noMistakes.cancel(nmRunId)}
-      onDismiss={() => noMistakes.dismiss(nmRunId)}
-      onSelectFindings={(findingIds) => noMistakes.selectFindings(nmRunId, findingIds)}
-      onInstall={() => noMistakes.install(nmRunId)}
-      onInit={() => noMistakes.initRepo(nmRunId)}
-      onRecheck={() => noMistakes.recheck(nmRunId)}
-    />
-  {/if}
 
   {#if validationRun}
     <ValidationPanel run={validationRun} />

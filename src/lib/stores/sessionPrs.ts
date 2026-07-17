@@ -2,7 +2,12 @@ import { get, writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { repos, findRepoById, type RepoConfig } from '$lib/stores/repos';
 import { findRepoByPath } from '$lib/utils/repoIcons';
-import { sdkSessions, type SdkSession, type SessionPrSummary } from '$lib/stores/sdkSessions';
+import {
+  sdkSessions,
+  normalizeScopePath,
+  type SdkSession,
+  type SessionPrSummary,
+} from '$lib/stores/sdkSessions';
 
 /**
  * Per-session GitHub PR state backing the PR badge and panel.
@@ -22,6 +27,8 @@ export interface GitHubPrCheck {
 export interface GitHubPrStatus {
   number: number;
   title: string;
+  /** PR description (markdown). */
+  body: string;
   url: string;
   /** "open" | "merged" | "closed" */
   state: string;
@@ -42,6 +49,14 @@ export interface GitHubPrStatus {
 
 export type MergeStrategy = 'squash' | 'merge' | 'rebase';
 
+/** Result of the post-merge branch/worktree cleanup command. */
+export interface BranchCleanupResult {
+  worktree_removed: boolean;
+  local_branch_deleted: boolean;
+  remote_branch_deleted: boolean;
+  warnings: string[];
+}
+
 export interface SessionPrEntry {
   pr: GitHubPrStatus | null;
   loading: boolean;
@@ -50,6 +65,11 @@ export interface SessionPrEntry {
   mergeError: string | null;
   lastFetched: number | null;
   panelOpen: boolean;
+  /** Post-merge cleanup (delete branch/worktree) in flight. */
+  cleaning: boolean;
+  cleanupError: string | null;
+  /** Set once cleanup succeeded — the branch/worktree are gone. */
+  cleanupResult: BranchCleanupResult | null;
 }
 
 const EMPTY_ENTRY: SessionPrEntry = {
@@ -60,6 +80,9 @@ const EMPTY_ENTRY: SessionPrEntry = {
   mergeError: null,
   lastFetched: null,
   panelOpen: false,
+  cleaning: false,
+  cleanupError: null,
+  cleanupResult: null,
 };
 
 /** Auto-detection reuses a fetch newer than this; manual refresh bypasses. */
@@ -136,7 +159,9 @@ function createSessionPrsStore() {
 
   async function refresh(session: SdkSession): Promise<void> {
     const entry = entryFor(session.id);
-    if (entry.loading) return;
+    // After cleanup the worktree directory is gone — fetching there would only
+    // produce a "path does not exist" error over a finished PR lifecycle.
+    if (entry.loading || entry.cleanupResult) return;
     const branch = sessionBranch(session);
     if (!branch) return;
     const repo = resolveRepo(session);
@@ -196,6 +221,33 @@ function createSessionPrsStore() {
         await refresh(session);
       } catch (e) {
         patch(session.id, { merging: false, mergeError: String(e) });
+      }
+    },
+
+    /** Post-merge cleanup: remove the session's worktree (when it runs in one),
+     *  delete the local branch, best-effort delete the remote branch. The
+     *  backend refuses when unsafe (uncommitted changes, unpushed commits). */
+    async cleanup(session: SdkSession): Promise<void> {
+      const entry = entryFor(session.id);
+      if (entry.cleaning || entry.cleanupResult) return;
+      const branch = sessionBranch(session);
+      const repo = resolveRepo(session);
+      if (!branch || !repo?.path) {
+        patch(session.id, { cleanupError: 'Could not resolve the session branch or repository' });
+        return;
+      }
+      const isWorktree =
+        !!session.cwd && normalizeScopePath(session.cwd) !== normalizeScopePath(repo.path);
+      patch(session.id, { cleaning: true, cleanupError: null });
+      try {
+        const result = await invoke<BranchCleanupResult>('cleanup_merged_branch', {
+          repoPath: repo.path,
+          branch,
+          worktreePath: isWorktree ? session.cwd : null,
+        });
+        patch(session.id, { cleaning: false, cleanupResult: result });
+      } catch (e) {
+        patch(session.id, { cleaning: false, cleanupError: String(e) });
       }
     },
 

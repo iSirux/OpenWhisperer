@@ -48,6 +48,8 @@ export type FindingAction = 'auto-fix' | 'ask-user' | 'no-op';
 export interface ValidationFinding {
   /** Deterministic: "<step>-<n>" for agent findings, "user-<n>" for user-added. */
   id: string;
+  /** Short imperative title; absent on user-added findings (display falls back to description). */
+  title?: string | null;
   severity: ValidationSeverity;
   file?: string | null;
   line?: number | null;
@@ -211,9 +213,14 @@ export interface ValidationRunView extends ValidationRun {
   userFindings: ValidationFinding[];
   /** A respond/ship request is in flight (drives a spinner). */
   responding?: boolean;
+  /** Where fix prompts are sent: the run's own session, or a fresh session
+   *  created in the same cwd with the run's context prepended. */
+  fixTarget: FixTarget;
   /** Client-only: signature of the gate we last seeded selection for. */
   gateSignature?: string;
 }
+
+export type FixTarget = 'session' | 'new-session';
 
 // ---------------------------------------------------------------------------
 // Event payload shapes (camelCase, matching the Rust contract).
@@ -371,6 +378,7 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
       ...incoming,
       log: prev.log,
       activity: prev.activity,
+      fixTarget: prev.fixTarget,
       selectedFindingIds,
       userFindings,
       gateSignature: sig,
@@ -473,6 +481,7 @@ async function startRun(
     finishedAt: null,
     log: [],
     activity: [],
+    fixTarget: 'session',
     selectedFindingIds: [],
     userFindings: [],
   };
@@ -572,6 +581,11 @@ function selectFindings(runId: string, findingIds: string[]): void {
   patchView(runId, { selectedFindingIds: findingIds });
 }
 
+/** Choose where fix prompts go: the run's session or a fresh one with context. */
+function setFixTarget(runId: string, target: FixTarget): void {
+  patchView(runId, { fixTarget: target });
+}
+
 /**
  * Add a user-authored finding to the current gate and select it. Sent to the
  * fixer as an `addedFinding` on the next `fix` response.
@@ -639,8 +653,10 @@ function lastErrorReason(session: SdkSession): string {
 }
 
 /**
- * Compose the fix prompt and hand it to the session's agent, then watch for the
- * turn to finish. Guarded so only one fix runs per run at a time.
+ * Compose the fix prompt and hand it to an agent — the run's own session, or
+ * (per the run's `fixTarget`) a fresh session created in the same cwd with the
+ * run's context prepended — then watch for the turn to finish. Guarded so only
+ * one fix runs per run at a time.
  */
 async function startFix(runId: string, payload: ValidationFixRequestPayload): Promise<void> {
   // Double-dispatch guard: one in-flight fix per run.
@@ -648,11 +664,15 @@ async function startFix(runId: string, payload: ValidationFixRequestPayload): Pr
 
   const view = get(validationRuns).get(runId);
   if (!view) return;
-  const sessionId = view.sessionId;
 
-  const session = get(sdkSessions).find((s) => s.id === sessionId);
-  if (!session) {
+  const origin = get(sdkSessions).find((s) => s.id === view.sessionId);
+  if (!origin) {
     void reportFixFailed(runId, 'The session was closed before the fix could start.');
+    return;
+  }
+
+  if (view.fixTarget === 'new-session') {
+    await startFixInNewSession(runId, view, origin, payload);
     return;
   }
 
@@ -660,7 +680,7 @@ async function startFix(runId: string, payload: ValidationFixRequestPayload): Pr
 
   const watcher: FixWatcher = {
     runId,
-    sessionId,
+    sessionId: view.sessionId,
     phase: 'awaiting-idle',
     prompt,
     unsub: () => {},
@@ -670,7 +690,69 @@ async function startFix(runId: string, payload: ValidationFixRequestPayload): Pr
 
   // Subscribe (fires synchronously with the current value first).
   watcher.unsub = sdkSessions.subscribe((sessions) => {
-    const s = sessions.find((sess) => sess.id === sessionId);
+    const s = sessions.find((sess) => sess.id === watcher.sessionId);
+    void onFixTick(watcher, s);
+  });
+}
+
+/**
+ * Fix in a fresh session: clone the origin session's provider/model/effort/
+ * account into a new session running in the run's cwd (same branch/worktree —
+ * that's where the changes live), send a context-rich fix prompt as its first
+ * turn, and watch that session instead. The origin session stays untouched.
+ */
+async function startFixInNewSession(
+  runId: string,
+  view: ValidationRunView,
+  origin: SdkSession,
+  payload: ValidationFixRequestPayload,
+): Promise<void> {
+  const prompt = buildFixPrompt(payload.findings, payload.instructions ?? undefined, {
+    intent: view.intent,
+    cwd: view.cwd,
+  });
+
+  // Reserve the watcher slot before the async launch so a second fix-request
+  // can't double-dispatch while the session is being created.
+  const watcher: FixWatcher = {
+    runId,
+    sessionId: '',
+    phase: 'in-fix',
+    prompt,
+    unsub: () => {},
+    done: false,
+  };
+  fixWatchers.set(runId, watcher);
+
+  try {
+    const newId = sdkSessions.createSetupSession(
+      origin.model,
+      origin.effortLevel,
+      origin.provider,
+      view.cwd,
+    );
+    watcher.sessionId = newId;
+    await sdkSessions.startSetupSession(newId, {
+      prompt,
+      cwd: view.cwd,
+      repoId: origin.repoId ?? undefined,
+      model: origin.model,
+      effortLevel: origin.effortLevel,
+      provider: origin.provider,
+      accountId: origin.accountId,
+    });
+  } catch (err) {
+    finishFix(watcher, 'failed', errMsg(err));
+    return;
+  }
+
+  patchView(runId, (r) => ({
+    log: appendLog(r.log, 'fix dispatched to a new session'),
+  }));
+
+  // The prompt was sent as the new session's first turn; watch it finish.
+  watcher.unsub = sdkSessions.subscribe((sessions) => {
+    const s = sessions.find((sess) => sess.id === watcher.sessionId);
     void onFixTick(watcher, s);
   });
 }
@@ -857,5 +939,6 @@ export const validation = {
   cancel,
   dismiss,
   selectFindings,
+  setFixTarget,
   addUserFinding,
 };

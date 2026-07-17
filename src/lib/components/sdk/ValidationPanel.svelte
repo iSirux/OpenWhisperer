@@ -4,7 +4,6 @@
     VALIDATION_STEP_ORDER,
     type ValidationRunView,
     type ValidationStep,
-    type ValidationFinding,
     type StepName,
     type StepStatus,
     type AgentActivityItem,
@@ -35,7 +34,7 @@
   let isRunningLike = $derived(run.status === 'running' || run.status === 'gate');
   let hasReportedSteps = $derived(run.steps.length > 0);
 
-  // Elapsed clock — ticks while active, freezes on finish (mirrors NoMistakesPanel).
+  // Elapsed clock — ticks while active, freezes on finish.
   let now = $state(Date.now());
   $effect(() => {
     if (isFinished) return;
@@ -104,6 +103,8 @@
       lastGateSig = sig;
       instructions = '';
       newFindingText = '';
+      // A new gate is the thing to look at — bring its tab to front.
+      if (gate) activeTab = 'gate';
     }
   });
 
@@ -181,10 +182,6 @@
     if (action === 'no-op') return 'action-noop';
     return 'action-other';
   }
-  function fileLabel(f: ValidationFinding): string {
-    if (!f.file) return '';
-    return f.line != null ? `${f.file}:${f.line}` : f.file;
-  }
   function diffLineClass(line: string): string {
     if (line.startsWith('+') && !line.startsWith('+++')) return 'diff-add';
     if (line.startsWith('-') && !line.startsWith('---')) return 'diff-del';
@@ -217,23 +214,55 @@
   // only in that state; during a fix the session transcript is the live view).
   let showLiveActivity = $derived(run.status === 'running' && !run.pendingFix && !!latestActivity);
 
-  let activityOpen = $state(false);
   let activityFeedEl = $state<HTMLElement | null>(null);
   $effect(() => {
-    // Follow the tail while the drawer is open.
+    // Follow the tail while the activity tab is showing.
     run.activity.length;
-    if (activityOpen && activityFeedEl) {
+    if (activeTab === 'activity' && activityFeedEl) {
       activityFeedEl.scrollTop = activityFeedEl.scrollHeight;
     }
   });
 
-  // --- Log tail -------------------------------------------------------------
-  let detailsOpen = $state(false);
-  let autoOpenedDetails = $state(false);
+  // --- Tabs + expand ----------------------------------------------------------
+  // The panel body is a single capped scroll area with tabbed content; the
+  // expand toggle trades the cap for most of the pane (working a gate, reading
+  // transcripts). Header/stepper/gate actions stay visible in both modes.
+  type PanelTab = 'gate' | 'steps' | 'activity' | 'log';
+  let expanded = $state(false);
+  let activeTab = $state<PanelTab>('steps');
+
+  const GATE_TAB_LABELS: Record<string, string> = {
+    findings: 'Findings',
+    fix_review: 'Fix review',
+    ship: 'Ship',
+    ci_failure: 'CI failure',
+  };
+  let tabs = $derived.by(() => {
+    const t: Array<{ id: PanelTab; label: string; count?: number }> = [];
+    if (run.status === 'gate' && gate) {
+      t.push({
+        id: 'gate',
+        label: GATE_TAB_LABELS[gate.kind] ?? 'Gate',
+        count: gate.kind === 'ship' ? undefined : gateFindings.length || undefined,
+      });
+    }
+    if (detailSteps.length > 0) t.push({ id: 'steps', label: 'Steps' });
+    if (run.activity.length > 0) t.push({ id: 'activity', label: 'Activity', count: run.activity.length });
+    if (run.log.length > 0) t.push({ id: 'log', label: 'Log' });
+    return t;
+  });
+  // Keep the selected tab valid as content appears/disappears.
   $effect(() => {
-    if (run.status === 'failed' && !autoOpenedDetails) {
-      detailsOpen = true;
-      autoOpenedDetails = true;
+    if (tabs.length > 0 && !tabs.some((t) => t.id === activeTab)) {
+      activeTab = tabs[0].id;
+    }
+  });
+  // A failed run auto-opens the log for debugging.
+  let autoOpenedLog = $state(false);
+  $effect(() => {
+    if (run.status === 'failed' && !autoOpenedLog && run.log.length > 0) {
+      autoOpenedLog = true;
+      activeTab = 'log';
     }
   });
 
@@ -280,6 +309,24 @@
       <span class="v-elapsed">{formatElapsed(displayElapsed)}</span>
     </div>
     <div class="v-header-right">
+      {#if tabs.length > 0}
+        <button
+          class="v-dismiss"
+          onclick={() => (expanded = !expanded)}
+          title={expanded ? 'Collapse panel' : 'Expand panel'}
+          aria-label={expanded ? 'Collapse panel' : 'Expand panel'}
+        >
+          {#if expanded}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
+            </svg>
+          {:else}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+            </svg>
+          {/if}
+        </button>
+      {/if}
       {#if isRunningLike}
         <button class="v-btn v-btn-ghost" onclick={() => validation.cancel(run.id)} title="Cancel the validation run">
           Cancel
@@ -336,234 +383,6 @@
     </div>
   {/if}
 
-  <!-- Per-step detail (proof / risk / evidence / transcript) -->
-  {#if detailSteps.length > 0}
-    <div class="v-details-list">
-      {#each detailSteps as step (step.name)}
-        <div class="v-step-detail">
-          <div class="v-step-detail-head">
-            <span class="v-step-detail-name">{STEP_LABELS[step.name]}</span>
-            {#if step.riskLevel}
-              <span class="v-risk risk-{step.riskLevel}">risk: {step.riskLevel}</span>
-            {/if}
-            {#if step.status === 'skipped'}
-              <span class="v-tag">skipped</span>
-            {/if}
-          </div>
-
-          {#if step.note}
-            <div class="v-note">{step.note}</div>
-          {/if}
-          {#if step.riskRationale}
-            <div class="v-note">{step.riskRationale}</div>
-          {/if}
-
-          {#if step.proof?.command}
-            <div class="v-proof">
-              <code class="v-proof-cmd">{step.proof.command}</code>
-              {#if step.proof.exitCode != null}
-                <span class="v-proof-exit" class:bad={step.proof.exitCode !== 0}>
-                  exit {step.proof.exitCode}
-                </span>
-              {/if}
-              {#if step.proof.outputTail}
-                <button class="v-inline-toggle" onclick={() => (openOutput[step.name] = !openOutput[step.name])}>
-                  {openOutput[step.name] ? 'Hide output' : 'Show output'}
-                </button>
-              {/if}
-            </div>
-            {#if step.proof.outputTail && openOutput[step.name]}
-              <pre class="v-output">{step.proof.outputTail}</pre>
-            {/if}
-          {/if}
-
-          {#if step.evidence}
-            <div class="v-evidence">
-              <div class="v-evidence-summary">{step.evidence.testingSummary}</div>
-              {#if step.evidence.tested.length > 0}
-                <ul class="v-evidence-tested">
-                  {#each step.evidence.tested as t}<li>{t}</li>{/each}
-                </ul>
-              {/if}
-              {#if step.evidence.artifacts.length > 0}
-                <div class="v-artifacts">
-                  {#each step.evidence.artifacts as a}
-                    <span class="v-artifact" title={a.path}>{a.label} <em>({a.kind})</em></span>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          {#if step.fixReviewDiff}
-            <button class="v-inline-toggle" onclick={() => (openDiff[step.name] = !openDiff[step.name])}>
-              {openDiff[step.name] ? 'Hide fix diff' : 'View fix diff'}
-            </button>
-            {#if openDiff[step.name]}
-              <pre class="v-diff">{#each step.fixReviewDiff.split('\n') as line}<span class={diffLineClass(line)}>{line}
-</span>{/each}</pre>
-            {/if}
-          {/if}
-
-          {#if step.transcript}
-            <button class="v-inline-toggle" onclick={() => (openTranscript[step.name] = !openTranscript[step.name])}>
-              {openTranscript[step.name] ? 'Hide agent transcript' : 'View agent transcript'}
-            </button>
-            {#if openTranscript[step.name]}
-              <pre class="v-transcript">{step.transcript}</pre>
-            {/if}
-          {/if}
-        </div>
-      {/each}
-    </div>
-  {/if}
-
-  <!-- Gate -->
-  {#if run.status === 'gate' && gate}
-    <div class="v-gate">
-      {#if gate.kind === 'ship' && gate.ship}
-        {@const ship = gate.ship}
-        <div class="v-gate-title">Ship — {gateStep}</div>
-        <div class="v-ship-refs" title="{ship.baseBranch} ← {ship.branch}">
-          <span class="v-ref">{ship.baseBranch}</span>
-          <span class="v-arrow">←</span>
-          <span class="v-ref">{ship.branch}</span>
-        </div>
-        {#if ship.onDefaultBranch}
-          <div class="v-note">On the default branch — will commit &amp; push only (no PR).</div>
-        {:else if ship.existingPrUrl}
-          <div class="v-note">A PR already exists — will commit &amp; push to it.</div>
-        {/if}
-        {#if !ship.hasUncommitted && ship.alreadyPushed}
-          <div class="v-note">Nothing to commit and branch already pushed.</div>
-        {/if}
-        <label class="v-field">
-          <span class="v-field-label">Commit message</span>
-          <textarea class="v-textarea" rows="2" bind:value={shipCommit}></textarea>
-        </label>
-        {#if !ship.onDefaultBranch && !ship.existingPrUrl}
-          <label class="v-field">
-            <span class="v-field-label">PR title</span>
-            <input class="v-input" bind:value={shipTitle} />
-          </label>
-          <label class="v-field">
-            <span class="v-field-label">PR body</span>
-            <textarea class="v-textarea" rows="5" bind:value={shipBody}></textarea>
-          </label>
-        {/if}
-        <div class="v-gate-actions">
-          <button class="v-btn v-btn-primary" onclick={commitAndShip} disabled={run.responding}>
-            {run.responding ? 'Shipping…' : 'Commit & Ship'}
-          </button>
-          <button class="v-btn v-btn-ghost" onclick={skip} disabled={run.responding}>Skip step</button>
-        </div>
-      {:else}
-        <!-- findings / fix_review / ci_failure gates -->
-        <div class="v-gate-title">
-          {#if gate.kind === 'fix_review'}
-            Review the fix — {gateStep}
-          {:else if gate.kind === 'ci_failure'}
-            CI failed — {gateStep}
-          {:else}
-            {gateStep} — {gateFindings.length}
-            {gateFindings.length === 1 ? 'finding' : 'findings'}
-          {/if}
-        </div>
-
-        {#if gate.kind === 'fix_review' && gate.diff}
-          <pre class="v-diff">{#each gate.diff.split('\n') as line}<span class={diffLineClass(line)}>{line}
-</span>{/each}</pre>
-        {/if}
-
-        {#if gateFindings.length > 0}
-          <div class="v-findings">
-            <div class="v-finding-row v-finding-head">
-              <span class="v-col-check" aria-hidden="true"></span>
-              <span class="v-col-sev">Severity</span>
-              <span class="v-col-action">Action</span>
-              <span class="v-col-file">File</span>
-              <span class="v-col-desc">Description</span>
-              <span class="v-col-send" aria-hidden="true"></span>
-            </div>
-            {#each gateFindings as finding (finding.id)}
-              <div class="v-finding-row">
-                <span class="v-col-check">
-                  <input
-                    type="checkbox"
-                    checked={checkedIds.has(finding.id)}
-                    disabled={run.responding}
-                    onchange={() => toggleFinding(finding.id)}
-                  />
-                </span>
-                <span class="v-col-sev">
-                  <span class="v-sev-badge {severityClass(finding.severity)}">{finding.severity}</span>
-                </span>
-                <span class="v-col-action">
-                  <span class="v-action-badge {actionBadgeClass(finding.action)}">{finding.action}</span>
-                </span>
-                <span class="v-col-file" title={finding.file ?? ''}>{fileLabel(finding)}</span>
-                <span class="v-col-desc">
-                  {finding.description}
-                  {#if finding.userInstructions}
-                    <span class="v-user-note">↳ {finding.userInstructions}</span>
-                  {/if}
-                </span>
-                <span class="v-col-send">
-                  <button
-                    class="v-send-btn"
-                    onclick={() => fixOne(finding.id)}
-                    disabled={run.responding}
-                    title="Send this single finding to the agent to fix"
-                  >
-                    Send to agent
-                  </button>
-                </span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        <!-- Fix instructions + add finding -->
-        <textarea
-          class="v-textarea"
-          rows="2"
-          placeholder="Optional instructions for the agent when fixing…"
-          bind:value={instructions}
-          disabled={run.responding}
-        ></textarea>
-        <div class="v-add-finding">
-          <input
-            class="v-input"
-            placeholder="Add a finding of your own…"
-            bind:value={newFindingText}
-            disabled={run.responding}
-            onkeydown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                addFinding();
-              }
-            }}
-          />
-          <button class="v-btn" onclick={addFinding} disabled={run.responding || !newFindingText.trim()}>Add finding</button>
-        </div>
-
-        <div class="v-gate-actions">
-          <button class="v-btn v-btn-primary" onclick={fixSelected} disabled={run.responding || checkedCount === 0}>
-            Fix selected ({checkedCount})
-          </button>
-          {#if gate.kind !== 'ci_failure'}
-            <button class="v-btn" onclick={approve} disabled={run.responding} title="Approve — accept the findings and continue">
-              Approve
-            </button>
-          {/if}
-          <button class="v-btn v-btn-ghost" onclick={skip} disabled={run.responding} title="Skip this step and continue">
-            Skip step
-          </button>
-        </div>
-      {/if}
-    </div>
-  {/if}
-
   <!-- Outcome banner -->
   {#if isFinished}
     <div class="v-outcome" data-status={run.status}>
@@ -583,16 +402,218 @@
     {/if}
   {/if}
 
-  <!-- Agent activity feed (full history, for understanding & debugging) -->
-  {#if run.activity.length > 0}
-    <div class="v-log-details">
-      <button class="v-details-toggle" onclick={() => (activityOpen = !activityOpen)}>
-        <svg class="v-chevron" class:open={activityOpen} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m9 18 6-6-6-6" />
-        </svg>
-        Agent activity ({run.activity.length})
-      </button>
-      {#if activityOpen}
+  <!-- Tabbed body: one capped scroll area (expandable) instead of a growing stack -->
+  {#if tabs.length > 0}
+    <div class="v-tabs" role="tablist">
+      {#each tabs as tab (tab.id)}
+        <button
+          class="v-tab"
+          class:active={activeTab === tab.id}
+          role="tab"
+          aria-selected={activeTab === tab.id}
+          onclick={() => (activeTab = tab.id)}
+        >
+          {tab.label}{#if tab.count != null}<span class="v-tab-count">{tab.count}</span>{/if}
+        </button>
+      {/each}
+    </div>
+
+    <div class="v-body" class:expanded>
+      {#if activeTab === 'gate' && gate}
+        {#if gate.kind === 'ship' && gate.ship}
+          {@const ship = gate.ship}
+          <div class="v-gate">
+            <div class="v-gate-title">Ship — {gateStep}</div>
+            <div class="v-ship-refs" title="{ship.baseBranch} ← {ship.branch}">
+              <span class="v-ref">{ship.baseBranch}</span>
+              <span class="v-arrow">←</span>
+              <span class="v-ref">{ship.branch}</span>
+            </div>
+            {#if ship.onDefaultBranch}
+              <div class="v-note">On the default branch — will commit &amp; push only (no PR).</div>
+            {:else if ship.existingPrUrl}
+              <div class="v-note">A PR already exists — will commit &amp; push to it.</div>
+            {/if}
+            {#if !ship.hasUncommitted && ship.alreadyPushed}
+              <div class="v-note">Nothing to commit and branch already pushed.</div>
+            {/if}
+            <label class="v-field">
+              <span class="v-field-label">Commit message</span>
+              <textarea class="v-textarea" rows="2" bind:value={shipCommit}></textarea>
+            </label>
+            {#if !ship.onDefaultBranch && !ship.existingPrUrl}
+              <label class="v-field">
+                <span class="v-field-label">PR title</span>
+                <input class="v-input" bind:value={shipTitle} />
+              </label>
+              <label class="v-field">
+                <span class="v-field-label">PR body</span>
+                <textarea class="v-textarea" rows="5" bind:value={shipBody}></textarea>
+              </label>
+            {/if}
+          </div>
+        {:else}
+          <!-- findings / fix_review / ci_failure gates -->
+          <div class="v-gate">
+            <div class="v-gate-title">
+              {#if gate.kind === 'fix_review'}
+                Review the fix — {gateStep}
+              {:else if gate.kind === 'ci_failure'}
+                CI failed — {gateStep}
+              {:else}
+                {gateStep} — {gateFindings.length}
+                {gateFindings.length === 1 ? 'finding' : 'findings'}
+              {/if}
+            </div>
+
+            {#if gate.kind === 'fix_review' && gate.diff}
+              <pre class="v-diff">{#each gate.diff.split('\n') as line}<span class={diffLineClass(line)}>{line}
+</span>{/each}</pre>
+            {/if}
+
+            {#if gateFindings.length > 0}
+              <div class="v-findings">
+                {#each gateFindings as finding (finding.id)}
+                  <div class="v-finding">
+                    <div class="v-finding-top">
+                      <label class="v-finding-check">
+                        <input
+                          type="checkbox"
+                          checked={checkedIds.has(finding.id)}
+                          disabled={run.responding}
+                          onchange={() => toggleFinding(finding.id)}
+                        />
+                        <span class="v-finding-title">{finding.title || finding.description}</span>
+                      </label>
+                      <span class="v-sev-badge {severityClass(finding.severity)}">{finding.severity}</span>
+                      <span class="v-action-badge {actionBadgeClass(finding.action)}">{finding.action}</span>
+                      <button
+                        class="v-send-btn"
+                        onclick={() => fixOne(finding.id)}
+                        disabled={run.responding}
+                        title="Send this single finding to the agent to fix"
+                      >
+                        Send to agent
+                      </button>
+                    </div>
+                    {#if finding.title}
+                      <div class="v-finding-desc">{finding.description}</div>
+                    {/if}
+                    {#if finding.userInstructions}
+                      <div class="v-user-note">↳ {finding.userInstructions}</div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+
+            <!-- Fix instructions + add finding -->
+            <textarea
+              class="v-textarea"
+              rows="2"
+              placeholder="Optional instructions for the agent when fixing…"
+              bind:value={instructions}
+              disabled={run.responding}
+            ></textarea>
+            <div class="v-add-finding">
+              <input
+                class="v-input"
+                placeholder="Add a finding of your own…"
+                bind:value={newFindingText}
+                disabled={run.responding}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addFinding();
+                  }
+                }}
+              />
+              <button class="v-btn" onclick={addFinding} disabled={run.responding || !newFindingText.trim()}>Add finding</button>
+            </div>
+          </div>
+        {/if}
+      {:else if activeTab === 'steps'}
+        <!-- Per-step detail (proof / risk / evidence / transcript) -->
+        <div class="v-details-list">
+          {#each detailSteps as step (step.name)}
+            <div class="v-step-detail">
+              <div class="v-step-detail-head">
+                <span class="v-step-detail-name">{STEP_LABELS[step.name]}</span>
+                {#if step.riskLevel}
+                  <span class="v-risk risk-{step.riskLevel}">risk: {step.riskLevel}</span>
+                {/if}
+                {#if step.status === 'skipped'}
+                  <span class="v-tag">skipped</span>
+                {/if}
+              </div>
+
+              {#if step.note}
+                <div class="v-note">{step.note}</div>
+              {/if}
+              {#if step.riskRationale}
+                <div class="v-note">{step.riskRationale}</div>
+              {/if}
+
+              {#if step.proof?.command}
+                <div class="v-proof">
+                  <code class="v-proof-cmd">{step.proof.command}</code>
+                  {#if step.proof.exitCode != null}
+                    <span class="v-proof-exit" class:bad={step.proof.exitCode !== 0}>
+                      exit {step.proof.exitCode}
+                    </span>
+                  {/if}
+                  {#if step.proof.outputTail}
+                    <button class="v-inline-toggle" onclick={() => (openOutput[step.name] = !openOutput[step.name])}>
+                      {openOutput[step.name] ? 'Hide output' : 'Show output'}
+                    </button>
+                  {/if}
+                </div>
+                {#if step.proof.outputTail && openOutput[step.name]}
+                  <pre class="v-output">{step.proof.outputTail}</pre>
+                {/if}
+              {/if}
+
+              {#if step.evidence}
+                <div class="v-evidence">
+                  <div class="v-evidence-summary">{step.evidence.testingSummary}</div>
+                  {#if step.evidence.tested.length > 0}
+                    <ul class="v-evidence-tested">
+                      {#each step.evidence.tested as t}<li>{t}</li>{/each}
+                    </ul>
+                  {/if}
+                  {#if step.evidence.artifacts.length > 0}
+                    <div class="v-artifacts">
+                      {#each step.evidence.artifacts as a}
+                        <span class="v-artifact" title={a.path}>{a.label} <em>({a.kind})</em></span>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              {#if step.fixReviewDiff}
+                <button class="v-inline-toggle" onclick={() => (openDiff[step.name] = !openDiff[step.name])}>
+                  {openDiff[step.name] ? 'Hide fix diff' : 'View fix diff'}
+                </button>
+                {#if openDiff[step.name]}
+                  <pre class="v-diff">{#each step.fixReviewDiff.split('\n') as line}<span class={diffLineClass(line)}>{line}
+</span>{/each}</pre>
+                {/if}
+              {/if}
+
+              {#if step.transcript}
+                <button class="v-inline-toggle" onclick={() => (openTranscript[step.name] = !openTranscript[step.name])}>
+                  {openTranscript[step.name] ? 'Hide agent transcript' : 'View agent transcript'}
+                </button>
+                {#if openTranscript[step.name]}
+                  <pre class="v-transcript">{step.transcript}</pre>
+                {/if}
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {:else if activeTab === 'activity'}
+        <!-- Agent activity feed (full history, for understanding & debugging) -->
         <div class="v-activity-feed" bind:this={activityFeedEl}>
           {#each run.activity as a, i (i)}
             <div class="v-activity-row">
@@ -607,21 +628,45 @@
             </div>
           {/each}
         </div>
+      {:else if activeTab === 'log'}
+        <pre class="v-log">{run.log.join('\n')}</pre>
       {/if}
     </div>
   {/if}
 
-  <!-- Log tail -->
-  {#if run.log.length > 0}
-    <div class="v-log-details">
-      <button class="v-details-toggle" onclick={() => (detailsOpen = !detailsOpen)}>
-        <svg class="v-chevron" class:open={detailsOpen} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m9 18 6-6-6-6" />
-        </svg>
-        Log
-      </button>
-      {#if detailsOpen}
-        <pre class="v-log">{run.log.join('\n')}</pre>
+  <!-- Gate actions — pinned outside the scroll area so they're always reachable -->
+  {#if run.status === 'gate' && gate}
+    <div class="v-gate-actions">
+      {#if gate.kind === 'ship' && gate.ship}
+        <button class="v-btn v-btn-primary" onclick={commitAndShip} disabled={run.responding}>
+          {run.responding ? 'Shipping…' : 'Commit & Ship'}
+        </button>
+        <button class="v-btn v-btn-ghost" onclick={skip} disabled={run.responding}>Skip step</button>
+      {:else}
+        <button class="v-btn v-btn-primary" onclick={fixSelected} disabled={run.responding || checkedCount === 0}>
+          Fix selected ({checkedCount})
+        </button>
+        <label class="v-fix-target" title="Where fix prompts are sent">
+          in
+          <select
+            class="v-fix-target-select"
+            value={run.fixTarget}
+            disabled={run.responding}
+            onchange={(e) =>
+              validation.setFixTarget(run.id, e.currentTarget.value as 'session' | 'new-session')}
+          >
+            <option value="session">this session</option>
+            <option value="new-session">a new session</option>
+          </select>
+        </label>
+        {#if gate.kind !== 'ci_failure'}
+          <button class="v-btn" onclick={approve} disabled={run.responding} title="Approve — accept the findings and continue">
+            Approve
+          </button>
+        {/if}
+        <button class="v-btn v-btn-ghost" onclick={skip} disabled={run.responding} title="Skip this step and continue">
+          Skip step
+        </button>
       {/if}
     </div>
   {/if}
@@ -954,8 +999,6 @@
   .v-transcript,
   .v-log {
     margin: 0;
-    max-height: 220px;
-    overflow: auto;
     padding: 0.5rem;
     background: var(--color-background);
     border: 1px solid var(--color-border);
@@ -1004,8 +1047,7 @@
   /* Diff */
   .v-diff {
     margin: 0;
-    max-height: 260px;
-    overflow: auto;
+    overflow-x: auto;
     padding: 0.5rem;
     background: var(--color-background);
     border: 1px solid var(--color-border);
@@ -1020,13 +1062,79 @@
   .v-diff .diff-del { color: rgb(248, 113, 113); }
   .v-diff .diff-hunk { color: rgb(96, 165, 250); }
 
+  /* Tabs + body */
+  .v-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .v-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.6rem;
+    margin-bottom: -1px;
+    font-size: 0.74rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+  }
+  .v-tab:hover {
+    color: var(--color-text-secondary);
+  }
+  .v-tab.active {
+    color: var(--color-text-primary);
+    border-bottom-color: var(--color-accent);
+  }
+  .v-tab-count {
+    font-size: 0.62rem;
+    font-weight: 600;
+    padding: 0.02rem 0.32rem;
+    border-radius: 8px;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .v-tab.active .v-tab-count {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    color: var(--color-accent);
+  }
+  .v-body {
+    overflow-y: auto;
+    max-height: 34vh;
+  }
+  .v-body.expanded {
+    max-height: 72vh;
+  }
+
   /* Gate */
   .v-gate {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    padding-top: 0.5rem;
-    border-top: 1px dashed var(--color-border);
+  }
+  .v-fix-target {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+  }
+  .v-fix-target-select {
+    padding: 0.28rem 0.4rem;
+    background: var(--color-background);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    font-size: 0.72rem;
+  }
+  .v-fix-target-select:focus {
+    outline: none;
+    border-color: var(--color-accent);
   }
   .v-gate-title {
     font-weight: 600;
@@ -1035,56 +1143,50 @@
   .v-findings {
     display: flex;
     flex-direction: column;
-    max-height: 260px;
-    overflow-y: auto;
     border: 1px solid var(--color-border);
     border-radius: 7px;
   }
-  .v-finding-row {
-    display: grid;
-    grid-template-columns: 24px 68px 72px minmax(80px, 1.2fr) minmax(120px, 2.4fr) 84px;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid var(--color-border);
-  }
-  .v-finding-row:last-child {
-    border-bottom: none;
-  }
-  .v-finding-head {
-    font-size: 0.66rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--color-text-muted);
-    background: var(--color-surface-elevated);
-  }
-  .v-col-check {
-    display: inline-flex;
-    justify-content: center;
-  }
-  .v-col-file {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.7rem;
-    color: var(--color-text-secondary);
-  }
-  .v-col-desc {
-    color: var(--color-text-secondary);
-    min-width: 0;
+  .v-finding {
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
+    gap: 0.2rem;
+    padding: 0.4rem 0.5rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .v-finding:last-child {
+    border-bottom: none;
+  }
+  .v-finding-top {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+  .v-finding-check {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .v-finding-title {
+    min-width: 0;
+    color: var(--color-text-primary);
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .v-finding-desc {
+    color: var(--color-text-secondary);
+    font-size: 0.74rem;
+    line-height: 1.45;
+    padding-left: 1.35rem;
   }
   .v-user-note {
     color: var(--color-text-muted);
     font-size: 0.7rem;
     font-style: italic;
-  }
-  .v-col-send {
-    display: inline-flex;
-    justify-content: flex-end;
+    padding-left: 1.35rem;
   }
   .v-send-btn {
     font-size: 0.66rem;
@@ -1272,8 +1374,6 @@
   .v-activity-feed {
     display: flex;
     flex-direction: column;
-    max-height: 240px;
-    overflow-y: auto;
     padding: 0.35rem 0.45rem;
     background: var(--color-background);
     border: 1px solid var(--color-border);
@@ -1313,33 +1413,4 @@
     word-break: break-word;
   }
 
-  /* Log */
-  .v-log-details {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-  .v-details-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    align-self: flex-start;
-    padding: 0.15rem 0.25rem;
-    font-size: 0.72rem;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    background: none;
-    border: none;
-  }
-  .v-details-toggle:hover {
-    color: var(--color-text-secondary);
-  }
-  .v-chevron {
-    width: 12px;
-    height: 12px;
-    transition: transform 0.15s ease;
-  }
-  .v-chevron.open {
-    transform: rotate(90deg);
-  }
 </style>

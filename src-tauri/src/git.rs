@@ -45,6 +45,16 @@ pub struct WorktreeSetupStepResult {
     pub output: Option<String>,
 }
 
+/// Result of cleaning up a session's merged branch (worktree + local + remote).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchCleanupResult {
+    pub worktree_removed: bool,
+    pub local_branch_deleted: bool,
+    pub remote_branch_deleted: bool,
+    /// Non-fatal issues (e.g. remote branch deletion failed).
+    pub warnings: Vec<String>,
+}
+
 pub struct GitManager;
 
 impl GitManager {
@@ -458,6 +468,161 @@ impl GitManager {
             });
         }
         Ok(())
+    }
+
+    /// Normalize a path for equality checks (separators + case, Windows-tolerant).
+    fn normalize_path(p: &str) -> String {
+        p.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    }
+
+    /// Clean up after a merged PR: remove the session's worktree (when given),
+    /// delete the local branch, and best-effort delete the remote branch.
+    ///
+    /// Refuses (returns Err) unless it is safe: the working tree must have no
+    /// uncommitted changes and the branch no unpushed commits. Deleting the
+    /// repo's default branch is always refused. Remote deletion failure is a
+    /// warning, not an error (the remote branch may already be gone).
+    pub fn cleanup_merged_branch(
+        repo_path: &str,
+        branch: &str,
+        worktree_path: Option<&str>,
+    ) -> Result<BranchCleanupResult, String> {
+        let branch = branch.trim();
+        if branch.is_empty() {
+            return Err("No branch to clean up".to_string());
+        }
+
+        // Never delete the default branch.
+        if let Ok(default_remote) = Self::get_default_remote_branch(repo_path) {
+            let default_tail = default_remote
+                .split_once('/')
+                .map(|(_, tail)| tail)
+                .unwrap_or(&default_remote);
+            if branch == default_tail {
+                return Err(format!(
+                    "Refusing to delete the default branch '{}'",
+                    branch
+                ));
+            }
+        }
+
+        // A provided worktree path must be a registered linked worktree (not the
+        // main one) — otherwise `git worktree remove` would fail confusingly or,
+        // worse, we'd be pointed at the wrong directory.
+        if let Some(wt) = worktree_path {
+            let worktrees = Self::list_worktrees(repo_path)?;
+            let normalized = Self::normalize_path(wt);
+            let found = worktrees
+                .iter()
+                .find(|w| Self::normalize_path(&w.path) == normalized);
+            match found {
+                None => {
+                    return Err(format!("'{}' is not a worktree of this repository", wt));
+                }
+                Some(w) if w.is_main => {
+                    return Err("Refusing to remove the main worktree".to_string());
+                }
+                Some(_) => {}
+            }
+        }
+
+        // Safety check 1: no uncommitted changes where the branch is checked out.
+        let check_dir = worktree_path.unwrap_or(repo_path);
+        let status = Self::git(check_dir, &["status", "--porcelain"])?;
+        let dirty = status.lines().filter(|l| !l.trim().is_empty()).count();
+        if dirty > 0 {
+            return Err(format!(
+                "Not cleaning up: {} uncommitted change{} in {} — commit, stash, or discard first",
+                dirty,
+                if dirty == 1 { "" } else { "s" },
+                check_dir
+            ));
+        }
+
+        let mut warnings = Vec::new();
+        let branch_ref = format!("refs/heads/{}", branch);
+        let branch_exists =
+            Self::git(repo_path, &["rev-parse", "--verify", "--quiet", &branch_ref]).is_ok();
+
+        // Safety check 2: every commit on the branch must be on the remote.
+        if branch_exists {
+            let remote_ref = format!("origin/{}", branch);
+            let unpushed = if Self::git(repo_path, &["rev-parse", "--verify", "--quiet", &remote_ref])
+                .is_ok()
+            {
+                Self::git(
+                    repo_path,
+                    &["rev-list", "--count", &format!("{}..{}", remote_ref, branch)],
+                )?
+            } else {
+                // No remote-tracking ref (e.g. already deleted on GitHub): count
+                // commits not reachable from ANY remote ref.
+                Self::git(
+                    repo_path,
+                    &["rev-list", "--count", branch, "--not", "--remotes"],
+                )?
+            };
+            let unpushed: usize = unpushed.trim().parse().unwrap_or(0);
+            if unpushed > 0 {
+                return Err(format!(
+                    "Not cleaning up: branch '{}' has {} commit{} not on the remote",
+                    branch,
+                    unpushed,
+                    if unpushed == 1 { "" } else { "s" }
+                ));
+            }
+        } else {
+            warnings.push(format!("Local branch '{}' not found (already deleted?)", branch));
+        }
+
+        // Remove the worktree. --force only bypasses ignored files (node_modules
+        // etc.) — real changes were ruled out by the porcelain check above.
+        let mut worktree_removed = false;
+        if let Some(wt) = worktree_path {
+            Self::git(repo_path, &["worktree", "remove", "--force", wt])?;
+            worktree_removed = true;
+        }
+
+        // Delete the local branch. -D (not -d) because squash/rebase merges leave
+        // the branch's commits outside the default branch's history; the
+        // unpushed-commits check above is the real safety gate.
+        let mut local_branch_deleted = false;
+        if branch_exists {
+            // If the branch is checked out here (non-worktree session), switch to
+            // the default branch first — git refuses to delete the current branch.
+            if worktree_path.is_none()
+                && Self::get_current_branch(repo_path).as_deref() == Ok(branch)
+            {
+                let default_remote = Self::get_default_remote_branch(repo_path)?;
+                let default_tail = default_remote
+                    .split_once('/')
+                    .map(|(_, tail)| tail)
+                    .unwrap_or(&default_remote);
+                Self::git(repo_path, &["checkout", default_tail])?;
+            }
+            Self::git(repo_path, &["branch", "-D", branch])?;
+            local_branch_deleted = true;
+        }
+
+        // Best-effort remote branch deletion (GitHub's own post-merge cleanup step).
+        let mut remote_branch_deleted = false;
+        match Self::git(repo_path, &["push", "origin", "--delete", branch]) {
+            Ok(_) => remote_branch_deleted = true,
+            Err(e) => {
+                let msg = e.to_string();
+                // Already gone is a success from the user's point of view.
+                if !msg.to_lowercase().contains("remote ref does not exist") {
+                    warnings.push(format!("Remote branch not deleted: {}", msg));
+                }
+            }
+        }
+
+        Ok(BranchCleanupResult {
+            worktree_removed,
+            local_branch_deleted,
+            remote_branch_deleted,
+            warnings,
+        })
     }
 
     pub fn get_worktree_path(repo_path: &str, branch_name: &str) -> String {

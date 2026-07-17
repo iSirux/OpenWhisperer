@@ -2,10 +2,9 @@
 
 Binding contract for the native post-implementation validation feature. Design rationale lives in
 `docs/native-validation-pipeline-brainstorm-2026-07.md`; this file is the source of truth for names,
-types, commands, events, and behaviors. The existing No Mistakes integration (`no_mistakes.rs`,
-`noMistakes.ts`, `NoMistakesPanel.svelte`) stays **untouched** (dev-mode-gated) — the new feature is
-independent code named **Validation** everywhere. Never use the words "no mistakes" in new
-code/UI/strings (referencing `no_mistakes.rs` as a code *pattern* to copy is fine).
+types, commands, events, and behaviors. The old external No Mistakes integration this feature
+replaced has been fully removed (July 2026) — the feature is named **Validation** everywhere; never
+use the words "no mistakes" in code/UI/strings.
 
 Decisions from the user:
 - Full v1+v2+v3 scope in one build (review/test/docs/lint pipeline + gates + fix-via-session + ship + ci).
@@ -120,8 +119,8 @@ pub struct RunOptions {
 }
 ```
 
-Timestamps: unix millis (`u64`). Runs are **in-memory only** in the backend (like
-`NoMistakesManager`); a summary is mirrored onto the session frontend-side (§7) for
+Timestamps: unix millis (`u64`). Runs are **in-memory only** in the backend; a summary is
+mirrored onto the session frontend-side (§7) for
 restart-surviving badges. One active run per session; starting a new run replaces a *finished*
 run, errors if one is active.
 
@@ -169,8 +168,10 @@ Sidecar behavior (clone the `handleGenerateRepoDescription` pattern, Claude prov
   rejects any Bash command not starting with `git ` (read-only intent; the review prompt tells the
   agent to read the diff/history itself via git).
 - An in-process MCP server exposes ONE submit tool per role, schema-enforced:
-  - `submit_review` → `{ findings: [{severity, file?, line?, description, action}], summary,
-    risk_level, risk_rationale }` (findings before risk — field order is deliberate).
+  - `submit_review` → `{ findings: [{title, severity, file?, line?, description, action}],
+    summary, risk_level, risk_rationale }` (findings before risk — field order is deliberate;
+    `title` = short imperative summary, schema-required for agent findings, optional in Rust for
+    compat with user-added findings).
   - `submit_verification` → `{ verdict: "confirmed"|"refuted", reason }`.
   - `submit_evidence` → `{ findings: [...], tested: [string], testing_summary,
     artifacts: [{kind, label, path}] }`.
@@ -193,7 +194,7 @@ built in Rust (`src-tauri/src/validation/prompts.rs`) — see §5 for required p
 ## 5. Step behaviors
 
 Executor: sequential over `options.steps` (fixed order), one tokio task per run with an abort
-handle (mirror `NoMistakesManager`'s `RunState`). Statuses/gates per §1. Auto-fix limits come from
+handle per run. Statuses/gates per §1. Auto-fix limits come from
 config (§7): findings with `action == "auto-fix"` are auto-sent to the fixer (via fix-request,
 no user gate) up to the per-step limit; after that, or for any `error`/`warning` or `ask-user`
 finding, the step parks as a gate. `info`-only findings never gate. After any fix round the step
@@ -286,19 +287,25 @@ Failures (all checks settled, ≥1 red):
   failing-check-name set twice in a row; that gates instead (`kind: "ci_failure"`).
 - Idle timeout (config, default 45 min without any check state change) → gate.
 
-## 6. Fix loop (frontend-mediated; the fixer is the session's own agent)
+## 6. Fix loop (frontend-mediated; fixer = the session's own agent OR a fresh session)
 
 In `stores/validation.ts`, on `validation-fix-request-{runId}`:
-1. Compose the fix prompt (util `buildFixPrompt(findings, instructions?)` in
-   `src/lib/utils/validationFix.ts`): list findings (id, severity, file:line, description, any
-   per-finding user instructions), plus the fixer discipline: "First double-check each finding is
-   legitimate — if one is wrong, say so and leave the code alone. Prefer the smallest correct
+1. Compose the fix prompt (util `buildFixPrompt(findings, instructions?, context?)` in
+   `src/lib/utils/validationFix.ts`): list findings (id, severity, title, file:line, description,
+   any per-finding user instructions), plus the fixer discipline: "First double-check each finding
+   is legitimate — if one is wrong, say so and leave the code alone. Prefer the smallest correct
    root-cause fix. Never resolve a finding by deleting intentional behavior; fix forward. Apply all
    fixes, then run ONE focused verification of the changed area only — do NOT run the full test or
    lint suite (the validation pipeline runs them next). Do not add comments explaining fixes."
-2. If the session is busy (`status === 'querying'`), wait until idle (subscribe), then send via
-   `sdkSessions.sendPrompt(sessionId, prompt)`.
-3. Watch the session: on its next transition querying→idle, call `validation_fix_done(runId)`;
+2. Route per the run view's client-only `fixTarget` (`'session'` default | `'new-session'`,
+   chosen via a select next to "Fix selected"):
+   - **session**: if the session is busy (`status === 'querying'`), wait until idle (subscribe),
+     then send via `sdkSessions.sendPrompt(sessionId, prompt)`.
+   - **new-session**: create a fresh session cloned from the origin (provider/model/effort/
+     account) in the run's exact `cwd` (same branch/worktree), and send the prompt as its first
+     turn with `context` — the prompt then opens with the run's intent (data-framed) and the cwd
+     so the history-less agent has what it needs. The origin session stays untouched.
+3. Watch the fixer session: on its next transition querying→idle, call `validation_fix_done(runId)`;
    on `sdk-error` / stopped-by-user, call `validation_fix_failed(runId, reason)` (backend turns the
    step into a gate so the user decides).
 4. While pending, run shows `pending_fix: true`; the panel shows "Agent is fixing (n findings)…".
@@ -334,7 +341,7 @@ seeded repo-override → global default, and the last-used per-repo choice persi
 
 ## 8. Frontend store & session mirror
 
-`src/lib/stores/validation.ts` (model on `noMistakes.ts`): `validationRuns:
+`src/lib/stores/validation.ts`: `validationRuns:
 writable<Map<string /*runId*/, ValidationRunView>>`, one visible run per session; API:
 `startRun(sessionId, cwd, repoId, intent, options)`, `respond`, `executeShip`, `cancel`,
 `dismiss`, `selectFindings`, `addUserFinding`. Listeners registered before invoking start.
@@ -342,38 +349,42 @@ Auto-select `auto-fix` findings at gates.
 
 Intent: `src/lib/utils/validationIntent.ts` — `buildValidationIntent(session)`: aiMetadata
 name/outcome + ALL user messages **verbatim** (recent last), cap ~6000 chars (truncate oldest
-with a marker). Richer than the old 1500-char one-liner.
+with a marker).
 
 `SdkSession` gains `validation?: { runId, status: RunStatus, step?: StepName, findingCount:
 number, prUrl?: string, updatedAt: number }` — auto-persisted (do NOT add to
 `NON_PERSISTABLE_FIELDS`), updated by the store on every `validation-update`, giving a
-restart-surviving badge. Full runs are not restored (in-memory backend), matching No Mistakes'
-assumption; a stale mirrored status renders as "last run: <status>".
+restart-surviving badge. Full runs are not restored (in-memory backend); a stale mirrored
+status renders as "last run: <status>".
 
 ## 9. UI
 
 - **`SdkSessionHeader.svelte`**: "Validate" button (checkmark-shield style, NOT gated on dev_mode),
-  enabled when session idle with a real cwd; opens the start popover. Keep the existing
-  dev-gated No Mistakes button as-is.
+  enabled when session idle with a real cwd; opens the start popover.
 - **Start popover** (`src/lib/components/sdk/ValidationStartPopover.svelte` or inline): step
   checkboxes (fixed order; seeded per §7), reviewer model select (Claude model list from
   `utils/models.ts` + "Session model"), effort select (off/low/medium/high), adversarial-verify
   toggle, Start button. Remember last per repo.
-- **`ValidationPanel.svelte`** (`components/sdk/`, rendered in `SdkView.svelte` in the same slot
-  as `NoMistakesPanel`, keyed off the session's run): header (status, elapsed, cancel/dismiss);
-  stepper over selected steps; per-step: status icon, proof line (command · exit code) with
-  expandable output, risk chip (review), evidence summary + artifact list (test), transcript
-  drawer ("View agent transcript"); gate cards:
-  - findings gate: table (checkbox / severity chip / action chip / file:line / description),
-    per-finding "Send to agent" one-click (single-finding fix), instructions textarea,
-    "Add finding" (small text input → user-N finding), buttons **Fix selected (n)** / **Approve** /
-    **Skip step**; auto-fix findings pre-checked.
-  - fix_review gate: diff text in a `<pre>` (monospace, simple +/- line coloring) + same buttons.
-  - ship gate: editable commit message, PR title, PR body (textarea), base→branch line, notes
-    (on default branch / existing PR), **Commit & Ship** button.
-  - ci_failure gate: failing checks list + findings + Fix selected / Skip.
-  Collapsible log tail at the bottom (auto-open on failure). Outcome banner on finish; if a PR
-  was created, link + hint to the PR panel.
+- **`ValidationPanel.svelte`** (`components/sdk/`, rendered in `SdkView.svelte` pinned above the
+  prompt input, keyed off the session's run). **Hybrid capped layout**: header (status,
+  elapsed, expand toggle, cancel/dismiss), stepper, live-activity line, and outcome banner are
+  always visible; everything else lives in a **tabbed body** — one scroll area capped at ~34vh
+  (expand toggle → ~72vh) with tabs Gate (auto-selected when a gate appears, findings-count
+  badge) / Steps / Activity / Log (auto-selected on failure). Gate action buttons are pinned
+  BELOW the body so they stay reachable from any tab. Tab content:
+  - Gate (findings/ci_failure): stacked finding **rows** (not columns) — checkbox + bold `title`
+    (falls back to description; no file shown) + severity/action chips + per-finding "Send to
+    agent", description underneath; instructions textarea; "Add finding" input. Pinned actions:
+    **Fix selected (n)** + fix-target select ("in this session / a new session", §6) /
+    **Approve** / **Skip step**; auto-fix findings pre-checked.
+  - Gate (fix_review): diff text in a `<pre>` (monospace, simple +/- line coloring) + same actions.
+  - Gate (ship): editable commit message, PR title, PR body (textarea), base→branch line, notes
+    (on default branch / existing PR); pinned **Commit & Ship** / **Skip step**.
+  - Steps: per-step status, proof line (command · exit code) with expandable output, risk chip
+    (review), evidence summary + artifact list (test), transcript drawer.
+  - Activity: full timestamped agent-activity feed (auto-follows tail).
+  - Log: the streaming run log.
+  Outcome banner on finish; if a PR was created, link + hint to the PR panel.
 - **Badge**: small validation status dot/icon in `SessionListItem` (reuse status-color patterns)
   from the mirrored `session.validation`.
 - **Settings → Validation tab** (`components/settings/ValidationTab.svelte`, register in the
@@ -402,6 +413,6 @@ assumption; a stale mirrored status renders as "last run: <status>".
 
 - Rust: `cargo check` in `src-tauri/` must pass. Unit tests for: fail-closed action deserialize,
   finding id normalization, gate routing (error/warning/ask-user park; info passes), ship proposal
-  fallback templates. Follow the `no_mistakes.rs` test style.
+  fallback templates.
 - Sidecar: `npm run sidecar:build` must pass.
 - Frontend: `npm run check` must pass (no new errors vs. baseline).

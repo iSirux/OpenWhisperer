@@ -119,6 +119,10 @@ pub struct ValidationFinding {
     /// Deterministic id: "<step>-<n>" (agent) or "user-<n>" (user-added).
     #[serde(default)]
     pub id: String,
+    /// Short imperative title (schema-required for agent findings; absent on
+    /// user-added and pre-title findings — display falls back to description).
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default = "default_warning")]
     pub severity: ValidationSeverity,
     #[serde(default)]
@@ -166,6 +170,8 @@ impl ValidationFinding {
 /// id/source). Category is accepted (docs/lint roles) but not persisted.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawAgentFinding {
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default = "default_warning_str")]
     pub severity: String,
     #[serde(default)]
@@ -187,6 +193,7 @@ impl RawAgentFinding {
     pub fn into_finding(self) -> ValidationFinding {
         ValidationFinding {
             id: String::new(),
+            title: self.title.filter(|s| !s.trim().is_empty()),
             severity: ValidationSeverity::parse(&self.severity),
             file: self.file.filter(|s| !s.trim().is_empty()),
             line: self.line,
@@ -454,6 +461,7 @@ mod tests {
     fn id_normalization_is_deterministic() {
         let mut findings = vec![
             RawAgentFinding {
+                title: None,
                 severity: "error".into(),
                 file: None,
                 line: None,
@@ -462,6 +470,7 @@ mod tests {
             }
             .into_finding(),
             RawAgentFinding {
+                title: None,
                 severity: "info".into(),
                 file: None,
                 line: None,
@@ -479,6 +488,7 @@ mod tests {
     fn gate_routing_blocks_error_warning_askuser_not_info() {
         let mk = |sev: ValidationSeverity, act: FindingAction| ValidationFinding {
             id: "x".into(),
+            title: None,
             severity: sev,
             file: None,
             line: None,
@@ -501,6 +511,7 @@ mod tests {
     fn auto_fixable_excludes_info() {
         let mk = |sev, act| ValidationFinding {
             id: "x".into(),
+            title: None,
             severity: sev,
             file: None,
             line: None,

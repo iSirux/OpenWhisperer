@@ -216,7 +216,9 @@ Message to analyze:
 **Transcription B**:
 {}
 
-Compare both transcriptions and produce the best combined result. Prefer the more complete transcription as the base, and incorporate any clearly correct words or phrases from the other that it missed or misheard."#,
+Compare both transcriptions and produce the best combined result. Prefer the more complete transcription as the base, and incorporate any clearly correct words or phrases from the other that it missed or misheard.
+
+When one transcription contains words the other lacks (especially at the end), only drop those words if you are highly confident they are a transcription artifact rather than real speech — engines truncate endings more often than they hallucinate extra words. When in doubt, keep the extra words."#,
                 whisper_transcription,
                 realtime
             )
