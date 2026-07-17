@@ -71,6 +71,7 @@ Most routes live in the `(main)` route group, which shares `(main)/+layout.svelt
 - `sequences.ts` / `sequenceExecutions.ts` - Sequence definitions (YAML import/export) and live execution state (node results, logs, notifications)
 - `debugRecordings.ts` - Bounded rolling log (20 newest) of recordings with audio + all transcription stages; always on
 - `noMistakes.ts` - No Mistakes run store (see No Mistakes Integration)
+- `validation.ts` - Native validation pipeline run store (see Validation Pipeline)
 - `updater.ts` - App update check/download/install state via the Tauri updater plugin (see App Updates)
 
 **Components (`src/lib/components/`):**
@@ -122,6 +123,7 @@ Core UI:
 - `ForkButton.svelte` / `RerunDropdown.svelte` - Fork a session; re-run a prompt
 - `LaunchBar.svelte` - Launch profile/command bar (used in `RepositoryView`)
 - `NoMistakesPanel.svelte` - No Mistakes run panel (see No Mistakes Integration)
+- `ValidationPanel.svelte` / `ValidationStartPopover.svelte` - Native validation pipeline panel and start popover (see Validation Pipeline)
 - `SessionRecordingHeader.svelte` - Header for a voice recording: shows completed-recording visualizations and drives the **prepared** (draft, ready to launch) and **approval** (review-before-send) UIs for voice-originated sessions. This is the post-recording flow — NOT the manual typed New Session form (that's `SessionSetupView.svelte`).
 - `sdkViewMessageProcessing.ts` - Message-stream processing helpers for `SdkView`
 
@@ -140,6 +142,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `RealtimeTab.svelte` - Real-time transcription provider selection (Moonshine recommended, Vosk, VoiceStreamAI, Speaches, SherpaOnnx) with per-provider config and Docker support
 - `LlmTab.svelte` - LLM integration settings with provider selection and feature toggles
 - `QueueTab.svelte` - Smart Queue settings (rate-limit queueing, stagger delays)
+- `ValidationTab.svelte` - Validation pipeline defaults (steps, reviewer model/effort, auto-fix limits; see Validation Pipeline)
 - `McpTab.svelte` - MCP server configuration (add/edit/remove/test servers, OAuth)
 - `HotkeysTab.svelte` - Global hotkey configuration
 - `OverlayTab.svelte` - Overlay window settings (position, visibility, transparency)
@@ -178,6 +181,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `inlineDictation.ts` - `makeInlineDictation()` hold-to-record dictation factory with LLM cleanup, for inputs without their own recording pipeline
 - `recordingCycles.ts` - Shared pre-send cycling of recording context (repo, model) for hotkeys and overlay chips
 - `noMistakesIntent.ts` - Composes the No Mistakes `--intent` string
+- `validationIntent.ts` / `validationFix.ts` - Validation pipeline intent composition and fix-prompt builder (see Validation Pipeline)
 - `sessionStatus.ts` / `duration.ts` / `hotkeys.ts` / `logger.ts` / `repoIcons.ts` / `toolCallFormatting.ts` - Status categories/styling, duration formatting, hotkey normalization, backend-forwarded logging, curated repo icon set, tool-call display formatting
 - `sequenceConverter.ts` - Converts sequence definitions to/from `@xyflow/svelte` editor nodes/edges
 
@@ -206,6 +210,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `launch.rs` - Launch-profile/command execution
 - `notion.rs` - Notion API client
 - `no_mistakes.rs` - No Mistakes CLI integration (see No Mistakes Integration)
+- `validation/` - Native validation pipeline: types, prompts, ship step, executor/`ValidationManager` (see Validation Pipeline; config in `config/validation.rs`)
 - `usage_stats.rs` - Usage telemetry types (moved out of config)
 - `persist.rs` / `proc.rs` / `util.rs` - Shared helpers: atomic JSON writes + rolling backups; process spawning (Windows `CREATE_NO_WINDOW`); small utilities
 - `sequences/` - Sequence automation engine
@@ -240,6 +245,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `sequence_cmds.rs` - Sequence engine commands
 - `notion_cmds.rs` - Notion card integration
 - `no_mistakes_cmds.rs` - No Mistakes run commands
+- `validation_cmds.rs` - Native validation pipeline run commands (see Validation Pipeline)
 - `git_cmds.rs` - Git/worktree operations
 - `log_cmds.rs` - In-memory app log
 
@@ -561,6 +567,19 @@ Provider-agnostic support for multiple logged-in provider accounts on one machin
 - **Per-repo whitelist:** `RepoConfig.account_ids` (empty = all allowed; may include the virtual default ids; order = preference — first entry is the default for new sessions in that repo). Chip-row editor in `RepositoryView`'s Repository Settings. If a repo's whitelist excludes every account of a provider, the virtual default is the fallback.
 - **Per-account rate limits:** `fetch_claude_rate_limits`/`fetch_codex_rate_limits` accept an optional `accountId` (credentials resolved via `account_credentials_path` in `config/accounts.rs`; omitted/`default-*` = machine-default login). Frontend: `rateLimits.ts` keeps the two provider singletons for the default login and adds a lazily-built per-account store registry (`rateLimitStoreForAccount`, `syncAccountRateLimitStores` — reconciled from `settings.accounts` in `RateLimitIndicator`) mirrored into the reactive `accountRateLimits` record. `queueDetection.ts` gates (`providerExhaustion`/`shouldQueue`/`nextWindowResetAt`) take an optional trailing `accountId`; Smart Queue items snapshot the session's `accountId` so a pinned session waits on **its** account's window. UI: `RateLimitIndicator` renders one compact two-row indicator per account **with usage data**, identical in size to the provider ones — identity is carried ONLY by color + tooltip, no label rows (deliberate: the header has no room for more chrome) — background tint = provider (orange Claude / green Codex), border = account color; 5h/7d bars per account in `AccountsTab`; schedule-send countdowns in `SdkPromptInput` read the pinned account's windows. `spareTokens.ts` still reads the default-account stores only.
 - **Not yet implemented** (v2 in the design doc): capacity-based auto-routing across accounts.
+
+## Validation Pipeline
+
+Native post-implementation validation of a session's changes — the in-app successor to the external No Mistakes integration (design: `docs/native-validation-pipeline-brainstorm-2026-07.md`; binding contract: `docs/validation-pipeline-spec.md`). A per-session **Validation Run** executes user-selected steps in fixed order — `review → test → docs → lint → ship → ci` — with decision gates, an auto-fix loop, and the **session's own agent as the fixer**. Manual start only (deliberate: no auto-trigger, no SDK Stop hooks).
+
+- **Data model** (`src-tauri/src/validation/types.rs`): `ValidationFinding { id, severity: error|warning|info, file, line, description, action: auto-fix|ask-user|no-op, source }` with **fail-closed deserialization** (unknown/missing action → `ask-user`; unknown severity → `warning`); gate routing = any error/warning or ask-user finding parks, info passes; `StepRound` audit trail per attempt; `ValidationRun` full snapshots.
+- **Backend** (`src-tauri/src/validation/{types,prompts,ship,executor}.rs`, `commands/validation_cmds.rs`, `config/validation.rs`): `ValidationManager` (runs map, tokio task per run, modeled on `NoMistakesManager` but native). Events: `validation-update-${runId}` (full run snapshot on every change), `validation-log-${runId}`, `validation-fix-request-${runId}`, `validation-agent-activity-${runId}` (live per-tool-call/text agent activity; client-only bounded feed, not part of the snapshot). Commands: `validation_start_run` (returns backend-generated runId), `validation_get_run` (post-attach resync), `validation_respond` (approve|skip|fix), `validation_execute_ship`, `validation_fix_done`/`validation_fix_failed`, `validation_cancel`. Auto-fix limits per step from config (review 0 → always gates; test/lint/ci self-fix within bounds). Fix rounds re-run the step and park as `fix_review` with a `git diff` of what changed. Prompts (`prompts.rs`) carry the severity/action taxonomies, a do-NOT-flag list, BEGIN/END data-framing of intent/findings, and the **intent-conformance clause** (removed-required / added-forbidden behavior → mandatory ask-user finding).
+- **Review agents** are headless one-shots through the sidecar (`OutboundMessage::ValidationAgent` → sidecar `validation_agent` handler, cloned from the repo-description generator): `query()` with `settingSources: []`, role-specific `submit_*` MCP tools (`submit_review`/`submit_verification`/`submit_evidence`/`submit_housekeeping`), a `canUseTool` Bash guard (git-only for review/verify/docs; open for evidence/lint), reviewer SDK-session **resume across rounds**, results via `validation-agent-result/error-${id}` `{ structured, transcript, sdkSessionId, usage }`, streamed progress via `validation-agent-progress-${id}` (one event per tool call / text block — drives the UI activity feed and the executor's **activity-aware timeout**: fixed 10-min idle window reset on every progress event + configurable overall cap `agent_timeout_minutes`, default 60). Claude provider only. Reviewer model/effort chosen per run ("Session model" is resolved to a concrete model id frontend-side); optional adversarial verify (each error finding gets a refute-me one-shot; refuted findings dropped).
+- **Fix loop is frontend-mediated** (`stores/validation.ts` + `utils/validationFix.ts`): on `validation-fix-request` the store composes a fix prompt (double-check legitimacy first; root-cause; fix forward; ONE focused verification, no full suites), waits for the session to go idle, sends via `sdkSessions.sendPrompt`, then reports the turn's outcome via `validation_fix_done`/`_failed`. Cancel never interrupts an in-flight session turn.
+- **Ship & CI**: ship always gates with an editable proposal (commit message + PR title/body drafted via the LLM layer with deterministic fallbacks) then runs native `git add/commit/push` (`GitManager::commit_all`/`push`, lifted from the sequences nodes) + `gh pr create` on the pinned `run_gh` rail; PR skipped on the default branch or when one exists. CI polls the shared `fetch_branch_pr_status` helper, passes when checks are green (never waits for merge; merged/closed reconciles a parked gate), auto-fixes red checks via the session (logs from `gh run list`/`gh run view --log-failed`, auto commit+push after each fix, dedup by failing-check set, idle-timeout gate).
+- **Frontend**: `stores/validation.ts` (runId-keyed store, full-snapshot `applySnapshot`, auto-selects auto-fix findings at gates, per-repo last-used run options in localStorage), `utils/validationIntent.ts` (rich intent: aiMetadata + ALL user messages verbatim, ~6000-char cap — replaces the old 1500-char one-liner idea), `SdkSession.validation` summary mirror (auto-persisted → restart-surviving badge; full runs are in-memory only, like No Mistakes).
+- **UI**: "Validate" button in `SdkSessionHeader` (not dev-gated; idle + real cwd) → `sdk/ValidationStartPopover.svelte` (step checkboxes, reviewer model/effort, adversarial verify; seeded localStorage → repo → settings); `sdk/ValidationPanel.svelte` in the pinned slot above the prompt input (stepper, proof lines with expandable output, risk chip, evidence artifacts, transcript/diff drawers, four gate kinds: findings / fix_review / ship / ci_failure, outcome banner, live agent-activity line + expandable activity feed, collapsible log); status badge in `SessionListItem`; Settings → Validation (`settings/ValidationTab.svelte`); per-repo test/lint commands + review guidelines + default steps in `RepositoryView`'s Repository Settings.
+- **Config**: `AppConfig.validation` (`ValidationConfig`: default_steps, reviewer_model/effort, adversarial_verify, evidence_enabled, auto_fix_limits, ci_timeout_minutes, agent_timeout_minutes) + `RepoConfig.{validation_commands, review_guidelines, validation_steps}`; config migration v4→v5.
 
 ## No Mistakes Integration
 

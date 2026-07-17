@@ -15,13 +15,14 @@ mod session_persistence;
 mod sidecar;
 mod usage_stats;
 mod util;
+mod validation;
 mod whisper;
 
 use commands::{
     account_cmds, archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
     launch_cmds, llm_cmds, log_cmds,
     mcp_cmds, no_mistakes_cmds, notion_cmds, pile_cmds, realtime_cmds, screenshot_cmds, sdk_cmds,
-    sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds,
+    sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds, validation_cmds,
 };
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
@@ -252,6 +253,7 @@ pub fn run() {
     let realtime_manager = Arc::new(RealtimeSessionManager::new());
     let launch_manager = Arc::new(launch::LaunchManager::new());
     let no_mistakes_manager = Arc::new(no_mistakes::NoMistakesManager::new());
+    let validation_manager = Arc::new(validation::ValidationManager::new());
     let config_load_status = ConfigLoadStatus(Mutex::new(config_load_report));
 
     // Set up backend file logging via tauri-plugin-log (date-stamped, 7-day rolling)
@@ -315,6 +317,7 @@ pub fn run() {
         .manage(realtime_manager)
         .manage(launch_manager)
         .manage(no_mistakes_manager)
+        .manage(validation_manager)
         .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
             // The config loads before the log plugin exists, so its outcome was
@@ -542,6 +545,14 @@ pub fn run() {
             no_mistakes_cmds::nm_start_run,
             no_mistakes_cmds::nm_respond,
             no_mistakes_cmds::nm_cancel,
+            // --- Validation pipeline ---
+            validation_cmds::validation_start_run,
+            validation_cmds::validation_get_run,
+            validation_cmds::validation_respond,
+            validation_cmds::validation_execute_ship,
+            validation_cmds::validation_fix_done,
+            validation_cmds::validation_fix_failed,
+            validation_cmds::validation_cancel,
             // --- Notion ---
             notion_cmds::fetch_notion_cards,
             // --- MCP servers ---

@@ -411,6 +411,21 @@ interface AnswerPlanApprovalMessage {
   feedback?: string; // Feedback text for deny
 }
 
+// One-shot Validation pipeline agent (review/verify/evidence/docs/lint).
+// Claude provider only. Runs a restricted, read-only-ish query() that must
+// finish by calling a single role-specific submit tool (structured output).
+type ValidationRole = "review" | "verify" | "evidence" | "docs" | "lint";
+interface ValidationAgentMessage {
+  type: "validation_agent";
+  id: string; // Request ID for tracking (matches the emitted event suffix)
+  cwd: string; // Working directory (session cwd)
+  role: ValidationRole;
+  prompt: string; // Fully-composed prompt (built in Rust)
+  model: string; // Claude model id
+  effort?: string; // UI effort level ('low'|'medium'|'high'|'xhigh'|'max'); omit/undefined = off
+  resumeSessionId?: string; // SDK session id to resume (durable reviewer across rounds)
+}
+
 type InboundMessage =
   | CreateMessage
   | QueryMessage
@@ -423,7 +438,8 @@ type InboundMessage =
   | GenerateLaunchProfileMessage
   | GenerateLaunchProfileWithCodexMessage
   | AnswerAskUserQuestionMessage
-  | AnswerPlanApprovalMessage;
+  | AnswerPlanApprovalMessage
+  | ValidationAgentMessage;
 
 type OpenAiExecutionMode = "sdk" | "app_server";
 
@@ -510,6 +526,18 @@ interface Session {
   // Persistent message queue for streaming input mode. Follow-up messages
   // are enqueued here instead of calling streamInput() multiple times.
   inputQueue?: MessageQueue;
+  // User prompts sent to the CLI that haven't been accounted for by a `result`
+  // message yet. A follow-up stream-injected mid-run makes this 2. The CLI
+  // either STEERS the injected prompt into the in-flight turn (one shared
+  // result) or — when nothing can absorb it, e.g. during /compact — QUEUES it
+  // as a fresh turn with its own result. In the queued case the first result
+  // must NOT emit `done`: the CLI immediately starts the queued turn.
+  claudePendingTurns?: number;
+  // Armed when a result arrives while claudePendingTurns is still > 0 (see
+  // above — we can't tell steered from queued at that moment). Any further CLI
+  // message cancels it (a queued turn is running; its own result emits done);
+  // if it fires, the injected prompts were steered and this done is real.
+  pendingDoneTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface QueuedPrompt {
@@ -588,6 +616,15 @@ function sendThinkingEnd(
 
 function sendDone(id: string): void {
   send({ type: "done", id });
+}
+
+// Cancel a deferred done from a result that arrived with injected prompts
+// still unaccounted for (see Session.pendingDoneTimer).
+function cancelPendingDone(session: Session): void {
+  if (session.pendingDoneTimer) {
+    clearTimeout(session.pendingDoneTimer);
+    session.pendingDoneTimer = undefined;
+  }
 }
 
 function sendUsage(
@@ -768,6 +805,43 @@ function sendLaunchProfileResult(
 
 function sendLaunchProfileError(id: string, error: string): void {
   send({ type: "launch_profile_error", id, error });
+}
+
+// Validation agent result/error events.
+// Rust maps `validation_agent_result` -> event `validation-agent-result-{id}`
+// and `validation_agent_error` -> `validation-agent-error-{id}`.
+function sendValidationAgentResult(
+  id: string,
+  result: {
+    structured: unknown;
+    transcript: string;
+    sdkSessionId?: string;
+    usage?: Record<string, number>;
+  }
+): void {
+  send({
+    type: "validation_agent_result",
+    id,
+    structured: result.structured,
+    transcript: result.transcript,
+    ...(result.sdkSessionId ? { sdkSessionId: result.sdkSessionId } : {}),
+    ...(result.usage ? { usage: result.usage } : {}),
+  });
+}
+
+function sendValidationAgentError(id: string, error: string): void {
+  send({ type: "validation_agent_error", id, error });
+}
+
+// Streaming progress from a validation agent (tool calls / text), so the app
+// can show live activity instead of a black box — and so the backend can
+// reset its idle timeout while the agent is demonstrably working.
+// Rust maps `validation_agent_progress` -> event `validation-agent-progress-{id}`.
+function sendValidationAgentProgress(
+  id: string,
+  progress: { kind: "tool" | "text"; tool?: string; detail?: string; text?: string }
+): void {
+  send({ type: "validation_agent_progress", id, ...progress });
 }
 
 // =============================================================================
@@ -3097,6 +3171,355 @@ Path: ${msg.repo_path}
   }
 }
 
+// =============================================================================
+// Validation pipeline one-shot agents (Claude only)
+// =============================================================================
+
+const VALIDATION_MCP_SERVER_NAME = "validation-tools";
+
+// Shared finding shape used by review/evidence/housekeeping submit tools.
+// severity: error|warning|info; action: auto-fix|ask-user|no-op.
+const validationFindingShape = {
+  severity: z.enum(["error", "warning", "info"]),
+  file: z.string().optional(),
+  line: z.number().optional(),
+  description: z.string(),
+  action: z.enum(["auto-fix", "ask-user", "no-op"]),
+};
+
+const validationSubmitAck = async () => ({
+  content: [{ type: "text" as const, text: "Structured output submitted." }],
+});
+
+// Build the single role-specific submit tool for a validation agent, wrapped
+// in an in-process MCP server. Returns the server + the fully-qualified tool
+// name the agent must call (mcp__<server>__<tool>).
+function buildValidationRole(role: ValidationRole): {
+  server: ReturnType<typeof createSdkMcpServer>;
+  toolName: string;
+  readOnly: boolean;
+} {
+  let submitTool;
+  let toolName: string;
+  switch (role) {
+    case "review": {
+      toolName = "submit_review";
+      submitTool = tool(
+        "submit_review",
+        "Submit your code review. You MUST call this exactly once to complete the review.",
+        {
+          // Field order is deliberate: findings before risk.
+          findings: z
+            .array(z.object(validationFindingShape))
+            .describe("All findings from the review pass (may be empty)"),
+          summary: z.string().describe("Short overall summary of the review"),
+          risk_level: z
+            .enum(["low", "medium", "high"])
+            .describe("Overall risk level introduced by the changes"),
+          risk_rationale: z
+            .string()
+            .describe("One or two sentences justifying the risk level"),
+        },
+        validationSubmitAck
+      );
+      break;
+    }
+    case "verify": {
+      toolName = "submit_verification";
+      submitTool = tool(
+        "submit_verification",
+        "Submit your adversarial verification verdict. You MUST call this exactly once.",
+        {
+          verdict: z
+            .enum(["confirmed", "refuted"])
+            .describe("confirmed = the finding is a real issue; refuted = could not confirm a concrete failure"),
+          reason: z.string().describe("Justification for the verdict"),
+        },
+        validationSubmitAck
+      );
+      break;
+    }
+    case "evidence": {
+      toolName = "submit_evidence";
+      submitTool = tool(
+        "submit_evidence",
+        "Submit the evidence report demonstrating the intent is satisfied. You MUST call this exactly once.",
+        {
+          findings: z
+            .array(z.object(validationFindingShape))
+            .describe("Findings (e.g. a warning when sufficient evidence is not possible); may be empty"),
+          tested: z
+            .array(z.string())
+            .describe("What was tested/demonstrated"),
+          testing_summary: z
+            .string()
+            .describe("Summary of how the intent was verified"),
+          artifacts: z
+            .array(
+              z.object({
+                kind: z.string().describe("Artifact kind (e.g. 'transcript', 'screenshot', 'output')"),
+                label: z.string().describe("Human-readable label"),
+                path: z.string().describe("Path or reference to the artifact"),
+              })
+            )
+            .describe("Product-level evidence artifacts (may be empty)"),
+        },
+        validationSubmitAck
+      );
+      break;
+    }
+    case "docs":
+    case "lint": {
+      // docs and lint both use submit_housekeeping.
+      toolName = "submit_housekeeping";
+      submitTool = tool(
+        "submit_housekeeping",
+        "Submit your housekeeping findings. You MUST call this exactly once.",
+        {
+          findings: z
+            .array(
+              z.object({
+                ...validationFindingShape,
+                category: z
+                  .enum(["documentation", "lint"])
+                  .describe("Which housekeeping category this finding belongs to"),
+              })
+            )
+            .describe("All housekeeping findings (may be empty)"),
+          summary: z.string().describe("Short overall summary"),
+        },
+        validationSubmitAck
+      );
+      break;
+    }
+  }
+
+  const server = createSdkMcpServer({
+    name: VALIDATION_MCP_SERVER_NAME,
+    version: "1.0.0",
+    tools: [submitTool],
+  });
+
+  return {
+    server,
+    toolName: `mcp__${VALIDATION_MCP_SERVER_NAME}__${toolName}`,
+    // review/verify/docs are read-only (git-only Bash); evidence/lint may run commands freely.
+    readOnly: role === "review" || role === "verify" || role === "docs",
+  };
+}
+
+interface ValidationCapture {
+  structured: unknown;
+  transcript: string;
+  sdkSessionId?: string;
+  usage?: Record<string, number>;
+}
+
+// One-line summary of a tool call's input for the live activity feed.
+function summarizeValidationToolInput(toolName: string, input: unknown): string {
+  const obj = (input ?? {}) as Record<string, unknown>;
+  const first = (...keys: string[]): string => {
+    for (const k of keys) {
+      const v = obj[k];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    return "";
+  };
+  let detail: string;
+  switch (toolName) {
+    case "Bash":
+      detail = first("command");
+      break;
+    case "Read":
+    case "Edit":
+    case "Write":
+      detail = first("file_path");
+      break;
+    case "Grep":
+    case "Glob":
+      detail = first("pattern");
+      break;
+    default:
+      detail = first("description", "summary", "prompt", "query");
+      if (!detail) {
+        try {
+          detail = JSON.stringify(obj);
+        } catch {
+          detail = "";
+        }
+      }
+  }
+  detail = detail.replace(/\s+/g, " ").trim();
+  return detail.length > 200 ? `${detail.slice(0, 200)}…` : detail;
+}
+
+// Run a single one-shot validation query attempt. Throws on query failure so
+// the caller can retry without `resume`.
+async function runValidationQuery(
+  msg: ValidationAgentMessage,
+  role: ReturnType<typeof buildValidationRole>,
+  resumeSessionId: string | undefined
+): Promise<ValidationCapture> {
+  const options: Options = {
+    cwd: msg.cwd,
+    permissionMode: "default",
+    model: msg.model,
+    mcpServers: {
+      [VALIDATION_MCP_SERVER_NAME]: role.server,
+    },
+    allowedTools: [role.toolName, "Read", "Glob", "Grep", "Bash"],
+    // One-shot: never load user/project settings, CLAUDE.md, or filesystem skills.
+    settingSources: [],
+    ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+    // Guard Bash for read-only roles: only `git ` commands are allowed.
+    canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+      if (toolName === "Bash" && role.readOnly) {
+        const command = String((input as { command?: unknown }).command ?? "").trim();
+        if (!command.startsWith("git ")) {
+          return {
+            behavior: "deny" as const,
+            message:
+              "You are a read-only review agent. The only shell commands you may run are git commands (e.g. `git diff`, `git log`, `git show`). Use Read/Glob/Grep to inspect files; do not run tests, builds, or other commands.",
+          };
+        }
+      }
+      return { behavior: "allow" as const, updatedInput: input };
+    },
+    env: {
+      ...process.env,
+      CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "120000",
+    },
+  };
+
+  // Effort: reuse the same native Claude effort plumbing sessions use.
+  const mappedEffort = mapEffortForProvider(msg.effort, "claude");
+  if (mappedEffort) {
+    options.effort = mappedEffort as Options["effort"];
+  }
+
+  let structured: unknown = undefined;
+  let sdkSessionId: string | undefined;
+  let usage: Record<string, number> | undefined;
+  const textParts: string[] = [];
+
+  const iterator = query({ prompt: msg.prompt, options });
+  for await (const message of iterator) {
+    if (message.type === "system" && message.subtype === "init") {
+      sdkSessionId = message.session_id;
+    } else if (message.type === "assistant") {
+      for (const block of message.message.content) {
+        if (block.type === "text") {
+          const text = (block as { text?: string }).text;
+          if (text) {
+            textParts.push(text);
+            const trimmed = text.replace(/\s+/g, " ").trim();
+            if (trimmed) {
+              sendValidationAgentProgress(msg.id, {
+                kind: "text",
+                text: trimmed.length > 400 ? `${trimmed.slice(0, 400)}…` : trimmed,
+              });
+            }
+          }
+        } else if (block.type === "tool_use") {
+          sendValidationAgentProgress(msg.id, {
+            kind: "tool",
+            tool: block.name,
+            detail: summarizeValidationToolInput(
+              block.name,
+              (block as { input?: unknown }).input
+            ),
+          });
+          if (block.name === role.toolName) {
+            structured = block.input;
+          }
+        }
+      }
+    } else if (message.type === "result") {
+      const r = message as unknown as {
+        usage?: {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        };
+        total_cost_usd?: number;
+        duration_ms?: number;
+      };
+      if (r.usage) {
+        usage = {
+          inputTokens: r.usage.input_tokens || 0,
+          outputTokens: r.usage.output_tokens || 0,
+          cacheReadTokens: r.usage.cache_read_input_tokens || 0,
+          cacheCreationTokens: r.usage.cache_creation_input_tokens || 0,
+          totalCostUsd: r.total_cost_usd || 0,
+          durationMs: r.duration_ms || 0,
+        };
+      }
+    }
+  }
+
+  return {
+    structured,
+    transcript: textParts.join("\n\n"),
+    sdkSessionId,
+    usage,
+  };
+}
+
+async function handleValidationAgent(msg: ValidationAgentMessage): Promise<void> {
+  const requestId = msg.id;
+  send({
+    type: "debug",
+    id: requestId,
+    message: `Starting validation agent (role=${msg.role}, model=${msg.model}, resume=${msg.resumeSessionId ? "yes" : "no"}) at ${msg.cwd}`,
+  });
+
+  const role = buildValidationRole(msg.role);
+
+  try {
+    let capture: ValidationCapture;
+    try {
+      capture = await runValidationQuery(msg, role, msg.resumeSessionId);
+    } catch (err) {
+      // If a resumed query errors immediately, retry once with a fresh session.
+      if (msg.resumeSessionId) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        send({
+          type: "debug",
+          id: requestId,
+          message: `Resumed validation query failed (${errorMessage}); retrying without resume`,
+        });
+        capture = await runValidationQuery(msg, role, undefined);
+      } else {
+        throw err;
+      }
+    }
+
+    if (typeof capture.structured === "undefined" || capture.structured === null) {
+      sendValidationAgentError(
+        requestId,
+        "agent did not submit structured output"
+      );
+      return;
+    }
+
+    sendValidationAgentResult(requestId, {
+      structured: capture.structured,
+      transcript: capture.transcript,
+      sdkSessionId: capture.sdkSessionId,
+      usage: capture.usage,
+    });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Validation agent error: ${errorMessage}`,
+    });
+    sendValidationAgentError(requestId, errorMessage);
+  }
+}
+
 async function handleCreate(msg: CreateMessage): Promise<void> {
   const options: Options = {
     cwd: msg.cwd,
@@ -3860,6 +4283,10 @@ async function runClaudeQueryItem(
     session.inputQueue = inputQueue;
 
     const contentBlocks = buildContentBlocks(promptToSend, msg.images ?? []);
+    // Fresh query: exactly one turn is pending (self-heals any stale count or
+    // deferred done left by a torn-down predecessor query).
+    session.claudePendingTurns = 1;
+    cancelPendingDone(session);
     inputQueue.enqueue({
       type: "user",
       message: { role: "user", content: contentBlocks },
@@ -4013,6 +4440,10 @@ async function runClaudeQueryItem(
         return;
       }
       messageCount++;
+      // A live message means the CLI is still working: a deferred done armed by
+      // a prior result (injected-prompt ambiguity) would be premature. The
+      // result case in handleSdkMessage re-arms it when needed.
+      cancelPendingDone(session);
       send({
         type: "debug",
         id: msg.id,
@@ -4094,6 +4525,8 @@ async function runClaudeQueryItem(
     if (session.currentQueryId === queryId) {
       session.abortController = undefined;
       session.queryIterator = undefined;
+      session.claudePendingTurns = 0;
+      cancelPendingDone(session);
       if (session.inputQueue) {
         session.inputQueue.done();
         session.inputQueue = undefined;
@@ -4163,6 +4596,9 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
   if (session.claudeProcessing && session.inputQueue && !session.claudeStopping) {
     const injectSessionId = session.sdkSessionId || msg.id;
     const contentBlocks = buildContentBlocks(msg.prompt, msg.images ?? []);
+    session.claudePendingTurns = (session.claudePendingTurns ?? 1) + 1;
+    // This prompt starts (or joins) a turn whose own result settles the done.
+    cancelPendingDone(session);
     session.inputQueue.enqueue({
       type: "user",
       message: { role: "user", content: contentBlocks },
@@ -4172,7 +4608,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     send({
       type: "debug",
       id: msg.id,
-      message: `[claude stream-inject] enqueued prompt into persistent input queue`,
+      message: `[claude stream-inject] enqueued prompt into persistent input queue (pending turns: ${session.claudePendingTurns})`,
     });
     return;
   }
@@ -4371,8 +4807,43 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         ...mainAgentFields,
       });
 
+      // One pending user prompt is settled by this result. If more prompts were
+      // stream-injected while this turn ran, they were either steered into it
+      // (this result covers them too — done is real) or queued as a fresh turn
+      // the CLI starts right after this result (done now would falsely complete
+      // the session mid-work — e.g. a follow-up sent during a slow /compact).
+      // We can't distinguish the two here, so defer the done briefly: any
+      // further CLI message means a queued turn is running (its own result
+      // emits done); silence means everything was steered.
+      const remainingTurns = resultSession
+        ? (resultSession.claudePendingTurns = Math.max(
+            0,
+            (resultSession.claudePendingTurns ?? 1) - 1
+          ))
+        : 0;
+
       if (message.subtype === "success") {
-        sendDone(id);
+        if (remainingTurns > 0 && resultSession) {
+          send({
+            type: "debug",
+            id,
+            message: `Deferring done: ${remainingTurns} injected prompt(s) unaccounted for — waiting to see if a queued turn starts`,
+          });
+          cancelPendingDone(resultSession);
+          resultSession.pendingDoneTimer = setTimeout(() => {
+            resultSession.pendingDoneTimer = undefined;
+            if (sessions.get(id) !== resultSession) return;
+            resultSession.claudePendingTurns = 0;
+            send({
+              type: "debug",
+              id,
+              message: `Deferred done: no queued turn started — injected prompt(s) were steered into the finished turn`,
+            });
+            sendDone(id);
+          }, 2000);
+        } else {
+          sendDone(id);
+        }
       } else {
         // Error subtypes: error_during_execution, error_max_turns, error_max_budget_usd, error_max_structured_output_retries
         let errorText = resultMsg.errors?.join("; ") || `Error: ${message.subtype}`;
@@ -4624,6 +5095,10 @@ async function handleStop(msg: StopMessage): Promise<void> {
     session.inputQueue.done();
     session.inputQueue = undefined;
   }
+  // A stop settles the turn — a deferred done firing after it would emit a
+  // spurious completion on the stopped (or a future) turn.
+  session.claudePendingTurns = 0;
+  cancelPendingDone(session);
 
   const pendingCount = session.claudeQueue.length;
   if (pendingCount > 0) {
@@ -4846,6 +5321,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "generate_launch_profile_with_codex":
       await handleGenerateLaunchProfileWithCodex(msg);
+      break;
+    case "validation_agent":
+      await handleValidationAgent(msg);
       break;
     case "answer_ask_user_question": {
       const session = sessions.get(msg.id);

@@ -205,6 +205,33 @@
     void repos.updateRepo(index, updates);
   }
 
+  // --- Validation pipeline per-repo settings ---
+  const VALIDATION_STEP_NAMES = ['review', 'test', 'docs', 'lint', 'ship', 'ci'] as const;
+  const VALIDATION_STEP_LABELS: Record<string, string> = {
+    review: 'Review',
+    test: 'Test',
+    docs: 'Docs',
+    lint: 'Lint',
+    ship: 'Ship',
+    ci: 'CI',
+  };
+
+  function updateValidationCommand(field: 'test' | 'lint', value: string) {
+    const trimmed = value.trim();
+    const current = selectedRepo?.validation_commands ?? {};
+    const next = { ...current, [field]: trimmed || undefined };
+    const hasAny = !!next.test || !!next.lint;
+    updateRepo({ validation_commands: hasAny ? next : undefined });
+  }
+
+  function toggleValidationStep(step: string, on: boolean) {
+    const current = new Set(selectedRepo?.validation_steps ?? []);
+    if (on) current.add(step);
+    else current.delete(step);
+    const ordered = VALIDATION_STEP_NAMES.filter((s) => current.has(s));
+    updateRepo({ validation_steps: ordered.length > 0 ? ordered : undefined });
+  }
+
   function setRepoGenerating(provider: 'claude' | 'codex', id: string, active: boolean) {
     const target = provider === 'claude' ? generatingClaudeRepos : generatingCodexRepos;
     const next = new Set(target);
@@ -830,6 +857,55 @@
           </div>
         </div>
       {/if}
+
+      <div class="field">
+        <div class="field-title">Validation</div>
+        <div class="settings-grid">
+          <div class="field">
+            <label for="repo-val-test">Test command</label>
+            <input
+              id="repo-val-test"
+              type="text"
+              placeholder="e.g. npm test"
+              value={selectedRepo.validation_commands?.test ?? ''}
+              onchange={(event) => updateValidationCommand('test', (event.currentTarget as HTMLInputElement).value)}
+            />
+          </div>
+          <div class="field">
+            <label for="repo-val-lint">Lint command</label>
+            <input
+              id="repo-val-lint"
+              type="text"
+              placeholder="e.g. npm run lint"
+              value={selectedRepo.validation_commands?.lint ?? ''}
+              onchange={(event) => updateValidationCommand('lint', (event.currentTarget as HTMLInputElement).value)}
+            />
+          </div>
+        </div>
+        <label for="repo-val-guidelines">Review guidelines</label>
+        <textarea
+          id="repo-val-guidelines"
+          class="description-input"
+          rows="3"
+          placeholder="Extra guidance injected into the reviewer prompt for this repo (conventions, gotchas, what to scrutinise)."
+          value={selectedRepo.review_guidelines ?? ''}
+          onchange={(event) => updateRepo({ review_guidelines: (event.currentTarget as HTMLTextAreaElement).value.trim() || undefined })}
+        ></textarea>
+        <div class="field-title">Default steps</div>
+        <p class="field-help">Overrides the global default step set for runs started in this repo.</p>
+        <div class="chip-list chip-list-wrap">
+          {#each VALIDATION_STEP_NAMES as step (step)}
+            {@const on = selectedRepo.validation_steps?.includes(step)}
+            <button
+              class="chip-button"
+              class:is-selected={on}
+              onclick={() => toggleValidationStep(step, !on)}
+            >
+              {VALIDATION_STEP_LABELS[step]}
+            </button>
+          {/each}
+        </div>
+      </div>
 
       <div class="field">
         <label for="repo-tag-input">Tags</label>

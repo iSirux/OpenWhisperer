@@ -26,9 +26,11 @@
   import SessionRecordingHeader from "./sdk/SessionRecordingHeader.svelte";
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
   import NoMistakesPanel from "./sdk/NoMistakesPanel.svelte";
+  import ValidationPanel from "./sdk/ValidationPanel.svelte";
   import PrPanel from "./sdk/PrPanel.svelte";
   import { sessionPrs, getDefaultBranch, defaultBranchTail } from "$lib/stores/sessionPrs";
   import { nmRuns, noMistakes } from "$lib/stores/noMistakes";
+  import { validationRuns } from "$lib/stores/validation";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
@@ -1558,6 +1560,11 @@
     [...$nmRuns.values()].find((r) => r.sessionId === sessionId),
   );
 
+  // Native Validation pipeline run for this session, if any.
+  let validationRun = $derived(
+    [...$validationRuns.values()].find((r) => r.sessionId === sessionId),
+  );
+
   // Plan approval handlers
   function handleApprovePlan(feedback?: string) {
     sdkSessions.approvePlan(sessionId, feedback);
@@ -1892,6 +1899,10 @@
       onInit={() => noMistakes.initRepo(nmRunId)}
       onRecheck={() => noMistakes.recheck(nmRunId)}
     />
+  {/if}
+
+  {#if validationRun}
+    <ValidationPanel run={validationRun} />
   {/if}
 
   {#if hasLaunchProfiles && sessionRepoId}

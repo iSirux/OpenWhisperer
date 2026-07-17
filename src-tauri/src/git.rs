@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::proc::{run_git, run_shell};
+use crate::proc::{run_command_async, run_git, run_shell};
 
 /// Errors from git operations. Kept internal; converted to `String` at the
 /// command boundary (all public `GitManager` methods return `Result<_, String>`
@@ -400,6 +400,64 @@ impl GitManager {
         }
 
         base_name
+    }
+
+    /// Stage every change (`git add -A`) and commit with `message`. Returns
+    /// `Ok(true)` when a commit was made, `Ok(false)` when there was nothing to
+    /// commit (clean tree). Lifted from the sequences git-commit node so the
+    /// interactive validation path can reuse it.
+    pub async fn commit_all(cwd: &str, message: &str) -> Result<bool, String> {
+        let path = Path::new(cwd);
+        let add = run_command_async("git", &["add".into(), "-A".into()], Some(path), &[]).await?;
+        if !add.success {
+            return Err(format!("git add -A failed: {}", add.stderr.trim()));
+        }
+        // After staging, a clean tree has an empty porcelain status → nothing to commit.
+        let status =
+            run_command_async("git", &["status".into(), "--porcelain".into()], Some(path), &[])
+                .await?;
+        if status.stdout.trim().is_empty() {
+            return Ok(false);
+        }
+        let commit = run_command_async(
+            "git",
+            &["commit".into(), "-m".into(), message.to_string()],
+            Some(path),
+            &[],
+        )
+        .await?;
+        if !commit.success {
+            return Err(format!("git commit failed: {}", commit.stderr.trim()));
+        }
+        Ok(true)
+    }
+
+    /// Push the current branch. When `set_upstream` is true, pushes with
+    /// `--set-upstream origin <branch>` (first push of a new branch); otherwise a
+    /// plain `git push`. Lifted from the sequences git-push node.
+    pub async fn push(cwd: &str, set_upstream: bool) -> Result<(), String> {
+        let path = Path::new(cwd);
+        let args: Vec<String> = if set_upstream {
+            let branch = Self::get_current_branch(cwd)?;
+            vec![
+                "push".into(),
+                "--set-upstream".into(),
+                "origin".into(),
+                branch,
+            ]
+        } else {
+            vec!["push".into()]
+        };
+        let out = run_command_async("git", &args, Some(path), &[]).await?;
+        if !out.success {
+            let err = out.stderr.trim();
+            return Err(if err.is_empty() {
+                "git push failed".to_string()
+            } else {
+                err.to_string()
+            });
+        }
+        Ok(())
     }
 
     pub fn get_worktree_path(repo_path: &str, branch_name: &str) -> String {

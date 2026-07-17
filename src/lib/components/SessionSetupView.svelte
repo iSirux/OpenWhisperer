@@ -8,8 +8,8 @@
   import PromptChips from '$lib/components/PromptChips.svelte';
   import { appendChips } from '$lib/utils/promptChips';
   import SdkQuickActions from '$lib/components/sdk/SdkQuickActions.svelte';
-  import { isRecording, isTranscribing } from '$lib/stores/recording';
-  import { holdSpaceRecord } from '$lib/actions/holdSpaceRecord';
+  import { isRecording, isTranscribing, recording } from '$lib/stores/recording';
+  import { holdSpaceRecord, DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
   import {
     getEnabledModelsWithAuto,
     getEnabledModels,
@@ -542,6 +542,7 @@
   let globalHoldVariant: 'plain' | 'shift' = 'plain';
   let globalHoldTimer: ReturnType<typeof setTimeout> | null = null;
   let globalHoldStartSettled: Promise<void> = Promise.resolve();
+  let globalHoldPressAt = 0;
 
   function isEditableElement(el: Element | null): boolean {
     if (!el) return false;
@@ -581,9 +582,22 @@
   async function globalHoldFinish() {
     if (globalHoldPhase !== 'recording') return;
     const variant = globalHoldVariant;
+    const tooShort = Date.now() - globalHoldPressAt < DEFAULT_MIN_HOLD_MS;
     globalHoldPhase = 'idle';
     // Ensure the recorder actually started before we stop it (fast release).
     await globalHoldStartSettled;
+    // A hold that's over the warmup threshold but short in total time is a
+    // fumbled tap: discard the recording (never transcribe or send it). Nothing
+    // was typed (Space is suppressed while nothing editable is focused).
+    if (tooShort) {
+      try {
+        await recording.cancelRecording();
+      } catch (err) {
+        console.error('[SessionSetupView] Failed to discard short hold-Space:', err);
+      }
+      globalHoldReset();
+      return;
+    }
     try {
       if (variant === 'shift') await recordAndStart();
       else await handleStopRecording();
@@ -614,6 +628,7 @@
     if ($isRecording || $isTranscribing || isAwaitingTranscript) return;
     globalHoldVariant = e.shiftKey ? 'shift' : 'plain';
     globalHoldPhase = 'warmup';
+    globalHoldPressAt = Date.now();
     if (globalHoldTimer !== null) clearTimeout(globalHoldTimer);
     globalHoldTimer = setTimeout(() => void globalHoldActivate(), 280);
   }

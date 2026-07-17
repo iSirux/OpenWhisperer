@@ -1,5 +1,8 @@
 import { get } from 'svelte/store';
-import { isRecording } from '$lib/stores/recording';
+import { isRecording, recording } from '$lib/stores/recording';
+
+/** Default minimum total hold (ms) below which a hold is treated as a plain space. */
+export const DEFAULT_MIN_HOLD_MS = 500;
 
 /**
  * Hold-Space-to-record for text inputs.
@@ -14,6 +17,11 @@ import { isRecording } from '$lib/stores/recording';
  *      whichever comes first) we retract the one leaked space, suppress any
  *      further repeat-spaces, and start recording.
  *   3. Release    -> stop, transcribe, and insert the transcript at the caret.
+ *
+ * A hold that's over the warmup threshold but still short in TOTAL time
+ * (released before `minHoldMs`) is treated as a fumbled tap, not a recording:
+ * the in-flight recording is discarded (never transcribed, never sent) and the
+ * retracted space is put back, so a quick hold just types a regular space.
  *
  * When a hold cannot become a recording (guard declined, another recording or
  * transcription in flight), the key-repeat is still suppressed so the hold
@@ -63,6 +71,11 @@ export interface HoldSpaceRecordParams {
   /** Hold threshold in ms before a held Space becomes a recording (default 280). */
   thresholdMs?: number;
   /**
+   * Minimum TOTAL hold in ms (press → release) for the recording to be kept.
+   * A shorter hold is discarded and typed as a plain space (default 500).
+   */
+  minHoldMs?: number;
+  /**
    * Optional Shift+Space variant routed to a pipeline that consumes the
    * recording itself (e.g. record-and-send) instead of inserting at the caret.
    */
@@ -99,6 +112,10 @@ export function holdSpaceRecord(
   let warmupTimer: ReturnType<typeof setTimeout> | null = null;
   /** Caret index where the tap-space landed, so we can retract exactly that one. */
   let leakedSpacePos: number | null = null;
+  /** Caret index of the space we retracted on activate, so a too-short hold can restore it. */
+  let retractedSpacePos: number | null = null;
+  /** Timestamp of the initial Space press, to measure total hold time. */
+  let pressStartedAt = 0;
   /** Set once we commit to a recording; blocks overlapping gestures. */
   let busy = false;
   /** Which pipeline this gesture drives, locked in on the initial press. */
@@ -123,8 +140,18 @@ export function holdSpaceRecord(
   function reset() {
     clearWarmup();
     leakedSpacePos = null;
+    retractedSpacePos = null;
     busy = false;
     setState('idle');
+  }
+
+  /** Put back the single space we retracted on activate (too-short hold = plain space). */
+  function reinsertRetractedSpace() {
+    if (retractedSpacePos === null) return;
+    const pos = Math.min(retractedSpacePos, node.value.length);
+    node.value = node.value.slice(0, pos) + ' ' + node.value.slice(pos);
+    node.setSelectionRange(pos + 1, pos + 1);
+    node.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   function isEligible(e: KeyboardEvent): boolean {
@@ -154,12 +181,15 @@ export function holdSpaceRecord(
       return;
     }
 
-    // Retract the single space the initial tap inserted.
+    // Retract the single space the initial tap inserted. Remember where it was
+    // so a too-short hold can restore it and read as a plain space.
+    retractedSpacePos = null;
     if (leakedSpacePos !== null && node.value.charAt(leakedSpacePos) === ' ') {
       const pos = leakedSpacePos;
       node.value = node.value.slice(0, pos) + node.value.slice(pos + 1);
       node.setSelectionRange(pos, pos);
       node.dispatchEvent(new Event('input', { bubbles: true }));
+      retractedSpacePos = pos;
     }
     leakedSpacePos = null;
 
@@ -202,6 +232,24 @@ export function holdSpaceRecord(
     reset();
   }
 
+  /**
+   * The hold was over the warmup threshold but short in total time — treat it as
+   * a fumbled tap: discard the recording (never transcribe or send it) and put
+   * the retracted space back so the gesture reads as a plain space.
+   */
+  async function discardShortHold() {
+    if (phase !== 'recording') return;
+    // Ensure the recorder actually started before we stop it (fast release).
+    await startSettled;
+    try {
+      await recording.cancelRecording();
+    } catch (err) {
+      console.error('[holdSpaceRecord] Failed to discard short hold:', err);
+    }
+    reinsertRetractedSpace();
+    reset();
+  }
+
   function onKeyDown(e: KeyboardEvent) {
     if (e.code !== 'Space') return;
 
@@ -239,15 +287,22 @@ export function holdSpaceRecord(
     // timer. selectionStart here is the caret *before* the space is inserted.
     variant = e.shiftKey ? 'shift' : 'plain';
     leakedSpacePos = node.selectionStart;
+    pressStartedAt = Date.now();
     setState('warmup');
     clearWarmup();
     warmupTimer = setTimeout(() => void activate(), opts.thresholdMs ?? 280);
   }
 
+  /** Released/blurred too soon after recording began — discard it as a plain space. */
+  function tooShort(): boolean {
+    return Date.now() - pressStartedAt < (opts.minHoldMs ?? DEFAULT_MIN_HOLD_MS);
+  }
+
   function onKeyUp(e: KeyboardEvent) {
     if (e.code !== 'Space') return;
     if (phase === 'recording') {
-      void finish();
+      if (tooShort()) void discardShortHold();
+      else void finish();
     } else if (phase === 'warmup') {
       // Released before the threshold — it was a tap. Leave the typed space.
       reset();
@@ -255,8 +310,10 @@ export function holdSpaceRecord(
   }
 
   function onBlur() {
-    if (phase === 'recording') void finish();
-    else if (phase === 'warmup') reset();
+    if (phase === 'recording') {
+      if (tooShort()) void discardShortHold();
+      else void finish();
+    } else if (phase === 'warmup') reset();
   }
 
   // Cast to EventListener: `node` is a textarea|input union, which defeats TS's

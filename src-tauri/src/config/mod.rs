@@ -19,6 +19,7 @@ pub mod realtime;
 pub mod repo;
 pub mod sequences;
 pub mod ui;
+pub mod validation;
 pub mod whisper;
 
 // Re-export all schema types so `crate::config::X` paths keep working.
@@ -32,6 +33,7 @@ pub use realtime::*;
 pub use repo::*;
 pub use sequences::*;
 pub use ui::*;
+pub use validation::*;
 pub use whisper::*;
 
 // UsageStats and its telemetry types now live in a dedicated top-level module,
@@ -215,6 +217,9 @@ pub struct AppConfig {
     /// Smart queue configuration (defer launches/prompts when rate-limited)
     #[serde(default)]
     pub queue: QueueConfig,
+    /// Validation pipeline configuration (review/test/docs/lint/ship/ci)
+    #[serde(default)]
+    pub validation: ValidationConfig,
     /// Inject a system message notifying agents that other agents may be working in parallel
     #[serde(default = "default_notify_parallel_agents")]
     pub notify_parallel_agents: bool,
@@ -391,6 +396,7 @@ impl Default for AppConfig {
             mcp: McpConfig::default(),
             sequences: SequenceConfig::default(),
             queue: QueueConfig::default(),
+            validation: ValidationConfig::default(),
             notify_parallel_agents: default_notify_parallel_agents(),
             quick_actions: default_quick_actions(),
             prompt_chips: default_prompt_chips(),
@@ -818,6 +824,22 @@ mod tests {
         assert!(value.get("vosk").is_none());
         let config: AppConfig = serde_json::from_value(value).unwrap();
         assert_eq!(config.realtime.endpoint, "ws://legacy:9999");
+    }
+
+    #[test]
+    fn migration_adds_validation_config() {
+        // A pre-v5 config with no `validation` key must gain a default one after
+        // migrations, and deserialize cleanly.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(4));
+        obj.remove("validation");
+
+        migration::run_migrations(&mut value, 4);
+        assert!(value.get("validation").is_some());
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.validation.default_steps, vec!["review", "test", "lint"]);
+        assert_eq!(config.validation.auto_fix_limit("test"), 2);
     }
 
     #[test]

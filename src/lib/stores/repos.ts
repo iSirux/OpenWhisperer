@@ -5,6 +5,14 @@ import type { LaunchCommand, LaunchProfile } from "$lib/types/launch";
 
 // ---- Types ----
 
+/** Per-repo validation command overrides (used by the Validation test/lint steps). */
+export interface ValidationCommands {
+  /** Shell command to run the repo's test suite. */
+  test?: string;
+  /** Shell command to run the repo's linter/formatter checks. */
+  lint?: string;
+}
+
 export interface RepoConfig {
   /** Stable unique identifier for this repository (auto-generated UUID) */
   id?: string;
@@ -47,6 +55,12 @@ export interface RepoConfig {
   account_ids?: string[];
   /** Last PR merge strategy used in this repo; the PR panel defaults to it. */
   last_merge_strategy?: 'squash' | 'merge' | 'rebase';
+  /** Per-repo validation command overrides (test/lint) for the Validation pipeline. */
+  validation_commands?: ValidationCommands;
+  /** Extra review guidelines injected into the Validation review prompt. */
+  review_guidelines?: string;
+  /** Per-repo default validation step set (overrides the global default steps). */
+  validation_steps?: string[];
 }
 
 /** Helper: treat undefined/missing active field as true for backward compatibility */

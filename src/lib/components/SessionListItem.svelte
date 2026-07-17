@@ -131,6 +131,20 @@
     e.dataTransfer.setData(SESSION_DND_TYPE, session.id);
     e.dataTransfer.effectAllowed = "move";
   }
+
+  // Compact validation-run status badge from the mirrored session summary.
+  const validationBadge = $derived.by(() => {
+    if (session.type !== "sdk" || !session.validation) return null;
+    const v = session.validation;
+    const map: Record<string, { cls: string; label: string }> = {
+      running: { cls: "val-running", label: v.step ? `Validating · ${v.step}` : "Validating" },
+      gate: { cls: "val-gate", label: v.findingCount > 0 ? `Gate · ${v.findingCount}` : "Gate" },
+      passed: { cls: "val-passed", label: "Validated" },
+      failed: { cls: "val-failed", label: "Failed" },
+      cancelled: { cls: "val-cancelled", label: "Cancelled" },
+    };
+    return map[v.status] ?? null;
+  });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -511,6 +525,14 @@
           #{session.pr.number}
         </span>
       {/if}
+      {#if validationBadge}
+        <span class="val-badge {validationBadge.cls}" title="Validation: {validationBadge.label}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+          {validationBadge.label}
+        </span>
+      {/if}
     </div>
   {/if}
 </div>
@@ -626,6 +648,52 @@
   .pr-badge.pr-closed {
     color: rgb(248, 113, 113);
     background: rgba(248, 113, 113, 0.12);
+  }
+
+  .val-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 0.02rem 0.3rem;
+    border-radius: 0.25rem;
+    flex-shrink: 0;
+    max-width: 50%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .val-badge svg {
+    width: 0.65rem;
+    height: 0.65rem;
+    flex-shrink: 0;
+  }
+
+  .val-badge.val-running {
+    color: rgb(96, 165, 250);
+    background: rgba(96, 165, 250, 0.12);
+  }
+
+  .val-badge.val-gate {
+    color: rgb(251, 191, 36);
+    background: rgba(251, 191, 36, 0.12);
+  }
+
+  .val-badge.val-passed {
+    color: rgb(74, 222, 128);
+    background: rgba(74, 222, 128, 0.12);
+  }
+
+  .val-badge.val-failed {
+    color: rgb(248, 113, 113);
+    background: rgba(248, 113, 113, 0.12);
+  }
+
+  .val-badge.val-cancelled {
+    color: rgb(148, 163, 184);
+    background: rgba(148, 163, 184, 0.12);
   }
 
   /* Active/focused session - white background */

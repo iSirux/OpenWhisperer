@@ -130,10 +130,32 @@ function createLaunchStore() {
       // Clean up any existing queue
       this.cancelQueue();
 
-      const unlistenDone = await listen(`sdk-done-${sessionId}`, () => {
+      // A raw sdk-done can be a "semi-stop": the SDK emits it while background subagents /
+      // blocking tasks are still running, and the main agent usually resumes right after
+      // they settle. Only launch once the session has actually settled; poll while busy
+      // (covers the grace-timer finalize, which produces no further sdk-done).
+      let pollTimer: ReturnType<typeof setTimeout> | undefined;
+      let cancelled = false;
+      const launchWhenSettled = () => {
+        if (cancelled) return;
+        const session = get(sdkSessions).find((s) => s.id === sessionId);
+        const busy =
+          !!session &&
+          (session.status === "querying" ||
+            !!session.completionDeferred ||
+            (session.liveSubagentIds ?? []).length > 0 ||
+            (session.liveBackgroundTasks ?? []).some((t) => t.kind !== "server"));
+        if (busy) {
+          pollTimer = setTimeout(launchWhenSettled, 5000);
+          return;
+        }
         console.log("[launch] Agent done, launching queued profile");
-        this.launchProfile(repoId, profileId, launchedFromCwd);
+        void this.launchProfile(repoId, profileId, launchedFromCwd);
         this.cancelQueue();
+      };
+
+      const unlistenDone = await listen(`sdk-done-${sessionId}`, () => {
+        launchWhenSettled();
       });
 
       const unlistenError = await listen(`sdk-error-${sessionId}`, () => {
@@ -142,6 +164,8 @@ function createLaunchStore() {
       });
 
       queueCleanup = () => {
+        cancelled = true;
+        if (pollTimer !== undefined) clearTimeout(pollTimer);
         unlistenDone();
         unlistenError();
       };

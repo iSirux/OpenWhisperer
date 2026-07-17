@@ -517,6 +517,34 @@ export interface QueueConfig {
   fuzzy_delay_between_runs_max_secs: number;
 }
 
+/** Validation pipeline configuration (defaults for reviewer model, steps, auto-fix limits). */
+export interface ValidationConfig {
+  /** Default step set for new runs (subset of review/test/docs/lint/ship/ci). */
+  default_steps: string[];
+  /** Reviewer Claude model id, or "session" to use the session's own model. */
+  reviewer_model: string;
+  /**
+   * Reviewer effort level ("low"|"medium"|"high"|"xhigh"|"max"). Effort is
+   * always on — a null (from configs saved before this was grounded) is
+   * treated as "medium" by the UI.
+   */
+  reviewer_effort: string | null;
+  /** Give each error finding an adversarial verify pass before gating. */
+  adversarial_verify: boolean;
+  /** Run the evidence agent in the test step. */
+  evidence_enabled: boolean;
+  /** Per-step auto-fix round limits (keys: review/test/docs/lint/ci). */
+  auto_fix_limits: Record<string, number>;
+  /** CI polling idle timeout in minutes before the step gates. */
+  ci_timeout_minutes: number;
+  /**
+   * Overall time cap for a single validation agent call, in minutes. Agents
+   * also have a fixed 10-minute idle window that resets on every streamed
+   * tool call / text block, so this cap only cuts off runaways.
+   */
+  agent_timeout_minutes: number;
+}
+
 export interface AppConfig {
   whisper: WhisperConfig;
   realtime: RealtimeConfig;
@@ -579,6 +607,8 @@ export interface AppConfig {
   sequences: SequenceConfig;
   /** Smart queue configuration */
   queue: QueueConfig;
+  /** Validation pipeline configuration */
+  validation: ValidationConfig;
   /** Inject a system message notifying agents that other agents may be working in parallel */
   notify_parallel_agents: boolean;
   /** User-defined quick action prompts shown in SDK sessions */
@@ -815,6 +845,16 @@ const defaultConfig: AppConfig = {
     fuzzy_delay_between_runs: true,
     fuzzy_delay_between_runs_min_secs: 0,
     fuzzy_delay_between_runs_max_secs: 3,
+  },
+  validation: {
+    default_steps: ["review", "test", "lint"],
+    reviewer_model: "claude-sonnet-5",
+    reviewer_effort: "medium",
+    adversarial_verify: false,
+    evidence_enabled: true,
+    auto_fix_limits: { review: 0, test: 2, docs: 0, lint: 2, ci: 2 },
+    ci_timeout_minutes: 45,
+    agent_timeout_minutes: 60,
   },
   notify_parallel_agents: true,
   quick_actions: [

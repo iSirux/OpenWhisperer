@@ -20,6 +20,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_v1_to_v2,
     migrate_v2_to_v3,
     migrate_v3_to_v4,
+    migrate_v4_to_v5,
 ];
 
 /// The schema version the current build writes. Derived from the table length so
@@ -155,6 +156,27 @@ fn migrate_v3_to_v4(value: &mut Value) {
     if let Some(vosk) = obj.remove("vosk") {
         log::error!("[config.migrate] Renaming config key 'vosk' -> 'realtime'");
         obj.insert("realtime".to_string(), vosk);
+    }
+}
+
+// ============================================================================
+// v4 -> v5: introduce the native Validation pipeline config (`validation` on
+// AppConfig; `validation_commands`/`review_guidelines`/`validation_steps` on
+// each repo). All new fields are `#[serde(default)]`, so nothing needs to be
+// rewritten — an explicit default `validation` object is stamped only so the
+// on-disk file surfaces the new settings after the version bump.
+// ============================================================================
+
+fn migrate_v4_to_v5(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if !obj.contains_key("validation") {
+        if let Ok(default_validation) =
+            serde_json::to_value(crate::config::ValidationConfig::default())
+        {
+            obj.insert("validation".to_string(), default_validation);
+        }
     }
 }
 

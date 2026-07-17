@@ -23,3 +23,4 @@ pub mod session_cmds;
 pub mod settings_cmds;
 pub mod spare_tokens_cmds;
 pub mod usage_cmds;
+pub mod validation_cmds;

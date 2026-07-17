@@ -10,6 +10,8 @@
   import { get } from 'svelte/store';
   import { nmRuns, noMistakes } from '$lib/stores/noMistakes';
   import { buildIntent } from '$lib/utils/noMistakesIntent';
+  import { validationRuns } from '$lib/stores/validation';
+  import ValidationStartPopover from '$lib/components/sdk/ValidationStartPopover.svelte';
   import { sessionPrs } from '$lib/stores/sessionPrs';
   import type { SessionPrSummary } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
@@ -146,6 +148,27 @@
       console.error('[SdkSessionHeader] no-mistakes start failed:', err);
     });
   }
+
+  // --- Validation pipeline (native; NOT dev-mode gated) ---
+  const validationSession = $derived(
+    sessionId ? $sdkSessions.find((s) => s.id === sessionId) : undefined,
+  );
+  const validationRun = $derived(
+    sessionId ? [...$validationRuns.values()].find((r) => r.sessionId === sessionId) : undefined,
+  );
+  const validationActive = $derived(
+    !!validationRun && (validationRun.status === 'running' || validationRun.status === 'gate'),
+  );
+  // Enabled with a real cwd, not pending, not querying, and no active run.
+  const validationCanStart = $derived(
+    nmHasCwd && !isPending && !isQuerying && !validationActive && !!validationSession,
+  );
+  const showValidate = $derived(!isPending && !!sessionId);
+  let showValidatePopover = $state(false);
+  $effect(() => {
+    // Close the popover if the session can no longer start a run.
+    if (showValidatePopover && !validationCanStart) showValidatePopover = false;
+  });
 
 
   let isChatCopied = $state(false);
@@ -389,6 +412,39 @@
           </svg>
         </button>
       {/if}
+      {#if showValidate}
+        <div class="validate-wrap">
+          <button
+            class="validate-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
+            class:active={validationActive}
+            onclick={() => (showValidatePopover = !showValidatePopover)}
+            disabled={!validationCanStart}
+            title="Run the validation pipeline (review, test, docs, lint, ship, CI) on this session's branch."
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <path d="M9 12l2 2 4-4" />
+            </svg>
+            Validate
+          </button>
+          {#if showValidatePopover && validationSession}
+            <button
+              class="validate-backdrop"
+              onclick={() => (showValidatePopover = false)}
+              aria-label="Close validation options"
+            ></button>
+            <div class="validate-popover">
+              <ValidationStartPopover
+                session={validationSession}
+                cwd={repoPath}
+                repoId={repoId}
+                repoSteps={repoConfig?.validation_steps}
+                onClose={() => (showValidatePopover = false)}
+              />
+            </div>
+          {/if}
+        </div>
+      {/if}
       {#if showNoMistakes}
         <button
           class="no-mistakes-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
@@ -565,6 +621,44 @@
   .copy-all-btn.copied {
     background: color-mix(in srgb, var(--color-success) 20%, transparent);
     color: var(--color-success);
+  }
+
+  .validate-wrap {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .validate-btn {
+    color: var(--color-text-muted);
+  }
+
+  .validate-btn:hover:not(:disabled) {
+    color: var(--color-text-primary);
+  }
+
+  .validate-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .validate-btn.active {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    color: var(--color-accent);
+  }
+
+  .validate-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: transparent;
+    cursor: default;
+  }
+
+  .validate-popover {
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    right: 0;
+    z-index: 50;
   }
 
   .no-mistakes-btn {

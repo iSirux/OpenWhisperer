@@ -558,6 +558,54 @@ For each action provide `label` (2-4 word button text) and `prompt` (the full on
         self.run_feature(prompt, schema).await
     }
 
+    /// Draft a commit message and PR title/body for the validation ship step,
+    /// from the intent, a `git diff --stat`, and a per-step outcome summary.
+    /// The caller falls back to deterministic templates on any error.
+    pub async fn draft_ship_with_usage(
+        &self,
+        intent: &str,
+        diffstat: &str,
+        validation_summary: &str,
+    ) -> Result<GenerationResult<ShipDraftResult>, String> {
+        let prompt = format!(
+            r##"Draft a git commit message and a pull request title and body for a completed, validated change.
+
+Use the intent as the source of truth for WHAT was intended, the diffstat for the surface area of the change, and the validation summary for the pipeline outcomes.
+
+Rules:
+- commit_message: a concise imperative subject line (<= 72 chars), optionally followed by a short body. No trailing period on the subject.
+- pr_title: concise, imperative, no trailing period.
+- pr_body: markdown with these sections, in order, using level-2 headings named Intent, What changed, and Validation. Keep it factual; do not invent work that isn't in the inputs.
+
+Intent:
+{}
+
+Diffstat:
+{}
+
+Validation summary:
+{}{}"##,
+            truncate_text(intent, 3000),
+            truncate_text(diffstat, 2000),
+            truncate_text(validation_summary, 2000),
+            Self::json_only(
+                r###"{"commit_message": "imperative subject", "pr_title": "imperative title", "pr_body": "## Intent\n...\n\n## What changed\n...\n\n## Validation\n..."}"###
+            )
+        );
+
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "commit_message": { "type": "string", "description": "Commit message (imperative subject, optional body)" },
+                "pr_title": { "type": "string", "description": "Concise imperative PR title" },
+                "pr_body": { "type": "string", "description": "Markdown PR body with Intent / What changed / Validation sections" }
+            },
+            "required": ["commit_message", "pr_title", "pr_body"]
+        });
+
+        self.run_feature(prompt, schema).await
+    }
+
     /// Generate a descriptive git branch name from a user prompt
     pub async fn generate_branch_name_with_usage(
         &self,

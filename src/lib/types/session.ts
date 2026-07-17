@@ -74,6 +74,9 @@ export interface DisplaySession {
   // PR detected for this session's branch (SDK sessions)
   pr?: { number: number; url: string; state: string; title: string; isDraft?: boolean };
 
+  // Latest Validation run summary mirrored onto the session (SDK sessions) — drives the status badge
+  validation?: { runId: string; status: string; step?: string; findingCount: number; prUrl?: string; updatedAt: number };
+
   // Pile item this session was launched from
   pileItem?: { id: string; title: string };
 

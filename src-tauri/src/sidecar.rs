@@ -126,6 +126,22 @@ pub enum OutboundMessage {
         repo_path: String,
         repo_name: String,
     },
+    /// One-shot validation agent (review/verify/evidence/docs/lint). Runs a
+    /// restricted `query()` in `cwd` with a schema-enforced submit tool and
+    /// replies via `validation-agent-result-{id}` / `validation-agent-error-{id}`.
+    ValidationAgent {
+        id: String,
+        cwd: String,
+        /// "review" | "verify" | "evidence" | "docs" | "lint"
+        role: String,
+        prompt: String,
+        model: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        /// SDK session id to resume (durable reviewer across rounds).
+        #[serde(rename = "resumeSessionId", skip_serializing_if = "Option::is_none")]
+        resume_session_id: Option<String>,
+    },
     /// User's answers to AskUserQuestion tool
     AnswerAskUserQuestion {
         id: String,
@@ -347,6 +363,35 @@ pub enum InboundMessage {
     LaunchProfileError {
         id: String,
         error: String,
+    },
+    /// Result of a one-shot validation agent (role-specific structured output).
+    ValidationAgentResult {
+        id: String,
+        structured: serde_json::Value,
+        #[serde(default)]
+        transcript: Option<String>,
+        #[serde(rename = "sdkSessionId", default)]
+        sdk_session_id: Option<String>,
+        #[serde(default)]
+        usage: Option<serde_json::Value>,
+    },
+    /// Error from a one-shot validation agent.
+    ValidationAgentError {
+        id: String,
+        error: String,
+    },
+    /// Streaming progress from a one-shot validation agent (tool calls / text),
+    /// forwarded so the run executor can surface live activity and reset its
+    /// idle timeout.
+    ValidationAgentProgress {
+        id: String,
+        kind: String,
+        #[serde(default)]
+        tool: Option<String>,
+        #[serde(default)]
+        detail: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
     },
     /// SDK session ID captured from system/init message for session persistence
     SdkSessionId {
@@ -604,6 +649,28 @@ struct LaunchProfileResultPayload {
     profiles: Vec<LaunchProfileGroupResult>,
 }
 
+#[derive(Serialize, Clone)]
+struct ValidationAgentResultPayload {
+    structured: serde_json::Value,
+    transcript: Option<String>,
+    #[serde(rename = "sdkSessionId")]
+    sdk_session_id: Option<String>,
+    usage: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Clone)]
+struct ValidationAgentErrorPayload {
+    error: String,
+}
+
+#[derive(Serialize, Clone)]
+struct ValidationAgentProgressPayload {
+    kind: String,
+    tool: Option<String>,
+    detail: Option<String>,
+    text: Option<String>,
+}
+
 impl InboundMessage {
     /// Event-name suffix derived from the variant (I1). Empty for pure
     /// log-only variants (Ready/Debug) that emit nothing.
@@ -636,6 +703,9 @@ impl InboundMessage {
             InboundMessage::RepoDescriptionError { .. } => "repo-description-error",
             InboundMessage::LaunchProfileResult { .. } => "launch-profile-result",
             InboundMessage::LaunchProfileError { .. } => "launch-profile-error",
+            InboundMessage::ValidationAgentResult { .. } => "validation-agent-result",
+            InboundMessage::ValidationAgentError { .. } => "validation-agent-error",
+            InboundMessage::ValidationAgentProgress { .. } => "validation-agent-progress",
             InboundMessage::SdkSessionId { .. } => "sdk-session-id",
             InboundMessage::ParallelSessionNotification { .. } => "sdk-parallel-notification",
         }
@@ -1241,6 +1311,50 @@ impl SidecarManager {
             InboundMessage::LaunchProfileError { id, error } => {
                 log::error!("[sidecar] Launch profile error for {}: {}", id, error);
                 Self::emit(app, suffix, &id, error);
+            }
+            InboundMessage::ValidationAgentResult {
+                id,
+                structured,
+                transcript,
+                sdk_session_id,
+                usage,
+            } => {
+                log::info!("[sidecar] Validation agent result for {}", id);
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    ValidationAgentResultPayload {
+                        structured,
+                        transcript,
+                        sdk_session_id,
+                        usage,
+                    },
+                );
+            }
+            InboundMessage::ValidationAgentError { id, error } => {
+                log::error!("[sidecar] Validation agent error for {}: {}", id, error);
+                Self::emit(app, suffix, &id, ValidationAgentErrorPayload { error });
+            }
+            InboundMessage::ValidationAgentProgress {
+                id,
+                kind,
+                tool,
+                detail,
+                text,
+            } => {
+                // High-frequency; no per-event logging.
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    ValidationAgentProgressPayload {
+                        kind,
+                        tool,
+                        detail,
+                        text,
+                    },
+                );
             }
             InboundMessage::SdkSessionId { id, sdk_session_id } => {
                 log::info!("[sidecar] SDK session ID for {}: {}", id, sdk_session_id);

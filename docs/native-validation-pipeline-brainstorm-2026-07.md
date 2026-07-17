@@ -2,7 +2,7 @@
 
 **Concept:** Replace the external [no-mistakes](https://github.com/kunchenguid/no-mistakes) CLI integration with a **native, in-app validation pipeline** for the post-implementation phase of a session — the moment the agent finishes coding and the question becomes "is this actually good, and can it ship?" We dissected the no-mistakes codebase (two deep-dive passes over its Go source), mapped our own native building blocks, and swept the state of the art (Conductor, Sculptor, Vibe Kanban, Claude Code `/code-review`, Codex review, Graphite Diamond, self-healing CI, LLM-as-judge research).
 
-Status: **research complete, brainstorm — decisions pending (July 2026).** Supersedes the "No Mistakes: fully separate feature" stance in `conductor-inspired-features-brainstorm-2026-07.md` §3.
+Status: **decisions taken, implementation started 2026-07-16.** The feature is named **Validation** (not "No Mistakes"); scope = v1+v2+v3 built together; **no auto-trigger and no SDK Stop hooks** (manual start only — §5.5 tiers 2–3 and phase v4 are rejected); steps are **user-selectable per run** (e.g. skip docs); reviewer **model/effort chosen per run** with defaults in Settings → Validation and per-repo overrides. Binding contract: `docs/validation-pipeline-spec.md`. Supersedes the "No Mistakes: fully separate feature" stance in `conductor-inspired-features-brainstorm-2026-07.md` §3.
 
 ---
 
@@ -146,11 +146,9 @@ Reuse `NoMistakesPanel`'s stepper/findings-table/approve-fix-skip skeleton, now 
 - **Fix-review gates show the diff** of what changed since the gate (no-mistakes' `fix_review` + `git.DiffHead` behavior).
 - Summary-only-when-clean: a clean run collapses to one green line, not a seven-step ceremony.
 
-### 5.5 Triggers — three tiers of eagerness
+### 5.5 Triggers — manual only (decision 2026-07-16)
 
-1. **Manual** (v1): the existing header button, now un-dev-gated. Also a quick-action chip ("Validate changes").
-2. **Auto after turn** (v2, per-repo/per-session opt-in): hook the `justFinished` effect / `finalizeCompletion` — after a turn that changed files (`count_changed_files` > 0), auto-run a *pre-flight* (cheap LLM: "does this diff warrant review?") and start a run. This is Sculptor's always-on "Suggestions" shape.
-3. **In-loop** (v3, exploratory): SDK Stop hook via the sidecar — block turn completion until typecheck/tests pass, with `stop_hook_active`-style loop guard and attempt caps. Powerful but riskier UX (fights with voice-driven fire-and-forget); prototype behind a setting.
+**Manual start only:** a "Validate" header button (not dev-gated) opening a start popover — step checkboxes, reviewer model, effort. Auto-trigger-after-turn and SDK-Stop-hook in-loop gating were both considered and **rejected by the user** — no background eagerness, no blocking the agent's turn completion.
 
 ### 5.6 Where it runs — in place, not a separate worktree (v1)
 
@@ -210,6 +208,8 @@ The dividing line: **a session deserves sidebar identity only if the user might 
 ---
 
 ## 8. Phasing
+
+> **2026-07-16:** v1–v3 are being implemented together (user decision); v4's auto-trigger and Stop-hook items are rejected outright — only its voice-driven gate responses remain a future idea.
 
 1. **v1 — Review + gate (the core loop):** `get_git_diff` (shared with the planned diff viewer), sidecar `review_changes` one-shot with `submit_review` schema, Finding model + fail-closed defaults, single review step with approve / fix-via-session / skip, findings-as-prompts, panel evolved from `NoMistakesPanel`, `SdkSession.validation` persistence, manual trigger (un-dev-gated button + chip). *No new step machinery beyond one step.*
 2. **v2 — Pipeline:** test step (repo commands + proof-carrying results), docs+lint housekeeping pass, step rounds + fix-review diffs, per-repo config (`commands`, `review_guidelines`), evidence artifacts, intent-conformance clause, adversarial verify at high effort.

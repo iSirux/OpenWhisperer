@@ -85,3 +85,11 @@ pub struct QuickAction {
 pub struct QuickActionsResult {
     pub actions: Vec<QuickAction>,
 }
+
+/// Result for drafting a ship commit message + PR title/body (validation ship step)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShipDraftResult {
+    pub commit_message: String,
+    pub pr_title: String,
+    pub pr_body: String,
+}

@@ -23,6 +23,7 @@
     VoiceCommandsTab,
     SequencesTab,
     QueueTab,
+    ValidationTab,
     RecordingsLogTab,
     AboutTab,
   } from "$lib/components/settings";
@@ -138,6 +139,7 @@
       { id: "transcription", label: "Transcription" },
       { id: "llm", label: "LLM" },
       { id: "queue", label: "Smart Queue" },
+      { id: "validation", label: "Validation" },
       { id: "mcp", label: "MCP Servers" },
       { id: "hotkeys", label: "Hotkeys" },
       { id: "overlay", label: "Overlay" },
@@ -210,6 +212,8 @@
         <LlmTab />
       {:else if activeTab === "queue"}
         <QueueTab />
+      {:else if activeTab === "validation"}
+        <ValidationTab />
       {:else if activeTab === "mcp"}
         <McpTab />
       {:else if activeTab === "hotkeys"}

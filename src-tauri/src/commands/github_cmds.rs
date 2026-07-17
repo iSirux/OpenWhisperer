@@ -355,7 +355,10 @@ const ISSUE_LIST_PR_REFS_FIELD: &str = "closedByPullRequestsReferences";
 
 /// Run a `gh ...` command in the repo directory, pinned to `gh_user`
 /// when set (same GH_TOKEN mechanism as sessions). Returns stdout on success.
-async fn run_gh(
+///
+/// `pub(crate)` so the validation pipeline can drive `gh pr create` /
+/// `gh run view --log-failed` through the same pinned rail.
+pub(crate) async fn run_gh(
     repo_path: &str,
     gh_user: Option<&str>,
     args: &[String],
@@ -612,6 +615,31 @@ fn is_no_pr_error(err: &str) -> bool {
     e.contains("no pull requests found") || e.contains("could not find pull request")
 }
 
+/// Core of [`fetch_branch_pr`]: fetch the PR whose head is `branch` (open
+/// preferred by gh), or `None` when the branch has no PR. `pub(crate)` so the
+/// validation pipeline can reuse the same gh call + normalization for ship/ci.
+pub(crate) async fn fetch_branch_pr_status(
+    repo_path: &str,
+    gh_user: Option<&str>,
+    branch: &str,
+) -> Result<Option<GitHubPrStatus>, String> {
+    let args: Vec<String> = vec![
+        "pr".into(),
+        "view".into(),
+        branch.to_string(),
+        "--json".into(),
+        PR_VIEW_FIELDS.into(),
+    ];
+    let stdout = match run_gh(repo_path, gh_user, &args).await {
+        Ok(out) => out,
+        Err(e) if is_no_pr_error(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let raw: GhRawPr = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("Failed to parse gh pr view output: {}", e))?;
+    Ok(Some(raw.into_status()))
+}
+
 /// Fetch the PR whose head is `branch` (open preferred by gh), or None when the
 /// branch has no PR. Runs in the repo/worktree directory so gh resolves the remote.
 #[tauri::command]
@@ -620,21 +648,7 @@ pub async fn fetch_branch_pr(
     gh_user: Option<String>,
     branch: String,
 ) -> Result<Option<GitHubPrStatus>, String> {
-    let args: Vec<String> = vec![
-        "pr".into(),
-        "view".into(),
-        branch,
-        "--json".into(),
-        PR_VIEW_FIELDS.into(),
-    ];
-    let stdout = match run_gh(&repo_path, gh_user.as_deref(), &args).await {
-        Ok(out) => out,
-        Err(e) if is_no_pr_error(&e) => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    let raw: GhRawPr = serde_json::from_str(stdout.trim())
-        .map_err(|e| format!("Failed to parse gh pr view output: {}", e))?;
-    Ok(Some(raw.into_status()))
+    fetch_branch_pr_status(&repo_path, gh_user.as_deref(), &branch).await
 }
 
 /// Merge a PR via `gh pr merge`. Strategy: "squash" | "merge" | "rebase".

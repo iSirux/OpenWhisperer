@@ -18,5 +18,6 @@ export { default as McpTab } from "./McpTab.svelte";
 export { default as VoiceCommandsTab } from "./VoiceCommandsTab.svelte";
 export { default as SequencesTab } from "./SequencesTab.svelte";
 export { default as QueueTab } from "./QueueTab.svelte";
+export { default as ValidationTab } from "./ValidationTab.svelte";
 export { default as RecordingsLogTab } from "./RecordingsLogTab.svelte";
 export { default as AboutTab } from "./AboutTab.svelte";

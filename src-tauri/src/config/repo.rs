@@ -73,6 +73,15 @@ pub struct RepoConfig {
     /// Remembered so the PR panel defaults to it next time.
     #[serde(default)]
     pub last_merge_strategy: Option<String>,
+    /// Per-repo test/lint commands for the Validation pipeline's test/lint steps.
+    #[serde(default)]
+    pub validation_commands: Option<super::ValidationCommands>,
+    /// Per-repo review guidelines fed into the Validation reviewer prompt.
+    #[serde(default)]
+    pub review_guidelines: Option<String>,
+    /// Per-repo default Validation step set (overrides the global default).
+    #[serde(default)]
+    pub validation_steps: Option<Vec<String>>,
 }
 
 /// A single runnable command/service for a repository (e.g., "npm run dev")
