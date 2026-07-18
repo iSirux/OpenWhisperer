@@ -193,6 +193,44 @@ Message to analyze:
         realtime_transcription: Option<&str>,
         repo_context: Option<&str>,
     ) -> Result<GenerationResult<TranscriptionCleanupResult>, String> {
+        let prompt =
+            Self::build_cleanup_prompt(whisper_transcription, realtime_transcription, repo_context);
+
+        let mut result: GenerationResult<TranscriptionCleanupResult> =
+            self.run_feature(prompt, Self::cleanup_schema()).await?;
+
+        // Guard against runaway merges: cleaned text substantially longer than the
+        // longest input means the model concatenated both readings (or invented
+        // content) instead of merging — fall back to the raw batch transcript
+        // rather than ship a corrupted prompt.
+        if Self::cleanup_exceeds_length_guard(
+            whisper_transcription,
+            realtime_transcription,
+            &result.data.cleaned_text,
+        ) {
+            log::warn!(
+                "[llm] transcription cleanup output ({} words) far exceeds the longest input ({} words); discarding it and falling back to the raw transcript",
+                word_count(&result.data.cleaned_text),
+                word_count(whisper_transcription)
+                    .max(realtime_transcription.map(word_count).unwrap_or(0))
+            );
+            result.data = TranscriptionCleanupResult {
+                cleaned_text: whisper_transcription.to_string(),
+                corrections_made: Vec::new(),
+            };
+        }
+
+        Ok(result)
+    }
+
+    /// Build the exact production prompt for transcription cleanup/merge.
+    /// Extracted from `clean_transcription_with_usage` so the prompt-calibration
+    /// tests (`prompt_tests.rs`) exercise the real prompt.
+    pub(crate) fn build_cleanup_prompt(
+        whisper_transcription: &str,
+        realtime_transcription: Option<&str>,
+        repo_context: Option<&str>,
+    ) -> String {
         let context_section = if let Some(context) = repo_context {
             format!(
                 r#"6. Project-specific terms. The speaker's known projects and vocabulary are listed below. If a word or phrase in the transcription is phonetically close to one of these known terms, the speaker almost certainly said the known term — replace it, using the exact casing shown (e.g. "cloud whisperer" -> "OpenWhisperer", "torii" -> "Tauri", "sopranos" -> "Sonnet"). Only substitute on sound-alike matches; never insert terms that were not plausibly spoken.
@@ -259,7 +297,12 @@ Keep the original meaning and intent. Only fix clear errors, don't rewrite the c
             )
         );
 
-        let schema = serde_json::json!({
+        prompt
+    }
+
+    /// JSON schema for the cleanup feature's structured output.
+    pub(crate) fn cleanup_schema() -> serde_json::Value {
+        serde_json::json!({
             "type": "object",
             "properties": {
                 "cleaned_text": {
@@ -273,33 +316,20 @@ Keep the original meaning and intent. Only fix clear errors, don't rewrite the c
                 }
             },
             "required": ["cleaned_text", "corrections_made"]
-        });
+        })
+    }
 
-        let mut result: GenerationResult<TranscriptionCleanupResult> =
-            self.run_feature(prompt, schema).await?;
-
-        // Guard against runaway merges: cleaned text substantially longer than the
-        // longest input means the model concatenated both readings (or invented
-        // content) instead of merging — fall back to the raw batch transcript
-        // rather than ship a corrupted prompt.
-        let word_count = |s: &str| s.split_whitespace().count();
-        let baseline = word_count(whisper_transcription).max(
-            realtime_transcription.map(word_count).unwrap_or(0),
-        );
-        let cleaned_len = word_count(&result.data.cleaned_text);
-        if baseline > 0 && cleaned_len > baseline * 13 / 10 + 2 {
-            log::warn!(
-                "[llm] transcription cleanup output ({} words) far exceeds the longest input ({} words); discarding it and falling back to the raw transcript",
-                cleaned_len,
-                baseline
-            );
-            result.data = TranscriptionCleanupResult {
-                cleaned_text: whisper_transcription.to_string(),
-                corrections_made: Vec::new(),
-            };
-        }
-
-        Ok(result)
+    /// True when the cleaned output is so much longer than the longest input
+    /// that the model must have concatenated the two readings (or invented
+    /// content) instead of merging them.
+    pub(crate) fn cleanup_exceeds_length_guard(
+        whisper_transcription: &str,
+        realtime_transcription: Option<&str>,
+        cleaned_text: &str,
+    ) -> bool {
+        let baseline = word_count(whisper_transcription)
+            .max(realtime_transcription.map(word_count).unwrap_or(0));
+        baseline > 0 && word_count(cleaned_text) > baseline * 13 / 10 + 2
     }
 
     /// Recommend model with usage tracking
@@ -697,4 +727,9 @@ Rules:
 
         self.run_feature(prompt, schema).await
     }
+}
+
+/// Whitespace word count used by the cleanup length guard.
+fn word_count(s: &str) -> usize {
+    s.split_whitespace().count()
 }

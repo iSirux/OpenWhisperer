@@ -1,7 +1,7 @@
 /**
  * Global orientation preference for the session dock (the resizable pane
- * hosting the PR + validation panels in SdkView): docked at the bottom
- * (vertical split, default) or on the right (horizontal split). Persisted to
+ * hosting the PR + validation panels in SdkView): docked on the right
+ * (horizontal split, default) or at the bottom (vertical split). Persisted to
  * localStorage like the dock's split ratio (paneforge autoSaveId).
  */
 import { writable } from 'svelte/store';
@@ -11,11 +11,11 @@ export type DockOrientation = 'bottom' | 'right';
 const STORAGE_KEY = 'open-whisperer:session-dock-orientation';
 
 function load(): DockOrientation {
-  if (typeof localStorage === 'undefined') return 'bottom';
+  if (typeof localStorage === 'undefined') return 'right';
   try {
-    return localStorage.getItem(STORAGE_KEY) === 'right' ? 'right' : 'bottom';
+    return localStorage.getItem(STORAGE_KEY) === 'bottom' ? 'bottom' : 'right';
   } catch {
-    return 'bottom';
+    return 'right';
   }
 }
 

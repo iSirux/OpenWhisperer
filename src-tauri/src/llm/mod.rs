@@ -3,6 +3,8 @@
 mod api_types;
 mod features;
 mod providers;
+#[cfg(test)]
+mod prompt_tests;
 mod types;
 mod utils;
 

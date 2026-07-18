@@ -3390,7 +3390,14 @@ async function runValidationQuery(
     },
     env: {
       ...process.env,
-      CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "120000",
+      // Validation agents run autonomously: unlike interactive sessions there
+      // can be NO SDK->CLI traffic for many minutes (long generations, built-in
+      // tools that never hit canUseTool). MCP responses don't reset the CLI's
+      // inactivity timer (SDK issue #114), so a short timeout closes the
+      // control stream mid-run and every later in-process MCP submit_* call
+      // dies with "Stream closed". Use a value larger than any run; the
+      // executor enforces its own activity-aware timeout.
+      CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "14400000",
     },
   };
 
@@ -3400,10 +3407,15 @@ async function runValidationQuery(
     options.effort = mappedEffort as Options["effort"];
   }
 
-  let structured: unknown = undefined;
   let sdkSessionId: string | undefined;
   let usage: Record<string, number> | undefined;
   const textParts: string[] = [];
+  // Every submit-tool call the agent made, in order, keyed by tool_use id so
+  // tool_result acks can be correlated. The agent may call the tool more than
+  // once — e.g. retrying after a failed MCP call, sometimes with trimmed or
+  // minimal "probe" payloads — so blindly keeping the last input can replace
+  // the real review with a degenerate one.
+  const submissions = new Map<string, { input: unknown; acked: boolean }>();
 
   const iterator = query({ prompt: msg.prompt, options });
   for await (const message of iterator) {
@@ -3433,7 +3445,31 @@ async function runValidationQuery(
             ),
           });
           if (block.name === role.toolName) {
-            structured = block.input;
+            const toolUseId =
+              (block as { id?: string }).id ?? `submission-${submissions.size}`;
+            submissions.set(toolUseId, { input: block.input, acked: false });
+          }
+        }
+      }
+    } else if (message.type === "user") {
+      // Correlate tool_result acks with submit-tool calls. A successful MCP
+      // ack marks the submission as authoritative; an is_error result (e.g.
+      // "Stream closed" when the CLI's inactivity timer killed the control
+      // stream) leaves it unacked.
+      const content = (message as { message?: { content?: unknown } }).message
+        ?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          const b = block as {
+            type?: string;
+            tool_use_id?: string;
+            is_error?: boolean;
+          };
+          if (b?.type === "tool_result" && typeof b.tool_use_id === "string") {
+            const sub = submissions.get(b.tool_use_id);
+            if (sub && !b.is_error) {
+              sub.acked = true;
+            }
           }
         }
       }
@@ -3457,6 +3493,31 @@ async function runValidationQuery(
           totalCostUsd: r.total_cost_usd || 0,
           durationMs: r.duration_ms || 0,
         };
+      }
+    }
+  }
+
+  // Pick the authoritative submission: the newest acked one. If the MCP
+  // server never acked anything (stream closed on every attempt), fall back
+  // to the largest payload — failed-submit retries tend to shrink (trimmed
+  // payloads, minimal probes), so the fullest attempt is the real one.
+  let structured: unknown = undefined;
+  const all = [...submissions.values()];
+  const acked = all.filter((s) => s.acked);
+  if (acked.length > 0) {
+    structured = acked[acked.length - 1].input;
+  } else {
+    let bestLen = -1;
+    for (const s of all) {
+      let len = 0;
+      try {
+        len = JSON.stringify(s.input)?.length ?? 0;
+      } catch {
+        len = 0;
+      }
+      if (len > bestLen) {
+        bestLen = len;
+        structured = s.input;
       }
     }
   }
