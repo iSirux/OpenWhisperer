@@ -246,6 +246,7 @@ fn default_notify_parallel_agents() -> bool {
 
 fn default_quick_actions() -> Vec<String> {
     vec![
+        "Go".to_string(),
         "Implement this".to_string(),
         "Fix the issues".to_string(),
         "Keep going".to_string(),
@@ -840,6 +841,43 @@ mod tests {
         let config: AppConfig = serde_json::from_value(value).unwrap();
         assert_eq!(config.validation.default_steps, vec!["review", "test", "lint"]);
         assert_eq!(config.validation.auto_fix_limit("test"), 2);
+    }
+
+    #[test]
+    fn migration_prepends_go_quick_action() {
+        // A pre-v6 config gains the "Go" quick action at the front, preserving
+        // the user's existing actions.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(5));
+        obj.insert(
+            "quick_actions".to_string(),
+            serde_json::json!(["Fix the issues", "Keep going"]),
+        );
+
+        migration::run_migrations(&mut value, 5);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.quick_actions,
+            vec!["Go", "Fix the issues", "Keep going"]
+        );
+    }
+
+    #[test]
+    fn migration_go_quick_action_is_idempotent() {
+        // A config that already has a "Go" action (any casing) is left untouched
+        // so re-running the migration never duplicates it.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(5));
+        obj.insert(
+            "quick_actions".to_string(),
+            serde_json::json!(["Implement this", "go"]),
+        );
+
+        migration::run_migrations(&mut value, 5);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.quick_actions, vec!["Implement this", "go"]);
     }
 
     #[test]

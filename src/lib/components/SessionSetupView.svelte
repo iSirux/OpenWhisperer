@@ -9,7 +9,13 @@
   import { appendChips } from '$lib/utils/promptChips';
   import SdkQuickActions from '$lib/components/sdk/SdkQuickActions.svelte';
   import { isRecording, isTranscribing, recording } from '$lib/stores/recording';
-  import { holdSpaceRecord, DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
+  import { DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
+  import PromptTextarea from '$lib/components/PromptTextarea.svelte';
+  import {
+    sendTimingFromEvent,
+    spaceSendTimingFromEvent,
+    type SendTiming,
+  } from '$lib/utils/sendTiming';
   import {
     getEnabledModelsWithAuto,
     getEnabledModels,
@@ -23,8 +29,6 @@
     type SdkProvider,
   } from '$lib/utils/models';
   import {
-    getImagesFromClipboard,
-    getImagesFromClipboardHtml,
     getImagesFromDrop,
     processImages,
     createPreviewUrl,
@@ -137,7 +141,7 @@
   );
   let isStarting = $state(false);
   let isAwaitingTranscript = $state(false);
-  let textareaEl: HTMLTextAreaElement;
+  let promptTextareaRef: PromptTextarea | undefined;
   let prevSessionId = $state(sessionId);
 
   // Worktree state
@@ -199,9 +203,7 @@
 
   // Focus textarea on mount
   $effect(() => {
-    if (textareaEl) {
-      textareaEl.focus();
-    }
+    promptTextareaRef?.focus();
   });
 
   // Restore full setup state when switching between setup sessions.
@@ -273,22 +275,6 @@
         ? ($settings.openai_model || availableModels[0].id || DEFAULT_OPENAI_MODEL_ID)
         : ($settings.default_model || availableModels[0].id || DEFAULT_MODEL_ID);
     }
-  });
-
-  // Auto-resize textarea
-  function autoResize() {
-    if (textareaEl) {
-      textareaEl.style.height = 'auto';
-      const maxHeight = 200;
-      const newHeight = Math.min(textareaEl.scrollHeight, maxHeight);
-      textareaEl.style.height = newHeight + 'px';
-      textareaEl.style.overflowY = textareaEl.scrollHeight > maxHeight ? 'auto' : 'hidden';
-    }
-  }
-
-  $effect(() => {
-    prompt;
-    autoResize();
   });
 
   // Persist setup draft per session so typed content survives session switching.
@@ -394,25 +380,41 @@
     }
   }
 
-  /** Quick action: immediately start the session with the action's prompt (ignores the draft). */
+  /** Quick action combined with the typed draft (draft first, action appended). */
+  function combineActionWithPrompt(actionPrompt: string): string {
+    const typed = prompt.trim();
+    return typed ? `${typed}\n\n${actionPrompt}` : actionPrompt;
+  }
+
+  /** Plain click quick action: append the action's text to the prompt draft. */
+  function handleQuickAppend(actionPrompt: string) {
+    prompt = combineActionWithPrompt(actionPrompt);
+    promptTextareaRef?.focus();
+  }
+
+  /** Ctrl+click quick action: start now with the draft + action combined. */
   async function handleQuickAction(actionPrompt: string) {
     if (isStarting) return;
     isStarting = true;
     try {
-      const config = await resolveStartConfig(actionPrompt);
+      const config = await resolveStartConfig(combineActionWithPrompt(actionPrompt));
       if (config) await onStart(config);
     } finally {
       isStarting = false;
     }
   }
 
-  /** Ctrl+click quick action: queue the session to start once the target repo/worktree is idle. */
-  async function handleQuickActionAfterIdle(actionPrompt: string) {
+  /** Modifier quick action: queue the session (draft + action combined) to start
+   *  once the repo/worktree is idle or at the next 5h reset. */
+  async function handleQuickActionSchedule(
+    actionPrompt: string,
+    window: QueueWindow | 'after_sessions',
+  ) {
     if (isStarting || !onSchedule) return;
     isStarting = true;
     try {
-      const config = await resolveStartConfig(actionPrompt);
-      if (config) await onSchedule(config, 'after_sessions');
+      const config = await resolveStartConfig(combineActionWithPrompt(actionPrompt));
+      if (config) await onSchedule(config, window);
     } finally {
       isStarting = false;
     }
@@ -452,32 +454,17 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      handleStart();
-    }
+    if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    // Ctrl+Enter = start now; Ctrl+Shift+Enter = start when the repo/worktree is
+    // idle; Ctrl+Shift+Alt+Enter = start on the next 5h reset.
+    const timing = sendTimingFromEvent(e);
+    if (timing === 'reset_5h' && onSchedule) handleSchedule('5h');
+    else if (timing !== 'now' && onSchedule) handleSchedule('after_sessions');
+    else handleStart();
   }
 
   // Image handling
-  async function handlePaste(e: ClipboardEvent) {
-    // Read clipboard data synchronously — it's only valid during the event.
-    const html = e.clipboardData?.getData('text/html') ?? '';
-    const imageFiles = await getImagesFromClipboard(e);
-    if (imageFiles.length > 0) {
-      // Raw image blob (e.g. a screenshot) — replace the paste with the image.
-      e.preventDefault();
-      await addImages(imageFiles);
-      return;
-    }
-    // Rich HTML with embedded images (e.g. a page copied from Google Docs).
-    // Don't preventDefault — let the accompanying text paste normally, and
-    // attach the images alongside it.
-    const htmlImages = await getImagesFromClipboardHtml(html);
-    if (htmlImages.length > 0) {
-      await addImages(htmlImages);
-    }
-  }
-
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
     e.dataTransfer!.dropEffect = 'copy';
@@ -516,17 +503,20 @@
       if (transcript) {
         // Append to existing prompt with a space separator
         prompt = prompt ? `${prompt} ${transcript}` : transcript;
-        autoResize();
       }
     } finally {
       isAwaitingTranscript = false;
     }
   }
 
-  /** Shift+hold-Space: stop the recording, append its transcript, then start the session. */
-  async function recordAndStart() {
+  /** Modifier+hold-Space: stop the recording, append its transcript, then start
+   *  (or schedule) the session per the held combo's timing. */
+  async function recordAndFinish(timing: SendTiming) {
     await handleStopRecording();
-    await handleStart();
+    if (timing === 'reset_5h' && onSchedule) await handleSchedule('5h');
+    else if ((timing === 'repo_idle' || timing === 'session_idle') && onSchedule)
+      await handleSchedule('after_sessions');
+    else await handleStart();
   }
 
   // --- Global hold-Space (works without focusing the prompt) ---
@@ -534,12 +524,14 @@
   // any input) is focused, with leaked-space retraction. This window-level
   // handler mirrors it for the case where nothing editable is focused, so the
   // user can hold Space from anywhere in the New Session view. Plain Space
-  // dictates into the prompt; Shift+Space records and starts the session.
+  // dictates into the prompt; the send-timing modifier combos record and start
+  // (or schedule) the session.
   const holdSpaceEnabled = $derived(
     $settings.audio.hold_space_to_record_inline && !noVoice
   );
   let globalHoldPhase: 'idle' | 'warmup' | 'recording' = 'idle';
-  let globalHoldVariant: 'plain' | 'shift' = 'plain';
+  /** null = plain dictation, otherwise the send timing locked in at press. */
+  let globalHoldTiming: SendTiming | null = null;
   let globalHoldTimer: ReturnType<typeof setTimeout> | null = null;
   let globalHoldStartSettled: Promise<void> = Promise.resolve();
   let globalHoldPressAt = 0;
@@ -581,7 +573,7 @@
 
   async function globalHoldFinish() {
     if (globalHoldPhase !== 'recording') return;
-    const variant = globalHoldVariant;
+    const timing = globalHoldTiming;
     const tooShort = Date.now() - globalHoldPressAt < DEFAULT_MIN_HOLD_MS;
     globalHoldPhase = 'idle';
     // Ensure the recorder actually started before we stop it (fast release).
@@ -599,7 +591,7 @@
       return;
     }
     try {
-      if (variant === 'shift') await recordAndStart();
+      if (timing !== null) await recordAndFinish(timing);
       else await handleStopRecording();
     } catch (err) {
       console.error('[SessionSetupView] hold-Space finish failed:', err);
@@ -609,7 +601,10 @@
 
   function handleGlobalKeydown(e: KeyboardEvent) {
     if (e.code !== 'Space' || !holdSpaceEnabled) return;
-    if (e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+    if (e.isComposing) return;
+    // Alt without the full Ctrl+Shift+Alt combo is OS/window territory — leave it.
+    const timing = spaceSendTimingFromEvent(e);
+    if (timing === null && e.altKey) return;
     // While the prompt (or any input) is focused, the textarea's own gesture
     // owns the hold — don't double-handle.
     if (isEditableElement(document.activeElement)) return;
@@ -626,7 +621,7 @@
     // and arm the hold. A quick release (tap) resets without recording.
     e.preventDefault();
     if ($isRecording || $isTranscribing || isAwaitingTranscript) return;
-    globalHoldVariant = e.shiftKey ? 'shift' : 'plain';
+    globalHoldTiming = timing;
     globalHoldPhase = 'warmup';
     globalHoldPressAt = Date.now();
     if (globalHoldTimer !== null) clearTimeout(globalHoldTimer);
@@ -987,29 +982,29 @@
         </div>
       {/if}
 
-      <textarea
-        bind:this={textareaEl}
+      <PromptTextarea
+        bind:this={promptTextareaRef}
         bind:value={prompt}
-        oninput={autoResize}
+        variant="setup"
         onkeydown={handleKeydown}
-        onpaste={handlePaste}
-        use:holdSpaceRecord={{
+        onImageFiles={addImages}
+        holdSpace={{
           enabled: $settings.audio.hold_space_to_record_inline && !noVoice,
           canStart: () => !$isRecording && !$isTranscribing && !isAwaitingTranscript,
           start: onStartRecording,
           stop: onStopRecording,
           onState: (s) => (isAwaitingTranscript = s === 'transcribing'),
-          // Shift+Space: record and start the session immediately (mirrors the
-          // session view's record-and-send) instead of inserting at the caret.
-          shift: {
+          // Modifier+Space: record and start/schedule the session (mirrors the
+          // session view's record-and-send) instead of inserting at the caret;
+          // the held combo picks the timing.
+          send: {
             canStart: () => !$isRecording && !$isTranscribing && !isAwaitingTranscript,
-            start: onStartRecording,
-            stop: recordAndStart,
+            start: () => onStartRecording(),
+            stop: (timing) => recordAndFinish(timing),
           },
         }}
-        placeholder={`Enter your prompt... (Ctrl+V to paste images${$settings.audio.hold_space_to_record_inline && !noVoice ? ', hold Space to dictate, +Shift to start' : ''})`}
-        rows="1"
-      ></textarea>
+        placeholder={`Enter your prompt... (Ctrl+V to paste images${$settings.audio.hold_space_to_record_inline && !noVoice ? ', hold Space to dictate, +Ctrl to start' : ''})`}
+      />
 
       <div class="prompt-hint">
         Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to start, or use the button below
@@ -1020,8 +1015,15 @@
       </div>
 
       <SdkQuickActions
-        onSendPrompt={handleQuickAction}
-        onSendAfterIdle={onSchedule ? handleQuickActionAfterIdle : undefined}
+        verb="start"
+        onAppend={handleQuickAppend}
+        onSendNow={handleQuickAction}
+        onSendRepoIdle={onSchedule
+          ? (p) => handleQuickActionSchedule(p, 'after_sessions')
+          : undefined}
+        onSend5hReset={onSchedule
+          ? (p) => handleQuickActionSchedule(p, '5h')
+          : undefined}
       />
     </div>
 
@@ -1055,12 +1057,14 @@
         class="start-btn"
         class:loading={isStarting}
         disabled={!canStart || isStarting}
-        onclick={(e) =>
-          onSchedule && (e.ctrlKey || e.metaKey)
-            ? handleSchedule('after_sessions')
-            : handleStart()}
+        onclick={(e) => {
+          const timing = sendTimingFromEvent(e);
+          if (onSchedule && timing === 'reset_5h') handleSchedule('5h');
+          else if (onSchedule && timing !== 'now') handleSchedule('after_sessions');
+          else handleStart();
+        }}
         title={onSchedule
-          ? 'Start now — Ctrl+click: start when this repo/worktree is idle'
+          ? 'Start now — Shift+click / Ctrl+Shift+click: start when this repo/worktree is idle — Ctrl+Shift+Alt+click: start on next 5h reset'
           : undefined}
       >
         {#if isStarting}
@@ -1422,30 +1426,6 @@
     gap: 0.5rem;
   }
 
-  textarea {
-    width: 100%;
-    padding: 0.875rem 1rem;
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 0.5rem;
-    color: var(--color-text-primary);
-    font-size: 0.9rem;
-    font-family: inherit;
-    resize: none;
-    overflow-y: hidden;
-    transition: border-color 0.15s ease;
-    line-height: 1.5;
-  }
-
-  textarea:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-
-  textarea::placeholder {
-    color: var(--color-text-muted);
-  }
-
   .prompt-hint {
     font-size: 0.75rem;
     color: var(--color-text-muted);
@@ -1545,7 +1525,9 @@
     animation: spin 0.8s linear infinite;
   }
 
-  .setup-content:has(.pending-images) textarea {
+  /* The textarea lives inside the PromptTextarea child component, so it needs
+     :global to be reachable from this scope. */
+  .setup-content:has(.pending-images) :global(textarea) {
     border-top-left-radius: 0;
     border-top-right-radius: 0;
     border-top: none;

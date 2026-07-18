@@ -1,20 +1,12 @@
 <script lang="ts">
   import { sdkSessions, type PendingTranscriptionInfo } from "$lib/stores/sdkSessions";
   import type { AutoModelEffort } from "$lib/stores/settings";
-  import { repos as reposStore } from "$lib/stores/repos";
   import {
     getShortModelName,
     getModelBadgeBgColor,
     getModelTextColor,
   } from "$lib/utils/modelColors";
   import TranscriptDiff from "../TranscriptDiff.svelte";
-  import RepoIcon from "$lib/components/RepoIcon.svelte";
-  import PromptChips from "$lib/components/PromptChips.svelte";
-  import { appendChips } from "$lib/utils/promptChips";
-  import { settings } from "$lib/stores/settings";
-  import { isRecording, isTranscribing } from "$lib/stores/recording";
-  import { holdSpaceRecord } from "$lib/actions/holdSpaceRecord";
-  import { makeInlineDictation } from "$lib/utils/inlineDictation";
 
   interface Props {
     pendingTranscription: PendingTranscriptionInfo;
@@ -23,20 +15,8 @@
     completed?: boolean;
     onRetry?: () => void;
     onCancel?: () => void;
-    /** Whether to show approval UI (for pending_approval state) */
-    showApproval?: boolean;
-    /** The prompt waiting for approval */
-    approvalPrompt?: string;
-    /** Repository name for display in approval mode */
-    repoName?: string;
-    /** Callback when user approves the prompt (with optional edited text) */
-    onApprove?: (editedPrompt?: string) => void;
-    /** Callback when user cancels the approval */
-    onCancelApproval?: () => void;
     /** Auto model effort setting - needed to show effort level in dynamic mode */
     autoModelEffort?: AutoModelEffort;
-    /** Callback to demote this prompt to the pile instead of sending (approval mode) */
-    onDemoteToPile?: (prompt: string) => void;
   }
 
   let {
@@ -45,35 +25,8 @@
     completed = false,
     onRetry,
     onCancel,
-    showApproval = false,
-    approvalPrompt,
-    repoName,
-    onApprove,
-    onCancelApproval,
     autoModelEffort = "dynamic",
-    onDemoteToPile,
   }: Props = $props();
-
-  // Editable prompt state (approval prompt is always editable)
-  let editedPrompt = $state("");
-  let textareaEl: HTMLTextAreaElement | null = $state(null);
-
-  // Hold-Space dictation into the editable prompt (records -> transcribes ->
-  // inserts at the caret). Cleanup is biased by the routed repo when known.
-  const dictation = makeInlineDictation(() =>
-    repoName ? $reposStore.list.find((r) => r.name === repoName) : undefined
-  );
-
-  // Toggleable prompt chips appended to the prompt on send.
-  // Reset when the session changes so selections don't leak across sessions.
-  let selectedChips = $state<string[]>([]);
-  let chipsSessionId = $state("");
-  $effect(() => {
-    if (sessionId !== chipsSessionId) {
-      chipsSessionId = sessionId;
-      selectedChips = [];
-    }
-  });
 
   // Recording screenshot previews (expanded state per thumbnail index)
   let expandedScreenshots = $state<Set<number>>(new Set());
@@ -91,56 +44,6 @@
     sdkSessions.updatePendingTranscription(sessionId, {
       screenshots: remaining && remaining.length > 0 ? remaining : undefined,
     });
-  }
-
-  // Initialize edited prompt when approval mode is shown
-  $effect(() => {
-    if (showApproval && approvalPrompt) {
-      editedPrompt = approvalPrompt;
-    }
-  });
-
-  // Auto-resize textarea
-  function autoResizeTextarea() {
-    if (textareaEl) {
-      textareaEl.style.height = "auto";
-      const maxHeight = 200;
-      const newHeight = Math.min(textareaEl.scrollHeight, maxHeight);
-      textareaEl.style.height = newHeight + "px";
-      textareaEl.style.overflowY =
-        textareaEl.scrollHeight > maxHeight ? "auto" : "hidden";
-    }
-  }
-
-  // Keep the always-on textarea sized to its content
-  $effect(() => {
-    // re-run when the prompt text changes
-    void editedPrompt;
-    if (textareaEl) autoResizeTextarea();
-  });
-
-  function handleApprove() {
-    if (onApprove) {
-      const base = editedPrompt !== approvalPrompt ? editedPrompt : approvalPrompt ?? "";
-      // Only override if the prompt was edited or chips were selected
-      const promptToSend =
-        editedPrompt !== approvalPrompt || selectedChips.length > 0
-          ? appendChips(base, selectedChips)
-          : undefined;
-      onApprove(promptToSend);
-    }
-  }
-
-  function handleCancelApproval() {
-    if (onCancelApproval) {
-      onCancelApproval();
-    }
-  }
-
-  function handleDemoteToPile() {
-    if (onDemoteToPile) {
-      onDemoteToPile(editedPrompt || approvalPrompt || "");
-    }
   }
 
   // Determine if this was a voice recording vs typed text input
@@ -457,95 +360,9 @@
       {/if}
     </div>
   {/if}
-
-  <!-- Approval UI -->
-  {#if showApproval && approvalPrompt}
-    <div class="approval-section">
-      <div class="approval-header">
-        <svg
-          class="w-4 h-4"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-          />
-        </svg>
-        <span>Review your prompt before sending</span>
-      </div>
-
-      <!-- Repository info -->
-      {#if repoName}
-        <div class="approval-repo">
-          <RepoIcon repo={$reposStore.list.find(r => r.name === repoName) || null} size="xs" />
-          <span class="repo-label">Repository:</span>
-          <span class="repo-value">{repoName}</span>
-        </div>
-      {/if}
-
-      <!-- Editable prompt (always editable) -->
-      <div class="approval-prompt">
-        <textarea
-          bind:this={textareaEl}
-          bind:value={editedPrompt}
-          oninput={autoResizeTextarea}
-          use:holdSpaceRecord={{
-            enabled: $settings.audio.hold_space_to_record_inline && !$settings.system.voice_mode_disabled,
-            canStart: () => !$isRecording && !$isTranscribing,
-            start: dictation.start,
-            stop: dictation.stop,
-          }}
-          class="prompt-textarea"
-          placeholder={`Enter your prompt...${$settings.audio.hold_space_to_record_inline && !$settings.system.voice_mode_disabled ? ' (hold Space to dictate)' : ''}`}
-          rows="2"
-        ></textarea>
-      </div>
-
-      <!-- Prompt chips -->
-      <div class="prompt-chips-row">
-        <PromptChips selected={selectedChips} onchange={(next) => (selectedChips = next)} />
-      </div>
-
-      <!-- Action buttons -->
-      <div class="approval-actions">
-        <button class="cancel-approval-btn" onclick={handleCancelApproval}>
-          Cancel
-        </button>
-        {#if onDemoteToPile}
-          <button class="pile-btn" onclick={handleDemoteToPile} title="Save to the pile to handle later">
-            To Pile
-          </button>
-        {/if}
-        <button class="approve-btn" onclick={handleApprove}>
-          <svg
-            class="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M13 10V3L4 14h7v7l9-11h-7z"
-            />
-          </svg>
-          Send
-        </button>
-      </div>
-    </div>
-  {/if}
 </div>
 
 <style>
-  .prompt-chips-row {
-    margin: 8px 0 4px;
-  }
-
   .session-recording-header {
     background: var(--color-surface);
     border: 1px solid var(--color-border);
@@ -1037,130 +854,4 @@
     border: 1px solid rgba(139, 92, 246, 0.3);
     color: #a78bfa;
   }
-
-  /* Approval UI Styles */
-  .approval-section {
-    margin-top: 1rem;
-    padding: 1rem;
-    background: var(--color-surface-elevated);
-    border: 1px solid var(--color-accent);
-    border-radius: 8px;
-  }
-
-  .approval-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--color-accent);
-    margin-bottom: 0.75rem;
-  }
-
-  .approval-repo {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.8125rem;
-    color: var(--color-text-muted);
-    margin-bottom: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    background: var(--color-surface);
-    border-radius: 6px;
-  }
-
-  .repo-label {
-    color: var(--color-text-muted);
-  }
-
-  .repo-value {
-    color: var(--color-text-primary);
-    font-weight: 500;
-  }
-
-  .approval-prompt {
-    margin-bottom: 0.75rem;
-  }
-
-  .prompt-textarea {
-    width: 100%;
-    padding: 0.75rem;
-    background: var(--color-surface);
-    border: 1px solid var(--color-accent);
-    border-radius: 6px;
-    color: var(--color-text-primary);
-    font-size: 0.875rem;
-    font-family: inherit;
-    line-height: 1.5;
-    resize: none;
-    overflow-y: hidden;
-  }
-
-  .prompt-textarea:focus {
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(var(--color-accent-rgb, 59, 130, 246), 0.2);
-  }
-
-  .approval-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.5rem;
-  }
-
-  .cancel-approval-btn {
-    padding: 0.5rem 1rem;
-    font-size: 0.8125rem;
-    color: var(--color-text-muted);
-    background: transparent;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .cancel-approval-btn:hover {
-    color: var(--color-error);
-    border-color: var(--color-error);
-    background: rgba(239, 68, 68, 0.1);
-  }
-
-  .pile-btn {
-    padding: 0.5rem 1rem;
-    font-size: 0.8125rem;
-    color: rgb(251, 191, 36);
-    background: rgba(245, 158, 11, 0.1);
-    border: 1px solid rgba(245, 158, 11, 0.3);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .pile-btn:hover {
-    background: rgba(245, 158, 11, 0.2);
-  }
-
-  .approve-btn {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    padding: 0.5rem 1rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: white;
-    background: var(--color-accent);
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .approve-btn:hover {
-    filter: brightness(1.1);
-  }
-
-  .approve-btn:active {
-    transform: scale(0.98);
-  }
-
 </style>

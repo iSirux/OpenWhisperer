@@ -175,23 +175,6 @@ async function processSdkTranscript(
     ? currentRepos.list[repoRecommendation.repoIndex]
     : get(activeRepo);
 
-  // Check if approval is required
-  if (currentSettings.audio.require_transcription_approval) {
-    const repoPath = sessionRepo?.path || '.';
-    if (pendingSessionId) {
-      sdkSessions.setPendingApproval(pendingSessionId, finalTranscript, repoPath);
-    } else {
-      const newSessionId = sdkSessions.createPendingTranscriptionSession(
-        currentSettings.default_model,
-        settingsToStoreEffort(currentSettings.default_effort_level)
-      );
-      sdkSessions.setPendingApproval(newSessionId, finalTranscript, repoPath);
-      activeSdkSessionId.set(newSessionId);
-    }
-    navigation.setView('sessions');
-    return;
-  }
-
   if (pendingSessionId) {
     await completePendingSession(pendingSessionId, finalTranscript, sessionRepo, debugRecordingId);
   } else {
@@ -777,7 +760,7 @@ export async function handleVoiceCommand(
     recording
       .stopRecording(true, debugId)
       .then(async (whisperTranscript) => {
-        debugRecordings.update(debugId, { destination: 'prepare' });
+        debugRecordings.update(debugId, { destination: 'draft' });
         if (prepareSessionId) {
           const audioData = get(recording).audioData;
           if (audioData) {
@@ -916,43 +899,6 @@ export async function handleRetryTranscription(sessionId: string) {
     sdkSessions.updatePendingTranscription(sessionId, {
       transcriptionError: error instanceof Error ? error.message : 'Transcription failed',
     });
-  }
-}
-
-/**
- * Approve a pending transcription and send it.
- */
-export async function handleApproveTranscription(sessionId: string, editedPrompt?: string) {
-  const currentSessions = get(sdkSessions);
-  const session = currentSessions.find((s) => s.id === sessionId);
-
-  if (!session || session.status !== 'pending_approval') {
-    console.warn('[approve] Session not found or not pending approval');
-    return;
-  }
-
-  const prompt = editedPrompt || session.pendingApprovalPrompt;
-  if (!prompt) {
-    console.error('[approve] No prompt to send');
-    return;
-  }
-
-  const currentSettings = get(settings);
-  const currentRepos = get(repos);
-
-  let systemPrompt = '';
-  if (currentSettings.audio.include_transcription_notice) {
-    const repo = currentRepos.list.find((r) => r.path === session!.cwd);
-    systemPrompt = `The following prompt was voice-transcribed and may contain minor errors or homophones. `;
-    if (repo) {
-      systemPrompt += `The user is working in the "${repo.name}" repository.`;
-    }
-  }
-
-  try {
-    await sdkSessions.approveAndSend(sessionId, editedPrompt, systemPrompt || undefined);
-  } catch (error) {
-    console.error('[approve] Failed to approve and send:', error);
   }
 }
 

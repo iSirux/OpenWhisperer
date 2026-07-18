@@ -119,7 +119,9 @@ impl Default for OpenMicConfig {
 pub enum RecordAndSendAction {
     #[default]
     Send,
-    Prepare,
+    // `alias = "prepare"` loads configs written before this mode was renamed from "prepare".
+    #[serde(alias = "prepare")]
+    Draft,
     Pile,
 }
 
@@ -148,8 +150,6 @@ pub struct AudioConfig {
     pub recording_linger_ms: u32,
     #[serde(default = "default_include_transcription_notice")]
     pub include_transcription_notice: bool,
-    #[serde(default)]
-    pub require_transcription_approval: bool,
     #[serde(default)]
     pub record_and_send_action: RecordAndSendAction,
     /// Capture a screenshot when a recording starts and attach it to the prompt
@@ -208,7 +208,6 @@ impl Default for AudioConfig {
             play_sound_on_question: default_play_sound_on_question(),
             recording_linger_ms: default_recording_linger_ms(),
             include_transcription_notice: default_include_transcription_notice(),
-            require_transcription_approval: false,
             record_and_send_action: RecordAndSendAction::default(),
             capture_screenshot_on_record: false,
             voice_commands: VoiceCommandConfig::default(),

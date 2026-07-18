@@ -11,6 +11,7 @@
     type SdkSession,
   } from '$lib/stores/sdkSessions';
   import type { RepoConfig } from '$lib/stores/repos';
+  import { dockOrientation } from '$lib/stores/dockOrientation';
   import { renderMarkdown } from '$lib/utils/markdown';
 
   let {
@@ -106,7 +107,7 @@
   }
 </script>
 
-<div class="pr-panel">
+<div class="pr-panel" data-state={effectiveState ?? 'none'}>
   <div class="pr-header">
     <div class="pr-header-left">
       <span class="pr-icon state-{effectiveState ?? 'none'}" aria-hidden="true">
@@ -140,6 +141,28 @@
     <div class="pr-header-right">
       <button
         class="pr-icon-btn"
+        onclick={() => dockOrientation.toggle()}
+        title={$dockOrientation === 'bottom'
+          ? 'Move the dock to the right side'
+          : 'Move the dock to the bottom'}
+        aria-label={$dockOrientation === 'bottom'
+          ? 'Move the dock to the right side'
+          : 'Move the dock to the bottom'}
+      >
+        {#if $dockOrientation === 'bottom'}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="18" height="18" x="3" y="3" rx="2" />
+            <path d="M15 3v18" />
+          </svg>
+        {:else}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="18" height="18" x="3" y="3" rx="2" />
+            <path d="M3 15h18" />
+          </svg>
+        {/if}
+      </button>
+      <button
+        class="pr-icon-btn"
         class:spinning={entry.loading}
         onclick={() => sessionPrs.refresh(session)}
         disabled={entry.loading}
@@ -165,6 +188,7 @@
     </div>
   </div>
 
+  <div class="pr-body">
   {#if entry.error}
     <div class="pr-error">{entry.error}</div>
   {/if}
@@ -238,7 +262,36 @@
       </div>
     {/if}
 
-    {#if pr.state === 'open'}
+    {#if pr.state === 'merged'}
+      <div class="pr-merged-banner">
+        {#if entry.cleanupResult}
+          Cleaned up:
+          {[
+            entry.cleanupResult.worktree_removed ? 'worktree removed' : null,
+            entry.cleanupResult.local_branch_deleted ? 'local branch deleted' : null,
+            entry.cleanupResult.remote_branch_deleted ? 'remote branch deleted' : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'nothing to do'}.
+          Archive the session when you're done.
+        {:else}
+          Merged. You can now clean up: delete the branch/worktree and archive this session when you're done.
+        {/if}
+      </div>
+      {#if entry.cleanupResult?.warnings.length}
+        <div class="pr-cleanup-warnings">
+          {#each entry.cleanupResult.warnings as warning (warning)}
+            <div>{warning}</div>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+  {/if}
+  </div>
+
+  <!-- Action footer — pinned below the scroll area so merge/cleanup stay reachable -->
+  {#if pr && pr.state === 'open'}
+    <div class="pr-footer">
       <div class="pr-merge-row">
         {#if pr.is_draft}
           <span class="pr-muted">Draft PR — mark it ready for review on GitHub before merging.</span>
@@ -264,29 +317,9 @@
       {#if entry.mergeError}
         <div class="pr-error">{entry.mergeError}</div>
       {/if}
-    {:else if pr.state === 'merged'}
-      <div class="pr-merged-banner">
-        {#if entry.cleanupResult}
-          Cleaned up:
-          {[
-            entry.cleanupResult.worktree_removed ? 'worktree removed' : null,
-            entry.cleanupResult.local_branch_deleted ? 'local branch deleted' : null,
-            entry.cleanupResult.remote_branch_deleted ? 'remote branch deleted' : null,
-          ]
-            .filter(Boolean)
-            .join(' · ') || 'nothing to do'}.
-          Archive the session when you're done.
-        {:else}
-          Merged. You can now clean up: delete the branch/worktree and archive this session when you're done.
-        {/if}
-      </div>
-      {#if entry.cleanupResult?.warnings.length}
-        <div class="pr-cleanup-warnings">
-          {#each entry.cleanupResult.warnings as warning (warning)}
-            <div>{warning}</div>
-          {/each}
-        </div>
-      {/if}
+    </div>
+  {:else if pr && pr.state === 'merged'}
+    <div class="pr-footer">
       <div class="pr-cleanup-row">
         {#if !entry.cleanupResult}
           <button
@@ -316,22 +349,28 @@
       {#if entry.cleanupError}
         <div class="pr-error">{entry.cleanupError}</div>
       {/if}
-    {/if}
+    </div>
   {/if}
 </div>
 
 <style>
+  /* Fills its dock pane: fixed header, scrollable body, pinned action footer.
+     The state accent is a 2px strip under the dock resizer. */
   .pr-panel {
     display: flex;
     flex-direction: column;
-    gap: 0.55rem;
-    margin: 0 0.75rem 0.5rem;
-    padding: 0.7rem 0.85rem;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
     background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 10px;
+    border-top: 2px solid var(--color-border);
     font-size: 0.8rem;
   }
+
+  .pr-panel[data-state='open'] { border-top-color: rgba(74, 222, 128, 0.55); }
+  .pr-panel[data-state='draft'] { border-top-color: rgba(148, 163, 184, 0.55); }
+  .pr-panel[data-state='merged'] { border-top-color: rgba(192, 132, 252, 0.55); }
+  .pr-panel[data-state='closed'] { border-top-color: rgba(248, 113, 113, 0.55); }
 
   .pr-header {
     display: flex;
@@ -339,6 +378,33 @@
     justify-content: space-between;
     gap: 0.5rem;
     min-width: 0;
+    padding: 0.6rem 0.85rem 0.5rem;
+    flex-shrink: 0;
+  }
+
+  .pr-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 0.85rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .pr-footer {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.5rem 0.85rem 0.6rem;
+    border-top: 1px solid var(--color-border);
+  }
+
+  /* A long merge/cleanup error must not squeeze the body out of the pane. */
+  .pr-footer .pr-error {
+    max-height: 6rem;
+    overflow-y: auto;
   }
 
   .pr-header-left {
@@ -626,8 +692,6 @@
     border: 1px solid var(--color-border);
     border-radius: 6px;
     padding: 0.45rem 0.6rem;
-    max-height: 11rem;
-    overflow-y: auto;
     word-break: break-word;
   }
 
@@ -747,7 +811,6 @@
     padding: 0.35rem 0.55rem;
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 8rem;
-    overflow-y: auto;
+    flex-shrink: 0;
   }
 </style>

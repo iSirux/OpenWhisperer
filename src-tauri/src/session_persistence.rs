@@ -248,10 +248,8 @@ pub struct PersistedSdkSession {
     pub pending_transcription: Option<PersistedPendingTranscriptionInfo>,
     /// Pending repo selection info (for sessions in pending_repo state)
     pub pending_repo_selection: Option<PersistedPendingRepoSelection>,
-    /// Pending prompt to send (for sessions in pending_approval state)
+    /// Pending prompt to send (for sessions awaiting initialization)
     pub pending_prompt: Option<String>,
-    /// Pending approval prompt text
-    pub pending_approval_prompt: Option<String>,
     /// Setup draft prompt text
     #[serde(default)]
     pub draft_prompt: Option<String>,
@@ -808,7 +806,6 @@ fn is_active_status(status: &str) -> bool {
             | "initializing"
             | "pending_transcription"
             | "pending_repo"
-            | "pending_approval"
             | "setup"
             | "prepared"
     )

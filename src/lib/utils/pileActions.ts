@@ -20,9 +20,9 @@ import { appendChips, mergeChips } from '$lib/utils/promptChips';
 
 export type PileLaunchAction = 'start' | 'plan' | 'discuss';
 
-export const PILE_ACTIONS: { id: PileLaunchAction | 'prepare'; label: string; description: string }[] = [
+export const PILE_ACTIONS: { id: PileLaunchAction | 'draft'; label: string; description: string }[] = [
   { id: 'start', label: 'Start', description: 'Send the prompt as a new session' },
-  { id: 'prepare', label: 'Prepare', description: 'Create a draft session for review before sending' },
+  { id: 'draft', label: 'Draft', description: 'Create a draft session for review before sending' },
   { id: 'plan', label: 'Plan first', description: 'Ask for an implementation plan before any code' },
   { id: 'discuss', label: 'Discuss', description: 'Scan the codebase and talk it through first' },
 ];

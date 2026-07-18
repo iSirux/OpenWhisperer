@@ -100,7 +100,7 @@
     selectedIds = new Set();
     pendingAction = null;
 
-    if (action === 'prepare') {
+    if (action === 'draft') {
       // Draft (setup) sessions are cheap to create — no queue/stagger needed
       if (together) {
         void preparePileItemsTogether(itemsSnapshot);
@@ -328,7 +328,7 @@
         {/if}
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-[11px] font-medium text-text-primary">{actionLabel}:</span>
-          {#if pendingAction !== 'prepare'}
+          {#if pendingAction !== 'draft'}
             <label class="flex items-center gap-1 text-[11px] text-text-secondary cursor-pointer">
               <input type="checkbox" bind:checked={useWorktree} class="accent-accent" />
               Worktree

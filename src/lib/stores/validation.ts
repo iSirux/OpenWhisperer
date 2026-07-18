@@ -216,6 +216,10 @@ export interface ValidationRunView extends ValidationRun {
   /** Where fix prompts are sent: the run's own session, or a fresh session
    *  created in the same cwd with the run's context prepended. */
   fixTarget: FixTarget;
+  /** Client-only: whether the dock panel for this run is shown. Closing it does
+   *  NOT cancel/dismiss the run — a collapsed status strip stays visible, and a
+   *  new gate or a terminal outcome reopens the panel. */
+  panelOpen: boolean;
   /** Client-only: signature of the gate we last seeded selection for. */
   gateSignature?: string;
 }
@@ -374,11 +378,22 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
         .map((f) => f.id);
       userFindings = [];
     }
+    // A new gate needs the user's attention, and pass/fail is the outcome they
+    // were waiting for — reopen a closed panel for both.
+    let panelOpen = prev.panelOpen;
+    if (sig !== prev.gateSignature && incoming.gate) panelOpen = true;
+    if (
+      prev.status !== incoming.status &&
+      (incoming.status === 'passed' || incoming.status === 'failed')
+    ) {
+      panelOpen = true;
+    }
     return {
       ...incoming,
       log: prev.log,
       activity: prev.activity,
       fixTarget: prev.fixTarget,
+      panelOpen,
       selectedFindingIds,
       userFindings,
       gateSignature: sig,
@@ -482,6 +497,7 @@ async function startRun(
     log: [],
     activity: [],
     fixTarget: 'session',
+    panelOpen: true,
     selectedFindingIds: [],
     userFindings: [],
   };
@@ -579,6 +595,16 @@ function dismiss(runId: string): void {
 /** Update the checked findings for the current gate. */
 function selectFindings(runId: string, findingIds: string[]): void {
   patchView(runId, { selectedFindingIds: findingIds });
+}
+
+/** Show the dock panel for a run. */
+function openPanel(runId: string): void {
+  patchView(runId, { panelOpen: true });
+}
+
+/** Hide the dock panel without touching the run (a status strip remains). */
+function closePanel(runId: string): void {
+  patchView(runId, { panelOpen: false });
 }
 
 /** Choose where fix prompts go: the run's session or a fresh one with context. */
@@ -941,4 +967,6 @@ export const validation = {
   selectFindings,
   setFixTarget,
   addUserFinding,
+  openPanel,
+  closePanel,
 };

@@ -202,7 +202,7 @@ function createRecordingFlowStore() {
     const stopAction: RecordAndSendAction =
       forceAction ?? currentSettings.audio.record_and_send_action;
     const shouldPileOnStop = stopAction === 'pile';
-    const shouldPrepareOnStop = stopAction === 'prepare';
+    const shouldDraftOnStop = stopAction === 'draft';
 
     // Mint the debug id up-front and own it through the whole flow, so the
     // destination tag and the transcript pipeline's cleanup stage attach to the
@@ -234,7 +234,7 @@ function createRecordingFlowStore() {
             debugId
           );
         } else if (transcript) {
-          if (shouldPrepareOnStop && sessionIdToProcess) {
+          if (shouldDraftOnStop && sessionIdToProcess) {
             await handlePrepareTranscriptReady(
               transcript,
               sessionIdToProcess,

@@ -55,6 +55,52 @@
     $settings.quick_actions = ($settings.quick_actions ?? []).filter((_, i) => i !== index);
   }
 
+  // Drag-and-drop reordering for the quick-action and prompt-chip pill rows.
+  type ReorderList = "quick_actions" | "prompt_chips";
+  let dragList = $state<ReorderList | null>(null);
+  let dragIndex = $state<number | null>(null);
+  // Insertion position: the dragged pill would land *before* the pill at this index.
+  let dropIndex = $state<number | null>(null);
+
+  function handleDragStart(list: ReorderList, index: number, event: DragEvent) {
+    dragList = list;
+    dragIndex = index;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", String(index));
+    }
+  }
+
+  function handleDragOver(list: ReorderList, index: number, event: DragEvent) {
+    if (dragList !== list || dragIndex === null) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const before = event.clientX < rect.left + rect.width / 2;
+    dropIndex = before ? index : index + 1;
+  }
+
+  function handleDrop(list: ReorderList, event: DragEvent) {
+    event.preventDefault();
+    if (dragList === list && dragIndex !== null && dropIndex !== null) {
+      // Removing the dragged item first shifts a later insertion point down by one.
+      const target = dropIndex > dragIndex ? dropIndex - 1 : dropIndex;
+      if (target !== dragIndex) {
+        const items = [...($settings[list] ?? [])];
+        const [moved] = items.splice(dragIndex, 1);
+        items.splice(target, 0, moved);
+        $settings[list] = items;
+      }
+    }
+    handleDragEnd();
+  }
+
+  function handleDragEnd() {
+    dragList = null;
+    dragIndex = null;
+    dropIndex = null;
+  }
+
   function addChip() {
     const trimmed = newChip.trim();
     if (!trimmed) {
@@ -283,9 +329,21 @@
     <!-- Existing actions as removable chips -->
     {#if ($settings.quick_actions ?? []).length > 0}
       <div class="flex flex-wrap gap-2 mb-3">
-        {#each $settings.quick_actions ?? [] as action, i}
+        {#each $settings.quick_actions ?? [] as action, i (action)}
           <div
-            class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-surface border border-border text-text-secondary"
+            class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-surface border border-border text-text-secondary cursor-grab select-none transition-all active:cursor-grabbing"
+            class:opacity-40={dragList === 'quick_actions' && dragIndex === i}
+            class:reorder-before={dragList === 'quick_actions' && dropIndex === i && dragIndex !== i}
+            class:reorder-after={dragList === 'quick_actions' &&
+              dropIndex === i + 1 &&
+              i === ($settings.quick_actions ?? []).length - 1 &&
+              dragIndex !== i}
+            draggable="true"
+            ondragstart={(e) => handleDragStart('quick_actions', i, e)}
+            ondragover={(e) => handleDragOver('quick_actions', i, e)}
+            ondrop={(e) => handleDrop('quick_actions', e)}
+            ondragend={handleDragEnd}
+            title="Drag to reorder"
           >
             <span>{action}</span>
             <button
@@ -358,9 +416,21 @@
     <!-- Existing chips as removable pills -->
     {#if ($settings.prompt_chips ?? []).length > 0}
       <div class="flex flex-wrap gap-2 mb-3">
-        {#each $settings.prompt_chips ?? [] as chip, i}
+        {#each $settings.prompt_chips ?? [] as chip, i (chip)}
           <div
-            class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-surface border border-border text-text-secondary"
+            class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-surface border border-border text-text-secondary cursor-grab select-none transition-all active:cursor-grabbing"
+            class:opacity-40={dragList === 'prompt_chips' && dragIndex === i}
+            class:reorder-before={dragList === 'prompt_chips' && dropIndex === i && dragIndex !== i}
+            class:reorder-after={dragList === 'prompt_chips' &&
+              dropIndex === i + 1 &&
+              i === ($settings.prompt_chips ?? []).length - 1 &&
+              dragIndex !== i}
+            draggable="true"
+            ondragstart={(e) => handleDragStart('prompt_chips', i, e)}
+            ondragover={(e) => handleDragOver('prompt_chips', i, e)}
+            ondrop={(e) => handleDrop('prompt_chips', e)}
+            ondragend={handleDragEnd}
+            title="Drag to reorder"
           >
             <span>{chip}</span>
             <button
@@ -480,3 +550,13 @@
     {/if}
   </div>
 </div>
+
+<style>
+  /* Drop-position indicator for the draggable pill rows. */
+  .reorder-before {
+    box-shadow: -3px 0 0 0 var(--color-accent);
+  }
+  .reorder-after {
+    box-shadow: 3px 0 0 0 var(--color-accent);
+  }
+</style>

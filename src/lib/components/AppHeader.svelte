@@ -33,7 +33,7 @@
   let pending = $derived($pendingTranscriptions);
   let currentPath = $derived($page.url.pathname);
   let recordStopVerb = $derived(
-    $settings.audio.record_and_send_action === 'prepare' ? 'prepare' : 'send'
+    $settings.audio.record_and_send_action === 'draft' ? 'draft' : 'send'
   );
 
   // Check if current model is auto
@@ -283,8 +283,8 @@
           title={`Stop recording and ${recordStopVerb}`}
         >
           <div class="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-          {#if recordStopVerb === 'prepare'}
-            Stop & Prepare
+          {#if recordStopVerb === 'draft'}
+            Stop & Draft
           {:else}
             Stop & Send
           {/if}

@@ -8,6 +8,7 @@
     type StepStatus,
     type AgentActivityItem,
   } from '$lib/stores/validation';
+  import { dockOrientation } from '$lib/stores/dockOrientation';
 
   let { run }: { run: ValidationRunView } = $props();
 
@@ -223,12 +224,11 @@
     }
   });
 
-  // --- Tabs + expand ----------------------------------------------------------
-  // The panel body is a single capped scroll area with tabbed content; the
-  // expand toggle trades the cap for most of the pane (working a gate, reading
-  // transcripts). Header/stepper/gate actions stay visible in both modes.
+  // --- Tabs -------------------------------------------------------------------
+  // The panel fills its dock pane; the body is the flexible scroll area with
+  // tabbed content, while header/stepper/gate actions stay pinned. The pane's
+  // height is user-resizable via the dock's drag handle.
   type PanelTab = 'gate' | 'steps' | 'activity' | 'log';
-  let expanded = $state(false);
   let activeTab = $state<PanelTab>('steps');
 
   const GATE_TAB_LABELS: Record<string, string> = {
@@ -309,24 +309,38 @@
       <span class="v-elapsed">{formatElapsed(displayElapsed)}</span>
     </div>
     <div class="v-header-right">
-      {#if tabs.length > 0}
-        <button
-          class="v-dismiss"
-          onclick={() => (expanded = !expanded)}
-          title={expanded ? 'Collapse panel' : 'Expand panel'}
-          aria-label={expanded ? 'Collapse panel' : 'Expand panel'}
-        >
-          {#if expanded}
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
-            </svg>
-          {:else}
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-            </svg>
-          {/if}
-        </button>
-      {/if}
+      <button
+        class="v-dismiss"
+        onclick={() => dockOrientation.toggle()}
+        title={$dockOrientation === 'bottom'
+          ? 'Move the dock to the right side'
+          : 'Move the dock to the bottom'}
+        aria-label={$dockOrientation === 'bottom'
+          ? 'Move the dock to the right side'
+          : 'Move the dock to the bottom'}
+      >
+        {#if $dockOrientation === 'bottom'}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="18" height="18" x="3" y="3" rx="2" />
+            <path d="M15 3v18" />
+          </svg>
+        {:else}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="18" height="18" x="3" y="3" rx="2" />
+            <path d="M3 15h18" />
+          </svg>
+        {/if}
+      </button>
+      <button
+        class="v-dismiss"
+        onclick={() => validation.closePanel(run.id)}
+        title="Hide the validation panel (the run keeps going — a status strip stays above the prompt)"
+        aria-label="Hide validation panel"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
       {#if isRunningLike}
         <button class="v-btn v-btn-ghost" onclick={() => validation.cancel(run.id)} title="Cancel the validation run">
           Cancel
@@ -397,12 +411,12 @@
     {#if run.prUrl}
       <div class="v-pr-hint">
         <button class="v-pr-link" onclick={openPr}>View pull request</button>
-        <span class="v-note">— status &amp; merge live in the PR panel above the prompt.</span>
+        <span class="v-note">— status &amp; merge live in the PR panel (badge in the session header).</span>
       </div>
     {/if}
   {/if}
 
-  <!-- Tabbed body: one capped scroll area (expandable) instead of a growing stack -->
+  <!-- Tabbed body: the flexible scroll area between the pinned chrome -->
   {#if tabs.length > 0}
     <div class="v-tabs" role="tablist">
       {#each tabs as tab (tab.id)}
@@ -418,7 +432,7 @@
       {/each}
     </div>
 
-    <div class="v-body" class:expanded>
+    <div class="v-body">
       {#if activeTab === 'gate' && gate}
         {#if gate.kind === 'ship' && gate.ship}
           {@const ship = gate.ship}
@@ -673,25 +687,31 @@
 </div>
 
 <style>
+  /* Fills its dock pane; the body is the only flexible child, everything else
+     stays pinned. The status accent is a 2px strip under the dock resizer. */
   .v-panel {
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
-    margin: 0 0.75rem 0.5rem;
-    padding: 0.75rem 0.85rem;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0.65rem 0.85rem;
     background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 10px;
+    border-top: 2px solid var(--color-border);
     font-size: 0.8rem;
   }
+  .v-panel > * {
+    flex-shrink: 0;
+  }
   .v-panel[data-status='gate'] {
-    border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+    border-top-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
   }
   .v-panel[data-status='passed'] {
-    border-color: color-mix(in srgb, var(--color-success, #22c55e) 45%, var(--color-border));
+    border-top-color: color-mix(in srgb, var(--color-success, #22c55e) 60%, var(--color-border));
   }
   .v-panel[data-status='failed'] {
-    border-color: color-mix(in srgb, var(--color-error, #ef4444) 45%, var(--color-border));
+    border-top-color: color-mix(in srgb, var(--color-error, #ef4444) 60%, var(--color-border));
   }
 
   /* Header */
@@ -1104,11 +1124,9 @@
     color: var(--color-accent);
   }
   .v-body {
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
-    max-height: 34vh;
-  }
-  .v-body.expanded {
-    max-height: 72vh;
   }
 
   /* Gate */

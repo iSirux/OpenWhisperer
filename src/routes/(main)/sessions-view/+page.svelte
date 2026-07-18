@@ -11,6 +11,8 @@
     fetchBranchesForSessions
   } from '$lib/composables/useDisplaySessions.svelte';
   import SessionCard from '$lib/components/SessionCard.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import { sessionLaunchActivity } from '$lib/stores/launchProfiles';
 
   let now = $state(Math.floor(Date.now() / 1000));
   let interval: ReturnType<typeof setInterval> | null = null;
@@ -59,12 +61,27 @@
     goto('/');
   }
 
+  // Confirm before closing a session that owns a running/queued launch profile.
+  let launchConfirm = $state<{ show: boolean; sessionId: string }>({ show: false, sessionId: '' });
+
+  function performCloseSession(sessionId: string) {
+    const wasActive = $activeSdkSessionId === sessionId;
+    const prev = wasActive ? previousActiveSessionId(sessionId) : null;
+    sdkSessions.closeSession(sessionId);
+    if (wasActive && $activeSdkSessionId === sessionId) activeSdkSessionId.set(prev);
+  }
+
   function closeSession(session: DisplaySession, event: MouseEvent) {
     event.stopPropagation();
-    const wasActive = $activeSdkSessionId === session.id;
-    const prev = wasActive ? previousActiveSessionId(session.id) : null;
-    sdkSessions.closeSession(session.id);
-    if (wasActive && $activeSdkSessionId === session.id) activeSdkSessionId.set(prev);
+    const sdkSession = $sdkSessions.find((s) => s.id === session.id);
+    if (sdkSession) {
+      const launch = sessionLaunchActivity(session.id, sdkSession.cwd);
+      if (launch.running || launch.queued) {
+        launchConfirm = { show: true, sessionId: session.id };
+        return;
+      }
+    }
+    performCloseSession(session.id);
   }
 
   function isSessionActive(session: DisplaySession): boolean {
@@ -339,6 +356,18 @@
     {/if}
   </div>
 </div>
+
+<ConfirmDialog
+  show={launchConfirm.show}
+  title="Launch profile still active"
+  message="This session has a launch profile running or queued. Closing it won’t stop the processes. Close anyway?"
+  confirmLabel="Close session"
+  onconfirm={() => {
+    performCloseSession(launchConfirm.sessionId);
+    launchConfirm = { show: false, sessionId: '' };
+  }}
+  oncancel={() => (launchConfirm = { show: false, sessionId: '' })}
+/>
 
 <style>
   .sessions-view {

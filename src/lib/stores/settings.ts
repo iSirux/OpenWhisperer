@@ -264,10 +264,10 @@ export const OPEN_MIC_PRESETS = [
   "wake up",
 ] as const;
 
-export type RecordAndSendAction = "send" | "prepare" | "pile";
+export type RecordAndSendAction = "send" | "draft" | "pile";
 
 /** Display order for the recording stop-modes (what happens when the recording hotkey stops a recording) */
-export const RECORD_STOP_MODES: RecordAndSendAction[] = ["send", "prepare", "pile"];
+export const RECORD_STOP_MODES: RecordAndSendAction[] = ["send", "draft", "pile"];
 
 export interface AudioConfig {
   device_id: string | null;
@@ -284,7 +284,6 @@ export interface AudioConfig {
   play_sound_on_question: boolean;
   recording_linger_ms: number;
   include_transcription_notice: boolean;
-  require_transcription_approval: boolean;
   /** What "Record & Send" should do when recording stops */
   record_and_send_action: RecordAndSendAction;
   /** Capture a screenshot when a recording starts and attach it to the prompt */
@@ -736,7 +735,6 @@ const defaultConfig: AppConfig = {
     play_sound_on_question: true,
     recording_linger_ms: 500,
     include_transcription_notice: true,
-    require_transcription_approval: false,
     record_and_send_action: "send",
     capture_screenshot_on_record: false,
     voice_commands: {
@@ -861,6 +859,7 @@ const defaultConfig: AppConfig = {
   },
   notify_parallel_agents: true,
   quick_actions: [
+    "Go",
     "Implement this",
     "Fix the issues",
     "Keep going",

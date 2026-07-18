@@ -22,8 +22,6 @@ export interface EventHandlerCallbacks {
   onCloseSettings: () => void;
   /** Retry transcription for a session */
   onRetryTranscription: (sessionId: string) => Promise<void>;
-  /** Approve transcription for a session */
-  onApproveTranscription: (sessionId: string, editedPrompt?: string) => Promise<void>;
   /** Select repo for a session */
   onSelectRepoForSession: (sessionId: string, repoIndex: number) => Promise<void>;
   /** Focus the SDK prompt input */
@@ -44,7 +42,7 @@ export interface EventHandlerCallbacks {
   ) => Promise<void>;
   /** Unregister recording hotkeys */
   onUnregisterRecordingHotkeys: () => Promise<void>;
-  /** Set the recording stop mode (send / prepare / pile), e.g. from the overlay */
+  /** Set the recording stop mode (send / draft / pile), e.g. from the overlay */
   onSetStopMode?: (mode: RecordAndSendAction) => Promise<void>;
   /** Select the active repository ('auto' or a repo id), e.g. from the overlay dropdown */
   onSelectRepo?: (option: 'auto' | string) => Promise<void>;
@@ -81,14 +79,6 @@ export function useSessionEventHandlers() {
     await callbacks?.onRetryTranscription(customEvent.detail.sessionId);
   }
 
-  async function handleApproveTranscription(event: Event) {
-    const customEvent = event as CustomEvent<{ sessionId: string; editedPrompt?: string }>;
-    await callbacks?.onApproveTranscription(
-      customEvent.detail.sessionId,
-      customEvent.detail.editedPrompt
-    );
-  }
-
   async function handleSelectRepoForSession(event: Event) {
     const customEvent = event as CustomEvent<{ sessionId: string; repoIndex: number }>;
     await callbacks?.onSelectRepoForSession(
@@ -121,7 +111,6 @@ export function useSessionEventHandlers() {
     window.addEventListener('open-settings', handleOpenSettings);
     window.addEventListener('close-settings', handleCloseSettings);
     window.addEventListener('retry-transcription', handleRetryTranscription);
-    window.addEventListener('approve-transcription', handleApproveTranscription);
     window.addEventListener('select-repo-for-session', handleSelectRepoForSession);
     window.addEventListener('focus-sdk-prompt', handleFocusSdkPrompt);
     window.addEventListener('switch-to-session', handleSwitchToSession);
@@ -135,7 +124,6 @@ export function useSessionEventHandlers() {
     window.removeEventListener('open-settings', handleOpenSettings);
     window.removeEventListener('close-settings', handleCloseSettings);
     window.removeEventListener('retry-transcription', handleRetryTranscription);
-    window.removeEventListener('approve-transcription', handleApproveTranscription);
     window.removeEventListener('select-repo-for-session', handleSelectRepoForSession);
     window.removeEventListener('focus-sdk-prompt', handleFocusSdkPrompt);
     window.removeEventListener('switch-to-session', handleSwitchToSession);

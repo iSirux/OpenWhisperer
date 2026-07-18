@@ -269,7 +269,6 @@ export interface PersistedSdkSession {
   pendingTranscription?: PersistedPendingTranscriptionInfo;
   pendingRepoSelection?: PendingRepoSelection;
   pendingPrompt?: string;
-  pendingApprovalPrompt?: string;
   draftPrompt?: string;
   draftImages?: SdkImageContent[];
   sdkSessionId?: string;
@@ -315,8 +314,7 @@ export function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession 
 export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
   // Determine if this is a pending session
   const isPending = persisted.status === 'pending_transcription' ||
-                    persisted.status === 'pending_repo' ||
-                    persisted.status === 'pending_approval';
+                    persisted.status === 'pending_repo';
 
   // Deserialize with runtime defaults
   const session = deserializeFromPersistence<SdkSession>(persisted as unknown as Record<string, unknown>, {
@@ -391,6 +389,16 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
     session.preparedPrompt = undefined;
     session.preparedSystemPrompt = undefined;
     session.preparedRepoRecommendation = undefined;
+  }
+
+  // Migrate legacy `pending_approval` sessions (the removed transcription-approval
+  // flow) into editable `setup` drafts so their prompt isn't lost.
+  if ((session.status as string) === 'pending_approval') {
+    const approvalPrompt = (persisted as { pendingApprovalPrompt?: string }).pendingApprovalPrompt;
+    session.status = 'setup';
+    session.draftPrompt = approvalPrompt ?? session.draftPrompt;
+    session.setupRepoPath = session.cwd || session.setupRepoPath;
+    session.pendingTranscription = undefined;
   }
 
   // Backward-compat for older persisted setup sessions that only had cwd.

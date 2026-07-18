@@ -9,8 +9,9 @@
   import NotionKanban from '$lib/components/NotionKanban.svelte';
   import PileList from '$lib/components/PileList.svelte';
   import PileDetailView from '$lib/components/PileDetailView.svelte';
-  import CockpitView from '$lib/components/cockpit/CockpitView.svelte';
   import SpareTokensView from '$lib/components/SpareTokensView.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import { sessionLaunchActivity } from '$lib/stores/launchProfiles';
 
   // Refactored components
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
@@ -247,14 +248,28 @@
     activeSdkSessionId.set(prev);
   }
 
+  // Confirm before closing a session that owns a running/queued launch profile.
+  let launchCloseConfirm = $state<{ show: boolean; sessionId: string }>({ show: false, sessionId: '' });
+
+  function performSessionClose(sessionId: string) {
+    // Fall back to the session viewed just before this one (MRU), not an
+    // empty view. Compute before closing while the history entry still exists.
+    const prev = previousActiveSessionId(sessionId);
+    sdkSessions.closeSession(sessionId);
+    activeSdkSessionId.set(prev);
+  }
+
   function handleSessionClose() {
-    if ($activeSdkSessionId) {
-      // Fall back to the session viewed just before this one (MRU), not an
-      // empty view. Compute before closing while the history entry still exists.
-      const prev = previousActiveSessionId($activeSdkSessionId);
-      sdkSessions.closeSession($activeSdkSessionId);
-      activeSdkSessionId.set(prev);
+    if (!$activeSdkSessionId) return;
+    const session = $activeSdkSession;
+    if (session) {
+      const launch = sessionLaunchActivity(session.id, session.cwd);
+      if (launch.running || launch.queued) {
+        launchCloseConfirm = { show: true, sessionId: session.id };
+        return;
+      }
     }
+    performSessionClose($activeSdkSessionId);
   }
 
   function showSessionsView() {
@@ -312,17 +327,7 @@
 />
 
 <div class="main-content flex-1 flex overflow-hidden">
-  {#if currentView === 'cockpit'}
-    <div class="border-r border-border bg-surface flex shrink-0 overflow-hidden">
-      <RepositoryRail
-        currentRepoId={null}
-        {currentView}
-      />
-    </div>
-    <main class="flex-1 flex flex-col overflow-hidden">
-      <CockpitView />
-    </main>
-  {:else if currentView === 'notion'}
+  {#if currentView === 'notion'}
     <div class="border-r border-border bg-surface flex shrink-0 overflow-hidden">
       <RepositoryRail
         currentRepoId={null}
@@ -509,6 +514,18 @@
     </main>
   {/if}
 </div>
+
+<ConfirmDialog
+  show={launchCloseConfirm.show}
+  title="Launch profile still active"
+  message="This session has a launch profile running or queued. Closing it won’t stop the processes. Close anyway?"
+  confirmLabel="Close session"
+  onconfirm={() => {
+    performSessionClose(launchCloseConfirm.sessionId);
+    launchCloseConfirm = { show: false, sessionId: '' };
+  }}
+  oncancel={() => (launchCloseConfirm = { show: false, sessionId: '' })}
+/>
 
 <style>
   .terminal-wrapper {

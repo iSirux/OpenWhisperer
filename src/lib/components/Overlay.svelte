@@ -245,12 +245,12 @@
       title: "Stopping a recording sends it as a session",
       stopTitle: "Stop and send as a session",
     },
-    prepare: {
+    draft: {
       label: "Draft",
       cls: "bg-sky-500/20 text-sky-400 border-sky-500/30",
       hoverCls: "hover:bg-sky-500/30",
-      title: "Stopping a recording prepares a draft session for review",
-      stopTitle: "Stop and prepare a draft session for review",
+      title: "Stopping a recording creates a draft session for review",
+      stopTitle: "Stop and create a draft session for review",
     },
     pile: {
       label: "Pile",

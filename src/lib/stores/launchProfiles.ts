@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { LaunchCommand, LaunchProfile, LaunchRuntime, QueuedLaunch } from "$lib/types/launch";
 import { repos, findRepoById } from "./repos";
-import { sdkSessions, hasBusySessionsInScope } from "./sdkSessions";
+import { sdkSessions, hasBusySessionsInScope, normalizeScopePath } from "./sdkSessions";
 
 // ---- Store State ----
 
@@ -229,6 +229,34 @@ function createLaunchStore() {
 export const launchStore = createLaunchStore();
 
 // ---- Derived Stores ----
+
+/**
+ * Does the given session have a launch profile currently running or queued against
+ * its scope? Used to warn before closing/archiving a session that owns launch work.
+ * A launch is tied to a session when it was started/queued from that session's cwd,
+ * or (queued after_agent) is explicitly waiting on that session id.
+ */
+export function sessionLaunchActivity(
+  sessionId: string,
+  sessionCwd: string | undefined,
+): { running: boolean; queued: boolean } {
+  const state = get(launchStore);
+  const scope = sessionCwd ? normalizeScopePath(sessionCwd) : undefined;
+
+  const q = state.queued;
+  const queued =
+    !!q &&
+    ((!!q.sessionId && q.sessionId === sessionId) ||
+      (!!scope && !!q.launchedFromCwd && normalizeScopePath(q.launchedFromCwd) === scope));
+
+  const running =
+    !!scope &&
+    Object.values(state.runtimes).some(
+      (rt) => !!rt.launchedFromCwd && normalizeScopePath(rt.launchedFromCwd) === scope,
+    );
+
+  return { running, queued };
+}
 
 /** Get runtime for a specific repo ID */
 export function getLaunchRuntime(repoId: string | undefined) {

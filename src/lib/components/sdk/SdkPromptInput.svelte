@@ -1,22 +1,24 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, type Snippet } from "svelte";
   import type { SdkImageContent } from "$lib/stores/sdkSessions";
   import {
-    getImagesFromClipboard,
-    getImagesFromClipboardHtml,
     getImagesFromDrop,
     processImages,
     createPreviewUrl,
     formatFileSize,
     type ImageData,
   } from "$lib/utils/image";
+  import PromptTextarea from "$lib/components/PromptTextarea.svelte";
+  import {
+    sendTimingFromEvent,
+    type SendTiming,
+  } from "$lib/utils/sendTiming";
   import { nextWindowResetAt, type QueueWindow } from "$lib/stores/queueDetection";
   import { rateLimitData, codexRateLimitData, accountRateLimits } from "$lib/stores/rateLimits";
   import { isDefaultAccountId } from "$lib/utils/accounts";
   import type { SdkProvider } from "$lib/utils/models";
   import { settings } from "$lib/stores/settings";
-  import { ctrlHeld } from "$lib/stores/ctrlHint";
-  import { holdSpaceRecord } from "$lib/actions/holdSpaceRecord";
+  import { modifierCombo } from "$lib/stores/ctrlHint";
 
   let {
     sessionId,
@@ -33,6 +35,7 @@
     showScheduleSend = false,
     onSendPrompt,
     onScheduleSend,
+    onSendSessionIdle,
     onSendAfterIdle,
     onStopQuery,
     onStartRecording,
@@ -41,6 +44,7 @@
     onStopInlineRecording,
     onInlineTranscribe,
     onDraftChange,
+    bottomRow,
   }: {
     sessionId: string;
     isQuerying?: boolean;
@@ -64,11 +68,15 @@
       prompt: string,
       images?: SdkImageContent[],
     ) => void;
-    /** Defer this turn until every session in this repo+worktree is done (Ctrl+click / Ctrl+Enter). */
+    /** Defer this turn until this session's own running query is done (Shift+click Send). */
+    onSendSessionIdle?: (prompt: string, images?: SdkImageContent[]) => void;
+    /** Defer this turn until every session in this repo+worktree is done (Ctrl+Shift+click / Ctrl+Shift+Enter). */
     onSendAfterIdle?: (prompt: string, images?: SdkImageContent[]) => void;
     onStopQuery: () => void;
     onStartRecording: () => void;
-    onStopRecording: () => void;
+    /** Stop a record-and-send recording; `timing` routes the resulting send
+     *  (hold-Space modifier combos; the mic button always sends now). */
+    onStopRecording: (timing?: SendTiming) => void;
     onStartInlineRecording: () => void;
     onStopInlineRecording: () => void;
     /** Stop the inline recording and return the transcript (for hold-Space, which inserts at the caret). */
@@ -78,13 +86,15 @@
       prompt: string,
       images: SdkImageContent[],
     ) => void;
+    /** Extra row rendered at the bottom of the input area (e.g. quick actions). */
+    bottomRow?: Snippet;
   } = $props();
 
   const noVoice = $derived($settings.system.voice_mode_disabled);
 
   const holdSpaceHint = $derived(
     $settings.audio.hold_space_to_record_inline && !noVoice
-      ? ", hold Space to dictate, +Shift to send"
+      ? ", hold Space to dictate, +Ctrl to send"
       : ""
   );
 
@@ -195,11 +205,11 @@
     }
   });
   let isProcessingImages = $state(false);
-  let textareaEl: HTMLTextAreaElement;
+  let textareaRef: PromptTextarea | undefined;
 
   // Expose focus function for external use
   export function focus() {
-    textareaEl?.focus();
+    textareaRef?.focus();
   }
 
   // Expose method to imperatively clear the input (e.g. after voice sends that bypass the UI)
@@ -242,13 +252,11 @@
   export function appendToPrompt(text: string) {
     if (!text.trim()) return;
     prompt = prompt.trim() ? `${prompt.trim()} ${text.trim()}` : text.trim();
-    autoResize();
     notifyDraftChange();
-    textareaEl?.focus();
+    textareaRef?.focus();
   }
 
-  /** Ctrl+click / Ctrl+Enter routes the send through onSendAfterIdle (wait for repo idle). */
-  async function handleSendPrompt(afterIdle = false) {
+  async function handleSendPrompt(mode: SendTiming = "now") {
     if (!prompt.trim() && pendingImages.length === 0) return;
 
     const currentPrompt = prompt;
@@ -277,8 +285,12 @@
     prevDraftImagesKey = "[]";
     // Clear draft in parent store
     emitDraftChange(prevSessionId, "", []);
-    if (afterIdle && onSendAfterIdle) {
+    if (mode === "reset_5h" && onScheduleSend) {
+      onScheduleSend("5h", currentPrompt, imageContent);
+    } else if (mode === "repo_idle" && onSendAfterIdle) {
       onSendAfterIdle(currentPrompt, imageContent);
+    } else if (mode === "session_idle" && onSendSessionIdle) {
+      onSendSessionIdle(currentPrompt, imageContent);
     } else {
       onSendPrompt(currentPrompt, imageContent);
     }
@@ -384,25 +396,6 @@
     onScheduleSend(window, currentPrompt, imageContent);
   }
 
-  async function handlePaste(e: ClipboardEvent) {
-    // Read clipboard data synchronously — it's only valid during the event.
-    const html = e.clipboardData?.getData("text/html") ?? "";
-    const imageFiles = await getImagesFromClipboard(e);
-    if (imageFiles.length > 0) {
-      // Raw image blob (e.g. a screenshot) — replace the paste with the image.
-      e.preventDefault();
-      await addImages(imageFiles);
-      return;
-    }
-    // Rich HTML with embedded images (e.g. a page copied from Google Docs).
-    // Don't preventDefault — let the accompanying text paste normally, and
-    // attach the images alongside it.
-    const htmlImages = await getImagesFromClipboardHtml(html);
-    if (htmlImages.length > 0) {
-      await addImages(htmlImages);
-    }
-  }
-
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
     e.dataTransfer!.dropEffect = "copy";
@@ -436,27 +429,14 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSendPrompt(!!onSendAfterIdle && (e.ctrlKey || e.metaKey));
-    }
+    if (e.key !== "Enter") return;
+    // Shift+Enter (without Ctrl) stays a newline; session-idle has no Enter
+    // shortcut for that reason — it's reachable via Shift+click Send or the menu.
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    handleSendPrompt(sendTimingFromEvent(e));
   }
 
-  function autoResize() {
-    if (textareaEl) {
-      textareaEl.style.height = "auto";
-      const maxHeight = 200;
-      const newHeight = Math.min(textareaEl.scrollHeight, maxHeight);
-      textareaEl.style.height = newHeight + "px";
-      textareaEl.style.overflowY =
-        textareaEl.scrollHeight > maxHeight ? "auto" : "hidden";
-    }
-  }
-
-  $effect(() => {
-    prompt;
-    autoResize();
-  });
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -490,13 +470,14 @@
     </div>
   {/if}
   <div class="textarea-wrapper">
-    <textarea
-      bind:this={textareaEl}
+    <PromptTextarea
+      bind:this={textareaRef}
       bind:value={prompt}
-      oninput={() => { autoResize(); notifyDraftChange(); }}
+      variant="session"
+      oninput={notifyDraftChange}
       onkeydown={handleKeydown}
-      onpaste={handlePaste}
-      use:holdSpaceRecord={{
+      onImageFiles={addImages}
+      holdSpace={{
         enabled: $settings.audio.hold_space_to_record_inline && !noVoice,
         // Note: no isQuerying guard — like the mic button, dictating while the
         // agent works is fine (the transcript lands in the prompt, not sent).
@@ -507,23 +488,24 @@
           !isInlineTranscribing,
         start: onStartInlineRecording,
         stop: () => onInlineTranscribe?.() ?? Promise.resolve(null),
-        // Shift+Space: record-and-send immediately (the mic-button flow)
-        // instead of inserting the transcript into the prompt.
-        shift: {
+        // Modifier+Space: record-and-send (the mic-button flow) instead of
+        // inserting the transcript into the prompt; the held combo picks the
+        // send timing (Ctrl = now, Shift = session idle, Ctrl+Shift = repo
+        // idle, Ctrl+Shift+Alt = next 5h reset).
+        send: {
           canStart: () =>
             !isRecording &&
             !isTranscribing &&
             !isInlineRecording &&
             !isInlineTranscribing,
-          start: onStartRecording,
-          stop: onStopRecording,
+          start: () => onStartRecording(),
+          stop: (timing) => onStopRecording(timing),
         },
       }}
       placeholder={pendingImages.length > 0
         ? `Add a message about the image(s)... (Enter to send${holdSpaceHint})`
         : `Enter your prompt... (Ctrl+V to paste images, Enter to send${holdSpaceHint})`}
-      rows="1"
-    ></textarea>
+    />
     {#if !noVoice}
     {#if isInlineTranscribing}
       <button
@@ -602,7 +584,7 @@
     {:else if isRecording && isRecordingForCurrentSession}
       <button
         class="record-button recording"
-        onclick={onStopRecording}
+        onclick={() => onStopRecording()}
         title="Stop recording and send"
       >
         <div class="recording-dot"></div>
@@ -634,21 +616,31 @@
       <button
         class="send-main"
         class:has-caret={showScheduleCaret}
-        onclick={(e) => handleSendPrompt(!!onSendAfterIdle && (e.ctrlKey || e.metaKey))}
+        onclick={(e) => handleSendPrompt(sendTimingFromEvent(e))}
         disabled={(!prompt.trim() && pendingImages.length === 0) ||
           isRecording ||
           isTranscribing}
         title={(isQuerying ? "Send and interrupt" : "Send") +
-          (onSendAfterIdle ? " — Ctrl+click: send when this repo/worktree is idle" : "")}
+          (onSendSessionIdle ? " — Shift+click: send when this session is idle" : "") +
+          (onSendAfterIdle ? " — Ctrl+Shift+click: send when this repo/worktree is idle" : "") +
+          (onScheduleSend ? " — Ctrl+Shift+Alt+click: send on next 5h reset" : "")}
       >
         Send
-        {#if $ctrlHeld && onSendAfterIdle && hasDraft}
-          <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+click: send when repo is idle">
+        {#if hasDraft && $modifierCombo === "shift" && onSendSessionIdle}
+          <span class="ctrl-hint-badge" aria-hidden="true" title="Shift+click: send when this session is idle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 2h12M6 22h12M8 2v4l4 4 4-4V2M8 22v-4l4-4 4 4v4" />
+            </svg>
+          </span>
+        {:else if hasDraft && $modifierCombo === "ctrl+shift" && onSendAfterIdle}
+          <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift+click: send when repo is idle">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10" />
               <polyline points="12 6 12 12 16 14" />
             </svg>
           </span>
+        {:else if hasDraft && $modifierCombo === "ctrl+shift+alt" && onScheduleSend}
+          <span class="ctrl-hint-badge text-badge" aria-hidden="true" title="Ctrl+Shift+Alt+click: send on next 5h reset">5h</span>
         {/if}
       </button>
       {#if showScheduleCaret}
@@ -675,20 +667,38 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="send-menu-backdrop" onclick={() => (scheduleMenuOpen = false)}></div>
         <div class="send-menu" role="menu">
+          {#if onSendSessionIdle}
+            <button
+              class="send-menu-item"
+              role="menuitem"
+              onclick={() => {
+                scheduleMenuOpen = false;
+                handleSendPrompt("session_idle");
+              }}
+            >
+              <span class="menu-item-label">Send when this session is idle</span>
+              <span class="menu-item-countdown">Shift+click Send</span>
+            </button>
+          {/if}
           {#if onSendAfterIdle}
             <button
               class="send-menu-item"
               role="menuitem"
               onclick={() => {
                 scheduleMenuOpen = false;
-                handleSendPrompt(true);
+                handleSendPrompt("repo_idle");
               }}
             >
               <span class="menu-item-label">Send when repo is idle</span>
-              <span class="menu-item-countdown">Ctrl+click Send</span>
+              <span class="menu-item-countdown">Ctrl+Shift+click Send</span>
             </button>
           {/if}
-          <button class="send-menu-item" role="menuitem" onclick={() => handleScheduleSend("5h")}>
+          <button
+            class="send-menu-item"
+            role="menuitem"
+            title="Ctrl+Shift+Alt+click Send"
+            onclick={() => handleScheduleSend("5h")}
+          >
             <span class="menu-item-label">Send on next 5h reset</span>
             {#if countdown5h}<span class="menu-item-countdown">in {countdown5h}</span>{/if}
           </button>
@@ -700,60 +710,35 @@
       {/if}
     </div>
   </div>
+  {#if bottomRow}
+    <div class="input-bottom-row">
+      {@render bottomRow()}
+    </div>
+  {/if}
 </div>
 
 <style>
   .input-area {
     display: flex;
+    flex-wrap: wrap;
     align-items: flex-end;
     gap: 0.75rem;
+    row-gap: 0.5rem;
     padding: 1rem;
     border-top: 1px solid var(--color-border);
     background: var(--color-background);
     position: relative;
   }
 
+  /* Full-width row below the textarea (quick actions etc.). */
+  .input-bottom-row {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
   .textarea-wrapper {
     flex: 1;
     position: relative;
-  }
-
-  textarea {
-    display: block;
-    width: 100%;
-    background: var(--color-surface);
-    color: var(--color-text-primary);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    padding: 0.75rem 2.5rem 0.75rem 0.75rem;
-    resize: none;
-    font-family: inherit;
-    font-size: 0.9rem;
-    line-height: 1.4;
-    min-height: unset;
-    max-height: 200px;
-    overflow-y: hidden;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-    box-sizing: border-box;
-  }
-
-  textarea::-webkit-scrollbar {
-    display: none;
-  }
-
-  textarea:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-
-  textarea:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  textarea::placeholder {
-    color: var(--color-text-muted);
   }
 
   .button-group {
@@ -804,7 +789,8 @@
     border-bottom-right-radius: 0;
   }
 
-  /* Ctrl-held hint: Ctrl+click sends when the repo/worktree goes idle */
+  /* Modifier-held hint badge: Shift = send when this session is idle,
+     Ctrl+Shift = send when the repo/worktree goes idle */
   .ctrl-hint-badge {
     position: absolute;
     top: -0.45rem;
@@ -825,6 +811,12 @@
   .ctrl-hint-badge svg {
     width: 11px;
     height: 11px;
+  }
+
+  .ctrl-hint-badge.text-badge {
+    font-size: 0.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
   }
 
   .send-caret {
@@ -982,6 +974,7 @@
 
   /* Pending images preview */
   .pending-images {
+    flex-basis: 100%;
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
@@ -1072,8 +1065,9 @@
     }
   }
 
-  /* Adjust textarea when images are present */
-  .input-area:has(.pending-images) textarea {
+  /* Adjust textarea when images are present (the textarea lives inside the
+     PromptTextarea child component, so it needs :global to be reachable) */
+  .input-area:has(.pending-images) .textarea-wrapper :global(textarea) {
     border-top-left-radius: 0;
     border-top-right-radius: 0;
     border-top: none;

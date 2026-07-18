@@ -39,7 +39,7 @@ npm run sidecar:build    # Build the TypeScript sidecar
 
 Most routes live in the `(main)` route group, which shares `(main)/+layout.svelte` (mounts `AppHeader`, starts the smart queue). The overlay route is deliberately outside the group (separate Tauri window, no app chrome).
 
-- `(main)/+page.svelte` - Primary app view: repository rail + sidebar (Sessions/Pile tabs) + main pane. Switches on `navigation.mainView` (`sessions`, `start`, `sequences`, `archive`, `repository`, `notion`, `cockpit`) — these are **internal views**, not routes.
+- `(main)/+page.svelte` - Primary app view: repository rail + sidebar (Sessions/Pile tabs) + main pane. Switches on `navigation.mainView` (`sessions`, `start`, `sequences`, `archive`, `repository`, `notion`) — these are **internal views**, not routes.
 - `(main)/settings/+page.svelte` - Settings page with tabs (see Settings Components)
 - `(main)/usage/+page.svelte` - Usage statistics dashboard with session/token/cost analytics
 - `(main)/sessions-view/+page.svelte` - Unified sessions grid/list view with filtering and layout options
@@ -65,7 +65,7 @@ Most routes live in the `(main)` route group, which shares `(main)/+layout.svelt
 - `pile.ts` - Recording pile: inbox of transcribed recordings saved for later (own persistence file, saved audio, background LLM processing for cleanup/repo/model/title)
 - `panes.ts` - Split-pane layout (up to 4 panes, each holding one SDK session); persists to `settings.pane_layout`
 - `navigation.ts` - Main page internal view state (`MainView`, selected repo, repository-add mode)
-- `ctrlHint.ts` - Whether Ctrl/Cmd is being held (with a short show delay); drives in-app hotkey hint overlays (session number badges in the sidebar, key badges on Ctrl-hotkey buttons)
+- `ctrlHint.ts` - Which hint-modifier combo (Ctrl/Cmd, Shift, Ctrl+Shift, Ctrl+Shift+Alt) is held, with a short show delay; `modifierCombo` drives the send-timing badges (Send button, quick actions, launch profiles) and the legacy `ctrlHeld` (plain Ctrl only) drives Ctrl-hotkey hints (session number badges, Ctrl-hotkey buttons)
 - `archive.ts` - Archived-session index (search, entries with cost/duration/message counts)
 - `launchProfiles.ts` - Launch profile runtimes per repo (running launches, queued launch waiting for an agent)
 - `sequences.ts` / `sequenceExecutions.ts` - Sequence definitions (YAML import/export) and live execution state (node results, logs, notifications)
@@ -93,6 +93,7 @@ Core UI:
 - `EmptySessionPlaceholder.svelte` - Placeholder for empty session state
 - `SessionPendingView.svelte` - View for sessions in pending states (repo selection, transcription)
 - `SessionSetupView.svelte` - **The manual "New Session" form** (the fields-and-textarea view: Provider/Model/Effort/Repository/Worktree + "Your prompt" + Record/Start Session). This is the typed/manual entry point, distinct from the voice-recording prepared/approval flow in `sdk/SessionRecordingHeader.svelte`. Its `onStart` config is the choke point where the final prompt is assembled. Helpers in `session-setup/sessionSetupHelpers.ts`.
+- `PromptTextarea.svelte` - Shared prompt-textarea core used by `SdkPromptInput` and `SessionSetupView`: auto-resize, image paste (raw blobs + HTML-embedded), `holdSpaceRecord` passthrough, `session`/`setup` visual variants
 - `PromptChips.svelte` - Reusable toggleable prompt-chip row (chip set from `settings.prompt_chips`); selected chips are appended to the prompt on send. Used in `SessionSetupView`, `sdk/SessionRecordingHeader` (prepared + approval), and `PileDetailView`. See `src/lib/utils/promptChips.ts` (`appendChips`/`mergeChips`).
 - `ModelSelector.svelte` - Model selection (per-provider model lists + Auto)
 - `EffortToggle.svelte` - Effort level selector (replaces the old on/off ThinkingToggle)
@@ -113,8 +114,8 @@ Core UI:
 - `SdkTaskBlock.svelte` - Subagent (Task/Agent tool) block with lazy-mounted content
 - `SdkToolGrid.svelte` - Compact grid rendering of tool calls (see `utils/toolCallFormatting.ts`)
 - `SdkLoadingIndicator.svelte` - Animated loading indicator with status text
-- `SdkPromptInput.svelte` - Multi-line textarea with image paste/drop support, recording button, and auto-resize
-- `SdkQuickActions.svelte` - Quick action buttons for a session
+- `SdkPromptInput.svelte` - Prompt input area for live sessions: `PromptTextarea` core plus recording buttons, pending-image previews, drag-drop, per-session draft sync, the Send split-button (send-timing modifiers + schedule menu), and a `bottomRow` snippet slot (quick actions)
+- `SdkQuickActions.svelte` - Quick-action chip row rendered inside the prompt input's bottom row (via `SdkPromptInput`'s `bottomRow` snippet; also used in `SessionSetupView`). Plain click appends the action to the draft; Ctrl sends now, Shift when this session is idle, Ctrl+Shift when the repo/worktree is idle — modifier sends combine the current draft (text + images) with the action. Custom + builtin actions always show; AI-generated contextual ones only while idle
 - `SdkUsageBar.svelte` - Token usage display with input/output/cache stats, cost, and context usage bar
 - `AskUserQuestionWizard.svelte` - Interactive UI for the SDK's AskUserQuestion tool
 - `PlanApprovalDialog.svelte` - Approve/deny (with note) for the SDK's native `ExitPlanMode` plan approval, intercepted via `canUseTool` in the sidecar
@@ -160,7 +161,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 
 **Actions (`src/lib/actions/`):**
 
-- `holdSpaceRecord.ts` - Svelte action: hold-Space-to-record inside text inputs (tap types a space; hold retracts it and records; transcript inserted at caret on release). Pairs with `utils/inlineDictation.ts`.
+- `holdSpaceRecord.ts` - Svelte action: hold-Space-to-record inside text inputs (tap types a space; hold retracts it and records; transcript inserted at caret on release). An optional `send` variant engages on the app-wide send-timing modifier combos (Ctrl/Shift/Ctrl+Shift/Ctrl+Shift+Alt + Space) and routes the recording to a record-and-send pipeline with that timing. Pairs with `utils/inlineDictation.ts`.
 
 **Utilities (`src/lib/utils/`):**
 
@@ -377,7 +378,7 @@ A single global driver (`src/lib/stores/smartQueue.ts`, started in `(main)/+layo
 - `status: 'queued'` — a never-launched session, dispatched via `launchPrepared`
 - `rateLimited != null` — a live session with a pending turn to re-send, dispatched via `continueRateLimited` (mid-run rejection, deferred follow-ups, scheduled turns)
 
-Three `QueueReason` triggers: `rate_limit` (window exhausted), `scheduled` (user-picked 5h/7d boundary), and `after_sessions` — run once every session in the same repo+worktree (same `cwd`, via `hasBusySessionsInScope` in `sdkSessions.ts`) has finished. `after_sessions` is entered via Ctrl+click/Ctrl+Enter on Send (`queueTurnAfterSessions`; a parked follow-up also waits for its own session's running query), Ctrl+click on Start in the New Session view (`schedule: 'after_sessions'`), or the "when repo is idle" schedule-menu items; it dispatches even when the Smart Queue master toggle is off (explicit per-item user action). The launch-profile analog is Ctrl+click on a `LaunchBar` profile button → `launchStore.queueUntilRepoIdle` (waits on the whole scope, vs. `queueAfterAgent`'s single-session `sdk-done` listener).
+Three `QueueReason` triggers: `rate_limit` (window exhausted), `scheduled` (user-picked 5h/7d boundary), and `after_sessions` — run once the waited-on scope goes idle. Parked follow-up turns carry an `AfterSessionsScope`: `'worktree'` (every session in the same repo+worktree, same `cwd`, via `hasBusySessionsInScope` in `sdkSessions.ts`) or `'session'` (just the own session's running query). **Send-timing modifiers are uniform app-wide: plain = default action, Ctrl = now, Shift = when this session is idle, Ctrl+Shift = when the repo/worktree is idle, Ctrl+Shift+Alt = queue for the next 5h reset** (`utils/sendTiming.ts` maps events to a `SendTiming`; `modifierCombo` hint badges from `ctrlHint.ts`). The same combos work with hold-Space (plain Space = dictate into the draft; modifier+Space = record-and-send with that timing, combined with the typed draft) in both the session view and the New Session view (including its global unfocused-Space gesture). `after_sessions` is entered via Shift/Ctrl+Shift on Send or Ctrl+Shift+Enter (`queueTurnAfterSessions`; Shift+Enter stays newline, so session-idle has no Enter shortcut), Shift/Ctrl+Shift on Start in the New Session view (`schedule: 'after_sessions'`, always worktree scope — no session exists yet), modifier-clicks on quick actions, or the schedule-menu items; it dispatches even when the Smart Queue master toggle is off (explicit per-item user action). The launch-profile analog is Ctrl+Shift+click on a `LaunchBar` profile button → `launchStore.queueUntilRepoIdle` (waits on the whole scope), while plain/Shift+click during an agent run → `queueAfterAgent` (single-session `sdk-done` listener) and Ctrl+click force-launches now.
 
 Exhaustion detection lives in `queueDetection.ts` (threshold ≥100% utilization of the 5h or 7d window, per provider — Claude and Codex both) which deliberately imports neither `sdkSessions` nor `smartQueue` to break the import cycle. Draining is FIFO per provider with configurable fuzzy stagger (`settings.queue`, Settings → Smart Queue). UI: `QueueIndicator` (header) and `RateLimitBanner` (session). Distinct from `createSessionQueue` in `sessionLaunch.ts`, which is just a sequential batch-launch stagger.
 
@@ -575,10 +576,6 @@ Native post-implementation validation of a session's changes (design: `docs/nati
 - **Frontend**: `stores/validation.ts` (runId-keyed store, full-snapshot `applySnapshot`, auto-selects auto-fix findings at gates, per-repo last-used run options in localStorage), `utils/validationIntent.ts` (rich intent: aiMetadata + ALL user messages verbatim, ~6000-char cap), `SdkSession.validation` summary mirror (auto-persisted → restart-surviving badge; full runs are in-memory only).
 - **UI**: "Validate" button in `SdkSessionHeader` (not dev-gated; idle + real cwd) → `sdk/ValidationStartPopover.svelte` (step checkboxes, reviewer model/effort, adversarial verify; seeded localStorage → repo → settings); `sdk/ValidationPanel.svelte` in the pinned slot above the prompt input — **hybrid capped layout**: always-visible chrome (header with expand toggle, stepper, live agent-activity line, outcome banner) over a single tabbed scroll body capped at ~34vh (expand → ~72vh) with tabs Gate (auto-selected on gate; findings as stacked title-first rows, no file column) / Steps (proof lines with expandable output, risk chip, evidence artifacts, transcript/diff drawers) / Activity (timestamped feed) / Log (auto-selected on failure); gate actions (Fix selected + fix-target select "this session / a new session" / Approve / Skip) pinned below the body; four gate kinds: findings / fix_review / ship / ci_failure; status badge in `SessionListItem`; Settings → Validation (`settings/ValidationTab.svelte`); per-repo test/lint commands + review guidelines + default steps in `RepositoryView`'s Repository Settings.
 - **Config**: `AppConfig.validation` (`ValidationConfig`: default_steps, reviewer_model/effort, adversarial_verify, evidence_enabled, auto_fix_limits, ci_timeout_minutes, agent_timeout_minutes) + `RepoConfig.{validation_commands, review_guidelines, validation_steps}`; config migration v4→v5.
-
-## Cockpit (Experimental)
-
-`src/lib/cockpit/` contains an experimental voice-driven fleet-control system (command grammar, intent executor, cockpit mic/store). It is under active exploration and its design is not settled. **Do not mention, suggest, extend, or wire new features into the cockpit unless the user brings it up first.**
 
 ### Providers
 

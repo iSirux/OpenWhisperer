@@ -54,7 +54,6 @@
   import {
     handleTranscriptReady,
     handleRetryTranscription,
-    handleApproveTranscription,
     handleRepoSelectionForSession,
     handleSendSelection,
     handlePrepareSelection,
@@ -421,7 +420,6 @@
       },
       onCloseSettings: showSessionsView,
       onRetryTranscription: handleRetryTranscription,
-      onApproveTranscription: handleApproveTranscription,
       onSelectRepoForSession: handleRepoSelectionForSession,
       onFocusSdkPrompt: async () => {
         // This is a UI action that only works when the prompt input is visible.

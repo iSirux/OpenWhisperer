@@ -1,144 +1,133 @@
 <script lang="ts">
   import type { QuickAction } from '$lib/utils/llm';
   import { settings } from '$lib/stores/settings';
-  import { ctrlHeld } from '$lib/stores/ctrlHint';
+  import { modifierCombo } from '$lib/stores/ctrlHint';
+  import { sendTimingFromEvent } from '$lib/utils/sendTiming';
 
   let {
-    onSendPrompt,
-    onSendAfterIdle,
+    onAppend,
+    onSendNow,
+    onSendSessionIdle,
+    onSendRepoIdle,
+    onSend5hReset,
     generatedActions,
     builtinActions,
-    hasOutcomeAbove = false,
+    showContextual = true,
+    verb = 'send',
   }: {
-    onSendPrompt: (prompt: string) => void;
-    /** Ctrl+click routes the action here: defer until the repo/worktree scope is idle. */
-    onSendAfterIdle?: (prompt: string) => void;
+    /** Plain click: append the action's text to the prompt draft (editable before sending). */
+    onAppend: (prompt: string) => void;
+    /** Ctrl+click: send right away (parent combines with the current draft). */
+    onSendNow: (prompt: string) => void;
+    /** Shift+click: send once this session's own query is done. When absent,
+     *  Shift falls back to onSendRepoIdle (e.g. the setup view, where no session
+     *  exists yet and repo-idle is the only deferral). */
+    onSendSessionIdle?: (prompt: string) => void;
+    /** Ctrl+Shift+click: send once the whole repo/worktree scope is idle. */
+    onSendRepoIdle?: (prompt: string) => void;
+    /** Ctrl+Shift+Alt+click: queue the send for the next 5h usage-window reset. */
+    onSend5hReset?: (prompt: string) => void;
     generatedActions?: QuickAction[];
     /** App-provided actions (e.g. the PR "commit, push, create PR" chip), shown before custom ones. */
     builtinActions?: QuickAction[];
-    hasOutcomeAbove?: boolean;
+    /** AI-generated contextual actions are follow-up suggestions from the last
+     *  exchange — only shown while the session is idle (they go stale mid-turn). */
+    showContextual?: boolean;
+    /** Tooltip verb: "send" for live sessions, "start" for the setup view. */
+    verb?: string;
   } = $props();
 
+  type RowAction = QuickAction & { kind: 'builtin' | 'custom' | 'contextual' };
+
+  const actions = $derived<RowAction[]>([
+    ...(builtinActions ?? []).map((a) => ({ ...a, kind: 'builtin' as const })),
+    ...($settings.quick_actions ?? []).map((prompt: string) => ({
+      prompt,
+      kind: 'custom' as const,
+    })),
+    ...(showContextual ? (generatedActions ?? []) : []).map((a) => ({
+      ...a,
+      kind: 'contextual' as const,
+    })),
+  ]);
+
   function handleClick(e: MouseEvent, prompt: string) {
-    if (onSendAfterIdle && (e.ctrlKey || e.metaKey)) {
-      onSendAfterIdle(prompt);
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (!ctrl && !e.shiftKey) {
+      onAppend(prompt);
+      return;
+    }
+    const timing = sendTimingFromEvent(e);
+    if (timing === 'reset_5h' && onSend5hReset) {
+      onSend5hReset(prompt);
+    } else if (timing === 'repo_idle' && onSendRepoIdle) {
+      onSendRepoIdle(prompt);
+    } else if (timing === 'session_idle' && (onSendSessionIdle || onSendRepoIdle)) {
+      (onSendSessionIdle ?? onSendRepoIdle)!(prompt);
     } else {
-      onSendPrompt(prompt);
+      onSendNow(prompt);
     }
   }
 
-  // User-defined quick actions from settings (converted from string[] to QuickAction[])
-  const customActions = $derived(
-    ($settings.quick_actions ?? []).map((prompt: string) => ({ prompt }))
-  );
-
-  // AI-generated contextual actions (from LLM)
-  const contextualActions = $derived(
-    generatedActions && generatedActions.length > 0 ? generatedActions : []
-  );
-
-  const appActions = $derived(builtinActions ?? []);
-
-  // Whether we have any actions to show at all
-  const hasAnyActions = $derived(
-    customActions.length > 0 || contextualActions.length > 0 || appActions.length > 0
-  );
+  function actionTitle(action: RowAction): string {
+    const timings = [
+      'Click: add to prompt',
+      `Ctrl: ${verb} now`,
+      onSendSessionIdle ? `Shift: ${verb} when this session is idle` : undefined,
+      onSendRepoIdle
+        ? `${onSendSessionIdle ? '' : 'Shift / '}Ctrl+Shift: ${verb} when repo is idle`
+        : undefined,
+      onSend5hReset ? `Ctrl+Shift+Alt: ${verb} on next 5h reset` : undefined,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    return action.label ? `${action.prompt}\n${timings}` : timings;
+  }
 </script>
 
-{#if hasAnyActions}
-<div class="quick-actions" class:no-border={hasOutcomeAbove}>
-  {#if appActions.length > 0}
-    <div class="quick-actions-buttons">
-      {#each appActions as action}
-        <button
-          class="quick-action-button builtin"
-          onclick={(e) => handleClick(e, action.prompt)}
-          title={[
-            action.label ? action.prompt : undefined,
-            onSendAfterIdle ? 'Ctrl+click: run when this repo/worktree is idle' : undefined,
-          ].filter(Boolean).join(' — ') || undefined}
-        >
-          {action.label ?? action.prompt}
-          {#if $ctrlHeld && onSendAfterIdle}
-            <span class="ctrl-hint-badge" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <polyline points="12 6 12 12 16 14" />
-              </svg>
-            </span>
-          {/if}
-        </button>
-      {/each}
-    </div>
-  {/if}
-
-  {#if customActions.length > 0}
-    <div class="quick-actions-buttons">
-      {#each customActions as action}
-        <button
-          class="quick-action-button"
-          onclick={(e) => handleClick(e, action.prompt)}
-          title={onSendAfterIdle ? 'Ctrl+click: run when this repo/worktree is idle' : undefined}
-        >
-          {action.prompt}
-          {#if $ctrlHeld && onSendAfterIdle}
-            <span class="ctrl-hint-badge" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <polyline points="12 6 12 12 16 14" />
-              </svg>
-            </span>
-          {/if}
-        </button>
-      {/each}
-    </div>
-  {/if}
-
-  {#if contextualActions.length > 0}
-    <div class="quick-actions-buttons">
-      {#each contextualActions as action}
-        <button
-          class="quick-action-button contextual"
-          title={[
-            action.label ? action.prompt : undefined,
-            onSendAfterIdle ? 'Ctrl+click: run when this repo/worktree is idle' : undefined,
-          ].filter(Boolean).join(' — ') || undefined}
-          onclick={(e) => handleClick(e, action.prompt)}
-        >
-          {action.label ?? action.prompt}
-          {#if $ctrlHeld && onSendAfterIdle}
-            <span class="ctrl-hint-badge" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <polyline points="12 6 12 12 16 14" />
-              </svg>
-            </span>
-          {/if}
-        </button>
-      {/each}
-    </div>
-  {/if}
-</div>
+{#if actions.length > 0}
+  <div class="quick-actions">
+    {#each actions as action}
+      <button
+        class="quick-action-button"
+        class:builtin={action.kind === 'builtin'}
+        class:contextual={action.kind === 'contextual'}
+        onclick={(e) => handleClick(e, action.prompt)}
+        title={actionTitle(action)}
+      >
+        {action.label ?? action.prompt}
+        {#if $modifierCombo === 'ctrl'}
+          <span class="ctrl-hint-badge" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </svg>
+          </span>
+        {:else if $modifierCombo === 'shift' && onSendSessionIdle}
+          <span class="ctrl-hint-badge" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 2h12M6 22h12M8 2v4l4 4 4-4V2M8 22v-4l4-4 4 4v4" />
+            </svg>
+          </span>
+        {:else if ($modifierCombo === 'ctrl+shift' || $modifierCombo === 'shift') && onSendRepoIdle}
+          <span class="ctrl-hint-badge" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+          </span>
+        {:else if $modifierCombo === 'ctrl+shift+alt' && onSend5hReset}
+          <span class="ctrl-hint-badge text-badge" aria-hidden="true">5h</span>
+        {/if}
+      </button>
+    {/each}
+  </div>
 {/if}
 
 <style>
   .quick-actions {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.375rem;
-    padding: 0.375rem 0 0.25rem;
-    border-top: 1px dashed var(--color-border);
-  }
-
-  .quick-actions.no-border {
-    border-top: none;
-  }
-
-  .quick-actions-buttons {
-    display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.375rem;
   }
 
   .quick-action-button {
@@ -146,12 +135,12 @@
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
-    padding: 0.375rem 0.75rem;
+    padding: 0.25rem 0.625rem;
     background: var(--color-surface);
     color: var(--color-text-secondary);
     border: 1px solid var(--color-border);
     border-radius: 16px;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -184,6 +173,8 @@
     border-color: rgb(74, 222, 128);
   }
 
+  /* Modifier-held hint badge: Ctrl = send now, Shift = send when this session
+     is idle, Ctrl+Shift = send when the repo/worktree is idle */
   .ctrl-hint-badge {
     position: absolute;
     top: -0.45rem;
@@ -204,5 +195,11 @@
   .ctrl-hint-badge svg {
     width: 11px;
     height: 11px;
+  }
+
+  .ctrl-hint-badge.text-badge {
+    font-size: 0.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
   }
 </style>

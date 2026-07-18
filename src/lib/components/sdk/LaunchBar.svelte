@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { LaunchCommand, LaunchProfile, LaunchRuntime, QueuedLaunch } from "$lib/types/launch";
   import { launchStore } from "$lib/stores/launchProfiles";
-  import { ctrlHeld } from "$lib/stores/ctrlHint";
+  import { modifierCombo } from "$lib/stores/ctrlHint";
 
   interface Props {
     repoId: string;
@@ -127,15 +127,19 @@
   }
 
   function handleProfileClick(e: MouseEvent, profileId: string) {
-    if (e.ctrlKey || e.metaKey) {
-      // Ctrl+click = queue until EVERY session in this repo/worktree has finished
-      // (launches immediately if the scope is already idle)
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && e.shiftKey) {
+      // Ctrl+Shift+click = queue until EVERY session in this repo/worktree has
+      // finished (launches immediately if the scope is already idle)
       handleQueueRepoIdle(profileId);
-    } else if (isAgentRunning && !e.shiftKey) {
-      // Agent running + normal click = queue after agent finishes
+    } else if (ctrl) {
+      // Ctrl+click = force launch right now, even while the agent is working
+      handleLaunchProfile(profileId);
+    } else if (isAgentRunning) {
+      // Agent running + plain or Shift+click = queue after this agent finishes
+      // (plain click is the safe default; Shift is the explicit form)
       handleQueueProfile(profileId);
     } else {
-      // Agent idle (normal click) or force launch (Shift+click while running)
       handleLaunchProfile(profileId);
     }
   }
@@ -280,16 +284,28 @@
             onclick={(e) => handleProfileClick(e, profile.id)}
             oncontextmenu={(e) => handleContextMenu(e, profile.id)}
             title={(isAgentRunning
-              ? "Click to queue after agent, Shift+click to launch now"
-              : `Launch ${profile.name}`) + " — Ctrl+click: run when this repo/worktree is idle"}
+              ? "Click/Shift+click: queue after agent, Ctrl+click: launch now"
+              : `Launch ${profile.name}`) + " — Ctrl+Shift+click: run when this repo/worktree is idle"}
           >
             {profile.name}
             <span class="profile-count">{profile.command_ids.length}</span>
-            {#if $ctrlHeld}
+            {#if $modifierCombo === "ctrl+shift"}
               <span class="ctrl-hint-badge" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="10" />
                   <polyline points="12 6 12 12 16 14" />
+                </svg>
+              </span>
+            {:else if $modifierCombo === "ctrl" && isAgentRunning}
+              <span class="ctrl-hint-badge" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                </svg>
+              </span>
+            {:else if $modifierCombo === "shift" && isAgentRunning}
+              <span class="ctrl-hint-badge" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 2h12M6 22h12M8 2v4l4 4 4-4V2M8 22v-4l4-4 4 4v4" />
                 </svg>
               </span>
             {/if}
@@ -441,7 +457,8 @@
     color: inherit;
   }
 
-  /* Ctrl-held hint: Ctrl+click queues the launch until the repo/worktree is idle */
+  /* Modifier-held hint badge: Ctrl = launch now, Shift = queue after agent,
+     Ctrl+Shift = queue until the repo/worktree is idle */
   .ctrl-hint-badge {
     position: absolute;
     top: -0.45rem;

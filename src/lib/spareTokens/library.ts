@@ -68,7 +68,7 @@ export const SPARE_TOKENS_LIBRARY: SpareTokensPrompt[] = [
     readOnly: true,
     appetite: 'medium',
     fanOut: false,
-    prompt: `Analyze this repository's test coverage by risk, not by percentage. Identify the critical paths, public APIs, and error/edge branches that currently have no meaningful tests, and rank them by how much damage a regression there would cause (data loss, auth bypass, money, corruption, user-facing breakage rank highest). For each gap, name the specific function or flow, describe the untested behavior, explain the risk, and sketch the one or two test cases that would most cheaply cover it. Ignore trivial code that does not need tests. Deliver a prioritized list — the goal is to tell the reader exactly where to spend the next hour of test-writing, not to chase a coverage number.`,
+    prompt: `Analyze this repository's test coverage by risk, not by percentage. FIRST establish how testing actually works here rather than assuming: discover the test framework(s), runner, and conventions in use, where tests live (co-located, a tests/ tree, integration/e2e suites, doctests, snapshot files), and what layers are and aren't exercised — so gap analysis and any suggested tests match the project's real setup. Then identify the critical paths, public APIs, and error/edge branches that currently have no meaningful tests, and rank them by how much damage a regression there would cause (data loss, auth bypass, money, corruption, user-facing breakage rank highest). For each gap, name the specific function or flow, describe the untested behavior, explain the risk, and sketch the one or two test cases that would most cheaply cover it — in the style the project already uses. Ignore trivial code that does not need tests. Deliver a prioritized list — the goal is to tell the reader exactly where to spend the next hour of test-writing, not to chase a coverage number.`,
   },
   {
     id: 'dead-code-hunt',
@@ -109,11 +109,11 @@ export const SPARE_TOKENS_LIBRARY: SpareTokensPrompt[] = [
   {
     id: 'docs-drift-check',
     title: 'Documentation drift check',
-    description: 'Compare README / docs / CLAUDE.md claims against the actual code.',
+    description: 'Discover every doc surface, then compare its claims against the actual code.',
     readOnly: true,
     appetite: 'medium',
     fanOut: false,
-    prompt: `Check the project's documentation for drift against the real code. Read the README, any docs/ files, and agent-onboarding files (CLAUDE.md / AGENTS.md), then verify their concrete claims against the codebase: commands that no longer exist or have changed flags, described file/module layout that has moved, configuration keys and defaults that are stale, features documented but removed (or present but undocumented), and setup steps that would no longer work. List every stale or wrong statement with the doc location, the claim, and what the code actually does now. Rank by how badly each would mislead a new contributor. Report only — do not edit the docs.`,
+    prompt: `Check the project's documentation for drift against the real code. FIRST discover where documentation actually lives for THIS project rather than assuming a fixed layout — map every documentation surface you can reach: the README, a docs/ tree, agent-onboarding files (CLAUDE.md / AGENTS.md), agent skills and command definitions (e.g. .claude/, .cursor/), a wiki, changelogs, inline API docs / docstrings / JSDoc, meaningful code comments, and any external support, marketing, or docs site linked from the README or package metadata (follow those links and read them, but never edit anything outside this repository). Then verify their concrete claims against the codebase: commands that no longer exist or have changed flags, described file/module layout that has moved, configuration keys and defaults that are stale, features documented but removed (or present but undocumented), and setup steps that would no longer work. List every stale or wrong statement with the doc surface + location, the claim, and what the code actually does now. Rank by how badly each would mislead a new contributor or user. Report only — do not edit any docs.`,
   },
   {
     id: 'codebase-explainer',
@@ -123,15 +123,6 @@ export const SPARE_TOKENS_LIBRARY: SpareTokensPrompt[] = [
     appetite: 'large',
     fanOut: true,
     prompt: `Produce a wiki-style architecture deep-dive of this codebase aimed at a senior engineer joining the project. First map the top-level structure and identify the major subsystems. Then fan out parallel subagents, one per subsystem, each producing a focused section: what the subsystem is responsible for, its key modules/files and their roles, the important data types and flows, how it talks to the other subsystems, and the non-obvious gotchas or invariants someone must know before changing it. Merge the sections into one coherent document with a top-level overview, an architecture summary (how the pieces fit and where the main data flows run), and the per-subsystem sections. Favor accurate, code-grounded explanation over hand-waving; call out anything surprising or fragile.`,
-  },
-  {
-    id: 'repo-vocabulary',
-    title: 'Repo vocabulary extraction',
-    description: 'Extract domain terms and invented names into a transcription glossary.',
-    readOnly: true,
-    appetite: 'small',
-    fanOut: false,
-    prompt: `Extract this repository's specialized vocabulary into a glossary suitable for correcting voice transcription. Scan the code, docs, and identifiers for domain terms, invented product/feature names, module and component names, key abbreviations and acronyms, and any jargon that a general speech-to-text model would likely mishear or misspell (e.g. camelCase or compound coined names, uncommon technical terms, project-specific shorthand). For each entry give the exact canonical spelling and, where useful, a very short gloss and any common homophones or mis-transcriptions to watch for. Output a clean, de-duplicated, alphabetized list of the terms (roughly 20–50) — this list is meant to be pasted into a transcription-cleanup vocabulary, so favor the terms most likely to be spoken aloud and mis-transcribed.`,
   },
   {
     id: 'prompt-designer',

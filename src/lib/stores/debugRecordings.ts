@@ -36,7 +36,7 @@ export interface DebugRecording {
   durationMs?: number;
   /** Transcription mode in effect ('Whisper' | 'Realtime' | 'Both'). */
   transcriptionMode?: string;
-  /** Where the recording was headed ('send' | 'prepare' | 'pile' | ...). */
+  /** Where the recording was headed ('send' | 'draft' | 'pile' | ...). */
   destination?: string;
 
   hasAudio?: boolean;

@@ -36,6 +36,7 @@
     worktreeHasHeader,
   } from '$lib/stores/sessionGrouping';
   import { repos } from '$lib/stores/repos';
+  import { sessionLaunchActivity } from '$lib/stores/launchProfiles';
   import RepoIcon from './RepoIcon.svelte';
 
   const archiveCount = archive.archiveCount;
@@ -236,11 +237,14 @@
   }
 
   // Confirmation dialog state
+  // 'working' = session/sequence still running; 'launch' = a launch profile is
+  // running or queued for this session's scope.
   let confirmDialog = $state<{
     show: boolean;
     sessionId: string;
     sessionType: 'sdk' | 'sequence';
-  }>({ show: false, sessionId: '', sessionType: 'sdk' });
+    reason: 'working' | 'launch';
+  }>({ show: false, sessionId: '', sessionType: 'sdk', reason: 'working' });
 
   function closeSession(session: DisplaySession, event: MouseEvent) {
     event.stopPropagation();
@@ -248,7 +252,7 @@
     if (session.type === 'sequence') {
       // For sequences, check if actively running
       if (isActivelyWorking(session.status)) {
-        confirmDialog = { show: true, sessionId: session.id, sessionType: 'sequence' };
+        confirmDialog = { show: true, sessionId: session.id, sessionType: 'sequence', reason: 'working' };
         return;
       }
       performClose(session.id, 'sequence');
@@ -260,7 +264,13 @@
     if (sdkSession) {
       const smartStatus = getSdkSmartStatus(sdkSession);
       if (isActivelyWorking(smartStatus.status)) {
-        confirmDialog = { show: true, sessionId: session.id, sessionType: 'sdk' };
+        confirmDialog = { show: true, sessionId: session.id, sessionType: 'sdk', reason: 'working' };
+        return;
+      }
+      // Warn if this session owns a launch profile that's running or queued.
+      const launch = sessionLaunchActivity(session.id, sdkSession.cwd);
+      if (launch.running || launch.queued) {
+        confirmDialog = { show: true, sessionId: session.id, sessionType: 'sdk', reason: 'launch' };
         return;
       }
     }
@@ -311,11 +321,11 @@
 
   function confirmClose() {
     performClose(confirmDialog.sessionId, confirmDialog.sessionType);
-    confirmDialog = { show: false, sessionId: '', sessionType: 'sdk' };
+    confirmDialog = { show: false, sessionId: '', sessionType: 'sdk', reason: 'working' };
   }
 
   function cancelClose() {
-    confirmDialog = { show: false, sessionId: '', sessionType: 'sdk' };
+    confirmDialog = { show: false, sessionId: '', sessionType: 'sdk', reason: 'working' };
   }
 
   // Right-click context menu (pin/unpin; SDK sessions only)
@@ -567,10 +577,16 @@
 
 <ConfirmDialog
   show={confirmDialog.show}
-  title={confirmDialog.sessionType === 'sequence' ? 'Close running sequence?' : 'Close active session?'}
+  title={confirmDialog.sessionType === 'sequence'
+    ? 'Close running sequence?'
+    : confirmDialog.reason === 'launch'
+      ? 'Launch profile still active'
+      : 'Close active session?'}
   message={confirmDialog.sessionType === 'sequence'
     ? 'This sequence is still running. Are you sure you want to close it?'
-    : 'This session is still working. Are you sure you want to close it?'}
+    : confirmDialog.reason === 'launch'
+      ? 'This session has a launch profile running or queued. Closing it won’t stop the processes. Close anyway?'
+      : 'This session is still working. Are you sure you want to close it?'}
   confirmLabel={confirmDialog.sessionType === 'sequence' ? 'Close sequence' : 'Close session'}
   onconfirm={confirmClose}
   oncancel={cancelClose}

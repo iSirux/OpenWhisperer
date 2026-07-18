@@ -22,7 +22,7 @@
 // =============================================================================
 
 import { derived, get, writable } from 'svelte/store';
-import { sdkSessions, hasBusySessionsInScope, type QueueReason, type SdkSession } from './sdkSessions';
+import { sdkSessions, hasBusySessionsInScope, type AfterSessionsScope, type QueueReason, type SdkSession } from './sdkSessions';
 import { rateLimitData, codexRateLimitData, type ProviderRateLimits } from './rateLimits';
 import { providerExhaustion } from './queueDetection';
 import { settings } from './settings';
@@ -49,6 +49,8 @@ interface PendingItem {
   targetStartAt?: number;
   /** For after_sessions items: the repo/worktree scope to wait on (the session's cwd). */
   cwd?: string;
+  /** For after_sessions rateLimited items: wait on just the own session, or the whole cwd scope. */
+  scope?: AfterSessionsScope;
 }
 
 // -----------------------------------------------------------------------------
@@ -113,6 +115,7 @@ function toPendingItem(session: SdkSession): PendingItem | null {
       queuedAt: session.rateLimited.queuedAt ?? session.lastActivityAt ?? 0,
       targetStartAt: session.rateLimited.targetStartAt ?? session.rateLimited.resetsAt,
       cwd: session.cwd,
+      scope: session.rateLimited.scope,
     };
   }
   return null;
@@ -140,10 +143,12 @@ function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider):
  *   provider isn't exhausted. When the store is null we treat the provider as
  *   not-exhausted (`providerExhaustion` already returns `exhausted: false` for a
  *   null store), honoring the time the user explicitly scheduled.
- * - `after_sessions`: ready once no session in the same repo+worktree (same cwd)
- *   is actively working. A never-launched `queued` item excludes itself from the
- *   scope check (it isn't running); a parked follow-up turn does NOT — its own
- *   session may still be mid-query, and the turn should fire only after it finishes.
+ * - `after_sessions`: ready once the waited-on scope is idle. Scope `'session'`
+ *   (parked follow-ups only) waits on just the own session's running query;
+ *   `'worktree'` (the default) waits until no session in the same repo+worktree
+ *   (same cwd) is actively working. A never-launched `queued` item excludes itself
+ *   from the scope check (it isn't running); a parked follow-up turn does NOT — its
+ *   own session may still be mid-query, and the turn should fire only after it finishes.
  */
 function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolean {
   const exhausted = providerExhaustion(item.provider, item.accountId).exhausted;
@@ -155,6 +160,10 @@ function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolea
 
   if (item.reason === 'after_sessions') {
     if (exhausted) return false; // it would only get re-rejected — hold and roll forward
+    if (item.kind === 'rateLimited' && item.scope === 'session') {
+      const own = sessions.find((s) => s.id === item.id);
+      return !!own && own.status !== 'querying' && own.status !== 'initializing';
+    }
     const excludeId = item.kind === 'queued' ? item.id : undefined;
     return !item.cwd || !hasBusySessionsInScope(sessions, item.cwd, excludeId);
   }

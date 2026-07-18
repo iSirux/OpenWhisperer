@@ -102,22 +102,6 @@
         />
       </div>
 
-      <div class="flex items-center justify-between">
-        <div>
-          <label class="text-sm font-medium text-text-secondary"
-            >Require Transcription Approval</label
-          >
-          <p class="text-xs text-text-muted mt-0.5">
-            Review and approve transcriptions before sending
-          </p>
-        </div>
-        <input
-          type="checkbox"
-          class="toggle"
-          bind:checked={$settings.audio.require_transcription_approval}
-        />
-      </div>
-
       <div>
         <label class="block text-sm font-medium text-text-secondary mb-1"
           >Recording Linger Time</label

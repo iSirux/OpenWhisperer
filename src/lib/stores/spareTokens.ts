@@ -346,7 +346,7 @@ let activeAutoSessionId: string | null = null;
 let evaluating = false;
 
 /**
- * One evaluation pass: bail unless dev mode + auto enabled, hold while an auto
+ * One evaluation pass: bail unless auto mode is enabled, hold while an auto
  * session is still busy, then fire at most one eligible item.
  */
 async function evaluateAuto(): Promise<void> {

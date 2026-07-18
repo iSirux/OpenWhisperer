@@ -208,24 +208,33 @@ Message to analyze:
 
         let transcription_section = if let Some(realtime) = realtime_transcription {
             format!(
-                r#"You have two transcriptions of the same recording from different speech-to-text engines. Neither is inherently more accurate — each may capture words the other missed or misheard.
+                r#"You have two transcriptions of the SAME audio from different speech-to-text engines. They are two readings of the same spoken words — not two separate utterances, and never two pieces to join together.
 
-**Transcription A**:
+**Transcription A** (batch engine — usually the more accurate reading):
 {}
 
-**Transcription B**:
+**Transcription B** (realtime engine — often fragmentary, but may catch words A missed):
 {}
 
-Compare both transcriptions and produce the best combined result. Prefer the more complete transcription as the base, and incorporate any clearly correct words or phrases from the other that it missed or misheard.
+Produce ONE merged transcript. Use Transcription A as the base, and use B only to recover words that A clearly missed or misheard.
 
-If a word appears in BOTH transcriptions, it is real speech — never drop it, even if it seems redundant, trailing, or semantically odd (it may be a proper noun, a product name, or jargon you don't recognize).
+Where the two disagree at the same position (e.g. A has "select an organization" where B has "select the navigation"), that is one utterance misheard by one engine — choose the more plausible reading and discard the other. NEVER keep both variants, and NEVER append one transcription after the other. The merged result must be roughly the length of the longer transcription, never the two combined.
 
-When one transcription contains words the other lacks (especially at the end), only drop those words if you are highly confident they are a transcription artifact rather than real speech — engines truncate endings more often than they hallucinate extra words. When in doubt, keep the extra words."#,
+A word both engines agree on is real speech — keep it, even if it seems redundant or odd (it may be a proper noun, a product name, or jargon you don't recognize). If B ends with words that A lacks entirely — a continuation of the speech, not a variant reading of A's ending — keep them; engines truncate endings more often than they hallucinate extra words."#,
                 whisper_transcription,
                 realtime
             )
         } else {
             format!("Transcription to clean:\n{}", whisper_transcription)
+        };
+
+        // The preservation rule differs by mode: in dual-source mode, merging the two
+        // readings IS the task, so a blanket "never merge" would instruct the model
+        // to concatenate both variants of every disagreement.
+        let preserve_section = if realtime_transcription.is_some() {
+            r#"CRITICAL: Preserve ALL of the speaker's content. Keep every spoken clause and sentence — including trailing questions, asides, and apparent self-corrections (e.g. "..., or does it show here?"). Never drop, shorten, or summarize what was said. But remember: the two transcriptions are readings of the same speech, so each spoken clause must appear exactly ONCE in the output — in one engine's reading, never both."#
+        } else {
+            r#"CRITICAL: Preserve ALL of the speaker's content. Keep every clause and sentence — including trailing questions, asides, and apparent self-corrections (e.g. "..., or does it show here?"). Never drop, shorten, summarize, or merge parts of what was said. The cleaned text must carry the same information as the input, only with errors fixed. When in doubt, leave the wording as-is."#
         };
 
         let prompt = format!(
@@ -239,10 +248,11 @@ When one transcription contains words the other lacks (especially at the end), o
 {}
 Keep the original meaning and intent. Only fix clear errors, don't rewrite the content.
 
-CRITICAL: Preserve ALL of the speaker's content. Keep every clause and sentence — including trailing questions, asides, and apparent self-corrections (e.g. "..., or does it show here?"). Never drop, shorten, summarize, or merge parts of what was said. The cleaned text must carry the same information as the input, only with errors fixed. When in doubt, leave the wording as-is.
+{}
 
 {}{}"#,
             context_section,
+            preserve_section,
             transcription_section,
             Self::json_only(
                 r#"{"cleaned_text": "the corrected text", "corrections_made": ["correction 1", "correction 2"]}"#
@@ -265,7 +275,31 @@ CRITICAL: Preserve ALL of the speaker's content. Keep every clause and sentence 
             "required": ["cleaned_text", "corrections_made"]
         });
 
-        self.run_feature(prompt, schema).await
+        let mut result: GenerationResult<TranscriptionCleanupResult> =
+            self.run_feature(prompt, schema).await?;
+
+        // Guard against runaway merges: cleaned text substantially longer than the
+        // longest input means the model concatenated both readings (or invented
+        // content) instead of merging — fall back to the raw batch transcript
+        // rather than ship a corrupted prompt.
+        let word_count = |s: &str| s.split_whitespace().count();
+        let baseline = word_count(whisper_transcription).max(
+            realtime_transcription.map(word_count).unwrap_or(0),
+        );
+        let cleaned_len = word_count(&result.data.cleaned_text);
+        if baseline > 0 && cleaned_len > baseline * 13 / 10 + 2 {
+            log::warn!(
+                "[llm] transcription cleanup output ({} words) far exceeds the longest input ({} words); discarding it and falling back to the raw transcript",
+                cleaned_len,
+                baseline
+            );
+            result.data = TranscriptionCleanupResult {
+                cleaned_text: whisper_transcription.to_string(),
+                corrections_made: Vec::new(),
+            };
+        }
+
+        Ok(result)
     }
 
     /// Recommend model with usage tracking

@@ -21,6 +21,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_v2_to_v3,
     migrate_v3_to_v4,
     migrate_v4_to_v5,
+    migrate_v5_to_v6,
 ];
 
 /// The schema version the current build writes. Derived from the table length so
@@ -177,6 +178,28 @@ fn migrate_v4_to_v5(value: &mut Value) {
         {
             obj.insert("validation".to_string(), default_validation);
         }
+    }
+}
+
+// ============================================================================
+// v5 -> v6: seed the "Go" quick action. Prepend it to any existing
+// `quick_actions` list (case-insensitive dedup) so current users get the new
+// first action without losing their own; a missing list is left for the
+// `#[serde(default)]` to fill.
+// ============================================================================
+
+fn migrate_v5_to_v6(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    let Some(Value::Array(actions)) = obj.get_mut("quick_actions") else {
+        return;
+    };
+    let already_present = actions
+        .iter()
+        .any(|v| v.as_str().is_some_and(|s| s.eq_ignore_ascii_case("Go")));
+    if !already_present {
+        actions.insert(0, Value::String("Go".to_string()));
     }
 }
 

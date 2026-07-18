@@ -477,7 +477,7 @@
           disabled={!canLaunch}
           onclick={runPrepare}
         >
-          Prepare draft
+          Draft
         </button>
         <button
           class="px-3 py-1.5 rounded text-xs font-medium bg-surface hover:bg-background text-text-secondary transition-colors disabled:opacity-50"

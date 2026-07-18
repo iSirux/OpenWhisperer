@@ -24,6 +24,8 @@
 
   let rl = $derived(session.rateLimited);
   let reason = $derived(rl?.reason ?? 'rate_limit');
+  // 'after_sessions' waits on just this session or the whole repo+worktree scope.
+  let afterSessionsScope = $derived(rl?.scope ?? 'worktree');
   // For a scheduled turn the target is targetStartAt; for a rate-limit turn prefer
   // the (possibly refreshed) targetStartAt, falling back to the event's resetsAt.
   let targetMs = $derived(
@@ -60,7 +62,9 @@
     reason === 'scheduled'
       ? `Scheduled to send${countdown ? ` in ${countdown}` : ''}`
       : reason === 'after_sessions'
-        ? 'Waiting for repo to go idle'
+        ? afterSessionsScope === 'session'
+          ? 'Waiting for this session to finish'
+          : 'Waiting for repo to go idle'
         : `Rate limit reached${countdown ? ` — resets in ${countdown}` : ''}`,
   );
 
@@ -110,7 +114,11 @@
         {#if reason === 'scheduled'}
           This turn is parked and will send automatically at the next{windowLabel ? ` ${windowLabel}` : ''} window reset.
         {:else if reason === 'after_sessions'}
-          This turn is parked and will send automatically once every session in this repo/worktree has finished.
+          {#if afterSessionsScope === 'session'}
+            This turn is parked and will send automatically once this session's current work has finished.
+          {:else}
+            This turn is parked and will send automatically once every session in this repo/worktree has finished.
+          {/if}
         {:else}
           {windowLabel ? `The ${windowLabel} usage window is exhausted. ` : ''}Your turn is saved and can be re-sent.
           {#if queueEnabled}

@@ -25,15 +25,17 @@
   import SdkPromptInput from "./sdk/SdkPromptInput.svelte";
   import SessionRecordingHeader from "./sdk/SessionRecordingHeader.svelte";
   import SdkQuickActions from "./sdk/SdkQuickActions.svelte";
-  import ValidationPanel from "./sdk/ValidationPanel.svelte";
-  import PrPanel from "./sdk/PrPanel.svelte";
+  import SessionDock from "./sdk/SessionDock.svelte";
+  import { PaneGroup, Pane, PaneResizer } from "paneforge";
+  import { dockOrientation } from "$lib/stores/dockOrientation";
   import { sessionPrs, getDefaultBranch, defaultBranchTail } from "$lib/stores/sessionPrs";
-  import { validationRuns } from "$lib/stores/validation";
+  import { validation, validationRuns } from "$lib/stores/validation";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
   import RateLimitBanner from "./sdk/RateLimitBanner.svelte";
   import { type QueueWindow } from "$lib/stores/queueDetection";
+  import { type SendTiming } from "$lib/utils/sendTiming";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import LaunchBar from "./sdk/LaunchBar.svelte";
   import { launchStore, getLaunchRuntime, queuedLaunch } from "$lib/stores/launchProfiles";
@@ -59,7 +61,6 @@
     cleanupTranscript,
     buildSingleRepoContext,
   } from "$lib/composables/useTranscriptionProcessor.svelte";
-  import { pile, sidebarTab } from "$lib/stores/pile";
   import { debugRecordings } from "$lib/stores/debugRecordings";
   import { activeSdkSessionId, previousActiveSessionId } from "$lib/stores/sdkSessions";
   import { focusedPaneSessionId } from "$lib/stores/panes";
@@ -141,18 +142,18 @@
   let isPendingRepo = $derived(status === "pending_repo");
   let isInitializing = $derived(status === "initializing");
   let isPendingTranscription = $derived(status === "pending_transcription");
-  let isPendingApproval = $derived(status === "pending_approval");
   // Note: isLoading is suppressed when the session is waiting for user input
   // (plan approval or AskUserQuestion) to avoid showing a spinner alongside the dialog.
   let isWaitingForUserInput = $derived(!!session?.pendingPlanApproval || !!(session?.askUserQuestion?.questions?.length));
   let isLoading = $derived((isQuerying || isInitializing) && !isWaitingForUserInput);
 
-  let showQuickActions = $derived(
+  // Idle with history: gates the outcome banner and the AI-generated contextual
+  // quick actions (custom/builtin quick actions show whenever the input does).
+  let isIdleWithHistory = $derived(
     status === "idle" &&
       messages.length > 0 &&
       !isPendingRepo &&
-      !isPendingTranscription &&
-      !isPendingApproval,
+      !isPendingTranscription,
   );
   let generatedQuickActions = $derived(session?.aiMetadata?.quickActions);
   let sessionOutcome = $derived(session?.aiMetadata?.outcome);
@@ -177,7 +178,6 @@
   let sessionEffortLevel = $derived(session?.effortLevel ?? null);
   let forkSourceLabel = $derived(session?.forkedFromSessionLabel ?? "");
   let isForkSession = $derived(!!session?.forkedFromSessionId);
-  let pendingApprovalPrompt = $derived(session?.pendingApprovalPrompt);
   let usage = $derived(session?.usage);
   let hasUsageData = $derived(
     !!usage &&
@@ -668,10 +668,6 @@
       return { status: "pending_repo" };
     }
 
-    if (status === "pending_approval") {
-      return { status: "pending_approval" };
-    }
-
     if (status === "initializing") {
       return { status: "initializing" };
     }
@@ -827,6 +823,59 @@
     setTimeout(() => {
       copiedMessageId = null;
     }, 2000);
+  }
+
+  /**
+   * Take (and clear) the current prompt draft so a voice send or quick-action send
+   * can combine with it. Reads the live input when mounted (flushes the debounce so
+   * no typing is lost), falling back to the store draft when it isn't.
+   */
+  function takeDraftForSend(): { text: string; images?: SdkImageContent[] } {
+    const d = promptInputRef?.getCurrentDraft();
+    const text = (d?.prompt ?? draftPrompt ?? "").trim();
+    const images = d?.images ?? draftImages ?? [];
+    if (promptInputRef) promptInputRef.clearInput();
+    else sdkSessions.updateDraft(sessionId, "", undefined);
+    return { text, images: images.length > 0 ? images : undefined };
+  }
+
+  /** Draft + action combined: the typed draft leads, the action text follows. */
+  function combineDraftWith(action: string): {
+    prompt: string;
+    images?: SdkImageContent[];
+  } {
+    const draft = takeDraftForSend();
+    return {
+      prompt: draft.text ? `${draft.text}\n\n${action}` : action,
+      images: draft.images,
+    };
+  }
+
+  // Quick actions: plain click appends to the draft; modifier clicks send the
+  // draft + action combined (Ctrl = now, Shift = after this session,
+  // Ctrl+Shift = after the repo/worktree scope).
+  function handleQuickAppend(action: string) {
+    promptInputRef?.appendToPrompt(action);
+  }
+
+  function handleQuickSendNow(action: string) {
+    const { prompt, images } = combineDraftWith(action);
+    void handleSendPrompt(prompt, images);
+  }
+
+  function handleQuickSendSessionIdle(action: string) {
+    const { prompt, images } = combineDraftWith(action);
+    void handleSendSessionIdle(prompt, images);
+  }
+
+  function handleQuickSendRepoIdle(action: string) {
+    const { prompt, images } = combineDraftWith(action);
+    void handleSendAfterIdle(prompt, images);
+  }
+
+  function handleQuickSend5hReset(action: string) {
+    const { prompt, images } = combineDraftWith(action);
+    void handleScheduleSend("5h", prompt, images);
   }
 
   // Prompt handling
@@ -993,20 +1042,13 @@
     if ($isRecording) return;
     isRecordingForCurrentSession = true;
 
-    // Set overlay mode to inline and show session info
-    overlay.setMode("inline");
-    overlay.setInlineSessionInfo({
-      repoName: repoName,
-      branch: branch,
-      model: session?.model ?? null,
-      promptPreview: firstPrompt() ?? null,
-    });
-    await overlay.show();
-
+    // No recording overlay for in-session recording — the session view itself
+    // already shows the recording state inline (mic button / prompt input).
     await recording.startRecording($settings.audio.device_id || undefined);
   }
 
-  async function handleStopRecording() {
+  /** `timing` comes from the hold-Space modifier combo (mic button = "now"). */
+  async function handleStopRecording(timing: SendTiming = "now") {
     if (!$isRecording) return;
 
     // Capture realtime transcript before stopping (for dual-source cleanup)
@@ -1022,8 +1064,6 @@
       // Transcription failed — keep the recording attached to THIS session (it was
       // meant for this conversation, not the pile) as a durable, retriable failed
       // recording rather than throwing and losing the audio.
-      overlay.clearInlineSessionInfo();
-      overlay.hide();
       isRecordingForCurrentSession = false;
       await salvageInSessionRecording(
         "send",
@@ -1033,10 +1073,6 @@
       );
       return;
     }
-
-    // Hide overlay and clear inline session info
-    overlay.clearInlineSessionInfo();
-    overlay.hide();
 
     debugRecordings.update(debugId, { destination: "session" });
 
@@ -1118,9 +1154,22 @@
         }
       }
 
-      // Clear the input box before sending so any typed draft doesn't linger
-      promptInputRef?.clearInput();
-      await sdkSessions.sendPrompt(sessionId, finalTranscript);
+      // Combine any typed draft with the voice transcript (draft first) and carry
+      // the draft's images along, instead of discarding them. The hold-Space
+      // modifier combo picks the send timing.
+      const draft = takeDraftForSend();
+      const combined = draft.text
+        ? `${draft.text}\n\n${finalTranscript}`
+        : finalTranscript;
+      if (timing === "session_idle") {
+        await sdkSessions.queueTurnAfterSessions(sessionId, combined, draft.images, "session");
+      } else if (timing === "repo_idle") {
+        await sdkSessions.queueTurnAfterSessions(sessionId, combined, draft.images, "worktree");
+      } else if (timing === "reset_5h") {
+        await sdkSessions.queueTurnForWindow(sessionId, combined, draft.images, "5h");
+      } else {
+        await sdkSessions.sendPrompt(sessionId, combined, draft.images);
+      }
       recording.clearTranscript();
     } finally {
       isProcessingRecording = false;
@@ -1321,8 +1370,11 @@
       // Transcription succeeded — dispatch the transcript, THEN clean up the durable
       // audio (only once it has been consumed, so a send failure stays retriable).
       if (fr.mode === "send") {
-        promptInputRef?.clearInput();
-        await sdkSessions.sendPrompt(sessionId, finalTranscript);
+        const draft = takeDraftForSend();
+        const combined = draft.text
+          ? `${draft.text}\n\n${finalTranscript}`
+          : finalTranscript;
+        await sdkSessions.sendPrompt(sessionId, combined, draft.images);
       } else {
         promptInputRef?.appendToPrompt(finalTranscript);
       }
@@ -1364,21 +1416,6 @@
     }
     // Remove the pending session
     sdkSessions.cancelPendingTranscription(sessionId);
-  }
-
-  // Handlers for pending approval sessions
-  function handleApprove(editedPrompt?: string) {
-    // Dispatch event to parent to complete the approval
-    // The parent (+page.svelte) will handle building system prompt and calling approveAndSend
-    window.dispatchEvent(
-      new CustomEvent("approve-transcription", {
-        detail: { sessionId, editedPrompt },
-      }),
-    );
-  }
-
-  function handleCancelApproval() {
-    sdkSessions.cancelApproval(sessionId);
   }
 
   // --- Smart Queue: scheduling + queued state ---
@@ -1459,57 +1496,17 @@
     await sdkSessions.queueTurnForWindow(sessionId, prompt, images, window);
   }
 
-  // Ctrl+click Send / "Send when repo is idle": park the turn until every session
+  // Ctrl+Shift Send / "Send when repo is idle": park the turn until every session
   // in this repo+worktree (including this one) has finished; sends immediately if
   // the scope is already idle.
   async function handleSendAfterIdle(prompt: string, images?: SdkImageContent[]) {
-    await sdkSessions.queueTurnAfterSessions(sessionId, prompt, images);
+    await sdkSessions.queueTurnAfterSessions(sessionId, prompt, images, "worktree");
   }
 
-  /**
-   * Demote a pending-approval prompt into the pile.
-   * Carries over the session's processing results (cleanup, repo/model recs,
-   * audio, waveform) so no LLM work is redone, then closes the session.
-   */
-  function handleDemoteToPile(prompt: string) {
-    if (!session || !prompt.trim()) return;
-
-    const pending = session.pendingTranscription;
-    const repoPath = cwd;
-    const repoFromRec =
-      pending?.repoRecommendation != null
-        ? $repos.list[pending.repoRecommendation.repoIndex]
-        : undefined;
-    const repoFromPath = repoPath && repoPath !== '.'
-      ? $repos.list.find((r) => r.path === repoPath)
-      : undefined;
-    const repo = repoFromPath ?? repoFromRec;
-
-    pile.addRecording({
-      transcript: prompt.trim(),
-      process: false,
-      rawTranscript: pending?.transcript,
-      realtimeTranscript: pending?.realtimeTranscript,
-      wasCleanedUp: pending?.wasCleanedUp,
-      cleanupCorrections: pending?.cleanupCorrections,
-      usedDualSource: pending?.usedDualSource,
-      audioData: pending?.audioData,
-      recordingDurationMs:
-        pending?.recordingDurationMs ??
-        (pending?.recordingStartedAt ? Date.now() - pending.recordingStartedAt : undefined),
-      audioVisualizationHistory: pending?.audioVisualizationHistory,
-      // Pile items store a single screenshot; recordings only ever capture one
-      screenshot: pending?.screenshots?.[0],
-      repoId: repo?.id,
-      repoConfidence: pending?.repoRecommendation?.confidence,
-      repoReasoning: pending?.repoRecommendation?.reasoning,
-      model: session.model,
-      effortLevel: session.effortLevel,
-    });
-
-    sdkSessions.closeSession(sessionId);
-    activeSdkSessionId.set(null);
-    sidebarTab.set('pile');
+  // Shift Send / "Send when this session is idle": park the turn until this
+  // session's own running query finishes (ignoring sibling sessions in the scope).
+  async function handleSendSessionIdle(prompt: string, images?: SdkImageContent[]) {
+    await sdkSessions.queueTurnAfterSessions(sessionId, prompt, images, "session");
   }
 
   // Model and effort change handlers
@@ -1559,6 +1556,34 @@
     [...$validationRuns.values()].find((r) => r.sessionId === sessionId),
   );
 
+  // --- Session dock (PR + validation panels in a resizable pane) -------------
+  let dockPrOpen = $derived(!!(session && prEntry?.panelOpen));
+  let dockValidationOpen = $derived(!!validationRun?.panelOpen);
+  let dockOpen = $derived(!!session && (dockPrOpen || dockValidationOpen));
+  // Global bottom/right preference; paneforge's direction is reactive, and the
+  // shared autoSaveId keeps one split ratio across both orientations.
+  let dockRight = $derived($dockOrientation === "right");
+
+  // Compact status line for the collapsed validation strip.
+  let validationStripStatus = $derived.by(() => {
+    const r = validationRun;
+    if (!r) return "";
+    switch (r.status) {
+      case "running":
+        return r.pendingFix ? "Agent is fixing…" : "Running…";
+      case "gate":
+        return "Waiting for your decision";
+      case "passed":
+        return "Passed";
+      case "failed":
+        return "Failed";
+      case "cancelled":
+        return "Cancelled";
+      default:
+        return "";
+    }
+  });
+
   // Plan approval handlers
   function handleApprovePlan(feedback?: string) {
     sdkSessions.approvePlan(sessionId, feedback);
@@ -1598,6 +1623,12 @@
     />
   {/if}
 
+  <PaneGroup
+    direction={dockRight ? "horizontal" : "vertical"}
+    autoSaveId="sdk-session-dock"
+    class="content-pane-group"
+  >
+    <Pane defaultSize={65} minSize={25} order={0} class="content-pane">
   <div class="messages-wrapper">
     <div
       class="messages"
@@ -1614,21 +1645,6 @@
           {sessionId}
           onRetry={handleRetryTranscription}
           onCancel={handleCancelPendingTranscription}
-          autoModelEffort={$settings.llm?.features?.auto_model_effort}
-        />
-      {/if}
-
-      <!-- Approval UI for pending_approval sessions -->
-      {#if isPendingApproval && pendingTranscription && pendingApprovalPrompt}
-        <SessionRecordingHeader
-          {pendingTranscription}
-          {sessionId}
-          showApproval={true}
-          approvalPrompt={pendingApprovalPrompt}
-          {repoName}
-          onApprove={handleApprove}
-          onCancelApproval={handleCancelApproval}
-          onDemoteToPile={handleDemoteToPile}
           autoModelEffort={$settings.llm?.features?.auto_model_effort}
         />
       {/if}
@@ -1672,7 +1688,7 @@
       {/if}
 
       <!-- Completed recording context shown at the top of active sessions -->
-      {#if hasCompletedRecordingData && pendingTranscription && !isPendingApproval}
+      {#if hasCompletedRecordingData && pendingTranscription}
         <SessionRecordingHeader
           {pendingTranscription}
           {sessionId}
@@ -1818,23 +1834,13 @@
         </div>
       {/if}
 
-      {#if showQuickActions && sessionOutcome}
+      {#if isIdleWithHistory && sessionOutcome}
         <div class="session-outcome">
           {#if sessionCategory}
             <span class="outcome-category">{sessionCategory}</span>
           {/if}
           <span class="outcome-text">{sessionOutcome}</span>
         </div>
-      {/if}
-
-      {#if showQuickActions}
-        <SdkQuickActions
-          onSendPrompt={(prompt) => handleSendPrompt(prompt)}
-          onSendAfterIdle={(prompt) => handleSendAfterIdle(prompt)}
-          generatedActions={generatedQuickActions}
-          builtinActions={builtinQuickActions}
-          hasOutcomeAbove={!!sessionOutcome}
-        />
       {/if}
 
       {#if hasAskUserQuestions && askUserQuestion}
@@ -1876,14 +1882,40 @@
       </button>
     {/if}
   </div>
+    </Pane>
 
-  {#if session && prEntry?.panelOpen}
-    <PrPanel {session} entry={prEntry} repo={sessionRepo ?? undefined} />
-  {/if}
+    {#if dockOpen && session}
+      <PaneResizer class="dock-resizer {dockRight ? 'right' : 'bottom'}" />
+      <Pane defaultSize={35} minSize={12} maxSize={75} order={1} class="dock-pane">
+        <SessionDock
+          {session}
+          prEntry={dockPrOpen ? prEntry : undefined}
+          validationRun={dockValidationOpen ? validationRun : undefined}
+          repo={sessionRepo ?? undefined}
+        />
+      </Pane>
+    {/if}
+  </PaneGroup>
 
-
-  {#if validationRun}
-    <ValidationPanel run={validationRun} />
+  <!-- Collapsed validation strip: the run is alive but its panel is hidden -->
+  {#if validationRun && !validationRun.panelOpen}
+    {@const stripRun = validationRun}
+    <button
+      class="validation-strip"
+      data-status={stripRun.status}
+      onclick={() => validation.openPanel(stripRun.id)}
+      title="Show the validation panel"
+    >
+      <span
+        class="strip-dot"
+        class:pulsing={stripRun.status === "running" || stripRun.status === "gate"}
+      ></span>
+      <span class="strip-label">Validation</span>
+      <span class="strip-status">{validationStripStatus}</span>
+      <svg class="strip-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m18 15-6-6-6 6" />
+      </svg>
+    </button>
   {/if}
 
   {#if hasLaunchProfiles && sessionRepoId}
@@ -1964,6 +1996,7 @@
       showScheduleSend={canScheduleSend}
       onSendPrompt={handleSendPrompt}
       onScheduleSend={handleScheduleSend}
+      onSendSessionIdle={handleSendSessionIdle}
       onSendAfterIdle={handleSendAfterIdle}
       onStopQuery={handleStopQuery}
       onStartRecording={handleStartRecording}
@@ -1972,7 +2005,20 @@
       onStopInlineRecording={handleStopInlineRecording}
       onInlineTranscribe={transcribeInlineToText}
       onDraftChange={handleDraftChange}
-    />
+    >
+      {#snippet bottomRow()}
+        <SdkQuickActions
+          onAppend={handleQuickAppend}
+          onSendNow={handleQuickSendNow}
+          onSendSessionIdle={handleQuickSendSessionIdle}
+          onSendRepoIdle={handleQuickSendRepoIdle}
+          onSend5hReset={handleQuickSend5hReset}
+          generatedActions={generatedQuickActions}
+          builtinActions={builtinQuickActions}
+          showContextual={isIdleWithHistory}
+        />
+      {/snippet}
+    </SdkPromptInput>
   {/if}
 </div>
 
@@ -1987,11 +2033,146 @@
       monospace;
   }
 
+  /* Vertical split between the transcript and the session dock (PR/validation).
+     PaneForge renders its own elements, hence the :global selectors. */
+  :global(.sdk-view .content-pane-group) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  :global(.sdk-view .content-pane),
+  :global(.sdk-view .dock-pane) {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  /* Dock drag handle, matching the session-pane resizer styling. Orientation
+     class mirrors the dock preference: bottom = horizontal bar, right = vertical. */
+  :global(.sdk-view .dock-resizer) {
+    position: relative;
+    background: var(--color-border);
+    outline: none;
+    flex-shrink: 0;
+  }
+
+  :global(.sdk-view .dock-resizer.bottom) {
+    height: 1px;
+    cursor: row-resize;
+  }
+
+  :global(.sdk-view .dock-resizer.right) {
+    width: 1px;
+    cursor: col-resize;
+  }
+
+  :global(.sdk-view .dock-resizer::after) {
+    content: "";
+    position: absolute;
+    z-index: 1;
+  }
+
+  :global(.sdk-view .dock-resizer.bottom::after) {
+    left: 0;
+    right: 0;
+    top: -3px;
+    bottom: -3px;
+  }
+
+  :global(.sdk-view .dock-resizer.right::after) {
+    top: 0;
+    bottom: 0;
+    left: -3px;
+    right: -3px;
+  }
+
+  :global(.sdk-view .dock-resizer:hover),
+  :global(.sdk-view .dock-resizer[data-active="pointer"]),
+  :global(.sdk-view .dock-resizer[data-active="keyboard"]) {
+    background: var(--color-accent);
+  }
+
   .messages-wrapper {
     position: relative;
     flex: 1;
     overflow: hidden;
     min-height: 0;
+  }
+
+  /* Collapsed validation strip (run alive, panel hidden) */
+  .validation-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.4rem 0.75rem 0.1rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface);
+    font-size: 0.74rem;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .validation-strip:hover {
+    border-color: var(--color-accent);
+  }
+
+  .strip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    flex-shrink: 0;
+  }
+
+  .validation-strip[data-status="passed"] .strip-dot {
+    background: var(--color-success, #22c55e);
+  }
+
+  .validation-strip[data-status="failed"] .strip-dot {
+    background: var(--color-error, #ef4444);
+  }
+
+  .validation-strip[data-status="cancelled"] .strip-dot {
+    background: var(--color-text-muted);
+  }
+
+  .strip-dot.pulsing {
+    animation: strip-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes strip-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+
+  .strip-label {
+    font-weight: 600;
+    color: var(--color-text-primary);
+  }
+
+  .strip-status {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .strip-chevron {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: var(--color-text-muted);
   }
 
   .messages {

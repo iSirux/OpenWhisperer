@@ -373,6 +373,10 @@ export type QueueReason = 'rate_limit' | 'scheduled' | 'after_sessions';
 /** Which usage window a queued/rate-limited session is waiting on. */
 export type QueueWindow = '5h' | '7d';
 
+/** What an 'after_sessions' parked turn waits on: just its own session, or every
+ *  session in the same repo+worktree (same cwd). */
+export type AfterSessionsScope = 'session' | 'worktree';
+
 /**
  * Attached to a `status: 'queued'` session (a never-launched session parked
  * until its provider's usage window resets or a scheduled window boundary).
@@ -399,6 +403,8 @@ export interface RateLimitedState {
   resetsAt?: number;
   /** For a user-scheduled turn: snapshot of the target window's reset time (epoch ms). */
   targetStartAt?: number;
+  /** For 'after_sessions': what to wait on. Absent = 'worktree' (pre-existing persisted turns). */
+  scope?: AfterSessionsScope;
   prompt: string;
   images?: SdkImageContent[];
   queuedAt: number;
@@ -486,7 +492,7 @@ export interface SdkSession {
   /** @deprecated Use effortLevel */
   thinkingLevel?: EffortLevel;
   messages: SdkMessage[];
-  status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'prepared' | 'queued' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
+  status: 'setup' | 'pending_transcription' | 'pending_repo' | 'prepared' | 'queued' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
   lastActivityAt: number;
   startedAt?: number;
@@ -501,7 +507,6 @@ export interface SdkSession {
   aiMetadata?: SessionAiMetadata;
   pendingRepoSelection?: PendingRepoSelection;
   pendingPrompt?: string;
-  pendingApprovalPrompt?: string;
   pendingTranscription?: PendingTranscriptionInfo;
   /** A follow-up recording for this live session whose transcription failed; retriable in place. */
   failedRecording?: FailedRecording;
@@ -3063,21 +3068,6 @@ function createSdkSessionsStore() {
       panes.clearSession(id);
     },
 
-    setPendingApproval(id: string, prompt: string, cwd?: string): void {
-      update(sessions =>
-        sessions.map(s => s.id === id ? { ...s, status: 'pending_approval' as const, pendingApprovalPrompt: prompt, cwd: cwd || s.cwd, repoId: cwd ? resolveRepoId(cwd) : s.repoId } : s)
-      );
-      const nextCwd = cwd;
-      if (nextCwd) {
-        void syncSessionBranchMetadata(id, nextCwd);
-      }
-    },
-
-    cancelApproval(id: string): void {
-      update(sessions => sessions.filter(s => s.id !== id));
-      panes.clearSession(id);
-    },
-
     async launchPrepared(id: string, editedPrompt?: string): Promise<void> {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
@@ -3145,33 +3135,6 @@ function createSdkSessionsStore() {
       );
       if (config.cwd) void syncSessionBranchMetadata(id, config.cwd);
       debouncedSave();
-    },
-
-    async approveAndSend(id: string, editedPrompt?: string, systemPrompt?: string): Promise<void> {
-      let session: SdkSession | undefined;
-      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
-
-      if (!session || session.status !== 'pending_approval') return;
-
-      const prompt = editedPrompt || session.pendingApprovalPrompt;
-      if (!prompt) throw new Error('No prompt to send');
-
-      update(sessions =>
-        sessions.map(s => s.id === id ? { ...s, status: 'initializing' as const, pendingPrompt: prompt, pendingApprovalPrompt: undefined } : s)
-      );
-
-      try {
-        await this.initializeSession(id, session.cwd, session.model, session.effortLevel, systemPrompt, prompt, session.provider);
-      } catch (error) {
-        update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? { ...s, status: 'error' as const, messages: [...s.messages, { type: 'error' as const, content: error instanceof Error ? error.message : 'Failed to initialize session', timestamp: Date.now() }] }
-              : s
-          )
-        );
-        throw error;
-      }
     },
 
     createPendingRepoSession(model: string, effortLevel: EffortLevel, pendingRepoSelection: PendingRepoSelection, provider?: SdkProvider): string {
@@ -3356,21 +3319,22 @@ function createSdkSessionsStore() {
     },
 
     /**
-     * Smart Queue ("Send when repo is idle"): from a live session, park a follow-up turn until
-     * every session in the same repo+worktree (same cwd) — including this one — has finished
-     * working. If the scope is already idle, this is just a normal send. Unlike
+     * Smart Queue ("Send when repo is idle" / "Send when this session is idle"): from a live
+     * session, park a follow-up turn until the waited-on scope goes idle — for 'worktree' that's
+     * every session in the same repo+worktree (same cwd) including this one; for 'session' just
+     * this session's own running query. If already idle, this is just a normal send. Unlike
      * queueTurnForWindow, the session's own status is left untouched: a still-running query on
      * this session keeps the scope busy, so the parked turn fires right after it completes
      * instead of interrupting it.
      */
-    async queueTurnAfterSessions(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
+    async queueTurnAfterSessions(id: string, prompt: string, images?: SdkImageContent[], scope: AfterSessionsScope = 'worktree'): Promise<void> {
       const sessions = get({ subscribe });
       const session = sessions.find(s => s.id === id);
       if (!session) return;
 
       // Nothing to wait for (own session included) — send immediately.
       if (
-        !hasBusySessionsInScope(sessions, session.cwd, id) &&
+        (scope === 'session' || !hasBusySessionsInScope(sessions, session.cwd, id)) &&
         session.status !== 'querying' &&
         session.status !== 'initializing'
       ) {
@@ -3392,6 +3356,7 @@ function createSdkSessionsStore() {
                 rateLimited: {
                   reason: 'after_sessions' as const,
                   provider,
+                  scope,
                   prompt,
                   images,
                   queuedAt: now,

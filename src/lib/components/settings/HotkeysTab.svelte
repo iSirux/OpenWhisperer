@@ -3,8 +3,8 @@
   import HotkeyInput from "$lib/components/HotkeyInput.svelte";
 
   const recordAndSendActionText = $derived(
-    $settings.audio.record_and_send_action === "prepare"
-      ? "transcribes and prepares a draft session"
+    $settings.audio.record_and_send_action === "draft"
+      ? "transcribes and creates a draft session"
       : $settings.audio.record_and_send_action === "pile"
         ? "transcribes and saves to the pile for later"
         : "transcribes and sends the prompt"
@@ -47,7 +47,7 @@
       bind:value={$settings.audio.record_and_send_action}
     >
       <option value="send">Send immediately</option>
-      <option value="prepare">Prepare draft session</option>
+      <option value="draft">Create draft session</option>
       <option value="pile">Save to pile for later</option>
     </select>
     <p class="text-xs text-text-muted mt-1">

@@ -2,17 +2,33 @@
   import { onMount, onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { openMic, isOpenMicListening, isOpenMicPaused, isOpenMicActive } from "$lib/stores/openMic";
+  import { isRecording, realtimeTranscript } from "$lib/stores/recording";
 
   let transcript = $state("");
   let isListening = $derived($isOpenMicListening);
   let isPaused = $derived($isOpenMicPaused);
-  let isActive = $derived($isOpenMicActive);
+  let isOpenMicVisible = $derived($isOpenMicActive);
+  // While recording, open mic is stopped — but we keep the marquee (the header's
+  // waveform) visible and drive it from the recording's own audio visualization
+  // and live transcript, so recordings always get a header waveform (even the
+  // in-session ones that no longer show the overlay).
+  let recording = $derived($isRecording);
+  // Show the marquee whenever open mic is active OR a recording is in progress.
+  let isActive = $derived(isOpenMicVisible || recording);
+  // Animate the waveform when listening to open mic OR while recording.
+  let showWaveform = $derived(isListening || recording);
+  // Text shown in the marquee: the live recording transcript while recording,
+  // otherwise the open-mic transcript.
+  let displayText = $derived(recording ? $realtimeTranscript : transcript);
 
   function handleClick() {
+    // Click only toggles open-mic pause; it's a no-op while recording.
+    if (recording) return;
     openMic.togglePause();
   }
   let unlistenTranscript: UnlistenFn | null = null;
   let unlistenVisualization: UnlistenFn | null = null;
+  let unlistenRecordingViz: UnlistenFn | null = null;
 
   // Timer to reset transcript after inactivity
   let resetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -96,7 +112,8 @@
       const x = i * barTotalWidth;
       const y = (displayHeight - barHeight) / 2;
 
-      ctx.fillStyle = isAboveThreshold ? waveColorActive : waveColorInactive;
+      // While recording, the mic is inherently "hot" — use the active (red) color.
+      ctx.fillStyle = isAboveThreshold || recording ? waveColorActive : waveColorInactive;
       ctx.globalAlpha = 0.5; // Semi-transparent to be behind text
       ctx.beginPath();
       ctx.roundRect(x, y, barWidth, barHeight, barWidth / 2);
@@ -121,6 +138,10 @@
   }
 
   async function startWaveform() {
+    // Guard against re-entry: the effect can re-run while already animating
+    // (e.g. open-mic listening → recording transition) without stopping first.
+    if (unlistenVisualization || unlistenRecordingViz) return;
+
     if (container) {
       resizeObserver = new ResizeObserver(() => {
         updateCanvasSize();
@@ -132,6 +153,15 @@
     // Listen for visualization data from open mic store
     unlistenVisualization = await listen<{ data: number[] }>(
       "open-mic-visualization",
+      (event) => {
+        audioData = event.payload?.data ?? null;
+      }
+    );
+
+    // Listen for the recording store's visualization data (fed while recording,
+    // when open mic is stopped) so the header waveform tracks the recording.
+    unlistenRecordingViz = await listen<{ data: number[] | null }>(
+      "audio-visualization",
       (event) => {
         audioData = event.payload?.data ?? null;
       }
@@ -159,6 +189,10 @@
     if (unlistenVisualization) {
       unlistenVisualization();
       unlistenVisualization = null;
+    }
+    if (unlistenRecordingViz) {
+      unlistenRecordingViz();
+      unlistenRecordingViz = null;
     }
     if (unlistenAudioLevel) {
       unlistenAudioLevel();
@@ -204,9 +238,9 @@
     }
   });
 
-  // Start/stop waveform based on listening state
+  // Start/stop waveform based on listening/recording state
   $effect(() => {
-    if (isListening && canvas && container) {
+    if (showWaveform && canvas && container) {
       startWaveform();
     } else {
       stopWaveform();
@@ -220,12 +254,17 @@
   <div
     class="open-mic-marquee"
     class:paused={isPaused}
+    class:recording={recording}
     bind:this={container}
     onclick={handleClick}
-    title={isPaused ? "Click to resume listening" : "Click to pause listening"}
+    title={recording
+      ? "Recording…"
+      : isPaused
+        ? "Click to resume listening"
+        : "Click to pause listening"}
   >
-    <!-- Waveform canvas behind text (only when listening) -->
-    {#if isListening}
+    <!-- Waveform canvas behind text (when listening to open mic or recording) -->
+    {#if showWaveform}
       <canvas bind:this={canvas} class="waveform-canvas"></canvas>
     {/if}
     <!-- Text overlay -->
@@ -239,7 +278,7 @@
         </span>
       {:else}
         <span class="transcript-text">
-          {transcript || ""}
+          {displayText || ""}
         </span>
       {/if}
     </div>
@@ -264,6 +303,11 @@
   .open-mic-marquee:hover {
     border-color: var(--color-border-hover, var(--color-border));
     opacity: 0.9;
+  }
+
+  .open-mic-marquee.recording {
+    border-color: var(--color-recording, #ef4444);
+    cursor: default;
   }
 
   .open-mic-marquee.paused {
