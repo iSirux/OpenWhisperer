@@ -28,6 +28,7 @@
     sdkSessions,
     activeSdkSessionId,
     activeSdkSession,
+    previousActiveSessionId,
     type EffortLevel,
     type SdkImageContent,
   } from '$lib/stores/sdkSessions';
@@ -241,14 +242,18 @@
   async function handlePendingSessionCancel() {
     if (!$activeSdkSessionId) return;
     console.log('[session] User cancelled pending session');
+    const prev = previousActiveSessionId($activeSdkSessionId);
     await sdkSessions.closeSession($activeSdkSessionId);
-    activeSdkSessionId.set(null);
+    activeSdkSessionId.set(prev);
   }
 
   function handleSessionClose() {
     if ($activeSdkSessionId) {
+      // Fall back to the session viewed just before this one (MRU), not an
+      // empty view. Compute before closing while the history entry still exists.
+      const prev = previousActiveSessionId($activeSdkSessionId);
       sdkSessions.closeSession($activeSdkSessionId);
-      activeSdkSessionId.set(null);
+      activeSdkSessionId.set(prev);
     }
   }
 
@@ -257,8 +262,9 @@
   }
 
   function handleSetupSessionCancel(sessionId: string) {
+    const prev = previousActiveSessionId(sessionId);
     sdkSessions.cancelSetupSession(sessionId);
-    activeSdkSessionId.set(null);
+    activeSdkSessionId.set(prev);
   }
 
   /**

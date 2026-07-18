@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId, previousActiveSessionId } from '$lib/stores/sdkSessions';
   import { settings, type SessionsViewLayout, type SessionsGridSize } from '$lib/stores/settings';
   import { navigation } from '$lib/stores/navigation';
   import type { DisplaySession } from '$lib/types/session';
@@ -61,8 +61,10 @@
 
   function closeSession(session: DisplaySession, event: MouseEvent) {
     event.stopPropagation();
+    const wasActive = $activeSdkSessionId === session.id;
+    const prev = wasActive ? previousActiveSessionId(session.id) : null;
     sdkSessions.closeSession(session.id);
-    if ($activeSdkSessionId === session.id) activeSdkSessionId.set(null);
+    if (wasActive && $activeSdkSessionId === session.id) activeSdkSessionId.set(prev);
   }
 
   function isSessionActive(session: DisplaySession): boolean {

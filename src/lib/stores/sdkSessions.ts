@@ -3648,6 +3648,31 @@ export const activeSdkSession = derived(
   }
 );
 
+// Most-recently-active-first stack of session ids the user has viewed. Lets a
+// close fall back to the session viewed before the one being closed (MRU),
+// rather than dropping the user on an empty view or the next list item.
+const activationHistory: string[] = [];
+activeSdkSessionId.subscribe(id => {
+  if (!id) return;
+  const existing = activationHistory.indexOf(id);
+  if (existing !== -1) activationHistory.splice(existing, 1);
+  activationHistory.unshift(id);
+});
+
+/**
+ * The session to activate after closing `closedId`: the most recently active
+ * session that still exists and isn't the one being closed. Returns null when
+ * there's no prior session to fall back to. Call this *before* closing the
+ * session, while it (and its history entry) still exist.
+ */
+export function previousActiveSessionId(closedId: string): string | null {
+  const live = new Set(get(sdkSessions).map(s => s.id));
+  for (const id of activationHistory) {
+    if (id !== closedId && live.has(id)) return id;
+  }
+  return null;
+}
+
 export const appSessionUsage = derived(
   sdkSessions,
   ($sdkSessions) => {

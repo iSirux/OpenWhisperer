@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId, previousActiveSessionId } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import type { DisplaySession } from '$lib/types/session';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
@@ -271,6 +271,7 @@
 
   // Pick the session to activate after closing the one at `sessionId`:
   // prefer the next one down the (filtered) list, falling back to the previous.
+  // Used for sequence executions; SDK sessions use MRU history instead.
   function findNextSession(sessionId: string): DisplaySession | null {
     const idx = visibleSessions.findIndex((s) => s.id === sessionId);
     if (idx === -1) return null;
@@ -284,25 +285,26 @@
   }
 
   function performClose(sessionId: string, sessionType: 'sdk' | 'sequence') {
-    // Was the closing session the one currently open? If so, we advance to the
-    // next session in line rather than dropping the user on an empty view.
+    // Was the closing session the one currently open? If so, we fall back to
+    // another session rather than dropping the user on an empty view.
     const wasActive =
       sessionType === 'sdk'
         ? $activeSdkSessionId === sessionId
         : $activeExecutionId === sessionId;
-    const nextSession = wasActive ? findNextSession(sessionId) : null;
 
     if (sessionType === 'sdk') {
+      // Return to the session viewed just before this one (MRU). Compute before
+      // closing while the history entry still exists.
+      const prev = wasActive ? previousActiveSessionId(sessionId) : null;
       sdkSessions.closeSession(sessionId);
+      if (wasActive && $activeSdkSessionId === sessionId) {
+        activeSdkSessionId.set(prev);
+      }
     } else {
+      const nextSession = wasActive ? findNextSession(sessionId) : null;
       closeExecution(sessionId);
-    }
-
-    if (wasActive) {
-      if (nextSession) {
+      if (wasActive && nextSession) {
         selectDisplaySession(nextSession);
-      } else if (sessionType === 'sdk' && $activeSdkSessionId === sessionId) {
-        activeSdkSessionId.set(null);
       }
     }
   }

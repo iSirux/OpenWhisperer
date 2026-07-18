@@ -43,6 +43,7 @@
   import { ctrlHintKeydown, ctrlHintKeyup, ctrlHintReset } from '$lib/stores/ctrlHint';
   import { popRecentlyClosed, recentlyClosedSessions } from '$lib/stores/recentlyClosed';
   import { archive } from '$lib/stores/archive';
+  import { sessionNavHistory } from '$lib/stores/sessionNavHistory';
 
   // Composables (now layout-level — survive route changes)
   import { useHotkeyManager } from '$lib/composables/useHotkeyManager.svelte';
@@ -329,7 +330,32 @@
     ) {
       event.preventDefault();
       void createSessionInSameRepo();
+      return;
     }
+
+    // Alt+Left / Alt+Right — browser-style back/forward through viewed sessions,
+    // the keyboard equivalent of the mouse back/forward buttons below.
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      if (event.code === 'ArrowLeft') {
+        if (sessionNavHistory.goBack()) event.preventDefault();
+        return;
+      }
+      if (event.code === 'ArrowRight') {
+        if (sessionNavHistory.goForward()) event.preventDefault();
+        return;
+      }
+    }
+  }
+
+  // Mouse back (button 3) / forward (button 4) → browser-style session history.
+  // Handle on mousedown so the WebView never acts on its own history, and mirror
+  // the preventDefault onto mouseup/auxclick to fully suppress native navigation.
+  function handleNavMouseButton(event: MouseEvent): void {
+    if (event.button !== 3 && event.button !== 4) return;
+    event.preventDefault();
+    if (event.type !== 'mousedown') return;
+    if (event.button === 3) sessionNavHistory.goBack();
+    else sessionNavHistory.goForward();
   }
 
   onMount(async () => {
@@ -469,7 +495,14 @@
   });
 </script>
 
-<svelte:window onkeydown={handleAppKeydown} onkeyup={ctrlHintKeyup} onblur={ctrlHintReset} />
+<svelte:window
+  onkeydown={handleAppKeydown}
+  onkeyup={ctrlHintKeyup}
+  onblur={ctrlHintReset}
+  onmousedown={handleNavMouseButton}
+  onmouseup={handleNavMouseButton}
+  onauxclick={handleNavMouseButton}
+/>
 
 <div class="app-container h-screen flex flex-col bg-background">
 

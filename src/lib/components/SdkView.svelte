@@ -61,7 +61,7 @@
   } from "$lib/composables/useTranscriptionProcessor.svelte";
   import { pile, sidebarTab } from "$lib/stores/pile";
   import { debugRecordings } from "$lib/stores/debugRecordings";
-  import { activeSdkSessionId } from "$lib/stores/sdkSessions";
+  import { activeSdkSessionId, previousActiveSessionId } from "$lib/stores/sdkSessions";
   import { focusedPaneSessionId } from "$lib/stores/panes";
   import { get } from "svelte/store";
 
@@ -1446,8 +1446,9 @@
 
   // Take the session out of the queue entirely (close/discard).
   function handleRemoveQueued() {
+    const prev = previousActiveSessionId(sessionId);
     sdkSessions.closeSession(sessionId);
-    activeSdkSessionId.set(null);
+    activeSdkSessionId.set(prev);
   }
 
   async function handleScheduleSend(
