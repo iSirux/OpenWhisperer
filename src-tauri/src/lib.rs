@@ -439,6 +439,7 @@ pub fn run() {
             sdk_cmds::create_sdk_session,
             sdk_cmds::send_sdk_prompt,
             sdk_cmds::stop_sdk_query,
+            sdk_cmds::compact_sdk_session,
             sdk_cmds::update_sdk_model,
             sdk_cmds::update_sdk_effort,
             sdk_cmds::close_sdk_session,

@@ -133,6 +133,37 @@
     e.dataTransfer.effectAllowed = "move";
   }
 
+  // Schedule/queue row descriptor for a `status: 'queued'` session. Covers every
+  // way a never-launched session can be parked: waiting on a rate-limit reset, a
+  // user-scheduled window boundary, or the repo/worktree going idle (after_sessions,
+  // which for a queued session is always worktree scope — no session exists yet).
+  const scheduleInfo = $derived.by(() => {
+    if (session.status !== "queued") return null;
+    const qi = session.queueInfo;
+    const window = qi?.window === "7d" ? "7d" : "5h";
+    const countdown = formatMsRemaining(qi?.targetStartAt, now * 1000);
+    switch (qi?.reason) {
+      case "scheduled":
+        return {
+          label: "Scheduled",
+          detail: countdown ? `next ${window} reset · in ${countdown}` : `next ${window} reset`,
+          title: `Scheduled launch for the next ${window} reset`,
+        };
+      case "after_sessions":
+        return {
+          label: "Queued",
+          detail: "waiting for the repository to be idle",
+          title: "Queued - waiting for the repository/worktree to finish its running sessions",
+        };
+      default:
+        return {
+          label: "Queued",
+          detail: countdown ? `rate limited · resets in ${countdown}` : "rate limited",
+          title: "Queued - waiting for the rate limit to reset",
+        };
+    }
+  });
+
   // Compact validation-run status badge from the mirrored session summary.
   const validationBadge = $derived.by(() => {
     if (session.type !== "sdk" || !session.validation) return null;
@@ -462,17 +493,10 @@
     </div>
   {/if}
 
-  <!-- Schedule / queue row (Smart Queue: parked until reset / scheduled window) -->
-  {#if session.status === "queued"}
-    {@const qi = session.queueInfo}
-    {@const qWindow = qi?.window === "7d" ? "7d" : "5h"}
-    {@const qCountdown = formatMsRemaining(qi?.targetStartAt, now * 1000)}
-    <div
-      class="schedule-row"
-      title={qi?.reason === "scheduled"
-        ? `Scheduled launch for the next ${qWindow} reset`
-        : "Queued - waiting for the rate limit to reset"}
-    >
+  <!-- Schedule / queue row (Smart Queue: parked until reset / scheduled window /
+       repository idle) -->
+  {#if scheduleInfo}
+    <div class="schedule-row" title={scheduleInfo.title}>
       <svg
         class="w-3 h-3 shrink-0"
         fill="none"
@@ -487,11 +511,9 @@
         />
       </svg>
       <span class="truncate">
-        {qi?.reason === "scheduled" ? "Scheduled" : "Queued"}
-        {#if qCountdown}
-          · {qi?.reason === "scheduled"
-            ? `next ${qWindow} reset · in ${qCountdown}`
-            : `rate limited · resets in ${qCountdown}`}
+        {scheduleInfo.label}
+        {#if scheduleInfo.detail}
+          · {scheduleInfo.detail}
         {/if}
       </span>
     </div>

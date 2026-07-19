@@ -17,6 +17,10 @@
   import type { SdkSession, EffortLevel } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import EffortToggle from '$lib/components/EffortToggle.svelte';
+  import SendTimingIcon from '$lib/components/sdk/SendTimingIcon.svelte';
+  import { modifierCombo } from '$lib/stores/ctrlHint';
+  import { sendTimingFromEvent, type SendTiming } from '$lib/utils/sendTiming';
+  import type { SdkProvider } from '$lib/utils/models';
 
   let {
     session,
@@ -127,7 +131,13 @@
     return resolveReviewerModel('session');
   }
 
-  async function start() {
+  /**
+   * Start the run with the same send-timing modifiers as Send / record / compact:
+   * plain/Ctrl = now, Shift = when this session is idle, Ctrl+Shift = when the
+   * repo/worktree is idle, Ctrl+Shift+Alt = on the next 5h reset. Deferred timings
+   * park the run on the Smart Queue with the model/intent snapshotted now.
+   */
+  async function start(timing: SendTiming = 'now') {
     if (!canStart) return;
     starting = true;
     error = null;
@@ -149,7 +159,17 @@
     try {
       saveRunOptions(repoId, persisted);
       const intent = buildValidationIntent(session);
-      await validation.startRun(session.id, cwd, repoId, intent, runOptions);
+      const provider = (session.provider ?? 'claude') as SdkProvider;
+      await validation.scheduleRun(
+        session.id,
+        cwd,
+        repoId,
+        intent,
+        runOptions,
+        timing,
+        provider,
+        session.accountId,
+      );
       onClose();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -236,8 +256,20 @@
 
   <div class="vsp-actions">
     <button class="vsp-btn" onclick={onClose} disabled={starting}>Cancel</button>
-    <button class="vsp-btn vsp-btn-primary" onclick={start} disabled={!canStart}>
+    <button
+      class="vsp-btn vsp-btn-primary vsp-start"
+      onclick={(e) => start(sendTimingFromEvent(e))}
+      disabled={!canStart}
+      title={'Start now — Shift+click: when this session is idle — Ctrl+Shift+click: when the repo/worktree is idle — Ctrl+Shift+Alt+click: on the next 5h reset'}
+    >
       {starting ? 'Starting…' : `Start (${orderedSelected.length})`}
+      {#if $modifierCombo === 'shift'}
+        <span class="vsp-hint-badge" aria-hidden="true"><SendTimingIcon timing="session_idle" /></span>
+      {:else if $modifierCombo === 'ctrl+shift'}
+        <span class="vsp-hint-badge" aria-hidden="true"><SendTimingIcon timing="repo_idle" /></span>
+      {:else if $modifierCombo === 'ctrl+shift+alt'}
+        <span class="vsp-hint-badge" aria-hidden="true"><SendTimingIcon timing="reset_5h" /></span>
+      {/if}
     </button>
   </div>
 </div>
@@ -402,5 +434,25 @@
   }
   .vsp-btn-primary:hover:not(:disabled) {
     filter: brightness(1.08);
+  }
+  .vsp-start {
+    position: relative;
+  }
+  /* Modifier-held send-timing hint badge (mirrors Send / record / compact). */
+  .vsp-hint-badge {
+    position: absolute;
+    top: -0.4rem;
+    right: -0.4rem;
+    width: 0.95rem;
+    height: 0.95rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    color: #fff;
+    border-radius: 0.25rem;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   }
 </style>

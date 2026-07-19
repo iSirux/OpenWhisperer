@@ -258,7 +258,7 @@ Produce ONE merged transcript. Use Transcription A as the base, and use B only t
 
 Where the two disagree at the same position (e.g. A has "select an organization" where B has "select the navigation"), that is one utterance misheard by one engine — choose the more plausible reading and discard the other. NEVER keep both variants, and NEVER append one transcription after the other. The merged result must be roughly the length of the longer transcription, never the two combined.
 
-A word both engines agree on is real speech — keep it, even if it seems redundant or odd (it may be a proper noun, a product name, or jargon you don't recognize). If B ends with words that A lacks entirely — a continuation of the speech, not a variant reading of A's ending — keep them; engines truncate endings more often than they hallucinate extra words."#,
+A word both engines agree on is real speech — keep it, even if it seems redundant or odd (it may be a proper noun, a product name, or jargon you don't recognize). If B ends with words that A lacks entirely — a continuation of the speech, not a variant reading of A's ending — keep them; engines truncate endings more often than they hallucinate extra words. However, filler sounds and disfluencies ("um", "uh", "hmm", stutters) that appear in only one transcription are NOT missed content — the other engine deliberately filtered them out; never copy them into the merged result."#,
                 whisper_transcription,
                 realtime
             )

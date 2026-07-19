@@ -472,15 +472,15 @@
                     <path d="M18 9a9 9 0 0 1-9 9" />
                   </svg>
                   <span class="truncate">{worktree.label}</span>
+                  {#if wtChangedCount > 0}
+                    <span
+                      class="wt-change-badge shrink-0"
+                      title="{wtChangedCount} file{wtChangedCount === 1 ? '' : 's'} changed"
+                    >
+                      {wtChangedCount > 99 ? '99+' : wtChangedCount}
+                    </span>
+                  {/if}
                   <span class="ml-auto flex items-center gap-1.5 shrink-0">
-                    {#if wtChangedCount > 0}
-                      <span
-                        class="wt-change-badge"
-                        title="{wtChangedCount} file{wtChangedCount === 1 ? '' : 's'} changed"
-                      >
-                        {wtChangedCount > 99 ? '99+' : wtChangedCount}
-                      </span>
-                    {/if}
                     {#if wtActiveCount > 0}
                       <span class="flex items-center gap-1">
                         <span class="w-1 h-1 rounded-full bg-emerald-400"></span>

@@ -244,6 +244,23 @@ fn cleanup_prompt_06_crm_organization() {
 
 #[test]
 #[ignore = "hits the live Groq API — see module docs for how to run"]
+fn cleanup_prompt_08_menu_icons_sorry() {
+    run_case(
+        "menu_icons_sorry",
+        &Case {
+            failure: "reinserted B's filler 'Um...' into A's text and appended a hallucinated \
+                      'And I'm sorry.' that appears in neither transcript",
+            expect: "whisper's reading essentially unchanged; no 'Um...', no invented apology",
+            whisper: "The icons in the menu, pipeline menu thing look pretty awful. I think we should move the buttons and icons out of this menu and somewhere else.",
+            realtime: Some(
+                "The icons in the menu, pipeline menu thing Look pretty awful Um... I think we should move the buttons and icons out of this Menu And somewhere else",
+            ),
+        },
+    );
+}
+
+#[test]
+#[ignore = "hits the live Groq API — see module docs for how to run"]
 fn cleanup_prompt_07_log_vs_lobby() {
     run_case(
         "log_vs_lobby",

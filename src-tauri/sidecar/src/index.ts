@@ -322,6 +322,11 @@ interface StopMessage {
   id: string;
 }
 
+interface CompactMessage {
+  type: "compact";
+  id: string;
+}
+
 interface UpdateModelMessage {
   type: "update_model";
   id: string;
@@ -439,6 +444,7 @@ type InboundMessage =
   | QueryMessage
   | CloseMessage
   | StopMessage
+  | CompactMessage
   | UpdateModelMessage
   | UpdateEffortMessage
   | GenerateRepoDescriptionMessage
@@ -509,6 +515,13 @@ interface Session {
   appServer?: AppServerState; // Active Codex app-server process state
   extraEnv?: Record<string, string>; // Per-session extra env vars (e.g., GH_TOKEN) applied to spawned agent processes
   appServerTurnId?: string; // Active app-server turn ID
+  // Pending manual compaction (Codex app-server). thread/compact/start returns
+  // immediately and streams its own turn via notifications; this waiter is
+  // resolved by that turn's turn/completed so handleCompact can emit `done`.
+  compactWaiter?: {
+    resolve: () => void;
+    reject: (error: Error) => void;
+  };
   pendingParallelNotification?: string; // Queued notification to inject via PreToolUse hook when parallel session detected
   claudeQueue: QueuedPrompt[]; // Pending Claude prompts (FIFO)
   claudeProcessing: boolean; // Claude queue worker active flag
@@ -1649,6 +1662,22 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
               `[app-server turn/completed] cached completion turnId=${turnId} ` +
               `completedTurns=${session.appServer.completedTurns.size}`,
           });
+        }
+      }
+
+      // A manual compaction (thread/compact/start) streams its own turn that we
+      // never registered a pendingTurns waiter for. It's the only turn that can
+      // complete while a compact is in flight (compaction requires an idle
+      // session), so settle the compact waiter on its completion.
+      if (session.compactWaiter) {
+        const waiter = session.compactWaiter;
+        session.compactWaiter = undefined;
+        const compactStatus = String(turn?.status || "");
+        if (compactStatus === "failed") {
+          const compactError = turn?.error as Record<string, unknown> | undefined;
+          waiter.reject(new Error(String(compactError?.message || "Compaction failed")));
+        } else {
+          waiter.resolve();
         }
       }
       break;
@@ -4776,6 +4805,71 @@ async function runClaudeQueryItem(
   }
 }
 
+/**
+ * Manual conversation-history compaction.
+ *
+ * Codex app-server exposes compaction as a dedicated RPC (`thread/compact/start`)
+ * — NOT as a text prompt. It returns `{}` immediately and streams its own turn
+ * via the usual turn and item notifications; we await that turn's completion
+ * (captured by the compactWaiter hooked in the turn/completed handler) before
+ * emitting `done`.
+ *
+ * Claude's `/compact` is a native slash command handled by the Agent SDK, so for
+ * Claude sessions this just runs it through the normal query path. (In practice
+ * the frontend sends Claude's `/compact` straight through send_sdk_prompt; this
+ * branch is a safety net.)
+ */
+async function handleCompact(msg: CompactMessage): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, "Session not found");
+    return;
+  }
+
+  if (session.provider !== "openai") {
+    // Claude: slash command via the standard query path.
+    await handleQuery({ type: "query", id: msg.id, prompt: "/compact" });
+    return;
+  }
+
+  if (session.openaiMode !== "app_server" || !session.appServer) {
+    sendError(msg.id, "Compaction requires an active Codex app-server session");
+    return;
+  }
+
+  const threadId = session.sdkSessionId || session.passedSdkSessionId;
+  if (!threadId) {
+    sendError(msg.id, "Cannot compact: no active Codex thread");
+    return;
+  }
+
+  const appServer = session.appServer;
+  try {
+    const completed = new Promise<void>((resolve, reject) => {
+      session.compactWaiter = { resolve, reject };
+      // Safety net: never leave the session stuck "querying" if the compaction
+      // turn's completion notification never arrives.
+      setTimeout(() => {
+        if (session.compactWaiter) {
+          session.compactWaiter = undefined;
+          resolve();
+        }
+      }, 180000);
+    });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `[app-server] thread/compact/start threadId=${threadId}`,
+    });
+    await appServerRequest(appServer, "thread/compact/start", { threadId });
+    await completed;
+    sendDone(msg.id);
+  } catch (error) {
+    session.compactWaiter = undefined;
+    sendError(msg.id, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleQuery(msg: QueryMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (!session) {
@@ -5541,6 +5635,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "stop":
       await handleStop(msg);
+      break;
+    case "compact":
+      await handleCompact(msg);
       break;
     case "update_model":
       await handleUpdateModel(msg);

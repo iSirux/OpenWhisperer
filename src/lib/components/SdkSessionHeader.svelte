@@ -7,13 +7,15 @@
   import { sdkSessions, type EffortLevel } from '$lib/stores/sdkSessions';
   import type { SdkProvider } from '$lib/utils/models';
   import { panes, paneLayout, MAX_PANES } from '$lib/stores/panes';
-  import { validationRuns } from '$lib/stores/validation';
+  import { validationRuns, validation, scheduledValidations } from '$lib/stores/validation';
   import ValidationStartPopover from '$lib/components/sdk/ValidationStartPopover.svelte';
   import { sessionPrs } from '$lib/stores/sessionPrs';
   import type { SessionPrSummary } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import { accountById, isDefaultAccountId } from '$lib/utils/accounts';
-  import { ctrlHeld } from '$lib/stores/ctrlHint';
+  import { ctrlHeld, modifierCombo } from '$lib/stores/ctrlHint';
+  import { sendTimingFromEvent, type SendTiming } from '$lib/utils/sendTiming';
+  import SendTimingIcon from '$lib/components/sdk/SendTimingIcon.svelte';
   import { createSessionInSameRepo } from '$lib/utils/sessionCreation';
   import { formatHotkeyForDisplay, getHotkeyKeyLabel } from '$lib/utils/hotkeys';
 
@@ -84,13 +86,28 @@
   let isCompacting = $state(false);
   const canCompact = $derived(!!sessionId && !!sdkSessionId && !isPending && !isQuerying);
 
-  async function compactConversation() {
+  /**
+   * Compact history. The send-timing modifiers apply just like Send/record:
+   *   plain / Ctrl = now, Shift = when this session is idle, Ctrl+Shift = when
+   *   the repo/worktree is idle, Ctrl+Shift+Alt = on the next 5h reset. The
+   *   deferred variants park a compact turn on the Smart Queue (provider-correct
+   *   at fire time — Codex uses its dedicated compaction RPC, not a text prompt).
+   */
+  async function compactConversation(timing: SendTiming = 'now') {
     if (!sessionId || isCompacting || !canCompact) return;
     isCompacting = true;
     try {
-      await sdkSessions.sendPrompt(sessionId, '/compact');
+      if (timing === 'reset_5h') {
+        await sdkSessions.queueTurnForWindow(sessionId, '/compact', undefined, '5h', 'compact');
+      } else if (timing === 'repo_idle') {
+        await sdkSessions.queueTurnAfterSessions(sessionId, '/compact', undefined, 'worktree', 'compact');
+      } else if (timing === 'session_idle') {
+        await sdkSessions.queueTurnAfterSessions(sessionId, '/compact', undefined, 'session', 'compact');
+      } else {
+        await sdkSessions.compactSession(sessionId);
+      }
     } catch (err) {
-      console.error('[SdkSessionHeader] /compact failed:', err);
+      console.error('[SdkSessionHeader] compact failed:', err);
     } finally {
       isCompacting = false;
     }
@@ -140,6 +157,10 @@
     hasRealCwd && !isPending && !isQuerying && !validationActive && !!validationSession,
   );
   const showValidate = $derived(!isPending && !!sessionId);
+  // A run parked on the Smart Queue (deferred start) for this session, if any.
+  const validationScheduled = $derived(
+    sessionId ? $scheduledValidations.get(sessionId) : undefined,
+  );
   let showValidatePopover = $state(false);
   $effect(() => {
     // Close the popover if the session can no longer start a run.
@@ -373,10 +394,10 @@
       {/if}
       {#if !isPending && sessionId && sdkSessionId}
         <button
-          class="action-icon-btn p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
-          onclick={compactConversation}
+          class="action-icon-btn compact-btn relative p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
+          onclick={(e) => compactConversation(sendTimingFromEvent(e))}
           disabled={!canCompact || isCompacting}
-          title="Compact conversation history"
+          title={'Compact conversation history — Shift+click: when this session is idle — Ctrl+Shift+click: when the repo/worktree is idle — Ctrl+Shift+Alt+click: on the next 5h reset'}
           aria-label="Compact conversation history"
         >
           <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -386,22 +407,39 @@
             <line x1="14" y1="10" x2="21" y2="3" />
             <line x1="3" y1="21" x2="10" y2="14" />
           </svg>
+          {#if $modifierCombo === 'shift'}
+            <span class="compact-hint-badge" aria-hidden="true"><SendTimingIcon timing="session_idle" /></span>
+          {:else if $modifierCombo === 'ctrl+shift'}
+            <span class="compact-hint-badge" aria-hidden="true"><SendTimingIcon timing="repo_idle" /></span>
+          {:else if $modifierCombo === 'ctrl+shift+alt'}
+            <span class="compact-hint-badge" aria-hidden="true"><SendTimingIcon timing="reset_5h" /></span>
+          {/if}
         </button>
       {/if}
       {#if showValidate}
         <div class="validate-wrap">
           <button
-            class="validate-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
-            class:active={validationActive}
-            onclick={() => (showValidatePopover = !showValidatePopover)}
-            disabled={!validationCanStart}
-            title="Run the validation pipeline (review, test, docs, lint, ship, CI) on this session's branch."
+            class="validate-btn relative px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
+            class:active={validationActive || !!validationScheduled}
+            onclick={() => {
+              if (validationScheduled && sessionId) validation.cancelScheduledRun(sessionId);
+              else showValidatePopover = !showValidatePopover;
+            }}
+            disabled={!validationScheduled && !validationCanStart}
+            title={validationScheduled
+              ? 'Validation scheduled — click to cancel'
+              : "Run the validation pipeline (review, test, docs, lint, ship, CI) on this session's branch."}
           >
             <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               <path d="M9 12l2 2 4-4" />
             </svg>
             Validate
+            {#if validationScheduled}
+              <span class="validate-scheduled-badge" aria-hidden="true">
+                <SendTimingIcon timing={validationScheduled.timing} />
+              </span>
+            {/if}
           </button>
           {#if showValidatePopover && validationSession}
             <button
@@ -460,6 +498,26 @@
 </div>
 
 <style>
+  /* Modifier-held send-timing hint badge on the compact button (mirrors Send /
+     record): Shift = session idle, Ctrl+Shift = repo idle, Ctrl+Shift+Alt = 5h reset. */
+  .compact-hint-badge,
+  .validate-scheduled-badge {
+    position: absolute;
+    top: -0.3rem;
+    right: -0.3rem;
+    width: 0.85rem;
+    height: 0.85rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    color: white;
+    border-radius: 0.25rem;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+
   .header-left {
     display: flex;
     align-items: center;

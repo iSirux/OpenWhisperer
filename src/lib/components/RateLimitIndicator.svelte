@@ -70,6 +70,16 @@
     lines.push(
       `7d window: ${data.seven_day.utilization.toFixed(1)}% used, resets ${formatResetAt(data.seven_day.resets_at)}${pace7dData ? ` (${paceLabel(pace7dData.paceRatio, data.seven_day.utilization)})` : ''}`
     );
+    // Per-model weekly caps (e.g. Fable) — separate buckets that don't count
+    // against the all-model 7d window. Active ones first, then by utilization.
+    const scoped = [...(data.scoped_windows ?? [])].sort(
+      (a, b) => Number(b.is_active) - Number(a.is_active) || b.utilization - a.utilization
+    );
+    for (const w of scoped) {
+      lines.push(
+        `${w.model} (7d): ${w.utilization.toFixed(1)}% used, resets ${formatResetAt(w.resets_at)}${w.is_active ? '' : ' (inactive)'}`
+      );
+    }
     lines.push('');
     lines.push('Colors: green = low, white = on target, red = high');
     return lines.join('\n');

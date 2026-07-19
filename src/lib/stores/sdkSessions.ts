@@ -416,6 +416,12 @@ export interface RateLimitedState {
   scope?: AfterSessionsScope;
   prompt: string;
   images?: SdkImageContent[];
+  /**
+   * What the parked turn does when it fires. Absent/'prompt' = send `prompt` as a
+   * normal turn. 'compact' = run history compaction instead (provider-correct:
+   * Claude sends the `/compact` slash command, Codex calls `compact_sdk_session`).
+   */
+  action?: 'compact';
   queuedAt: number;
 }
 
@@ -2491,6 +2497,54 @@ function createSdkSessionsStore() {
       }
     },
 
+    /**
+     * Compact the session's conversation history (provider-correct).
+     * - Claude: `/compact` is a native slash command — send it as a normal turn.
+     * - Codex: history compaction is a dedicated app-server RPC, so route through
+     *   the `compact_sdk_session` command (sending "/compact" as text would just
+     *   feed the literal string to the model). A "/compact" marker turn is pushed
+     *   to the transcript and the session goes `querying` until the backend emits
+     *   `sdk-done` for the compaction turn.
+     */
+    async compactSession(id: string): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
+      if (!session) return;
+      const provider = session.provider ?? getProviderForModel(session.model);
+
+      if (provider !== 'openai') {
+        await this.sendPrompt(id, '/compact');
+        return;
+      }
+
+      await this.ensureSessionLive(id);
+      const now = Date.now();
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                status: 'querying' as const,
+                lastActivityAt: now,
+                messages: [...s.messages, { type: 'user' as const, content: '/compact', timestamp: now }],
+              }
+            : s
+        )
+      );
+      try {
+        await invoke('compact_sdk_session', { id });
+      } catch (error) {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, status: 'error' as const, messages: [...s.messages, { type: 'error' as const, content: String(error), timestamp: Date.now() }] }
+              : s
+          )
+        );
+        throw error;
+      }
+    },
+
     async stopQuery(id: string): Promise<void> {
       // A user stop settles the turn — drop any pending deferred-completion grace finalize.
       cancelDeferredFinalize(id);
@@ -3290,7 +3344,7 @@ function createSdkSessionsStore() {
      * the turn is parked in `rateLimited` with reason 'scheduled'. The driver re-sends it at the
      * window boundary via `continueRateLimited` (which is prompt-agnostic and handles it unchanged).
      */
-    async queueTurnForWindow(id: string, prompt: string, images: SdkImageContent[] | undefined, window: QueueWindow): Promise<void> {
+    async queueTurnForWindow(id: string, prompt: string, images: SdkImageContent[] | undefined, window: QueueWindow, action?: 'compact'): Promise<void> {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
       if (!session) return;
@@ -3318,6 +3372,7 @@ function createSdkSessionsStore() {
                   resetsAt: targetStartAt,
                   prompt,
                   images,
+                  action,
                   queuedAt: now,
                 },
               }
@@ -3336,18 +3391,19 @@ function createSdkSessionsStore() {
      * this session keeps the scope busy, so the parked turn fires right after it completes
      * instead of interrupting it.
      */
-    async queueTurnAfterSessions(id: string, prompt: string, images?: SdkImageContent[], scope: AfterSessionsScope = 'worktree'): Promise<void> {
+    async queueTurnAfterSessions(id: string, prompt: string, images?: SdkImageContent[], scope: AfterSessionsScope = 'worktree', action?: 'compact'): Promise<void> {
       const sessions = get({ subscribe });
       const session = sessions.find(s => s.id === id);
       if (!session) return;
 
-      // Nothing to wait for (own session included) — send immediately.
+      // Nothing to wait for (own session included) — run immediately.
       if (
         (scope === 'session' || !hasBusySessionsInScope(sessions, session.cwd, id)) &&
         session.status !== 'querying' &&
         session.status !== 'initializing'
       ) {
-        await this.sendPrompt(id, prompt, images);
+        if (action === 'compact') await this.compactSession(id);
+        else await this.sendPrompt(id, prompt, images);
         return;
       }
 
@@ -3368,6 +3424,7 @@ function createSdkSessionsStore() {
                   scope,
                   prompt,
                   images,
+                  action,
                   queuedAt: now,
                 },
               }
@@ -3390,6 +3447,60 @@ function createSdkSessionsStore() {
       const rl = session.rateLimited;
 
       await this.ensureSessionLive(id);
+
+      // A parked compaction fires through the provider-correct compact path
+      // (Codex uses a dedicated RPC), not as a text turn. Drop the ghost flag so
+      // the "/compact" marker renders as a normal turn, then delegate.
+      if (rl.action === 'compact') {
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  rateLimited: null,
+                  messages: s.messages.some(m => m.queued)
+                    ? s.messages.map(m => (m.queued ? { ...m, queued: undefined } : m))
+                    : s.messages,
+                }
+              : s
+          )
+        );
+        // compactSession pushes its own "/compact" marker for Codex; for Claude
+        // it sends the slash command as a turn. Either way the ghost we just
+        // un-flagged stands in, so route through the raw provider action here.
+        const provider = rl.provider;
+        if (provider === 'openai') {
+          update(sessions => sessions.map(s => s.id === id ? { ...s, status: 'querying' as const, lastActivityAt: Date.now() } : s));
+          try {
+            await invoke('compact_sdk_session', { id });
+          } catch (error) {
+            update(sessions =>
+              sessions.map(s =>
+                s.id === id
+                  ? { ...s, status: 'error' as const, messages: [...s.messages, { type: 'error' as const, content: String(error), timestamp: Date.now() }] }
+                  : s
+              )
+            );
+            throw error;
+          }
+        } else {
+          // Claude: '/compact' is a valid slash command sent as a normal turn.
+          update(sessions => sessions.map(s => s.id === id ? { ...s, status: 'querying' as const, lastActivityAt: Date.now(), inFlightPrompt: '/compact', inFlightImages: null } : s));
+          try {
+            await invoke('send_sdk_prompt', { id, prompt: '/compact', images: null });
+          } catch (error) {
+            update(sessions =>
+              sessions.map(s =>
+                s.id === id
+                  ? { ...s, status: 'error' as const, inFlightPrompt: null, inFlightImages: null, messages: [...s.messages, { type: 'error' as const, content: String(error), timestamp: Date.now() }] }
+                  : s
+              )
+            );
+            throw error;
+          }
+        }
+        return;
+      }
 
       update(sessions =>
         sessions.map(s =>

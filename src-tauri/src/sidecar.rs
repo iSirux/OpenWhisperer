@@ -90,6 +90,12 @@ pub enum OutboundMessage {
     Stop {
         id: String,
     },
+    /// Trigger manual conversation-history compaction for a session. Claude runs
+    /// the native `/compact` slash command via the query path (handled frontend
+    /// side); this message drives Codex app-server compaction (`thread/compact/start`).
+    Compact {
+        id: String,
+    },
     UpdateModel {
         id: String,
         model: String,

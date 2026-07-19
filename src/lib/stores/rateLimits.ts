@@ -15,11 +15,21 @@ export interface ExtraUsage {
 	utilization: number | null;
 }
 
+/** A per-model weekly window (e.g. Fable) from the OAuth usage `limits[]` array */
+export interface ScopedLimit {
+	model: string; // e.g. "Fable"
+	utilization: number; // 0-100
+	severity: string; // "normal" | "warning" | "critical"
+	resets_at: string; // ISO timestamp
+	is_active: boolean;
+}
+
 /** Unified rate limit data shape used by both Claude and Codex */
 export interface ProviderRateLimits {
 	five_hour: RateLimitWindow;
 	seven_day: RateLimitWindow;
 	extra_usage: ExtraUsage;
+	scoped_windows?: ScopedLimit[]; // per-model weekly caps; Claude only
 }
 
 // Keep backward compat alias

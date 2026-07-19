@@ -75,6 +75,13 @@ pub fn stop_sdk_query(sidecar: State<Arc<SidecarManager>>, id: String) -> Result
     sidecar.send(OutboundMessage::Stop { id })
 }
 
+/// Trigger conversation-history compaction for a Codex app-server session. (For
+/// Claude the frontend sends `/compact` through the normal prompt path instead.)
+#[tauri::command]
+pub fn compact_sdk_session(sidecar: State<Arc<SidecarManager>>, id: String) -> Result<(), String> {
+    sidecar.send(OutboundMessage::Compact { id })
+}
+
 #[tauri::command]
 pub fn update_sdk_model(
     sidecar: State<Arc<SidecarManager>>,
@@ -356,11 +363,27 @@ pub struct ExtraUsage {
     pub utilization: Option<f64>,
 }
 
+/// A per-model weekly window scoped to a specific model (e.g. Fable), surfaced
+/// by the OAuth usage endpoint's `limits[]` array as `kind: "weekly_scoped"`.
+/// The old top-level `seven_day_opus`/`seven_day_sonnet` fields are now null;
+/// all per-model limits live here.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScopedLimit {
+    pub model: String,
+    pub utilization: f64,
+    pub severity: String,
+    pub resets_at: String,
+    pub is_active: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClaudeRateLimits {
     pub five_hour: RateLimitWindow,
     pub seven_day: RateLimitWindow,
     pub extra_usage: ExtraUsage,
+    /// Per-model weekly windows (e.g. Fable). Empty for Codex.
+    #[serde(default)]
+    pub scoped_windows: Vec<ScopedLimit>,
 }
 
 /// Read an OAuth credentials file and extract a bearer token from it (I7).
@@ -621,6 +644,26 @@ pub async fn fetch_claude_rate_limits(
             used_credits: data["extra_usage"]["used_credits"].as_u64(),
             utilization: data["extra_usage"]["utilization"].as_f64(),
         },
+        // Per-model weekly caps arrive in `limits[]` as `weekly_scoped` entries
+        // carrying `scope.model.display_name` (e.g. "Fable").
+        scoped_windows: data["limits"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter(|l| l["kind"].as_str() == Some("weekly_scoped"))
+                    .filter_map(|l| {
+                        let model = l["scope"]["model"]["display_name"].as_str()?.to_string();
+                        Some(ScopedLimit {
+                            model,
+                            utilization: l["percent"].as_f64().unwrap_or(0.0),
+                            severity: l["severity"].as_str().unwrap_or("").to_string(),
+                            resets_at: l["resets_at"].as_str().unwrap_or("").to_string(),
+                            is_active: l["is_active"].as_bool().unwrap_or(false),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -708,5 +751,7 @@ pub async fn fetch_codex_rate_limits(
             used_credits: credits["used_credits"].as_u64(),
             utilization: credits["utilization"].as_f64(),
         },
+        // Codex has no per-model scoped windows.
+        scoped_windows: Vec::new(),
     })
 }
