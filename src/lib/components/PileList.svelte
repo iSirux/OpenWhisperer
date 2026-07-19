@@ -22,6 +22,9 @@
   } from '$lib/utils/pileActions';
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import { sendTimingFromEvent, launchScheduleFromTiming } from '$lib/utils/sendTiming';
+  import { modifierCombo } from '$lib/stores/ctrlHint';
+  import SendTimingIcon from './sdk/SendTimingIcon.svelte';
 
   let selectedIds = $state<Set<string>>(new Set());
   let pendingAction = $state<string | null>(null);
@@ -89,7 +92,7 @@
     groupMode = 'separate';
   }
 
-  function confirmAction() {
+  function confirmAction(e?: MouseEvent) {
     if (!pendingAction || selectedItems.length === 0) return;
     const action = pendingAction;
     const itemsSnapshot = [...selectedItems].filter(
@@ -97,11 +100,14 @@
     );
     const worktree = useWorktree;
     const together = groupMode === 'together' && itemsSnapshot.length > 1;
+    // Send-timing modifiers: plain = launch now, Ctrl+Shift = when the repo/worktree is
+    // idle, Ctrl+Shift+Alt = next 5h reset. Deferred launches park as `queued`.
+    const schedule = e ? launchScheduleFromTiming(sendTimingFromEvent(e)) : undefined;
     selectedIds = new Set();
     pendingAction = null;
 
     if (action === 'draft') {
-      // Draft (setup) sessions are cheap to create — no queue/stagger needed
+      // Draft (setup) sessions are cheap to create — no queue/stagger/schedule needed
       if (together) {
         void preparePileItemsTogether(itemsSnapshot);
       } else {
@@ -117,6 +123,7 @@
         () =>
           launchPileItemsTogether(itemsSnapshot, action as PileLaunchAction, {
             useWorktree: worktree,
+            schedule,
           }).then(() => {}),
       ]);
       return;
@@ -126,6 +133,7 @@
       itemsSnapshot.map((item) => () =>
         launchPileItem(item, action as PileLaunchAction, {
           useWorktree: worktree,
+          schedule,
         }).then(() => {})
       ),
       { stagger: true }
@@ -335,10 +343,16 @@
             </label>
           {/if}
           <button
-            class="ml-auto px-3 py-1 rounded text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
-            onclick={confirmAction}
+            class="ml-auto inline-flex items-center gap-1 px-3 py-1 rounded text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+            onclick={(e) => confirmAction(e)}
+            title="Launch now. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
           >
             Go
+            {#if pendingAction !== 'draft' && ($modifierCombo === 'ctrl+shift' || $modifierCombo === 'ctrl+shift+alt')}
+              <span class="inline-flex items-center text-white/90">
+                <SendTimingIcon timing={$modifierCombo === 'ctrl+shift+alt' ? 'reset_5h' : 'repo_idle'} />
+              </span>
+            {/if}
           </button>
           <button
             class="px-2 py-1 rounded text-[11px] bg-surface hover:bg-background text-text-secondary transition-colors"

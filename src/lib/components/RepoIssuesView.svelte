@@ -23,6 +23,9 @@
     composeIssuePrompt,
     type IssueLaunchAction,
   } from '$lib/utils/issueActions';
+  import { sendTimingFromEvent, launchScheduleFromTiming } from '$lib/utils/sendTiming';
+  import { modifierCombo } from '$lib/stores/ctrlHint';
+  import SendTimingIcon from './sdk/SendTimingIcon.svelte';
 
   interface Props {
     repoId?: string | null;
@@ -137,12 +140,15 @@
     return { githubIssue: { number: issue.number, title: issue.title, url: issue.url } };
   }
 
-  function confirmAction() {
+  function confirmAction(e?: MouseEvent) {
     if (!pendingAction || !repo || selectedIssues.length === 0) return;
     const action = pendingAction;
     const config = snapshotLaunchConfigForRepo(repo);
     const issuesSnapshot = [...selectedIssues];
     const worktree = useWorktree;
+    // Send-timing modifiers: plain = launch now, Ctrl+Shift = when the repo/worktree is
+    // idle, Ctrl+Shift+Alt = next 5h reset. Deferred launches park as `queued`.
+    const schedule = e ? launchScheduleFromTiming(sendTimingFromEvent(e)) : undefined;
     clearSelection();
     pendingAction = null;
 
@@ -158,6 +164,7 @@
           useWorktree: worktree,
           branchNameHint: `issue-${issue.number} ${issue.title}`,
           tag: issueTag(issue),
+          schedule,
         });
       }),
       { stagger: true }
@@ -467,10 +474,16 @@
               Draft
             </button>
             <button
-              class="h-8 px-5 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
-              onclick={confirmAction}
+              class="h-8 px-5 inline-flex items-center gap-1 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+              onclick={(e) => confirmAction(e)}
+              title="Launch now. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
             >
               Go
+              {#if $modifierCombo === 'ctrl+shift' || $modifierCombo === 'ctrl+shift+alt'}
+                <span class="inline-flex items-center text-white/90">
+                  <SendTimingIcon timing={$modifierCombo === 'ctrl+shift+alt' ? 'reset_5h' : 'repo_idle'} />
+                </span>
+              {/if}
             </button>
             <button
               class="h-8 px-3 rounded text-xs font-medium bg-surface-elevated hover:bg-surface text-text-secondary transition-colors"

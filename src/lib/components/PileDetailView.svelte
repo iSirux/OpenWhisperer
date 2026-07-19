@@ -17,6 +17,9 @@
   import ConfirmDialog from './ConfirmDialog.svelte';
   import PromptChips from './PromptChips.svelte';
   import RepoSelector from './RepoSelector.svelte';
+  import { sendTimingFromEvent, launchScheduleFromTiming } from '$lib/utils/sendTiming';
+  import { modifierCombo } from '$lib/stores/ctrlHint';
+  import SendTimingIcon from './sdk/SendTimingIcon.svelte';
 
   interface Props {
     item: PileItem;
@@ -166,12 +169,16 @@
     return new Date(ts).toLocaleString();
   }
 
-  async function runLaunch(action: PileLaunchAction) {
+  async function runLaunch(action: PileLaunchAction, e?: MouseEvent) {
     saveTranscript();
     launching = true;
     try {
+      // Send-timing modifiers: plain = launch now, Ctrl+Shift = when the repo/worktree
+      // is idle, Ctrl+Shift+Alt = next 5h reset. Deferred launches park as `queued`.
+      const schedule = e ? launchScheduleFromTiming(sendTimingFromEvent(e)) : undefined;
       const sessionId = await launchPileItem(pile.getItem(item.id)!, action, {
         useWorktree,
+        schedule,
       });
       if (sessionId) {
         selectedPileItemId.set(null);
@@ -464,13 +471,22 @@
           Worktree
         </label>
       </div>
+      {#snippet launchHint()}
+        {#if $modifierCombo === 'ctrl+shift' || $modifierCombo === 'ctrl+shift+alt'}
+          <span class="inline-flex items-center opacity-90">
+            <SendTimingIcon timing={$modifierCombo === 'ctrl+shift+alt' ? 'reset_5h' : 'repo_idle'} />
+          </span>
+        {/if}
+      {/snippet}
       <div class="flex items-center gap-2 flex-wrap">
         <button
-          class="px-3 py-1.5 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50"
+          class="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50"
           disabled={!canLaunch}
-          onclick={() => runLaunch('start')}
+          onclick={(e) => runLaunch('start', e)}
+          title="Launch now. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
         >
           Start session
+          {@render launchHint()}
         </button>
         <button
           class="px-3 py-1.5 rounded text-xs font-medium bg-sky-600/60 hover:bg-sky-600 text-white transition-colors disabled:opacity-50"
@@ -480,20 +496,22 @@
           Draft
         </button>
         <button
-          class="px-3 py-1.5 rounded text-xs font-medium bg-surface hover:bg-background text-text-secondary transition-colors disabled:opacity-50"
+          class="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs font-medium bg-surface hover:bg-background text-text-secondary transition-colors disabled:opacity-50"
           disabled={!canLaunch}
-          onclick={() => runLaunch('plan')}
-          title="Appends a request to plan before implementing"
+          onclick={(e) => runLaunch('plan', e)}
+          title="Appends a request to plan before implementing. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
         >
           Plan first
+          {@render launchHint()}
         </button>
         <button
-          class="px-3 py-1.5 rounded text-xs font-medium bg-surface hover:bg-background text-text-secondary transition-colors disabled:opacity-50"
+          class="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs font-medium bg-surface hover:bg-background text-text-secondary transition-colors disabled:opacity-50"
           disabled={!canLaunch}
-          onclick={() => runLaunch('discuss')}
-          title="Scan the codebase, then discuss without implementing"
+          onclick={(e) => runLaunch('discuss', e)}
+          title="Scan the codebase, then discuss without implementing. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
         >
           Discuss
+          {@render launchHint()}
         </button>
       </div>
     </div>

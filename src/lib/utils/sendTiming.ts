@@ -35,6 +35,26 @@ export function spaceSendTimingFromEvent(e: ModifierLike): SendTiming | null {
   return sendTimingFromEvent(e);
 }
 
+/**
+ * Map a send-timing to a session-*launch* schedule. Launch surfaces (pile, Notion,
+ * GitHub issues, New Session) have no live session yet, so `session_idle` and
+ * `repo_idle` both defer to `'after_sessions'` (worktree scope); `reset_5h` targets
+ * the next 5h window; `now` returns undefined (launch immediately).
+ */
+export function launchScheduleFromTiming(
+  timing: SendTiming
+): '5h' | '7d' | 'after_sessions' | undefined {
+  switch (timing) {
+    case 'reset_5h':
+      return '5h';
+    case 'repo_idle':
+    case 'session_idle':
+      return 'after_sessions';
+    default:
+      return undefined;
+  }
+}
+
 /** Human-readable description of a deferred send timing (for parked-turn UI). */
 export function sendTimingLabel(timing: SendTiming): string {
   switch (timing) {

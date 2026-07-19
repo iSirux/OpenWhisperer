@@ -77,6 +77,10 @@ export interface LaunchSessionOptions {
   branchNameHint?: string;
   systemPrompt?: string;
   tag?: SessionTag;
+  /** When set, defer the launch (fire-and-forget) instead of starting now: to the next
+   *  usage-window reset ('5h'/'7d'), or — 'after_sessions' — until the repo/worktree is idle.
+   *  Parks the session as `queued`; the Smart Queue dispatches it via launchPrepared. */
+  schedule?: import('$lib/stores/sdkSessions').QueueWindow | 'after_sessions';
 }
 
 /**
@@ -140,6 +144,7 @@ export async function launchSession(opts: LaunchSessionOptions): Promise<string>
     systemPrompt: opts.systemPrompt,
     createdBranch,
     worktreePostSetup,
+    schedule: opts.schedule,
   });
 
   return sessionId;

@@ -20,6 +20,9 @@ import { appendChips, mergeChips } from '$lib/utils/promptChips';
 
 export type PileLaunchAction = 'start' | 'plan' | 'discuss';
 
+/** Fire-and-forget launch timing for pile sessions (parks them as `queued`). */
+export type PileLaunchSchedule = import('$lib/stores/sdkSessions').QueueWindow | 'after_sessions';
+
 export const PILE_ACTIONS: { id: PileLaunchAction | 'draft'; label: string; description: string }[] = [
   { id: 'start', label: 'Start', description: 'Send the prompt as a new session' },
   { id: 'draft', label: 'Draft', description: 'Create a draft session for review before sending' },
@@ -98,7 +101,7 @@ function resolveLaunchParams(item: PileItem): PileLaunchParams | null {
 export async function launchPileItem(
   item: PileItem,
   action: PileLaunchAction,
-  opts: { useWorktree?: boolean } = {}
+  opts: { useWorktree?: boolean; schedule?: PileLaunchSchedule } = {}
 ): Promise<string | null> {
   const params = resolveLaunchParams(item);
   if (!params || !item.transcript.trim()) return null;
@@ -116,6 +119,7 @@ export async function launchPileItem(
     branchNameHint: pileItemTitle(item),
     systemPrompt: params.systemPrompt,
     tag: { pileItem: { id: item.id, title: pileItemTitle(item) } },
+    schedule: opts.schedule,
   });
 
   pile.linkSession(item.id, sessionId);
@@ -130,7 +134,7 @@ export async function launchPileItem(
 export async function launchPileItemsTogether(
   items: PileItem[],
   action: PileLaunchAction,
-  opts: { useWorktree?: boolean } = {}
+  opts: { useWorktree?: boolean; schedule?: PileLaunchSchedule } = {}
 ): Promise<string | null> {
   const usable = items.filter((i) => i.transcript.trim());
   if (usable.length === 0) return null;
@@ -158,6 +162,7 @@ export async function launchPileItemsTogether(
     branchNameHint: title,
     systemPrompt: params.systemPrompt,
     tag: { pileItem: { id: usable[0].id, title } },
+    schedule: opts.schedule,
   });
 
   for (const item of usable) {
