@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepName {
+    Simplify,
     Review,
     Test,
     Docs,
@@ -20,7 +21,8 @@ pub enum StepName {
 
 impl StepName {
     /// Fixed pipeline order.
-    pub const ORDER: [StepName; 6] = [
+    pub const ORDER: [StepName; 7] = [
+        StepName::Simplify,
         StepName::Review,
         StepName::Test,
         StepName::Docs,
@@ -32,6 +34,7 @@ impl StepName {
     /// snake_case key used in config (`auto_fix_limits`) and prompts.
     pub fn key(&self) -> &'static str {
         match self {
+            StepName::Simplify => "simplify",
             StepName::Review => "review",
             StepName::Test => "test",
             StepName::Docs => "docs",
@@ -374,6 +377,12 @@ pub struct RunOptions {
     pub adversarial_verify: bool,
     #[serde(default)]
     pub base_branch: Option<String>,
+    /// Model id for the simplify step's headless agent — any provider (the
+    /// sidecar routes Claude models to the SDK rail, GPT/Codex models to a
+    /// Codex thread). "session" is resolved frontend-side; `None` falls back
+    /// to the reviewer model.
+    #[serde(default)]
+    pub simplify_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

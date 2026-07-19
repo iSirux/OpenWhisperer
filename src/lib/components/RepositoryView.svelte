@@ -206,8 +206,9 @@
   }
 
   // --- Validation pipeline per-repo settings ---
-  const VALIDATION_STEP_NAMES = ['review', 'test', 'docs', 'lint', 'ship', 'ci'] as const;
+  const VALIDATION_STEP_NAMES = ['simplify', 'review', 'test', 'docs', 'lint', 'ship', 'ci'] as const;
   const VALIDATION_STEP_LABELS: Record<string, string> = {
+    simplify: 'Simplify',
     review: 'Review',
     test: 'Test',
     docs: 'Docs',

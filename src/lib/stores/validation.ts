@@ -28,10 +28,11 @@ import { buildFixPrompt } from '$lib/utils/validationFix';
 // ---------------------------------------------------------------------------
 
 /** Pipeline steps, in fixed order. The *set* is user-chosen per run. */
-export type StepName = 'review' | 'test' | 'docs' | 'lint' | 'ship' | 'ci';
+export type StepName = 'simplify' | 'review' | 'test' | 'docs' | 'lint' | 'ship' | 'ci';
 
 /** Canonical step order (fixed); the run's selected steps are a subset of this. */
 export const VALIDATION_STEP_ORDER: readonly StepName[] = [
+  'simplify',
   'review',
   'test',
   'docs',
@@ -157,6 +158,12 @@ export interface RunOptions {
   adversarialVerify: boolean;
   /** Defaults to the repo's default branch. */
   baseBranch?: string | null;
+  /**
+   * Model for the simplify step's headless agent — any active provider's
+   * model, or "session" (resolved to the session's model before startRun).
+   * Null falls back to the reviewer model on the backend.
+   */
+  simplifyModel?: string | null;
 }
 
 /** The FULL run snapshot emitted on every `validation-update` event. */
@@ -183,7 +190,7 @@ export interface ValidationRun {
  * block), streamed while the agent works so the run isn't a black box.
  */
 export interface AgentActivityItem {
-  /** "review" | "verify" | "evidence" | "docs" | "lint" */
+  /** "simplify" | "review" | "verify" | "evidence" | "docs" | "lint" */
   role: string;
   /** "tool" | "text" */
   kind: string;
@@ -904,6 +911,7 @@ export function loadRunOptions(repoId: string | undefined): RunOptions | null {
       reviewerEffort: parsed.reviewerEffort ?? null,
       adversarialVerify: !!parsed.adversarialVerify,
       baseBranch: parsed.baseBranch ?? null,
+      simplifyModel: parsed.simplifyModel ?? null,
     };
   } catch {
     return null;
@@ -951,6 +959,7 @@ export function seedRunOptions(args: {
     reviewerEffort: saved?.reviewerEffort ?? defaults.reviewer_effort ?? null,
     adversarialVerify: saved?.adversarialVerify ?? defaults.adversarial_verify,
     baseBranch: saved?.baseBranch ?? null,
+    simplifyModel: saved?.simplifyModel ?? null,
   };
 }
 

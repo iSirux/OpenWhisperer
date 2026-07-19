@@ -126,13 +126,14 @@ pub enum OutboundMessage {
         repo_path: String,
         repo_name: String,
     },
-    /// One-shot validation agent (review/verify/evidence/docs/lint). Runs a
-    /// restricted `query()` in `cwd` with a schema-enforced submit tool and
+    /// One-shot validation agent (simplify/review/verify/evidence/docs/lint).
+    /// Runs a restricted `query()` in `cwd` with a schema-enforced submit tool
+    /// (or, for simplify on a GPT/Codex model, a headless Codex thread) and
     /// replies via `validation-agent-result-{id}` / `validation-agent-error-{id}`.
     ValidationAgent {
         id: String,
         cwd: String,
-        /// "review" | "verify" | "evidence" | "docs" | "lint"
+        /// "simplify" | "review" | "verify" | "evidence" | "docs" | "lint"
         role: String,
         prompt: String,
         model: String,

@@ -33,6 +33,10 @@
   } = $props();
 
   const STEP_META: Record<StepName, { label: string; description: string }> = {
+    simplify: {
+      label: 'Simplify',
+      description: 'Headless agent cleans up the changed code (finds & fixes, no gates)',
+    },
     review: { label: 'Review', description: 'Code review of the branch diff' },
     test: { label: 'Test', description: 'Run tests & gather evidence' },
     docs: { label: 'Docs', description: 'Find documentation this change made stale' },
@@ -50,11 +54,24 @@
   // the session model selector), plus "Session model". Computed once at mount —
   // the popover is short-lived.
   const models = getEnabledModels($settings.enabled_models);
+  // The simplify agent can run on any active provider's model (the sidecar
+  // routes Claude models to the SDK rail, GPT/Codex models to a Codex thread).
+  const simplifyModels = [
+    ...($settings.enabled_providers.claude ? getEnabledModels($settings.enabled_models, 'claude') : []),
+    ...($settings.enabled_providers.openai
+      ? getEnabledModels($settings.enabled_openai_models, 'openai')
+      : []),
+  ];
 
   let selectedSteps = $state<Set<StepName>>(new Set(seeded.steps));
   let reviewerModel = $state(
     seeded.reviewerModel === 'session' || models.some((m) => m.id === seeded.reviewerModel)
       ? seeded.reviewerModel
+      : 'session',
+  );
+  let simplifyModel = $state(
+    seeded.simplifyModel && simplifyModels.some((m) => m.id === seeded.simplifyModel)
+      ? seeded.simplifyModel
       : 'session',
   );
   // Effort is always on for the reviewer; older saved options may carry null.
@@ -99,6 +116,17 @@
     return fallback && fallback !== 'session' ? fallback : DEFAULT_MODEL_ID;
   }
 
+  /**
+   * Like resolveReviewerModel, but for the simplify agent — the session's model
+   * is used as-is whatever its provider (a Codex session gets a Codex agent).
+   */
+  function resolveSimplifyModel(choice: string): string {
+    if (choice !== 'session') return choice;
+    const sessionModel = session.model;
+    if (sessionModel && !isAutoModel(sessionModel)) return sessionModel;
+    return resolveReviewerModel('session');
+  }
+
   async function start() {
     if (!canStart) return;
     starting = true;
@@ -112,8 +140,12 @@
       baseBranch: seeded.baseBranch ?? null,
     };
     // Persist the user's raw choice (may be "session"); send the resolved id.
-    const persisted: RunOptions = { ...base, reviewerModel };
-    const runOptions: RunOptions = { ...base, reviewerModel: resolveReviewerModel(reviewerModel) };
+    const persisted: RunOptions = { ...base, reviewerModel, simplifyModel };
+    const runOptions: RunOptions = {
+      ...base,
+      reviewerModel: resolveReviewerModel(reviewerModel),
+      simplifyModel: resolveSimplifyModel(simplifyModel),
+    };
     try {
       saveRunOptions(repoId, persisted);
       const intent = buildValidationIntent(session);
@@ -154,6 +186,18 @@
       {/each}
     </div>
   </div>
+
+  {#if selectedSteps.has('simplify')}
+    <div class="vsp-section">
+      <label class="vsp-section-label" for="vsp-simplify-model">Simplify model</label>
+      <select id="vsp-simplify-model" class="vsp-select" bind:value={simplifyModel}>
+        <option value="session">Session model</option>
+        {#each simplifyModels as m (m.id)}
+          <option value={m.id}>{m.label}</option>
+        {/each}
+      </select>
+    </div>
+  {/if}
 
   <div class="vsp-section vsp-grid">
     <div class="vsp-field">

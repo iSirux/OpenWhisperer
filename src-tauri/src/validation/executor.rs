@@ -507,12 +507,34 @@ impl RunCtx {
         }
     }
 
-    /// Run a one-shot validation agent and await its structured result.
+    /// Model for the simplify step's headless agent (any provider; the sidecar
+    /// routes by model id). Falls back to the reviewer model.
+    fn simplify_model(&self) -> String {
+        match self.run.options.simplify_model.as_deref() {
+            Some(m) if !m.trim().is_empty() && m != "session" => m.to_string(),
+            _ => self.reviewer_model(),
+        }
+    }
+
+    /// Run a one-shot validation agent on the reviewer model.
     async fn run_agent(
         &self,
         role: &str,
         prompt: String,
         resume: Option<String>,
+    ) -> Result<AgentOutcome, String> {
+        self.run_agent_with_model(role, prompt, resume, self.reviewer_model())
+            .await
+    }
+
+    /// Run a one-shot validation agent on an explicit model and await its
+    /// structured result.
+    async fn run_agent_with_model(
+        &self,
+        role: &str,
+        prompt: String,
+        resume: Option<String>,
+        model: String,
     ) -> Result<AgentOutcome, String> {
         let sidecar = self.app.state::<Arc<SidecarManager>>();
         let agent_id = format!("val-{}-{}", self.run.id, uuid::Uuid::new_v4());
@@ -606,7 +628,7 @@ impl RunCtx {
                     cwd: self.cwd(),
                     role: role.to_string(),
                     prompt,
-                    model: self.reviewer_model(),
+                    model,
                     effort: self.run.options.reviewer_effort.clone(),
                     resume_session_id: resume,
                 },
@@ -653,6 +675,7 @@ impl RunCtx {
     async fn run_step(&mut self, name: StepName) -> StepEnd {
         self.log(format!("Starting step: {}", name.key()));
         let end = match name {
+            StepName::Simplify => self.run_simplify().await,
             StepName::Review => self.run_findings_step(name).await,
             StepName::Docs => self.run_findings_step(name).await,
             StepName::Lint => self.run_findings_step(name).await,
@@ -870,6 +893,33 @@ impl RunCtx {
     }
 
     // ── Step producers ──────────────────────────────────────────────────────
+
+    /// The simplify step: one autonomous headless agent running the Simplify
+    /// skill prompt verbatim — it finds AND fixes quality issues in the changed
+    /// code itself. No findings, no gates; the agent's closing summary becomes
+    /// the step note. Runs on the user-selected simplify model (any provider —
+    /// the sidecar routes Claude models to the SDK rail, GPT/Codex models to a
+    /// headless Codex thread).
+    async fn run_simplify(&mut self) -> StepEnd {
+        self.set_step_status(StepName::Simplify, StepStatus::Running);
+        let prompt = prompts::simplify_prompt(&self.base_branch());
+        let model = self.simplify_model();
+        self.log(format!("simplify: running headless agent ({})", model));
+        let outcome = match self
+            .run_agent_with_model("simplify", prompt, None, model)
+            .await
+        {
+            Ok(o) => o,
+            Err(e) => return StepEnd::Failed(format!("simplify: {}", e)),
+        };
+        if let Some(step) = self.run.step_mut(StepName::Simplify) {
+            step.transcript = outcome.transcript;
+            if let Some(summary) = outcome.structured.get("summary").and_then(|v| v.as_str()) {
+                step.note = Some(summary.to_string());
+            }
+        }
+        StepEnd::Passed
+    }
 
     async fn produce_review(&mut self) -> Result<Vec<ValidationFinding>, String> {
         let base = self.base_branch();

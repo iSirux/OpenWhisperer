@@ -13,6 +13,7 @@
   let { run }: { run: ValidationRunView } = $props();
 
   const STEP_LABELS: Record<StepName, string> = {
+    simplify: 'Simplify',
     review: 'Review',
     test: 'Test',
     docs: 'Docs',
@@ -192,6 +193,7 @@
 
   // --- Live agent activity ----------------------------------------------------
   const ROLE_LABELS: Record<string, string> = {
+    simplify: 'Simplify',
     review: 'Reviewer',
     verify: 'Verifier',
     evidence: 'Evidence',

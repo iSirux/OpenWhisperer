@@ -411,17 +411,25 @@ interface AnswerPlanApprovalMessage {
   feedback?: string; // Feedback text for deny
 }
 
-// One-shot Validation pipeline agent (review/verify/evidence/docs/lint).
-// Claude provider only. Runs a restricted, read-only-ish query() that must
-// finish by calling a single role-specific submit tool (structured output).
-type ValidationRole = "review" | "verify" | "evidence" | "docs" | "lint";
+// One-shot Validation pipeline agent (simplify/review/verify/evidence/docs/lint).
+// Most roles run a restricted, read-only-ish Claude query() that must finish by
+// calling a single role-specific submit tool (structured output). The simplify
+// role can edit files, and routes by model provider: Claude models use the
+// query() rail, GPT/Codex models run a headless workspace-write Codex thread.
+type ValidationRole =
+  | "simplify"
+  | "review"
+  | "verify"
+  | "evidence"
+  | "docs"
+  | "lint";
 interface ValidationAgentMessage {
   type: "validation_agent";
   id: string; // Request ID for tracking (matches the emitted event suffix)
   cwd: string; // Working directory (session cwd)
   role: ValidationRole;
   prompt: string; // Fully-composed prompt (built in Rust)
-  model: string; // Claude model id
+  model: string; // Model id (any provider for simplify; Claude otherwise)
   effort?: string; // UI effort level ('low'|'medium'|'high'|'xhigh'|'max'); omit/undefined = off
   resumeSessionId?: string; // SDK session id to resume (durable reviewer across rounds)
 }
@@ -3201,10 +3209,29 @@ function buildValidationRole(role: ValidationRole): {
   server: ReturnType<typeof createSdkMcpServer>;
   toolName: string;
   readOnly: boolean;
+  canEdit: boolean;
 } {
   let submitTool;
   let toolName: string;
   switch (role) {
+    case "simplify": {
+      // The simplify agent finds AND fixes autonomously; the only structured
+      // output is its closing summary.
+      toolName = "submit_simplify";
+      submitTool = tool(
+        "submit_simplify",
+        "Submit your simplify summary. You MUST call this exactly once when done.",
+        {
+          summary: z
+            .string()
+            .describe(
+              "Brief summary of what was fixed and what was skipped (or that the code was already clean)"
+            ),
+        },
+        validationSubmitAck
+      );
+      break;
+    }
     case "review": {
       toolName = "submit_review";
       submitTool = tool(
@@ -3308,6 +3335,8 @@ function buildValidationRole(role: ValidationRole): {
     toolName: `mcp__${VALIDATION_MCP_SERVER_NAME}__${toolName}`,
     // review/verify/docs are read-only (git-only Bash); evidence/lint may run commands freely.
     readOnly: role === "review" || role === "verify" || role === "docs",
+    // Only the simplify agent edits files (and fans out subagents).
+    canEdit: role === "simplify",
   };
 }
 
@@ -3365,12 +3394,22 @@ async function runValidationQuery(
 ): Promise<ValidationCapture> {
   const options: Options = {
     cwd: msg.cwd,
-    permissionMode: "default",
+    permissionMode: role.canEdit ? "acceptEdits" : "default",
     model: msg.model,
     mcpServers: {
       [VALIDATION_MCP_SERVER_NAME]: role.server,
     },
-    allowedTools: [role.toolName, "Read", "Glob", "Grep", "Bash"],
+    allowedTools: [
+      role.toolName,
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash",
+      // The simplify agent applies fixes itself and fans out review subagents.
+      ...(role.canEdit
+        ? ["Edit", "Write", "MultiEdit", "NotebookEdit", "Task", "TodoWrite"]
+        : []),
+    ],
     // One-shot: never load user/project settings, CLAUDE.md, or filesystem skills.
     settingSources: [],
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),
@@ -3530,8 +3569,137 @@ async function runValidationQuery(
   };
 }
 
+// Headless Codex thread for the simplify role: same verbatim prompt, a
+// GPT/Codex model, and a workspace-write sandbox so the agent can apply its
+// fixes itself. Codex has no in-process submit tools, so the final agent
+// message doubles as the structured summary.
+async function runSimplifyCodexThread(msg: ValidationAgentMessage): Promise<void> {
+  const requestId = msg.id;
+  send({
+    type: "debug",
+    id: requestId,
+    message: `Starting Codex simplify agent (model=${msg.model}) at ${msg.cwd}`,
+  });
+
+  const truncate = (text: string, max: number): string => {
+    const trimmed = text.replace(/\s+/g, " ").trim();
+    return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+  };
+
+  try {
+    const codex = getCodexInstance();
+    const effort = mapEffortForProvider(msg.effort, "openai", msg.model);
+    const thread = codex.startThread({
+      workingDirectory: msg.cwd,
+      skipGitRepoCheck: true,
+      model: msg.model,
+      sandboxMode: "workspace-write",
+      approvalPolicy: "never",
+      ...(effort
+        ? { modelReasoningEffort: effort as ThreadOptions["modelReasoningEffort"] }
+        : {}),
+    });
+
+    const texts: string[] = [];
+    let usage: Record<string, number> | undefined;
+    const { events } = await thread.runStreamed(msg.prompt, {});
+    for await (const event of events) {
+      if (event.type === "item.started" || event.type === "item.completed") {
+        const item = event.item as {
+          type: string;
+          text?: string;
+          command?: string;
+          changes?: Array<{ path?: string }>;
+        };
+        if (item.type === "agent_message" && event.type === "item.completed" && item.text) {
+          texts.push(item.text);
+          const trimmed = truncate(item.text, 400);
+          if (trimmed) {
+            sendValidationAgentProgress(requestId, { kind: "text", text: trimmed });
+          }
+        } else if (item.type === "reasoning" && event.type === "item.completed" && item.text) {
+          const trimmed = truncate(item.text, 400);
+          if (trimmed) {
+            sendValidationAgentProgress(requestId, { kind: "text", text: trimmed });
+          }
+        } else if (item.type === "command_execution" && event.type === "item.started") {
+          sendValidationAgentProgress(requestId, {
+            kind: "tool",
+            tool: "Bash",
+            detail: truncate(item.command ?? "", 200),
+          });
+        } else if (item.type === "file_change" && event.type === "item.completed") {
+          const paths = (item.changes ?? [])
+            .map((c) => c.path)
+            .filter(Boolean)
+            .join(", ");
+          sendValidationAgentProgress(requestId, {
+            kind: "tool",
+            tool: "Edit",
+            detail: truncate(paths, 200),
+          });
+        }
+      } else if (event.type === "turn.completed") {
+        const u = (
+          event as {
+            usage?: {
+              input_tokens?: number;
+              cached_input_tokens?: number;
+              output_tokens?: number;
+            };
+          }
+        ).usage;
+        if (u) {
+          usage = {
+            inputTokens: u.input_tokens || 0,
+            outputTokens: u.output_tokens || 0,
+            cacheReadTokens: u.cached_input_tokens || 0,
+            cacheCreationTokens: 0,
+            totalCostUsd: 0,
+            durationMs: 0,
+          };
+        }
+      } else if (event.type === "turn.failed") {
+        const e = (event as { error?: { message?: string } }).error;
+        throw new Error(e?.message || "Codex turn failed");
+      } else if (event.type === "error") {
+        const m = (event as { message?: string }).message;
+        throw new Error(m || "Codex thread error");
+      }
+    }
+
+    sendValidationAgentResult(requestId, {
+      structured: {
+        summary:
+          texts.length > 0
+            ? texts[texts.length - 1]
+            : "Simplify agent finished without a summary.",
+      },
+      transcript: texts.join("\n\n"),
+      sdkSessionId: thread.id ?? undefined,
+      usage,
+    });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Codex simplify agent error: ${errorMessage}`,
+    });
+    sendValidationAgentError(requestId, errorMessage);
+  }
+}
+
 async function handleValidationAgent(msg: ValidationAgentMessage): Promise<void> {
   const requestId = msg.id;
+
+  // Simplify routes by model provider: GPT/Codex models run a headless
+  // workspace-write Codex thread; Claude models use the query() rail below.
+  if (msg.role === "simplify" && inferProvider(undefined, msg.model) === "openai") {
+    await runSimplifyCodexThread(msg);
+    return;
+  }
+
   send({
     type: "debug",
     id: requestId,
@@ -3539,11 +3707,20 @@ async function handleValidationAgent(msg: ValidationAgentMessage): Promise<void>
   });
 
   const role = buildValidationRole(msg.role);
+  // The simplify prompt is the Simplify skill verbatim; the Claude rail needs
+  // its structured-output submit instruction appended.
+  const queryMsg: ValidationAgentMessage =
+    msg.role === "simplify"
+      ? {
+          ...msg,
+          prompt: `${msg.prompt}\n\nWhen done, call submit_simplify with your summary.`,
+        }
+      : msg;
 
   try {
     let capture: ValidationCapture;
     try {
-      capture = await runValidationQuery(msg, role, msg.resumeSessionId);
+      capture = await runValidationQuery(queryMsg, role, msg.resumeSessionId);
     } catch (err) {
       // If a resumed query errors immediately, retry once with a fresh session.
       if (msg.resumeSessionId) {
@@ -3553,7 +3730,7 @@ async function handleValidationAgent(msg: ValidationAgentMessage): Promise<void>
           id: requestId,
           message: `Resumed validation query failed (${errorMessage}); retrying without resume`,
         });
-        capture = await runValidationQuery(msg, role, undefined);
+        capture = await runValidationQuery(queryMsg, role, undefined);
       } else {
         throw err;
       }

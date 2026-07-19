@@ -8,8 +8,9 @@
   // Only the user's active Claude models (Settings → Claude) are offered.
   const models = $derived(getEnabledModels($settings.enabled_models));
 
-  const STEP_ORDER = ["review", "test", "docs", "lint", "ship", "ci"] as const;
+  const STEP_ORDER = ["simplify", "review", "test", "docs", "lint", "ship", "ci"] as const;
   const STEP_LABELS: Record<string, string> = {
+    simplify: "Simplify",
     review: "Review",
     test: "Test",
     docs: "Docs",
