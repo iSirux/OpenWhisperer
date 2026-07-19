@@ -1,5 +1,6 @@
 import { get } from 'svelte/store';
 import { isRecording, recording } from '$lib/stores/recording';
+import { setCtrlHintsSuppressed } from '$lib/stores/ctrlHint';
 import { spaceSendTimingFromEvent, type SendTiming } from '$lib/utils/sendTiming';
 
 /** Default minimum total hold (ms) below which a hold is treated as a plain space. */
@@ -134,6 +135,10 @@ export function holdSpaceRecord(
     phase = next;
     if (next === 'idle') node.removeAttribute('data-hold-recording');
     else node.setAttribute('data-hold-recording', next);
+    // While a record-and-send gesture (modifier+Space) is actively recording,
+    // hide the modifier hint badges — the modifier is still held but the hint
+    // has done its job and shouldn't linger over the mic.
+    if (next === 'recording' && sendTiming !== null) setCtrlHintsSuppressed(true);
     opts.onState?.(next);
   }
 
@@ -149,6 +154,7 @@ export function holdSpaceRecord(
     leakedSpacePos = null;
     retractedSpacePos = null;
     busy = false;
+    setCtrlHintsSuppressed(false);
     setState('idle');
   }
 
@@ -343,6 +349,7 @@ export function holdSpaceRecord(
     },
     destroy() {
       clearWarmup();
+      setCtrlHintsSuppressed(false);
       node.removeEventListener('keydown', keydownListener);
       node.removeEventListener('keyup', keyupListener);
       node.removeEventListener('blur', onBlur);

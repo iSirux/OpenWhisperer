@@ -440,6 +440,25 @@
 
 </script>
 
+<!-- Modifier-held hint badge for the record-and-send mic button: mirrors the
+     Send button's badges (hold-Space +modifier records and sends with the same
+     timing; the mic button applies it on the stop click). -->
+{#snippet recordHintBadge()}
+  {#if $modifierCombo === "shift" && onSendSessionIdle}
+    <span class="ctrl-hint-badge" aria-hidden="true" title="Shift: record and send when this session is idle">
+      <SendTimingIcon timing="session_idle" />
+    </span>
+  {:else if $modifierCombo === "ctrl+shift" && onSendAfterIdle}
+    <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift: record and send when repo is idle">
+      <SendTimingIcon timing="repo_idle" />
+    </span>
+  {:else if $modifierCombo === "ctrl+shift+alt" && onScheduleSend}
+    <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift+Alt: record and send on next 5h reset">
+      <SendTimingIcon timing="reset_5h" />
+    </span>
+  {/if}
+{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="input-area" ondragover={handleDragOver} ondrop={handleDrop}>
   {#if pendingImages.length > 0 || isProcessingImages}
@@ -585,8 +604,11 @@
     {:else if isRecording && isRecordingForCurrentSession}
       <button
         class="record-button recording"
-        onclick={() => onStopRecording()}
-        title="Stop recording and send"
+        onclick={(e) => onStopRecording(sendTimingFromEvent(e))}
+        title={"Stop recording and send" +
+          (onSendSessionIdle ? " — Shift+click: send when this session is idle" : "") +
+          (onSendAfterIdle ? " — Ctrl+Shift+click: send when this repo/worktree is idle" : "") +
+          (onScheduleSend ? " — Ctrl+Shift+Alt+click: send on next 5h reset" : "")}
       >
         <div class="recording-dot"></div>
         <svg class="mic-icon" fill="currentColor" viewBox="0 0 20 20">
@@ -596,6 +618,7 @@
             clip-rule="evenodd"
           />
         </svg>
+        {@render recordHintBadge()}
       </button>
     {:else if !isRecording}
       <button
@@ -610,6 +633,7 @@
             clip-rule="evenodd"
           />
         </svg>
+        {@render recordHintBadge()}
       </button>
     {/if}
     {/if}

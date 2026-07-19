@@ -15,6 +15,7 @@ export type ModifierCombo = 'none' | 'ctrl' | 'shift' | 'ctrl+shift' | 'ctrl+shi
 
 const raw = { ctrl: false, shift: false, alt: false };
 let visible = false;
+let suppressed = false;
 let showTimer: ReturnType<typeof setTimeout> | null = null;
 
 const combo = writable<ModifierCombo>('none');
@@ -27,7 +28,19 @@ function currentCombo(): ModifierCombo {
 }
 
 function publish(): void {
-  combo.set(visible ? currentCombo() : 'none');
+  combo.set(visible && !suppressed ? currentCombo() : 'none');
+}
+
+/**
+ * Force-hide hint badges regardless of the held modifiers. Used while a
+ * hold-Space record-and-send gesture is actively recording: the modifier is
+ * still held, but the badge has served its purpose and shouldn't linger over
+ * the mic during the recording.
+ */
+export function setCtrlHintsSuppressed(next: boolean): void {
+  if (suppressed === next) return;
+  suppressed = next;
+  publish();
 }
 
 /** The modifier combo held long enough to show hint badges. */
