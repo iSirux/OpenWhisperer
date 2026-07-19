@@ -52,6 +52,7 @@
     handleSetupSessionStart,
   } from '$lib/stores/transcriptProcessor';
   import { isEditableElement } from '$lib/utils/hotkeys';
+  import { spaceSendTimingFromEvent, type SendTiming } from '$lib/utils/sendTiming';
 
   // Initialize composables (page-specific)
   const sidebar = useSidebarResize();
@@ -89,13 +90,18 @@
           startInlineRecording: () => Promise<void>;
           stopInlineRecording: () => Promise<void>;
           startSendRecording: () => Promise<void>;
-          stopSendRecording: () => Promise<void>;
+          stopSendRecording: (timing?: SendTiming) => Promise<void>;
         } | null;
       }
     | undefined;
   let isHoldingSpaceForInlineRecording = $state(false);
-  /** Whether the current page-level hold is the Shift+Space record-and-send variant. */
-  let holdSpaceIsSendVariant = false;
+  /**
+   * The send timing of the current page-level hold, or null when it's the plain
+   * (dictate) variant. Set from the held modifier combo on the initial press so
+   * every send-timing combo works from anywhere in the session — not just when
+   * the prompt textarea is focused (see utils/sendTiming.ts).
+   */
+  let holdSpaceSendTiming: SendTiming | null = null;
 
   // Show the multi-pane conversation area when any pane holds a session, or when
   // the user has split into multiple panes (even if the focused one is empty).
@@ -158,18 +164,30 @@
     );
   }
 
-  function canUseHoldSpaceInlineRecording(event: KeyboardEvent): boolean {
-    if (!$settings.audio.hold_space_to_record_inline) return false;
-    if (event.code !== 'Space') return false;
-    // Shift selects the record-and-send variant; other modifiers are ignored.
-    if (event.altKey || event.ctrlKey || event.metaKey) return false;
-    if (isInteractiveTarget(event.target)) return false;
-    if (!$activeSdkSession) return false;
-    if (currentView !== 'sessions') return false;
+  /**
+   * Which gesture a page-level Space press maps to: 'dictate' for a plain hold, a
+   * SendTiming for a modifier+Space record-and-send hold (Ctrl = now, Shift =
+   * session idle, Ctrl+Shift = repo/worktree idle, Ctrl+Shift+Alt = next 5h reset),
+   * or null when the Space should be left alone (feature off, not in a live
+   * session, focus is on an interactive element, or Alt-only typing). This is the
+   * window-level counterpart to the focused-textarea holdSpaceRecord action, so the
+   * full send-timing combo set works from anywhere in the session, not only when
+   * the prompt input has focus.
+   */
+  function holdSpaceGestureFor(event: KeyboardEvent): 'dictate' | SendTiming | null {
+    if (!$settings.audio.hold_space_to_record_inline) return null;
+    if (event.code !== 'Space') return null;
+    const timing = spaceSendTimingFromEvent(event);
+    // No send modifiers: a plain hold dictates; Alt-only Space is deliberate typing.
+    if (timing === null && event.altKey) return null;
+    if (isInteractiveTarget(event.target)) return null;
+    if (!$activeSdkSession) return null;
+    if (currentView !== 'sessions') return null;
     if ($activeSdkSession.status === 'pending_repo' || $activeSdkSession.status === 'initializing' || $activeSdkSession.status === 'setup') {
-      return false;
+      return null;
     }
-    return !!sessionPanesRef?.getFocusedSdkViewRef();
+    if (!sessionPanesRef?.getFocusedSdkViewRef()) return null;
+    return timing === null ? 'dictate' : timing;
   }
 
   async function handleInlineRecordingSpaceDown(event: KeyboardEvent) {
@@ -179,20 +197,21 @@
       return;
     }
     if (event.repeat) return;
-    if (!canUseHoldSpaceInlineRecording(event)) return;
+    const gesture = holdSpaceGestureFor(event);
+    if (gesture === null) return;
     if ($isRecording) return;
 
     event.preventDefault();
     isHoldingSpaceForInlineRecording = true;
-    holdSpaceIsSendVariant = event.shiftKey;
+    holdSpaceSendTiming = gesture === 'dictate' ? null : gesture;
 
     try {
       const view = sessionPanesRef?.getFocusedSdkViewRef();
-      if (holdSpaceIsSendVariant) await view?.startSendRecording();
+      if (holdSpaceSendTiming !== null) await view?.startSendRecording();
       else await view?.startInlineRecording();
       if (!isHoldingSpaceForInlineRecording && $isRecording) {
         // Released before start settled — stop through the same variant.
-        if (holdSpaceIsSendVariant) await view?.stopSendRecording();
+        if (holdSpaceSendTiming !== null) await view?.stopSendRecording(holdSpaceSendTiming);
         else await view?.stopInlineRecording();
       }
     } catch (error) {
@@ -207,7 +226,7 @@
 
     try {
       const view = sessionPanesRef?.getFocusedSdkViewRef();
-      if (holdSpaceIsSendVariant) await view?.stopSendRecording();
+      if (holdSpaceSendTiming !== null) await view?.stopSendRecording(holdSpaceSendTiming);
       else await view?.stopInlineRecording();
     } catch (error) {
       console.error('[sessions-page] Failed to stop inline hold-to-record:', error);

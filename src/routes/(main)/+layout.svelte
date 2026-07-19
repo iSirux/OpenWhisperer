@@ -87,6 +87,7 @@
   let cleanupPeriodicSave: (() => void) | null = null;
   let cleanupSmartQueue: (() => void) | null = null;
   let cleanupSpareTokens: (() => void) | null = null;
+  let cleanupUpdateChecks: (() => void) | null = null;
 
   // Wire the recording flow store to the hotkey manager
   recordingFlow.setHotkeyCallbacks({
@@ -373,8 +374,11 @@
       return;
     }
 
-    // App update check per settings (fire-and-forget; skipped in dev builds)
-    void updater.startupCheck($settings.system.update_check ?? 'Notify');
+    // App update check per settings (fire-and-forget; skipped in dev builds),
+    // then keep polling hourly so long-running sessions pick up new releases.
+    const updateCheckMode = $settings.system.update_check ?? 'Notify';
+    void updater.startupCheck(updateCheckMode);
+    cleanupUpdateChecks = updater.startPeriodicChecks(updateCheckMode);
 
     // Load persisted sessions if enabled
     if ($settings.session_persistence.enabled) {
@@ -487,6 +491,7 @@
     if (cleanupPeriodicSave) cleanupPeriodicSave();
     if (cleanupSmartQueue) cleanupSmartQueue();
     if (cleanupSpareTokens) cleanupSpareTokens();
+    if (cleanupUpdateChecks) cleanupUpdateChecks();
     cleanupSequenceExecutionListeners();
 
     saveSessionsToDisk();

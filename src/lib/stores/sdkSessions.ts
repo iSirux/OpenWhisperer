@@ -162,6 +162,15 @@ export interface SdkMessage {
   taskUsage?: { total_tokens: number; tool_uses: number; duration_ms: number };
   /** SDK assistant turn UUID (for fork support - identifies the conversation turn) */
   turnUuid?: string;
+  /**
+   * Set on a deliberately-parked user turn that has NOT been sent yet (Smart Queue
+   * "send when idle" / "send at next reset"). The value is the send-timing that
+   * created it (a subset of `SendTiming`: 'session_idle' | 'repo_idle' | 'reset_5h').
+   * While set, the message is pulled out of the scrolling transcript and rendered as
+   * a pinned "ghost" bubble; it's cleared when the turn actually sends
+   * (`continueRateLimited`) or removed entirely on cancel (`clearRateLimited`).
+   */
+  queued?: 'session_idle' | 'repo_idle' | 'reset_5h';
   timestamp: number;
 }
 
@@ -3298,7 +3307,7 @@ function createSdkSessionsStore() {
                 // Keep the session out of an active/error state — the turn is deferred, not running.
                 status: s.status === 'querying' ? ('idle' as const) : s.status,
                 lastActivityAt: now,
-                messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: now }],
+                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: 'reset_5h' as const, timestamp: now }],
                 draftPrompt: undefined,
                 draftImages: undefined,
                 rateLimited: {
@@ -3350,7 +3359,7 @@ function createSdkSessionsStore() {
             ? {
                 ...s,
                 lastActivityAt: now,
-                messages: [...s.messages, { type: 'user' as const, content: prompt, images, timestamp: now }],
+                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: scope === 'session' ? ('session_idle' as const) : ('repo_idle' as const), timestamp: now }],
                 draftPrompt: undefined,
                 draftImages: undefined,
                 rateLimited: {
@@ -3390,6 +3399,11 @@ function createSdkSessionsStore() {
                 status: 'querying' as const,
                 lastActivityAt: Date.now(),
                 rateLimited: null,
+                // The parked ghost turn is now sending — drop the queued flag so it
+                // renders as a normal user message in the transcript.
+                messages: s.messages.some(m => m.queued)
+                  ? s.messages.map(m => (m.queued ? { ...m, queued: undefined } : m))
+                  : s.messages,
                 inFlightPrompt: rl.prompt,
                 inFlightImages: rl.images ?? null,
               }
@@ -3426,9 +3440,17 @@ function createSdkSessionsStore() {
           const rl = s.rateLimited;
           let messages = s.messages;
           if (rl.reason !== 'rate_limit') {
-            const last = messages[messages.length - 1];
-            if (last && last.type === 'user' && last.content === rl.prompt) {
-              messages = messages.slice(0, -1);
+            // Drop the parked ghost bubble. It carries a `queued` flag and may be
+            // buried mid-transcript (a still-running turn keeps appending after it),
+            // so remove by flag rather than assuming it's the trailing message. Fall
+            // back to the legacy trailing prompt-match for pre-flag persisted turns.
+            if (messages.some(m => m.queued)) {
+              messages = messages.filter(m => !m.queued);
+            } else {
+              const last = messages[messages.length - 1];
+              if (last && last.type === 'user' && last.content === rl.prompt) {
+                messages = messages.slice(0, -1);
+              }
             }
           }
           return { ...s, rateLimited: null, messages };

@@ -1,6 +1,7 @@
 import { get, writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { repos, findRepoById, type RepoConfig } from '$lib/stores/repos';
+import { settings } from '$lib/stores/settings';
 import { findRepoByPath } from '$lib/utils/repoIcons';
 import {
   sdkSessions,
@@ -116,6 +117,31 @@ function sessionBranch(session: SdkSession): string | null {
   return session.currentBranch?.trim() || session.createdBranch?.trim() || null;
 }
 
+/**
+ * Stable key for the "worktree scope" a session's PR belongs to: the same
+ * checked-out directory + branch. Sessions sharing a scope are looking at the
+ * exact same PR, so their PR state must stay in lock-step (that's the divergence
+ * bug when several sessions run in one worktree). Null when the session isn't a
+ * shareable PR candidate (no cwd or no branch).
+ */
+function scopeKeyFor(session: SdkSession): string | null {
+  if (!session.cwd || session.cwd === '.') return null;
+  const branch = sessionBranch(session);
+  if (!branch) return null;
+  return `${normalizeScopePath(session.cwd)}::${branch}`;
+}
+
+/** All live sessions in the same worktree scope (including `session` itself). */
+function scopeSiblings(session: SdkSession): SdkSession[] {
+  const key = scopeKeyFor(session);
+  if (!key) return [session];
+  return get(sdkSessions).filter((s) => scopeKeyFor(s) === key);
+}
+
+/** Scopes for which we've already auto-opened the PR panel this app session, so
+ *  a manually-closed panel isn't reopened on every subsequent poll. */
+const autoOpenedScopes = new Set<string>();
+
 function resolveRepo(session: SdkSession): RepoConfig | undefined {
   const list = get(repos).list;
   return (
@@ -165,18 +191,48 @@ function createSessionPrsStore() {
     const branch = sessionBranch(session);
     if (!branch) return;
     const repo = resolveRepo(session);
-    patch(session.id, { loading: true, error: null });
+    // Mark every session in the scope as loading so a sibling's detection tick
+    // doesn't kick off a second concurrent fetch of the same PR.
+    const siblings = scopeSiblings(session);
+    for (const s of siblings) patch(s.id, { loading: true, error: null });
     try {
       const pr = await invoke<GitHubPrStatus | null>('fetch_branch_pr', {
         repoPath: session.cwd,
         ghUser: repo?.gh_user || null,
         branch,
       });
-      patch(session.id, { pr, loading: false, lastFetched: Date.now() });
-      sdkSessions.setSessionPr(session.id, pr ? toSummary(pr) : null);
+      const now = Date.now();
+      // The result is the same PR for every session in the scope — apply it to
+      // all of them so their badges/panels never diverge.
+      const wasKnown = siblings.some((s) => entryFor(s.id).pr != null);
+      const summary = pr ? toSummary(pr) : null;
+      for (const s of siblings) {
+        patch(s.id, { pr, loading: false, lastFetched: now });
+        sdkSessions.setSessionPr(s.id, summary);
+      }
+      maybeAutoOpen(session, pr, wasKnown);
     } catch (e) {
-      patch(session.id, { loading: false, error: String(e), lastFetched: Date.now() });
+      // Keep siblings' last good PR; only the initiating session records the error.
+      for (const s of siblings) patch(s.id, { loading: false });
+      patch(session.id, { error: String(e), lastFetched: Date.now() });
     }
+  }
+
+  /** Open the PR panel across the scope the first time a PR appears, if enabled. */
+  function maybeAutoOpen(
+    session: SdkSession,
+    pr: GitHubPrStatus | null,
+    wasKnown: boolean,
+  ): void {
+    if (!pr || wasKnown) return;
+    // Only surface an actionable PR — a merged/closed one shouldn't pop the panel
+    // open (e.g. the first detect after an app restart). Drafts are state "open".
+    if (pr.state !== 'open') return;
+    if (!get(settings).auto_open_session_panels) return;
+    const key = scopeKeyFor(session);
+    if (!key || autoOpenedScopes.has(key)) return;
+    autoOpenedScopes.add(key);
+    for (const s of scopeSiblings(session)) patch(s.id, { panelOpen: true });
   }
 
   return {
@@ -191,7 +247,17 @@ function createSessionPrsStore() {
     async detectIfStale(session: SdkSession, force = false): Promise<void> {
       const entry = entryFor(session.id);
       if (entry.loading || entry.merging) return;
-      if (!force && entry.lastFetched && Date.now() - entry.lastFetched < STALE_MS) return;
+      // Scope-aware freshness: if a session sharing this worktree is already
+      // fetching, or fetched recently, reuse that instead of a duplicate call —
+      // its result is propagated to us by `refresh`.
+      const now = Date.now();
+      for (const s of scopeSiblings(session)) {
+        if (s.id === session.id) continue;
+        const sib = entryFor(s.id);
+        if (sib.loading) return;
+        if (!force && sib.lastFetched && now - sib.lastFetched < STALE_MS) return;
+      }
+      if (!force && entry.lastFetched && now - entry.lastFetched < STALE_MS) return;
       if (!(await isCandidate(session))) return;
       await refresh(session);
     },
@@ -245,7 +311,11 @@ function createSessionPrsStore() {
           branch,
           worktreePath: isWorktree ? session.cwd : null,
         });
-        patch(session.id, { cleaning: false, cleanupResult: result });
+        // The branch/worktree is now gone for every session in the scope — stop
+        // them all from re-fetching a dead path.
+        for (const s of scopeSiblings(session)) {
+          patch(s.id, { cleaning: false, cleanupResult: result });
+        }
       } catch (e) {
         patch(session.id, { cleaning: false, cleanupError: String(e) });
       }

@@ -612,6 +612,9 @@ export interface AppConfig {
   validation: ValidationConfig;
   /** Inject a system message notifying agents that other agents may be working in parallel */
   notify_parallel_agents: boolean;
+  /** Automatically open a session's dock panel when its PR is detected or a
+   *  validation run needs attention (gate / pass / fail). */
+  auto_open_session_panels: boolean;
   /** User-defined quick action prompts shown in SDK sessions */
   quick_actions: string[];
   /** User-defined toggleable prompt chips appended to prompts before sending */
@@ -858,6 +861,7 @@ const defaultConfig: AppConfig = {
     agent_timeout_minutes: 60,
   },
   notify_parallel_agents: true,
+  auto_open_session_panels: true,
   quick_actions: [
     "Go",
     "Implement this",

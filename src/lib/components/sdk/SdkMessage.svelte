@@ -56,6 +56,11 @@
     return icons[tool] || `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5.433 2.304A4.494 4.494 0 0 0 3.5 6c0 1.598.832 3.002 2.09 3.802.518.328.929.923.929 1.61v.89a1 1 0 0 1-1.003 1c-.573 0-1.043.451-1.09 1.023l-.008.112a1.25 1.25 0 0 0 1.245 1.363h4.674a1.25 1.25 0 0 0 1.247-1.363l-.008-.112a1.103 1.103 0 0 0-1.09-1.023 1 1 0 0 1-1.003-1v-.89c0-.687.41-1.282.929-1.61A4.494 4.494 0 0 0 12.5 6a4.494 4.494 0 0 0-1.933-3.696c-.024.017-.067.067-.067.146v.452a.25.25 0 0 1-.25.25h-.5a.75.75 0 0 1-.75-.75v-.452c0-.326.11-.679.397-.894A2.975 2.975 0 0 1 8 1c-.52 0-1.017.133-1.446.361.271.222.379.559.379.869v.422a.75.75 0 0 1-.75.75h-.5a.25.25 0 0 1-.25-.25v-.452c0-.099-.048-.157-.085-.185a4.512 4.512 0 0 0-.915-.311Z"/></svg>`;
   }
 
+  // Wall-clock time a message was sent, e.g. "17:42" (24h).
+  function formatTime(ts: number): string {
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+
   // Format duration in seconds
   function formatDuration(ms: number | undefined): string {
     if (!ms) return "";
@@ -77,6 +82,7 @@
 <div class="message message-{message.type}">
   {#if message.type === "user"}
     <div class="user-message">
+      <div class="user-timestamp">{formatTime(message.timestamp)}</div>
       <div class="user-message-body">
         {#if message.images && message.images.length > 0}
           <div class="message-images">
@@ -339,9 +345,18 @@
 
   .user-message {
     padding: 0.75rem 1rem;
-    background: var(--color-surface);
+    /* Accent tint (not the neutral surface used by agent code blocks) so a sent
+       user turn is visually distinct from the agent's rendered markdown. */
+    background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
     border-radius: 8px;
     position: relative;
+  }
+
+  .user-timestamp {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    margin-bottom: 0.375rem;
+    font-variant-numeric: tabular-nums;
   }
 
   .user-message-body {

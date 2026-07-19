@@ -74,8 +74,33 @@ function createUpdaterStore() {
    * Download and install the available update. On Windows the installer takes
    * over and the app exits before this resolves; on macOS/Linux the promise
    * resolves and the caller may offer a restart.
+   *
+   * Re-checks the endpoint first so we install the newest version even if a
+   * fresher release was published since the update was originally detected
+   * (the cached handle could otherwise point at an already-superseded build).
    */
   async function downloadAndInstall(): Promise<boolean> {
+    // Refresh the update handle before committing to an install.
+    try {
+      const latest = await check();
+      if (!latest) {
+        // The endpoint no longer offers an update — nothing to install.
+        currentUpdate = null;
+        set({ ...initialState, status: "upToDate" });
+        return false;
+      }
+      currentUpdate = latest;
+      update((st) => ({
+        ...st,
+        version: latest.version,
+        notes: latest.body ?? null,
+      }));
+    } catch (e) {
+      console.error("[updater] Re-check before install failed:", e);
+      set({ ...initialState, status: "error", error: String(e) });
+      return false;
+    }
+
     if (!currentUpdate) return false;
     let total = 0;
     let received = 0;
@@ -114,11 +139,14 @@ function createUpdaterStore() {
   }
 
   /**
-   * Startup check per the system.update_check setting. Skipped in dev builds —
-   * a dev build always looks older than the published release.
+   * Scheduled check per the system.update_check setting. Skipped in dev builds —
+   * a dev build always looks older than the published release. Notifies (status
+   * flips to "available", driving the header pill) or, in Auto mode, downloads
+   * and installs.
    */
-  async function startupCheck(mode: UpdateCheckMode): Promise<void> {
+  async function scheduledCheck(mode: UpdateCheckMode): Promise<void> {
     if (import.meta.env.DEV || mode === "Off") return;
+    lastCheckAt = Date.now();
     const available = await checkForUpdate();
     if (available && mode === "Auto") {
       const installed = await downloadAndInstall();
@@ -127,12 +155,68 @@ function createUpdaterStore() {
     }
   }
 
+  /** Startup check, run once when the app boots. */
+  async function startupCheck(mode: UpdateCheckMode): Promise<void> {
+    await scheduledCheck(mode);
+  }
+
+  const PERIODIC_INTERVAL_MS = 60 * 60 * 1000; // check at most hourly
+  const POLL_INTERVAL_MS = 5 * 60 * 1000; // wake up every 5 min to re-evaluate
+
+  let periodicTimer: ReturnType<typeof setInterval> | null = null;
+  let onFocus: (() => void) | null = null;
+  let lastCheckAt = 0;
+
+  /** Whether the app window currently has focus (assume yes if unavailable). */
+  function appFocused(): boolean {
+    return typeof document === "undefined" ? true : document.hasFocus();
+  }
+
+  function stopPeriodicChecks(): void {
+    if (periodicTimer != null) {
+      clearInterval(periodicTimer);
+      periodicTimer = null;
+    }
+    if (onFocus != null && typeof window !== "undefined") {
+      window.removeEventListener("focus", onFocus);
+      onFocus = null;
+    }
+  }
+
+  /** Run a scheduled check only if the app is focused and an hour has elapsed. */
+  async function maybeScheduledCheck(mode: UpdateCheckMode): Promise<void> {
+    if (!appFocused()) return;
+    if (Date.now() - lastCheckAt < PERIODIC_INTERVAL_MS) return;
+    await scheduledCheck(mode);
+  }
+
+  /**
+   * Keep the update state fresh for long-running app sessions. Only checks while
+   * the app window is focused (no background polling) and at most once an hour;
+   * also re-evaluates when the window regains focus. Returns a cleanup fn.
+   * No-op in dev builds or when update checks are disabled.
+   */
+  function startPeriodicChecks(mode: UpdateCheckMode): () => void {
+    stopPeriodicChecks();
+    if (import.meta.env.DEV || mode === "Off") return () => {};
+    periodicTimer = setInterval(() => {
+      void maybeScheduledCheck(mode);
+    }, POLL_INTERVAL_MS);
+    if (typeof window !== "undefined") {
+      onFocus = () => void maybeScheduledCheck(mode);
+      window.addEventListener("focus", onFocus);
+    }
+    return stopPeriodicChecks;
+  }
+
   return {
     subscribe,
     checkForUpdate,
     downloadAndInstall,
     restart,
     startupCheck,
+    startPeriodicChecks,
+    stopPeriodicChecks,
     reset: () => set(initialState),
   };
 }

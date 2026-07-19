@@ -20,6 +20,7 @@ import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { sdkSessions, type SdkSession, type SessionValidationSummary } from './sdkSessions';
+import { settings } from './settings';
 import { buildFixPrompt } from '$lib/utils/validationFix';
 
 // ---------------------------------------------------------------------------
@@ -386,10 +387,13 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
       userFindings = [];
     }
     // A new gate needs the user's attention, and pass/fail is the outcome they
-    // were waiting for — reopen a closed panel for both.
+    // were waiting for — reopen a closed panel for both, unless the user has
+    // turned off auto-opening session panels.
     let panelOpen = prev.panelOpen;
-    if (sig !== prev.gateSignature && incoming.gate) panelOpen = true;
+    const autoOpen = get(settings).auto_open_session_panels;
+    if (autoOpen && sig !== prev.gateSignature && incoming.gate) panelOpen = true;
     if (
+      autoOpen &&
       prev.status !== incoming.status &&
       (incoming.status === 'passed' || incoming.status === 'failed')
     ) {

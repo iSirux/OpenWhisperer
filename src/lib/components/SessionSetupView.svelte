@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
   import { normalizeEffortLevel, sdkSessions, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
   import type { QueueWindow } from '$lib/stores/queueDetection';
@@ -9,6 +11,7 @@
   import { appendChips } from '$lib/utils/promptChips';
   import SdkQuickActions from '$lib/components/sdk/SdkQuickActions.svelte';
   import { isRecording, isTranscribing, recording } from '$lib/stores/recording';
+  import { isRecordingForSetup as isRecordingForSetupStore } from '$lib/stores/recordingFlow';
   import { DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
   import PromptTextarea from '$lib/components/PromptTextarea.svelte';
   import {
@@ -143,6 +146,15 @@
   let isAwaitingTranscript = $state(false);
   let promptTextareaRef: PromptTextarea | undefined;
   let prevSessionId = $state(sessionId);
+  /**
+   * The setup session that owns the in-flight recording. This component is REUSED
+   * (not remounted) when switching between setup sessions, so the reactive
+   * `sessionId` can change out from under an in-flight transcription — capturing
+   * the owner at record time lets `handleStopRecording` file the transcript on the
+   * right session instead of whichever setup session happens to be showing when it
+   * resolves. Null when no button/global-hold recording is in flight.
+   */
+  let recordingSessionId: string | null = null;
 
   // Worktree state
   let worktreeMode = $state<'main' | 'new' | 'existing'>(initialWorktreeMode);
@@ -209,6 +221,18 @@
   // Restore full setup state when switching between setup sessions.
   $effect(() => {
     if (sessionId !== prevSessionId) {
+      // A setup recording owned by the previous session is still live as we switch
+      // to another setup session. This component is REUSED (not remounted), so
+      // onDestroy won't fire — finalize the recording here, targeting its owner via
+      // recordingSessionId, so its transcript lands on the right session instead of
+      // the mic being left running with no UI to stop it.
+      if (
+        get(isRecording) &&
+        get(isRecordingForSetupStore) &&
+        recordingSessionId === prevSessionId
+      ) {
+        void handleStopRecording();
+      }
       model = initialModel;
       provider = initialProvider ?? getProviderForModel(initialModel);
       effortLevel = normalizeEffortLevel(initialEffortLevel);
@@ -282,6 +306,18 @@
     prompt;
     pendingImages;
     onDraftChange?.(sessionId, prompt, toSdkImageContent(pendingImages));
+  });
+
+  // A setup recording started from this view is still live when the view is torn
+  // down (user switched session/view mid-recording). Don't orphan the mic — stop,
+  // transcribe, and persist the transcript into the draft (handleStopRecording
+  // writes straight to the store) instead of leaving it running with no UI to stop
+  // it. Only one setup recording can be live at a time, so isRecordingForSetup
+  // guarantees the live recording is this view's.
+  onDestroy(() => {
+    if (get(isRecording) && get(isRecordingForSetupStore)) {
+      void handleStopRecording();
+    }
   });
 
   // Sync local config back to the store so setup-session state survives session switching.
@@ -495,14 +531,39 @@
     pendingImages = pendingImages.filter((_, i) => i !== index);
   }
 
-  // Recording handling
+  // Recording handling. Tag the recording with the session that owns it so a
+  // late-resolving transcript can be filed correctly even if the displayed
+  // session changed while it was in flight.
+  function handleStartRecording() {
+    recordingSessionId = sessionId;
+    return onStartRecording();
+  }
+
   async function handleStopRecording() {
+    // Capture the owner synchronously — `sessionId` may change (setup→setup switch)
+    // before the transcription resolves.
+    const target = recordingSessionId ?? sessionId;
+    recordingSessionId = null;
     isAwaitingTranscript = true;
     try {
       const transcript = await onStopRecording();
       if (transcript) {
-        // Append to existing prompt with a space separator
-        prompt = prompt ? `${prompt} ${transcript}` : transcript;
+        if (target === sessionId) {
+          // Still viewing the owning session — update the live prompt and persist.
+          // The explicit persist also covers the view being torn down mid-
+          // transcription (the reactive draft-persist effect is dead after unmount).
+          const combined = prompt ? `${prompt} ${transcript}` : transcript;
+          prompt = combined;
+          onDraftChange?.(sessionId, combined, toSdkImageContent(pendingImages));
+        } else {
+          // The user switched to a DIFFERENT setup session mid-transcription — append
+          // to the owning session's stored draft so the transcript isn't lost or
+          // misfiled onto the now-displayed session.
+          const owner = sdkSessions.getSession(target);
+          const existing = (owner?.draftPrompt ?? '').trim();
+          const combined = existing ? `${existing} ${transcript}` : transcript;
+          onDraftChange?.(target, combined, owner?.draftImages ?? []);
+        }
       }
     } finally {
       isAwaitingTranscript = false;
@@ -563,7 +624,7 @@
     }
     globalHoldPhase = 'recording';
     globalHoldStartSettled = Promise.resolve()
-      .then(() => onStartRecording())
+      .then(() => handleStartRecording())
       .catch((err) => {
         console.error('[SessionSetupView] Failed to start hold-Space recording:', err);
         globalHoldReset();
@@ -999,7 +1060,7 @@
           // the held combo picks the timing.
           send: {
             canStart: () => !$isRecording && !$isTranscribing && !isAwaitingTranscript,
-            start: () => onStartRecording(),
+            start: () => handleStartRecording(),
             stop: (timing) => recordAndFinish(timing),
           },
         }}
@@ -1044,7 +1105,7 @@
             Stop Recording
           </button>
         {:else if !$isRecording}
-          <button class="record-btn" onclick={onStartRecording}>
+          <button class="record-btn" onclick={handleStartRecording}>
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
             </svg>

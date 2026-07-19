@@ -223,6 +223,11 @@ pub struct AppConfig {
     /// Inject a system message notifying agents that other agents may be working in parallel
     #[serde(default = "default_notify_parallel_agents")]
     pub notify_parallel_agents: bool,
+    /// Automatically open a session's dock panel when its PR is detected or a
+    /// validation run needs attention (gate / pass / fail). When off, the panels
+    /// only open on explicit user action.
+    #[serde(default = "default_true")]
+    pub auto_open_session_panels: bool,
     /// User-defined quick action prompts shown in SDK sessions
     #[serde(default = "default_quick_actions")]
     pub quick_actions: Vec<String>,
@@ -399,6 +404,7 @@ impl Default for AppConfig {
             queue: QueueConfig::default(),
             validation: ValidationConfig::default(),
             notify_parallel_agents: default_notify_parallel_agents(),
+            auto_open_session_panels: true,
             quick_actions: default_quick_actions(),
             prompt_chips: default_prompt_chips(),
             server_command_patterns: default_server_command_patterns(),

@@ -34,6 +34,7 @@
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
   import RateLimitBanner from "./sdk/RateLimitBanner.svelte";
+  import QueuedTurnGhost from "./sdk/QueuedTurnGhost.svelte";
   import { type QueueWindow } from "$lib/stores/queueDetection";
   import { type SendTiming } from "$lib/utils/sendTiming";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
@@ -85,7 +86,25 @@
       new Map<string, SessionScrollState>()));
 
   let messages = $derived(session?.messages ?? []);
-  let processedMessages = $derived(processSdkMessages(messages));
+  // A deliberately-parked turn (Smart Queue "send when idle" / "at next reset") is
+  // carried in the transcript as a flagged user message but rendered as a pinned
+  // "ghost" bubble at the bottom instead — so pull it out of the scrolling flow. It
+  // can be buried mid-array when the still-running turn keeps appending, so we find
+  // it by flag (findLast, to match the latest parked turn) rather than by position.
+  let ghostMessage = $derived.by(() => {
+    const rl = session?.rateLimited;
+    // Only deliberately-parked turns (not a real mid-run rate-limit rejection) render
+    // as a ghost; the latter keeps the top banner.
+    if (!rl || rl.reason === "rate_limit") return undefined;
+    const flagged = messages.findLast((m) => m.queued);
+    if (flagged) return flagged;
+    // Legacy fallback: turns parked before the `queued` flag existed have no flag, so
+    // match the trailing user bubble against the parked prompt (as clearRateLimited does).
+    const last = messages[messages.length - 1];
+    return last && last.type === "user" && last.content === rl.prompt ? last : undefined;
+  });
+  let visibleMessages = $derived(ghostMessage ? messages.filter((m) => m !== ghostMessage) : messages);
+  let processedMessages = $derived(processSdkMessages(visibleMessages));
   let renderItems = $derived(
     buildRenderItems(processedMessages, $settings.tool_display_mode === "grid"),
   );
@@ -306,13 +325,14 @@
   }
 
   // Record-and-send variant (the mic-button flow) for the page-level
-  // Shift+Space hold: transcribes and sends to the session on stop.
+  // modifier+Space hold: transcribes and sends to the session on stop, with the
+  // send timing chosen by the held modifier combo (see utils/sendTiming.ts).
   export async function startSendRecording() {
     await handleStartRecording();
   }
 
-  export async function stopSendRecording() {
-    await handleStopRecording();
+  export async function stopSendRecording(timing: SendTiming = "now") {
+    await handleStopRecording(timing);
   }
 
   // Track previous session ID to save draft and scroll position before switching
@@ -582,6 +602,18 @@
   onDestroy(() => {
     console.log(`[SdkView] Destroy (session: ${sessionId}, hasPlanApproval: ${hasPlanApproval})`);
     persistCurrentScrollState(sessionId);
+    // A follow-up recording started from THIS view is still live when the view is
+    // torn down (user switched session/pane/view mid-recording). Don't orphan it —
+    // stop, transcribe, and stash the text in the session draft (store-backed, so
+    // it survives the unmount and reappears when the session is reopened) instead
+    // of leaving the mic running with no UI to stop it. The local flags guarantee
+    // this recording is ours, so we never hijack a global/other-view recording.
+    if (
+      get(isRecording) &&
+      (isRecordingForCurrentSession || isInlineRecordingForCurrentSession)
+    ) {
+      void handleStopInlineRecording();
+    }
     unsubscribe?.();
     unlistenVoiceCommand?.();
     unlistenVoiceCommand = null;
@@ -837,6 +869,24 @@
     if (promptInputRef) promptInputRef.clearInput();
     else sdkSessions.updateDraft(sessionId, "", undefined);
     return { text, images: images.length > 0 ? images : undefined };
+  }
+
+  /**
+   * Append transcribed follow-up text to the prompt. Uses the live input when the
+   * view is mounted; otherwise writes straight to the session's draft store so the
+   * transcript survives the view being torn down (switching session/pane/view mid-
+   * transcription) and reappears when the session is opened again.
+   */
+  function appendTranscriptToDraft(text: string) {
+    if (!text.trim()) return;
+    if (promptInputRef) {
+      promptInputRef.appendToPrompt(text);
+      return;
+    }
+    const current = sdkSessions.getSession(sessionId);
+    const existing = (current?.draftPrompt ?? "").trim();
+    const combined = existing ? `${existing} ${text.trim()}` : text.trim();
+    sdkSessions.updateDraft(sessionId, combined, current?.draftImages);
   }
 
   /** Draft + action combined: the typed draft leads, the action text follows. */
@@ -1273,7 +1323,7 @@
 
   async function handleStopInlineRecording() {
     const text = await transcribeInlineToText();
-    if (text) promptInputRef?.appendToPrompt(text);
+    if (text) appendTranscriptToDraft(text);
   }
 
   // --- Failed follow-up recordings (transcription failed for a live session) ---
@@ -1376,7 +1426,7 @@
           : finalTranscript;
         await sdkSessions.sendPrompt(sessionId, combined, draft.images);
       } else {
-        promptInputRef?.appendToPrompt(finalTranscript);
+        appendTranscriptToDraft(finalTranscript);
       }
       invoke("delete_pile_audio", { id: fr.audioId }).catch(() => {});
       sdkSessions.clearFailedRecording(sessionId);
@@ -1611,7 +1661,10 @@
     <ContextOverflowBanner session={session} />
   {/if}
 
-  {#if session?.rateLimited}
+  <!-- Deliberately-parked turns ("send when idle" / "at next reset") render as a
+       ghost bubble pinned at the bottom of the transcript; the top banner is kept
+       only for a real turn rejected mid-run by a rate limit. -->
+  {#if session?.rateLimited && session.rateLimited.reason === 'rate_limit'}
     <RateLimitBanner session={session} />
   {/if}
 
@@ -1862,6 +1915,12 @@
           onApproveNewSession={handleApprovePlanNewSession}
           onDeny={handleDenyPlan}
         />
+      {/if}
+
+      <!-- Parked ("send when idle" / "at next reset") turn, pinned at the bottom so
+           it doesn't get buried by the still-running turn's streaming. -->
+      {#if ghostMessage && session}
+        <QueuedTurnGhost {session} message={ghostMessage} />
       {/if}
 
     </div>

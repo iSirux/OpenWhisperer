@@ -306,6 +306,22 @@
   <div class="flex items-center justify-between">
     <div>
       <label class="text-sm font-medium text-text-secondary"
+        >Auto-open PR &amp; Validation Panels</label
+      >
+      <p class="text-xs text-text-muted">
+        Automatically open a session's dock panel when its pull request is detected or a
+        validation run needs your attention
+      </p>
+    </div>
+    <input
+      type="checkbox"
+      class="toggle"
+      bind:checked={$settings.auto_open_session_panels}
+    />
+  </div>
+  <div class="flex items-center justify-between">
+    <div>
+      <label class="text-sm font-medium text-text-secondary"
         >Notify Agents of Parallel Work</label
       >
       <p class="text-xs text-text-muted">

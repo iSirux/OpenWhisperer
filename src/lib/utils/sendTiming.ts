@@ -34,3 +34,17 @@ export function spaceSendTimingFromEvent(e: ModifierLike): SendTiming | null {
   if (!e.ctrlKey && !e.metaKey && !e.shiftKey) return null;
   return sendTimingFromEvent(e);
 }
+
+/** Human-readable description of a deferred send timing (for parked-turn UI). */
+export function sendTimingLabel(timing: SendTiming): string {
+  switch (timing) {
+    case 'session_idle':
+      return 'Sends when this session is idle';
+    case 'repo_idle':
+      return 'Sends when the repo is idle';
+    case 'reset_5h':
+      return 'Sends at the next 5-hour reset';
+    default:
+      return 'Sends now';
+  }
+}

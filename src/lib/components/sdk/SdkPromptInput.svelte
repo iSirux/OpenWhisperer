@@ -9,6 +9,7 @@
     type ImageData,
   } from "$lib/utils/image";
   import PromptTextarea from "$lib/components/PromptTextarea.svelte";
+  import SendTimingIcon from "./SendTimingIcon.svelte";
   import {
     sendTimingFromEvent,
     type SendTiming,
@@ -628,19 +629,16 @@
         Send
         {#if hasDraft && $modifierCombo === "shift" && onSendSessionIdle}
           <span class="ctrl-hint-badge" aria-hidden="true" title="Shift+click: send when this session is idle">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M6 2h12M6 22h12M8 2v4l4 4 4-4V2M8 22v-4l4-4 4 4v4" />
-            </svg>
+            <SendTimingIcon timing="session_idle" />
           </span>
         {:else if hasDraft && $modifierCombo === "ctrl+shift" && onSendAfterIdle}
           <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift+click: send when repo is idle">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
+            <SendTimingIcon timing="repo_idle" />
           </span>
         {:else if hasDraft && $modifierCombo === "ctrl+shift+alt" && onScheduleSend}
-          <span class="ctrl-hint-badge text-badge" aria-hidden="true" title="Ctrl+Shift+Alt+click: send on next 5h reset">5h</span>
+          <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift+Alt+click: send on next 5h reset">
+            <SendTimingIcon timing="reset_5h" />
+          </span>
         {/if}
       </button>
       {#if showScheduleCaret}
@@ -806,17 +804,6 @@
     z-index: 5;
     pointer-events: none;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-  }
-
-  .ctrl-hint-badge svg {
-    width: 11px;
-    height: 11px;
-  }
-
-  .ctrl-hint-badge.text-badge {
-    font-size: 0.5rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
   }
 
   .send-caret {

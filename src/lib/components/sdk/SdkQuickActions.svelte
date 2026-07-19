@@ -3,6 +3,7 @@
   import { settings } from '$lib/stores/settings';
   import { modifierCombo } from '$lib/stores/ctrlHint';
   import { sendTimingFromEvent } from '$lib/utils/sendTiming';
+  import SendTimingIcon from './SendTimingIcon.svelte';
 
   let {
     onAppend,
@@ -98,25 +99,20 @@
         {action.label ?? action.prompt}
         {#if $modifierCombo === 'ctrl'}
           <span class="ctrl-hint-badge" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-            </svg>
+            <SendTimingIcon timing="now" />
           </span>
         {:else if $modifierCombo === 'shift' && onSendSessionIdle}
           <span class="ctrl-hint-badge" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M6 2h12M6 22h12M8 2v4l4 4 4-4V2M8 22v-4l4-4 4 4v4" />
-            </svg>
+            <SendTimingIcon timing="session_idle" />
           </span>
         {:else if ($modifierCombo === 'ctrl+shift' || $modifierCombo === 'shift') && onSendRepoIdle}
           <span class="ctrl-hint-badge" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
+            <SendTimingIcon timing="repo_idle" />
           </span>
         {:else if $modifierCombo === 'ctrl+shift+alt' && onSend5hReset}
-          <span class="ctrl-hint-badge text-badge" aria-hidden="true">5h</span>
+          <span class="ctrl-hint-badge" aria-hidden="true">
+            <SendTimingIcon timing="reset_5h" />
+          </span>
         {/if}
       </button>
     {/each}
@@ -190,16 +186,5 @@
     z-index: 5;
     pointer-events: none;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-  }
-
-  .ctrl-hint-badge svg {
-    width: 11px;
-    height: 11px;
-  }
-
-  .ctrl-hint-badge.text-badge {
-    font-size: 0.5rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
   }
 </style>
