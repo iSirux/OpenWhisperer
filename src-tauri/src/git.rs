@@ -579,8 +579,32 @@ impl GitManager {
         // etc.) — real changes were ruled out by the porcelain check above.
         let mut worktree_removed = false;
         if let Some(wt) = worktree_path {
-            Self::git(repo_path, &["worktree", "remove", "--force", wt])?;
-            worktree_removed = true;
+            match Self::git(repo_path, &["worktree", "remove", "--force", wt]) {
+                Ok(_) => worktree_removed = true,
+                Err(e) => {
+                    // On Windows `git worktree remove` frequently fails with
+                    // "Permission denied" when a file in the tree is read-only or
+                    // briefly locked by antivirus / the search indexer — git's
+                    // --force does NOT clear read-only attributes and does not
+                    // retry. Every safety gate (clean tree, pushed commits,
+                    // registered non-main worktree) has already passed, so fall
+                    // back to a forced filesystem removal and then prune git's
+                    // administrative record.
+                    let removed = force_remove_dir_all(Path::new(wt)).is_ok();
+                    if removed {
+                        // Clean up `.git/worktrees/<name>` now that the dir is gone.
+                        let _ = Self::git(repo_path, &["worktree", "prune"]);
+                        worktree_removed = true;
+                    } else {
+                        return Err(format!(
+                            "Couldn't remove worktree '{}': {}. A program may still have \
+                             files open there (a running dev server, terminal, or editor) — \
+                             close it and try again.",
+                            wt, e
+                        ));
+                    }
+                }
+            }
         }
 
         // Delete the local branch. -D (not -d) because squash/rebase merges leave
@@ -639,5 +663,57 @@ impl GitManager {
             .join(&sanitized_branch)
             .to_string_lossy()
             .to_string()
+    }
+}
+
+/// Recursively clear the read-only attribute across a tree so it can be deleted.
+/// On Windows a single read-only file (common in `node_modules`, build output,
+/// or git's own object files) makes `remove_dir_all` fail with "Permission
+/// denied". Uses `symlink_metadata` so symlinks are not followed.
+fn clear_readonly_recursive(path: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    let mut perms = meta.permissions();
+    if perms.readonly() {
+        perms.set_readonly(false);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+    if meta.file_type().is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                clear_readonly_recursive(&entry.path());
+            }
+        }
+    }
+}
+
+/// Forcefully remove a directory tree, working around the two Windows failure
+/// modes `std::fs::remove_dir_all` (and `git worktree remove`) hit: read-only
+/// files, and transient locks from antivirus / the search indexer. Clears
+/// read-only attributes between attempts and retries a few times with a short
+/// backoff. Returns `Ok` if the directory is gone (including if it never
+/// existed), else the last error.
+fn force_remove_dir_all(path: &Path) -> std::io::Result<()> {
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..5 {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                clear_readonly_recursive(path);
+                last_err = Some(e);
+                // Ride out brief antivirus / indexer locks; back off a little
+                // more each round.
+                std::thread::sleep(std::time::Duration::from_millis(150 * (attempt + 1)));
+            }
+        }
+    }
+    // One last try after the final backoff — the directory may have just been
+    // released.
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(last_err.unwrap_or(e)),
     }
 }

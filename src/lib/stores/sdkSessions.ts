@@ -447,6 +447,22 @@ export function hasBusySessionsInScope(sessions: SdkSession[], cwd: string, excl
   );
 }
 
+/**
+ * A parked ("queued") ghost turn is pinned to the bottom of the transcript while it
+ * waits, but in the `messages` array it can end up buried mid-stream — the still-running
+ * turn keeps appending streamed assistant text/tool calls after it. When the parked turn
+ * finally fires we drop its `queued` flag; since the transcript renders in array order,
+ * we also relocate it to the end (with a fresh timestamp) so it lands at the bottom where
+ * the user last saw it instead of snapping back to its original scheduled slot.
+ */
+function releaseQueuedToEnd(messages: SdkMessage[]): SdkMessage[] {
+  if (!messages.some(m => m.queued)) return messages;
+  const now = Date.now();
+  const rest = messages.filter(m => !m.queued);
+  const released = messages.filter(m => m.queued).map(m => ({ ...m, queued: undefined, timestamp: now }));
+  return [...rest, ...released];
+}
+
 /** Summary of the PR detected for a session's branch (badges in header/list).
  *  Live detail (checks, mergeability) lives in the sessionPrs store. */
 export interface SessionPrSummary {
@@ -3458,9 +3474,7 @@ function createSdkSessionsStore() {
               ? {
                   ...s,
                   rateLimited: null,
-                  messages: s.messages.some(m => m.queued)
-                    ? s.messages.map(m => (m.queued ? { ...m, queued: undefined } : m))
-                    : s.messages,
+                  messages: releaseQueuedToEnd(s.messages),
                 }
               : s
           )
@@ -3510,11 +3524,14 @@ function createSdkSessionsStore() {
                 status: 'querying' as const,
                 lastActivityAt: Date.now(),
                 rateLimited: null,
-                // The parked ghost turn is now sending — drop the queued flag so it
-                // renders as a normal user message in the transcript.
-                messages: s.messages.some(m => m.queued)
-                  ? s.messages.map(m => (m.queued ? { ...m, queued: undefined } : m))
-                  : s.messages,
+                // The parked ghost turn is now sending — drop the queued flag AND
+                // move it to the end with a fresh timestamp. While parked it was
+                // pinned to the bottom of the transcript, but in the array it can be
+                // buried mid-stream (streamed assistant text/tools appended after it
+                // while the scope stayed busy). buildRenderItems orders by array
+                // position, so re-appending keeps it at the bottom where the user
+                // last saw it instead of snapping back to its original slot.
+                messages: releaseQueuedToEnd(s.messages),
                 inFlightPrompt: rl.prompt,
                 inFlightImages: rl.images ?? null,
               }
