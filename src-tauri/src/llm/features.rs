@@ -258,6 +258,8 @@ Produce ONE merged transcript. Use Transcription A as the base, and use B only t
 
 Where the two disagree at the same position (e.g. A has "select an organization" where B has "select the navigation"), that is one utterance misheard by one engine — choose the more plausible reading and discard the other. NEVER keep both variants, and NEVER append one transcription after the other. The merged result must be roughly the length of the longer transcription, never the two combined.
 
+Choose one reading word-for-word — never blend the two readings into a third phrasing that appears in neither transcription, and never substitute your own wording (e.g. do NOT turn A's "retry a domain" / B's "retry the main" into "retry it"; pick one). Apart from punctuation, capitalization, and the error fixes listed above, every word of the merged result must appear in at least one of the two transcriptions.
+
 A word both engines agree on is real speech — keep it, even if it seems redundant or odd (it may be a proper noun, a product name, or jargon you don't recognize). If B ends with words that A lacks entirely — a continuation of the speech, not a variant reading of A's ending — keep them; engines truncate endings more often than they hallucinate extra words. However, filler sounds and disfluencies ("um", "uh", "hmm", stutters) that appear in only one transcription are NOT missed content — the other engine deliberately filtered them out; never copy them into the merged result."#,
                 whisper_transcription,
                 realtime
@@ -270,7 +272,7 @@ A word both engines agree on is real speech — keep it, even if it seems redund
         // readings IS the task, so a blanket "never merge" would instruct the model
         // to concatenate both variants of every disagreement.
         let preserve_section = if realtime_transcription.is_some() {
-            r#"CRITICAL: Preserve ALL of the speaker's content. Keep every spoken clause and sentence — including trailing questions, asides, and apparent self-corrections (e.g. "..., or does it show here?"). Never drop, shorten, or summarize what was said. But remember: the two transcriptions are readings of the same speech, so each spoken clause must appear exactly ONCE in the output — in one engine's reading, never both."#
+            r#"CRITICAL: Preserve ALL of the speaker's content. Keep every spoken clause and sentence — including trailing questions, asides, and apparent self-corrections (e.g. "..., or does it show here?"). Never drop, shorten, or summarize what was said, and never delete words for feeling redundant, repetitive, or wordy — especially not words BOTH transcriptions agree on; spoken phrasing stays as spoken. But remember: the two transcriptions are readings of the same speech, so each spoken clause must appear exactly ONCE in the output — in one engine's reading, never both."#
         } else {
             r#"CRITICAL: Preserve ALL of the speaker's content. Keep every clause and sentence — including trailing questions, asides, and apparent self-corrections (e.g. "..., or does it show here?"). Never drop, shorten, summarize, or merge parts of what was said. The cleaned text must carry the same information as the input, only with errors fixed. When in doubt, leave the wording as-is."#
         };

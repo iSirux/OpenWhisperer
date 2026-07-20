@@ -261,6 +261,42 @@ fn cleanup_prompt_08_menu_icons_sorry() {
 
 #[test]
 #[ignore = "hits the live Groq API — see module docs for how to run"]
+fn cleanup_prompt_09_down_arrow_in_its_button() {
+    run_case(
+        "down_arrow_in_its_button",
+        &Case {
+            failure: "deleted 'in its button' (present in BOTH transcripts) as 'redundant' — \
+                      agreed-on speech dropped for style",
+            expect: "'…is not centered in its button' kept; 'I can' → 'icon' fixed; dropping the \
+                     'in the' stutter before 'beside' is acceptable",
+            whisper: "The down arrow I can in the beside the reject button is not centered in its button.",
+            realtime: Some(
+                "Down arrow icon In the beside the Reject button It's not centered in its button.",
+            ),
+        },
+    );
+}
+
+#[test]
+#[ignore = "hits the live Groq API — see module docs for how to run"]
+fn cleanup_prompt_10_back_off_retry_domain() {
+    run_case(
+        "back_off_retry_domain",
+        &Case {
+            failure: "invented 'retry it' — a phrasing from NEITHER transcript — instead of \
+                      choosing between whisper's 'retry a domain' and realtime's 'retry the main'",
+            expect: "one of the two readings kept verbatim (whisper's 'retry a domain' is the \
+                     plausible one); 'back of' → 'back-off' via realtime is good; no invented words",
+            whisper: "Why are you talking about back of numbers? I'm not sure we should even try to retry a domain.",
+            realtime: Some(
+                "Are you talking about back-off numbers? I'm not sure we should even try to I'll retry the main",
+            ),
+        },
+    );
+}
+
+#[test]
+#[ignore = "hits the live Groq API — see module docs for how to run"]
 fn cleanup_prompt_07_log_vs_lobby() {
     run_case(
         "log_vs_lobby",
