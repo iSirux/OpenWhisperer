@@ -981,6 +981,7 @@
     color: var(--color-text-secondary);
     line-height: 1.4;
     font-size: 0.74rem;
+    white-space: pre-wrap;
   }
   .v-proof {
     display: flex;
@@ -1041,6 +1042,7 @@
     color: var(--color-text-secondary);
     font-size: 0.74rem;
     line-height: 1.4;
+    white-space: pre-wrap;
   }
   .v-evidence-tested {
     margin: 0;
@@ -1201,6 +1203,7 @@
     font-size: 0.74rem;
     line-height: 1.45;
     padding-left: 1.35rem;
+    white-space: pre-wrap;
   }
   .v-user-note {
     color: var(--color-text-muted);
