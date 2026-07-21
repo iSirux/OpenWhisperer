@@ -81,6 +81,25 @@ impl TokenUsage {
 
 // ─── Node Result ─────────────────────────────────────────────────────────────
 
+/// Snapshot of a prompt node's agent run, captured so the user can later open it
+/// as a real, resumable SDK session in the main session view. Populated only when
+/// the underlying provider returned a resumable `sdk_session_id` (Claude).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptSessionCapture {
+    /// Claude SDK resumable session id — the durable identity used for resume/fork.
+    pub sdk_session_id: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Transcript in the frontend `SdkMessage` shape (user prompt + assistant
+    /// text/tool messages) so the opened session renders the full conversation.
+    #[serde(default)]
+    pub messages: Vec<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeResult {
     pub status: NodeStatus,
@@ -102,6 +121,9 @@ pub struct NodeResult {
     pub cost: Option<f64>,
     #[serde(default)]
     pub tokens: Option<TokenUsage>,
+    /// Openable-session snapshot for prompt nodes (set post-completion).
+    #[serde(default)]
+    pub session: Option<PromptSessionCapture>,
 }
 
 impl Default for NodeResult {
@@ -117,6 +139,7 @@ impl Default for NodeResult {
             duration_ms: None,
             cost: None,
             tokens: None,
+            session: None,
         }
     }
 }
@@ -489,6 +512,16 @@ impl SequenceExecution {
             LogLevel::Info,
             &format!("Node '{}' completed", node_id),
         );
+    }
+
+    /// Attach a captured openable-session snapshot to a completed prompt node.
+    /// Also mirrors the resume id onto `sdk_session_id` for reference. Call after
+    /// `record_node_complete` (the node result must already exist).
+    pub fn set_node_session(&mut self, node_id: &str, capture: PromptSessionCapture) {
+        if let Some(result) = self.node_results.get_mut(node_id) {
+            result.sdk_session_id = Some(capture.sdk_session_id.clone());
+            result.session = Some(capture);
+        }
     }
 
     /// Record a node error

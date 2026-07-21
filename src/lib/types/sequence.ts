@@ -331,6 +331,18 @@ export interface TokenUsage {
   cache_creation: number;
 }
 
+/** Snapshot of a prompt node's agent run, captured so it can be reopened as a
+ *  real, resumable SDK session in the main session view. Present only when the
+ *  provider returned a resumable session id (Claude). */
+export interface PromptSessionCapture {
+  sdk_session_id: string;
+  cwd?: string;
+  model?: string;
+  provider?: string;
+  /** Transcript in the frontend SdkMessage shape (user prompt + assistant text/tool messages). */
+  messages: unknown[];
+}
+
 export interface NodeResult {
   status: NodeStatus;
   started_at?: string;
@@ -342,6 +354,7 @@ export interface NodeResult {
   duration_ms?: number;
   cost?: number;
   tokens?: TokenUsage;
+  session?: PromptSessionCapture;
 }
 
 export type LogLevel = "info" | "warn" | "error" | "debug";

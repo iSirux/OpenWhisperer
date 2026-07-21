@@ -80,6 +80,9 @@ export interface DisplaySession {
   // Pile item this session was launched from
   pileItem?: { id: string; title: string };
 
+  // Sequence prompt node this session was materialized from
+  sequenceNode?: { executionId: string; nodeId: string; sequenceName?: string; nodeName?: string };
+
   // Spare Tokens library prompt this session was launched from
   spareTokens?: { promptId: string; auto: boolean };
 

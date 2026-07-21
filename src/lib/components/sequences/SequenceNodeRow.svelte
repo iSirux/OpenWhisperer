@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { get } from 'svelte/store';
   import type { NodeDefinition, NodeResult } from '$lib/types/sequence';
-  import { approveNode, rejectNode, retryNode } from '$lib/stores/sequenceExecutions';
+  import { approveNode, rejectNode, retryNode, activeExecutionId, executions } from '$lib/stores/sequenceExecutions';
+  import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
 
   interface Props {
     node: NodeDefinition;
@@ -12,6 +14,30 @@
 
   let status = $derived(result?.status ?? 'pending');
   let expanded = $state(false);
+
+  // A prompt node's captured, resumable run can be reopened as a real SDK session.
+  let sessionCapture = $derived(node.type === 'prompt' ? result?.session : undefined);
+  let canOpenSession = $derived(!!sessionCapture?.sdk_session_id);
+
+  function openSession() {
+    if (!sessionCapture?.sdk_session_id) return;
+    const exec = get(executions).find((e) => e.id === executionId);
+    const id = sdkSessions.openSequenceNodeSession({
+      executionId,
+      nodeId: node.id,
+      sequenceName: exec?.sequence_name,
+      nodeName: node.name || node.id,
+      capture: sessionCapture,
+      durationMs: result?.duration_ms,
+      tokens: result?.tokens,
+      cost: result?.cost,
+    });
+    if (!id) return;
+    activeExecutionId.set(null);
+    activeSdkSessionId.set(id);
+    sdkSessions.markAsRead(id);
+    window.dispatchEvent(new CustomEvent('switch-to-sessions'));
+  }
 
   // Status icons
   let statusIcon = $derived.by(() => {
@@ -270,6 +296,21 @@
           {#if result.cost}
             <span class="text-amber-400/80">${result.cost.toFixed(4)}</span>
           {/if}
+        </div>
+      {/if}
+
+      {#if canOpenSession}
+        <div class="mt-2">
+          <button
+            class="px-3 py-1 text-xs rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors inline-flex items-center gap-1.5"
+            onclick={openSession}
+            title="Open this prompt's run as a resumable session in the main view"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.96 7.96 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            Open session
+          </button>
         </div>
       {/if}
 

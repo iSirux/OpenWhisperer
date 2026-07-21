@@ -54,6 +54,7 @@ struct AiNodeUsage {
 pub(crate) struct ExecutorShared {
     ai_logs: Mutex<Vec<AiNodeLog>>,
     ai_usage: Mutex<HashMap<String, AiNodeUsage>>,
+    ai_sessions: Mutex<HashMap<String, crate::sequences::state::PromptSessionCapture>>,
     defaults: Mutex<SequenceDefaults>,
 }
 
@@ -62,6 +63,7 @@ impl ExecutorShared {
         Self {
             ai_logs: Mutex::new(Vec::new()),
             ai_usage: Mutex::new(HashMap::new()),
+            ai_sessions: Mutex::new(HashMap::new()),
             defaults: Mutex::new(SequenceDefaults::default()),
         }
     }
@@ -124,6 +126,21 @@ impl SequenceExecutor {
             .ai_usage
             .lock()
             .insert(node_id.to_string(), AiNodeUsage { tokens, cost });
+    }
+
+    /// Store an openable-session snapshot for a prompt node. Drained by the engine
+    /// into the node result after completion, mirroring `store_ai_usage` — the map
+    /// lives on the shared state so captures from parallel/foreach child executors
+    /// still reach the parent (finding S2).
+    pub(crate) fn store_ai_session(
+        &self,
+        node_id: &str,
+        capture: crate::sequences::state::PromptSessionCapture,
+    ) {
+        self.shared
+            .ai_sessions
+            .lock()
+            .insert(node_id.to_string(), capture);
     }
 }
 

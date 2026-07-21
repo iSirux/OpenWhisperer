@@ -329,6 +329,10 @@ export async function setupListeners(executionId: string): Promise<void> {
             };
           })
         );
+        // Live node-complete events only carry duration + cost. Re-fetch the full
+        // execution from disk so node_results include the captured prompt-node
+        // transcript + openable-session snapshot (drives "Open session").
+        void loadFullExecution(executionId);
         // Clean up listeners after completion
         cleanupListeners(executionId);
       }

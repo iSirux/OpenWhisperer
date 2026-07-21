@@ -389,6 +389,7 @@ export function transformToDisplaySessions(
         pr: s.pr ?? undefined,
         validation: s.validation ?? undefined,
         pileItem: s.pileItem,
+        sequenceNode: s.sequenceNode,
         spareTokens: s.spareTokens,
         queueInfo: s.queueInfo,
         rateLimited: s.rateLimited,

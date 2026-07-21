@@ -468,6 +468,15 @@
     </div>
   {/if}
 
+  {#if session.sequenceNode}
+    <div class="notion-card-link" title="From sequence{session.sequenceNode.sequenceName ? `: ${session.sequenceNode.sequenceName}` : ''}{session.sequenceNode.nodeName ? ` · ${session.sequenceNode.nodeName}` : ''}">
+      <svg class="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.7">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h6M4 12h6M4 18h6m4-12h6m-6 6h6m-6 6h6" />
+      </svg>
+      <span class="truncate">{session.sequenceNode.nodeName || session.sequenceNode.sequenceName || 'Sequence'}</span>
+    </div>
+  {/if}
+
   {#if session.githubIssue}
     <div class="notion-card-link" title="GitHub issue #{session.githubIssue.number}: {session.githubIssue.title}">
       <svg class="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="currentColor" opacity="0.7">

@@ -9,7 +9,7 @@ import { usageStats } from './usageStats';
 import { rateLimits, codexRateLimits } from './rateLimits';
 import { saveSessionsToDisk, saveSdkSessionsPartial } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, pickNickname, type QuickAction } from '$lib/utils/llm';
-import { clampEffortForModel, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
+import { clampEffortForModel, DEFAULT_MODEL_ID, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
@@ -585,6 +585,8 @@ export interface SdkSession {
   githubIssue?: { number: number; title: string; url: string };
   /** Spare Tokens library prompt this session was launched from (auto = fired by auto-mode) */
   spareTokens?: { promptId: string; auto: boolean };
+  /** Sequence prompt node this session was materialized from (via "Open session"). */
+  sequenceNode?: { executionId: string; nodeId: string; sequenceName?: string; nodeName?: string };
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
   contextOverflow?: boolean;
   /** Active auto-recovery from a "prompt is too long" overflow: fire /compact, then re-send the prompt that overflowed.
@@ -2355,6 +2357,79 @@ function createSdkSessionsStore() {
 
       update(sessions => [...sessions, session]);
 
+      return id;
+    },
+
+    /**
+     * Materialize a real, resumable SDK session from a sequence prompt node's
+     * captured run (see the Rust `PromptSessionCapture`), or return the id of the
+     * one already opened for that node. The session carries the node's transcript
+     * + `sdkSessionId`, so it renders the full conversation and resumes/forks like
+     * any other session on the next `sendPrompt`. Activation is left to the caller.
+     * Returns null when the capture has no resumable `sdk_session_id`.
+     */
+    openSequenceNodeSession(params: {
+      executionId: string;
+      nodeId: string;
+      sequenceName?: string;
+      nodeName?: string;
+      capture: { sdk_session_id?: string; cwd?: string; model?: string; provider?: string; messages?: unknown[] };
+      durationMs?: number;
+      tokens?: { input_tokens: number; output_tokens: number; cache_read: number; cache_creation: number };
+      cost?: number;
+    }): string | null {
+      const { executionId, nodeId, sequenceName, nodeName, capture } = params;
+      if (!capture?.sdk_session_id) return null;
+
+      // Dedup: reuse the session already materialized from this node.
+      let existingId: string | undefined;
+      subscribe(sessions => {
+        existingId = sessions.find(
+          s => s.sequenceNode?.executionId === executionId && s.sequenceNode?.nodeId === nodeId
+        )?.id;
+      })();
+      if (existingId) return existingId;
+
+      const cwd = capture.cwd ?? '';
+      const model = capture.model ?? DEFAULT_MODEL_ID;
+      const provider = normalizeSdkProvider(capture.provider, model);
+      const messages = (capture.messages ?? []) as SdkMessage[];
+
+      const usage = createDefaultUsage(getMaxContextTokens(model));
+      if (params.tokens) {
+        usage.totalInputTokens = params.tokens.input_tokens;
+        usage.totalOutputTokens = params.tokens.output_tokens;
+        usage.totalCacheReadTokens = params.tokens.cache_read;
+        usage.totalCacheCreationTokens = params.tokens.cache_creation;
+      }
+      if (typeof params.cost === 'number') usage.totalCostUsd = params.cost;
+      if (typeof params.durationMs === 'number') usage.totalDurationMs = params.durationMs;
+
+      const label = nodeName
+        ? `${sequenceName ? `${sequenceName} · ` : ''}${nodeName}`
+        : (sequenceName ?? 'Sequence session');
+
+      const id = crypto.randomUUID();
+      const session: SdkSession = {
+        id,
+        cwd,
+        repoId: resolveRepoId(cwd),
+        model,
+        provider,
+        effortLevel: null,
+        messages,
+        status: 'idle',
+        sdkSessionId: capture.sdk_session_id,
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+        accumulatedDurationMs: params.durationMs ?? 0,
+        usage,
+        aiMetadata: { name: label },
+        sequenceNode: { executionId, nodeId, sequenceName, nodeName },
+      };
+
+      update(sessions => [...sessions, session]);
+      debouncedSave(id);
       return id;
     },
 
