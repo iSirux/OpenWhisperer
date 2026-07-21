@@ -176,6 +176,41 @@ pub async fn generate_worktree_branch_name(
     Ok(GitManager::generate_unique_branch_name(&prompt, &repo_path))
 }
 
+/// Known install locations of VS Code's `code.cmd` launcher on Windows.
+///
+/// `code` is a batch script that only resolves by bare name when VS Code's
+/// `bin` directory is on PATH. A GUI process cannot rely on that (per-user
+/// installs are not on the machine PATH, and an app started before VS Code was
+/// installed inherits a stale PATH) — which is why "Open in VS Code" works only
+/// sometimes. We resolve the full path explicitly and fall back to a bare PATH
+/// lookup only if none of the standard locations exist.
+#[cfg(windows)]
+fn windows_vscode_cmd() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(local).join("Programs"));
+    }
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        roots.push(PathBuf::from(pf));
+    }
+    if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
+        roots.push(PathBuf::from(pf86));
+    }
+
+    for root in roots {
+        for edition in ["Microsoft VS Code", "Microsoft VS Code Insiders"] {
+            let candidate = root.join(edition).join("bin").join("code.cmd");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
 /// Open a path in VS Code
 #[tauri::command]
 pub fn open_in_vscode(path: String) -> Result<(), String> {
@@ -184,11 +219,30 @@ pub fn open_in_vscode(path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        Command::new("cmd")
-            .args(["/c", "code", &path])
-            .creation_flags(0x08000000)
-            .spawn()
-            .map_err(|e| format!("Failed to open VS Code: {}", e))?;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        // Prefer the resolved full path to code.cmd. Rust spawns `.cmd` files
+        // through cmd.exe with correct argument escaping, so a path with spaces
+        // (in either the launcher or the target) is handled for us.
+        if let Some(code_cmd) = windows_vscode_cmd() {
+            Command::new(code_cmd)
+                .arg(&path)
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .map_err(|e| format!("Failed to open VS Code: {}", e))?;
+        } else {
+            // Last resort: assume `code` is on PATH.
+            Command::new("cmd")
+                .args(["/c", "code", &path])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .map_err(|e| {
+                    format!(
+                        "Failed to open VS Code (couldn't locate code.cmd and `code` is not on PATH): {}",
+                        e
+                    )
+                })?;
+        }
     }
 
     #[cfg(not(windows))]
