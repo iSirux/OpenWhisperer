@@ -2,6 +2,7 @@ import { writable, derived, get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { playNotificationSound } from "$lib/utils/sound";
+import { sdkSessions } from "$lib/stores/sdkSessions";
 import {
   isPermissionGranted,
   requestPermission,
@@ -510,6 +511,12 @@ export async function loadExecutionHistory(): Promise<void> {
       return [...execs, ...historicalExecs];
     });
 
+    // Spawn the real session for every captured prompt node (deduped), so runs
+    // that finished while the app was closed still surface their sessions.
+    for (const exec of fullExecutions) {
+      materializeSessionsForExecution(exec);
+    }
+
     for (const exec of fullExecutions) {
       const status = getStatusString(exec.status);
       if (!isTerminal(exec.status) && !listeners.has(exec.id)) {
@@ -523,6 +530,30 @@ export async function loadExecutionHistory(): Promise<void> {
     }
   } catch (error) {
     console.error("Failed to load execution history:", error);
+  }
+}
+
+/**
+ * Every prompt node that captured a resumable run gets a real, persisted SDK
+ * session — created automatically (not on demand). Deduped per node via
+ * `sequenceNode`, so re-loads/refreshes never spawn duplicates. Activation is
+ * NOT triggered here (would hijack navigation); the session simply appears in
+ * the sidebar and the node's "Go to session" button jumps to it.
+ */
+function materializeSessionsForExecution(exec: SequenceExecution): void {
+  for (const [nodeId, result] of Object.entries(exec.node_results)) {
+    const capture = result?.session;
+    if (!capture?.sdk_session_id) continue;
+    sdkSessions.openSequenceNodeSession({
+      executionId: exec.id,
+      nodeId,
+      sequenceName: exec.sequence_name,
+      nodeName: capture.node_name,
+      capture,
+      durationMs: result.duration_ms,
+      tokens: result.tokens,
+      cost: result.cost,
+    });
   }
 }
 
@@ -543,6 +574,7 @@ export async function loadFullExecution(
       }
       return [exec, ...execs];
     });
+    materializeSessionsForExecution(exec);
     return exec;
   } catch (error) {
     console.error("Failed to load execution:", error);

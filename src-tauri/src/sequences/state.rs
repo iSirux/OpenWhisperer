@@ -94,6 +94,9 @@ pub struct PromptSessionCapture {
     pub model: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
+    /// Display name of the originating node (for the session label).
+    #[serde(default)]
+    pub node_name: Option<String>,
     /// Transcript in the frontend `SdkMessage` shape (user prompt + assistant
     /// text/tool messages) so the opened session renders the full conversation.
     #[serde(default)]

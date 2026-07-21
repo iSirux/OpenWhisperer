@@ -304,12 +304,12 @@
           <button
             class="px-3 py-1 text-xs rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors inline-flex items-center gap-1.5"
             onclick={openSession}
-            title="Open this prompt's run as a resumable session in the main view"
+            title="Jump to this prompt's resumable session in the main view"
           >
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.96 7.96 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
             </svg>
-            Open session
+            Go to session
           </button>
         </div>
       {/if}

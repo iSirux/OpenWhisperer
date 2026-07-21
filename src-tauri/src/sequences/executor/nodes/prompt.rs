@@ -359,6 +359,7 @@ impl SequenceExecutor {
                         cwd: Some(cwd.clone()),
                         model: model.clone(),
                         provider: Some(provider.to_string()),
+                        node_name: node.name.clone(),
                         messages,
                     },
                 );

@@ -339,6 +339,8 @@ export interface PromptSessionCapture {
   cwd?: string;
   model?: string;
   provider?: string;
+  /** Display name of the originating node (for the session label). */
+  node_name?: string;
   /** Transcript in the frontend SdkMessage shape (user prompt + assistant text/tool messages). */
   messages: unknown[];
 }
