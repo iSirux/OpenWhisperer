@@ -147,12 +147,30 @@ function worktreeInfo(
 }
 
 /**
+ * Order sessions within a worktree group with a *stable* comparator: pinned
+ * sessions lead (earlier pins first, matching the flat view), and everything
+ * else is ordered by creation time (newest first). Deliberately independent of
+ * `lastActivityAt`/status so grouped lists don't reshuffle as sessions become
+ * active — a session only moves when the user pins it.
+ */
+function compareGroupedSessions(a: DisplaySession, b: DisplaySession): number {
+  const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+  if (pinDiff !== 0) return pinDiff;
+  if (a.pinned && b.pinned) {
+    const pinnedAtDiff = (a.pinnedAt ?? 0) - (b.pinnedAt ?? 0);
+    if (pinnedAtDiff !== 0) return pinnedAtDiff;
+  }
+  return b.createdAt - a.createdAt;
+}
+
+/**
  * Group an (already filtered) display-session list by repository, then by
  * worktree within each repository. Groups follow the configured repository
  * order (the same order the repository rail shows); within a repo the main
  * checkout leads, followed by worktrees alphabetically. The "no repository"
- * group (sequences, unknown cwds) always trails. Sessions inside a group keep
- * the input order, so the user's chosen sort order still applies within it.
+ * group (sequences, unknown cwds) always trails. Sessions inside a group use a
+ * stable order (pinned first, then by creation time) — grouped lists never
+ * reorder by recency/status, so a session only moves when the user pins it.
  */
 export function groupDisplaySessions(
   sessions: DisplaySession[],
@@ -198,6 +216,9 @@ export function groupDisplaySessions(
       if (mainDiff !== 0) return mainDiff;
       return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
     });
+    for (const worktree of group.worktrees) {
+      worktree.sessions.sort(compareGroupedSessions);
+    }
   }
   if (noRepo) result.push(noRepo);
   return result;
