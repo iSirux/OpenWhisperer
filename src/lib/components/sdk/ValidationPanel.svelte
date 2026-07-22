@@ -33,13 +33,19 @@
   let isFinished = $derived(
     run.status === 'passed' || run.status === 'failed' || run.status === 'cancelled',
   );
-  let isRunningLike = $derived(run.status === 'running' || run.status === 'gate');
+  // Restored from disk after a restart: the backend run is gone, so this is
+  // read-only history — no live gate, cancel, or ticking clock.
+  let isDetached = $derived(!!run.detached);
+  let isRunningLike = $derived((run.status === 'running' || run.status === 'gate') && !isDetached);
+  // A gate is only actionable while the backend still owns the run.
+  let isLiveGate = $derived(run.status === 'gate' && !isDetached);
   let hasReportedSteps = $derived(run.steps.length > 0);
 
-  // Elapsed clock — ticks while active, freezes on finish.
+  // Elapsed clock — ticks while active, freezes on finish or when detached.
+  let clockFrozen = $derived(isFinished || isDetached);
   let now = $state(Date.now());
   $effect(() => {
-    if (isFinished) return;
+    if (clockFrozen) return;
     now = Date.now();
     const t = setInterval(() => {
       now = Date.now();
@@ -49,13 +55,16 @@
   let elapsed = $derived(Math.max(0, Math.floor((now - run.startedAt) / 1000)));
   let frozenElapsed = $state<number | null>(null);
   $effect(() => {
-    if (isFinished && frozenElapsed === null) {
-      frozenElapsed = Math.max(0, Math.floor((Date.now() - run.startedAt) / 1000));
-    } else if (!isFinished && frozenElapsed !== null) {
+    if (clockFrozen && frozenElapsed === null) {
+      const end = run.finishedAt ?? Date.now();
+      frozenElapsed = Math.max(0, Math.floor((end - run.startedAt) / 1000));
+    } else if (!clockFrozen && frozenElapsed !== null) {
       frozenElapsed = null;
     }
   });
   let displayElapsed = $derived(frozenElapsed ?? elapsed);
+  // A detached run that never finished has no meaningful elapsed to show.
+  let showElapsed = $derived(!(isDetached && run.finishedAt == null));
   function formatElapsed(secs: number): string {
     const m = Math.floor(secs / 60);
     const s = secs % 60;
@@ -308,7 +317,12 @@
       </span>
       <span class="v-title">Validation</span>
       <span class="v-status">{statusText}</span>
-      <span class="v-elapsed">{formatElapsed(displayElapsed)}</span>
+      {#if showElapsed}
+        <span class="v-elapsed">{formatElapsed(displayElapsed)}</span>
+      {/if}
+      {#if isDetached}
+        <span class="v-detached-tag" title="Restored after an app restart — this run can't be resumed">restored</span>
+      {/if}
     </div>
     <div class="v-header-right">
       <button
@@ -348,7 +362,7 @@
           Cancel
         </button>
       {/if}
-      {#if isFinished}
+      {#if isFinished || isDetached}
         <button class="v-dismiss" onclick={() => validation.dismiss(run.id)} title="Dismiss" aria-label="Dismiss">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 6 6 18M6 6l12 12" />
@@ -389,8 +403,16 @@
     </div>
   {/if}
 
+  <!-- Restored (detached) banner: read-only history after an app restart -->
+  {#if isDetached}
+    <div class="v-detached">
+      This run was restored after a restart — it's read-only and can't be resumed.
+      {#if run.status === 'gate'}Start a new validation run to continue.{/if}
+    </div>
+  {/if}
+
   <!-- Pending fix banner -->
-  {#if run.pendingFix}
+  {#if run.pendingFix && !isDetached}
     <div class="v-pending-fix">
       <span class="v-spinner" aria-hidden="true"></span>
       Agent is fixing
@@ -650,8 +672,9 @@
     </div>
   {/if}
 
-  <!-- Gate actions — pinned outside the scroll area so they're always reachable -->
-  {#if run.status === 'gate' && gate}
+  <!-- Gate actions — pinned outside the scroll area so they're always reachable.
+       Hidden for a detached (restored) run, whose backend is gone. -->
+  {#if isLiveGate && gate}
     <div class="v-gate-actions">
       {#if gate.kind === 'ship' && gate.ship}
         <button class="v-btn v-btn-primary" onclick={commitAndShip} disabled={run.responding}>
@@ -754,6 +777,26 @@
     color: var(--color-text-muted);
     font-variant-numeric: tabular-nums;
     font-size: 0.72rem;
+  }
+  .v-detached-tag {
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.04rem 0.35rem;
+    border-radius: 5px;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+  }
+  .v-detached {
+    padding: 0.4rem 0.55rem;
+    border-radius: 7px;
+    background: var(--color-surface-elevated);
+    border: 1px dashed var(--color-border);
+    color: var(--color-text-secondary);
+    font-size: 0.74rem;
+    line-height: 1.4;
   }
   .v-header-right {
     display: flex;

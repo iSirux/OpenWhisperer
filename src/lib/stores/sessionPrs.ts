@@ -232,7 +232,22 @@ function createSessionPrsStore() {
     const key = scopeKeyFor(session);
     if (!key || autoOpenedScopes.has(key)) return;
     autoOpenedScopes.add(key);
-    for (const s of scopeSiblings(session)) patch(s.id, { panelOpen: true });
+    for (const s of scopeSiblings(session)) {
+      patch(s.id, { panelOpen: true });
+      sdkSessions.setSessionPrPanelOpen(s.id, true);
+    }
+  }
+
+  /**
+   * Restore persisted PR-panel open state onto the store after sessions load
+   * from disk, so a session whose PR dock was left open reopens it on the next
+   * launch. The PR itself is refetched by the normal `detectIfStale` path when
+   * the session view mounts; here we only seed the panel-open flag.
+   */
+  function rehydrateFromSessions(): void {
+    for (const s of get(sdkSessions)) {
+      if (s.prPanelOpen) patch(s.id, { panelOpen: true });
+    }
   }
 
   return {
@@ -321,16 +336,22 @@ function createSessionPrsStore() {
       }
     },
 
+    rehydrateFromSessions,
+
     openPanel(sessionId: string): void {
       patch(sessionId, { panelOpen: true, mergeError: null });
+      sdkSessions.setSessionPrPanelOpen(sessionId, true);
     },
 
     closePanel(sessionId: string): void {
       patch(sessionId, { panelOpen: false });
+      sdkSessions.setSessionPrPanelOpen(sessionId, false);
     },
 
     togglePanel(sessionId: string): void {
-      patch(sessionId, { panelOpen: !entryFor(sessionId).panelOpen, mergeError: null });
+      const open = !entryFor(sessionId).panelOpen;
+      patch(sessionId, { panelOpen: open, mergeError: null });
+      sdkSessions.setSessionPrPanelOpen(sessionId, open);
     },
   };
 }

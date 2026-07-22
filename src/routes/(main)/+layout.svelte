@@ -31,6 +31,8 @@
     executions as sequenceExecutions,
   } from '$lib/stores/sequenceExecutions';
   import { loadSequences } from '$lib/stores/sequences';
+  import { validation } from '$lib/stores/validation';
+  import { sessionPrs } from '$lib/stores/sessionPrs';
   import { isActivelyWorking } from '$lib/utils/sessionStatus';
   import { type VoiceCommandType } from '$lib/utils/voiceCommands';
   import { eventMatchesHotkey } from '$lib/utils/hotkeys';
@@ -383,6 +385,11 @@
     // Load persisted sessions if enabled
     if ($settings.session_persistence.enabled) {
       await loadSessionsFromDisk();
+      // Restore per-session dock state saved with the sessions: the full
+      // validation run (panel survives restart, reattaching to the backend if it
+      // still has the run) and the PR panel's open flag.
+      await validation.rehydrateFromSessions();
+      sessionPrs.rehydrateFromSessions();
     }
 
     // Load the recording pile

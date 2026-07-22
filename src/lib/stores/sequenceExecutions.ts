@@ -18,6 +18,7 @@ import type {
   SequenceNodeStartEvent,
   SequenceNodeCompleteEvent,
   SequenceNodeErrorEvent,
+  SequenceNodeSessionEvent,
   SequenceLogEvent,
 } from "$lib/types/sequence";
 
@@ -154,6 +155,31 @@ export async function setupListeners(executionId: string): Promise<void> {
   }
   console.log(`[sequence] Setting up listeners for ${executionId.slice(0, 8)}`);
   const unlisteners: UnlistenFn[] = [];
+
+  // Prompt-node live session: the moment a prompt node starts its agent run, the
+  // backend emits this so we materialize a real, LIVE SDK session (streaming into
+  // the session list immediately) rather than waiting for the node to finish.
+  unlisteners.push(
+    await listen<SequenceNodeSessionEvent>(
+      `sequence-node-session-${executionId}`,
+      (event) => {
+        const p = event.payload;
+        const sequenceName = get(executions).find((e) => e.id === executionId)?.sequence_name;
+        sdkSessions.attachSequenceNodeSession({
+          executionId,
+          sessionId: p.session_id,
+          nodeId: p.node_id,
+          nodeName: p.node_name ?? undefined,
+          sequenceName,
+          cwd: p.cwd,
+          model: p.model,
+          provider: p.provider,
+          effort: p.effort,
+          prompt: p.prompt,
+        });
+      }
+    )
+  );
 
   // Node start
   unlisteners.push(
@@ -330,10 +356,6 @@ export async function setupListeners(executionId: string): Promise<void> {
             };
           })
         );
-        // Live node-complete events only carry duration + cost. Re-fetch the full
-        // execution from disk so node_results include the captured prompt-node
-        // transcript + openable-session snapshot (drives "Open session").
-        void loadFullExecution(executionId);
         // Clean up listeners after completion
         cleanupListeners(executionId);
       }
@@ -511,12 +533,6 @@ export async function loadExecutionHistory(): Promise<void> {
       return [...execs, ...historicalExecs];
     });
 
-    // Spawn the real session for every captured prompt node (deduped), so runs
-    // that finished while the app was closed still surface their sessions.
-    for (const exec of fullExecutions) {
-      materializeSessionsForExecution(exec);
-    }
-
     for (const exec of fullExecutions) {
       const status = getStatusString(exec.status);
       if (!isTerminal(exec.status) && !listeners.has(exec.id)) {
@@ -530,30 +546,6 @@ export async function loadExecutionHistory(): Promise<void> {
     }
   } catch (error) {
     console.error("Failed to load execution history:", error);
-  }
-}
-
-/**
- * Every prompt node that captured a resumable run gets a real, persisted SDK
- * session — created automatically (not on demand). Deduped per node via
- * `sequenceNode`, so re-loads/refreshes never spawn duplicates. Activation is
- * NOT triggered here (would hijack navigation); the session simply appears in
- * the sidebar and the node's "Go to session" button jumps to it.
- */
-function materializeSessionsForExecution(exec: SequenceExecution): void {
-  for (const [nodeId, result] of Object.entries(exec.node_results)) {
-    const capture = result?.session;
-    if (!capture?.sdk_session_id) continue;
-    sdkSessions.openSequenceNodeSession({
-      executionId: exec.id,
-      nodeId,
-      sequenceName: exec.sequence_name,
-      nodeName: capture.node_name,
-      capture,
-      durationMs: result.duration_ms,
-      tokens: result.tokens,
-      cost: result.cost,
-    });
   }
 }
 
@@ -574,7 +566,6 @@ export async function loadFullExecution(
       }
       return [exec, ...execs];
     });
-    materializeSessionsForExecution(exec);
     return exec;
   } catch (error) {
     console.error("Failed to load execution:", error);

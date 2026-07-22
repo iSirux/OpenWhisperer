@@ -9,12 +9,15 @@ import { usageStats } from './usageStats';
 import { rateLimits, codexRateLimits } from './rateLimits';
 import { saveSessionsToDisk, saveSdkSessionsPartial } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, pickNickname, type QuickAction } from '$lib/utils/llm';
-import { clampEffortForModel, DEFAULT_MODEL_ID, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
+import { clampEffortForModel, DEFAULT_MODEL_ID, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelAlias, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
 import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
 import { defaultAccountIdForRepo } from '$lib/utils/accounts';
+// Type-only import (erased at build; no runtime cycle with the validation store,
+// which value-imports from here).
+import type { PersistedValidationRun } from './validation';
 
 // =============================================================================
 // Debounced Save
@@ -512,8 +515,14 @@ export interface SdkSession {
   changedFileCount?: number;
   /** PR detected for this session's branch. Null = checked, none found; undefined = never checked. Persisted. */
   pr?: SessionPrSummary | null;
+  /** Whether the PR dock panel was left open for this session. Persisted so the dock reopens after restart. */
+  prPanelOpen?: boolean;
   /** Compact summary of the latest Validation run for this session (drives header/list badge). Persisted. */
   validation?: SessionValidationSummary | null;
+  /** Full latest Validation run snapshot (steps/gate/outcome/panel-open state) so the whole
+   *  panel — not just the badge — survives restart. Restored read-only (the backend run is gone
+   *  after a real restart). Cleared when the run is dismissed. Persisted. */
+  validationRun?: PersistedValidationRun | null;
   model: string;
   provider?: SdkProvider;
   /** Agent account this session is pinned to (isolated login profile). Undefined = machine default. */
@@ -2239,6 +2248,14 @@ function createSdkSessionsStore() {
 
       await this.ensureSidecarStarted();
 
+      // Detach any existing listeners first — a session attached live from a
+      // sequence node already has a listener set; re-attaching without detaching
+      // would double every streamed event.
+      const existingListeners = listeners.get(id);
+      if (existingListeners) {
+        existingListeners.forEach(unlisten => unlisten());
+        listeners.delete(id);
+      }
       const unlisteners = await setupEventListeners(id);
       listeners.set(id, unlisteners);
 
@@ -2361,76 +2378,79 @@ function createSdkSessionsStore() {
     },
 
     /**
-     * Materialize a real, resumable SDK session from a sequence prompt node's
-     * captured run (see the Rust `PromptSessionCapture`), or return the id of the
-     * one already opened for that node. The session carries the node's transcript
-     * + `sdkSessionId`, so it renders the full conversation and resumes/forks like
-     * any other session on the next `sendPrompt`. Activation is left to the caller.
-     * Returns null when the capture has no resumable `sdk_session_id`.
+     * Attach to a sequence prompt node's agent run as a LIVE SDK session the
+     * moment the node starts (id = the sidecar session id). The session appears
+     * in the session list immediately and streams in real time off the same
+     * `sdk-*` events, exactly like a normal live session — no post-hoc capture.
+     * Its `sdkSessionId` is captured live, so it resumes/forks after completion.
+     * Idempotent: a second call for the same session id is a no-op.
      */
-    openSequenceNodeSession(params: {
+    attachSequenceNodeSession(params: {
       executionId: string;
+      sessionId: string;
       nodeId: string;
       sequenceName?: string;
       nodeName?: string;
-      capture: { sdk_session_id?: string; cwd?: string; model?: string; provider?: string; messages?: unknown[] };
-      durationMs?: number;
-      tokens?: { input_tokens: number; output_tokens: number; cache_read: number; cache_creation: number };
-      cost?: number;
-    }): string | null {
-      const { executionId, nodeId, sequenceName, nodeName, capture } = params;
-      if (!capture?.sdk_session_id) return null;
+      cwd?: string | null;
+      model?: string | null;
+      provider?: string | null;
+      effort?: string | null;
+      prompt?: string | null;
+    }): void {
+      const { executionId, sessionId, nodeId, sequenceName, nodeName } = params;
+      if (!sessionId) return;
 
-      // Dedup: reuse the session already materialized from this node.
-      let existingId: string | undefined;
-      subscribe(sessions => {
-        existingId = sessions.find(
-          s => s.sequenceNode?.executionId === executionId && s.sequenceNode?.nodeId === nodeId
-        )?.id;
-      })();
-      if (existingId) return existingId;
+      // Idempotent (loops re-emit; the create event may also arrive twice).
+      let exists = false;
+      subscribe(sessions => { exists = sessions.some(s => s.id === sessionId); })();
+      if (exists) return;
 
-      const cwd = capture.cwd ?? '';
-      const model = capture.model ?? DEFAULT_MODEL_ID;
-      const provider = normalizeSdkProvider(capture.provider, model);
-      const messages = (capture.messages ?? []) as SdkMessage[];
+      const cwd = params.cwd ?? '';
+      // The node stores a shorthand model ("opus") — resolve it to a concrete id
+      // so the model selector/labels match what ran; provider/effort follow suit.
+      const model = resolveModelAlias(params.model ?? DEFAULT_MODEL_ID);
+      const provider = normalizeSdkProvider(params.provider ?? undefined, model);
+      const rawEffort = (params.effort ?? undefined) as EffortLevel | undefined;
+      const effortLevel: EffortLevel =
+        rawEffort && rawEffort !== ('off' as unknown as EffortLevel) && modelSupportsEffort(model)
+          ? clampEffortForModel(rawEffort, model)
+          : null;
 
-      const usage = createDefaultUsage(getMaxContextTokens(model));
-      if (params.tokens) {
-        usage.totalInputTokens = params.tokens.input_tokens;
-        usage.totalOutputTokens = params.tokens.output_tokens;
-        usage.totalCacheReadTokens = params.tokens.cache_read;
-        usage.totalCacheCreationTokens = params.tokens.cache_creation;
-      }
-      if (typeof params.cost === 'number') usage.totalCostUsd = params.cost;
-      if (typeof params.durationMs === 'number') usage.totalDurationMs = params.durationMs;
+      const now = Date.now();
+      const messages: SdkMessage[] = params.prompt
+        ? [{ type: 'user', content: params.prompt, timestamp: now }]
+        : [];
 
       const label = nodeName
         ? `${sequenceName ? `${sequenceName} · ` : ''}${nodeName}`
         : (sequenceName ?? 'Sequence session');
 
-      const id = crypto.randomUUID();
       const session: SdkSession = {
-        id,
+        id: sessionId,
         cwd,
         repoId: resolveRepoId(cwd),
         model,
         provider,
-        effortLevel: null,
+        effortLevel,
         messages,
-        status: 'idle',
-        sdkSessionId: capture.sdk_session_id,
-        createdAt: Date.now(),
-        lastActivityAt: Date.now(),
-        accumulatedDurationMs: params.durationMs ?? 0,
-        usage,
+        status: 'querying',
+        createdAt: now,
+        lastActivityAt: now,
+        startedAt: now,
+        currentWorkStartedAt: now,
+        accumulatedDurationMs: 0,
+        usage: createDefaultUsage(getMaxContextTokens(model)),
         aiMetadata: { name: label },
         sequenceNode: { executionId, nodeId, sequenceName, nodeName },
       };
 
       update(sessions => [...sessions, session]);
-      debouncedSave(id);
-      return id;
+      // Attach to the live sidecar stream (the sequence engine drives the query;
+      // these listeners populate the session's messages/usage/status/sdkSessionId).
+      void setupEventListeners(sessionId).then(unlisteners => {
+        listeners.set(sessionId, unlisteners);
+      });
+      debouncedSave(sessionId);
     },
 
     async sendPrompt(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
@@ -2883,9 +2903,22 @@ function createSdkSessionsStore() {
       debouncedSave();
     },
 
+    /** Persist whether the PR dock panel is open for a session (survives restart). */
+    setSessionPrPanelOpen(id: string, open: boolean): void {
+      update(sessions => sessions.map(s => s.id === id ? { ...s, prPanelOpen: open } : s));
+      debouncedSave(id);
+    },
+
     /** Mirror the latest Validation run summary onto a session (drives header/list badge). */
     setSessionValidation(id: string, validation: SessionValidationSummary | null): void {
       update(sessions => sessions.map(s => s.id === id ? { ...s, validation } : s));
+      debouncedSave(id);
+    },
+
+    /** Persist the full latest Validation run snapshot onto a session so the whole panel
+     *  survives restart. Null clears it (e.g. when a run is dismissed). */
+    setSessionValidationRun(id: string, validationRun: PersistedValidationRun | null): void {
+      update(sessions => sessions.map(s => s.id === id ? { ...s, validationRun } : s));
       debouncedSave(id);
     },
 

@@ -862,12 +862,23 @@
    * can combine with it. Reads the live input when mounted (flushes the debounce so
    * no typing is lost), falling back to the store draft when it isn't.
    */
-  function takeDraftForSend(): { text: string; images?: SdkImageContent[] } {
-    const d = promptInputRef?.getCurrentDraft();
-    const text = (d?.prompt ?? draftPrompt ?? "").trim();
-    const images = d?.images ?? draftImages ?? [];
-    if (promptInputRef) promptInputRef.clearInput();
-    else sdkSessions.updateDraft(sessionId, "", undefined);
+  function takeDraftForSend(
+    targetSessionId = sessionId,
+  ): { text: string; images?: SdkImageContent[] } {
+    // Only read the live input when it still shows the target session. After a
+    // session switch (or view teardown) the mounted input belongs to a different
+    // session, so pull the draft straight from the target session's store instead.
+    if (targetSessionId === sessionId && promptInputRef) {
+      const d = promptInputRef.getCurrentDraft();
+      const text = (d?.prompt ?? draftPrompt ?? "").trim();
+      const images = d?.images ?? draftImages ?? [];
+      promptInputRef.clearInput();
+      return { text, images: images.length > 0 ? images : undefined };
+    }
+    const stored = sdkSessions.getSession(targetSessionId);
+    const text = (stored?.draftPrompt ?? "").trim();
+    const images = stored?.draftImages ?? [];
+    sdkSessions.updateDraft(targetSessionId, "", undefined);
     return { text, images: images.length > 0 ? images : undefined };
   }
 
@@ -877,16 +888,19 @@
    * transcript survives the view being torn down (switching session/pane/view mid-
    * transcription) and reappears when the session is opened again.
    */
-  function appendTranscriptToDraft(text: string) {
+  function appendTranscriptToDraft(text: string, targetSessionId = sessionId) {
     if (!text.trim()) return;
-    if (promptInputRef) {
+    // Use the live input only when it still shows the target session; otherwise the
+    // recording outlived its view (session switched mid-transcription), so write
+    // straight to the target session's draft store.
+    if (targetSessionId === sessionId && promptInputRef) {
       promptInputRef.appendToPrompt(text);
       return;
     }
-    const current = sdkSessions.getSession(sessionId);
+    const current = sdkSessions.getSession(targetSessionId);
     const existing = (current?.draftPrompt ?? "").trim();
     const combined = existing ? `${existing} ${text.trim()}` : text.trim();
-    sdkSessions.updateDraft(sessionId, combined, current?.draftImages);
+    sdkSessions.updateDraft(targetSessionId, combined, current?.draftImages);
   }
 
   /** Draft + action combined: the typed draft leads, the action text follows. */
@@ -1101,6 +1115,13 @@
   async function handleStopRecording(timing: SendTiming = "now") {
     if (!$isRecording) return;
 
+    // Snapshot the target session (and its repo cwd) BEFORE any await. The user can
+    // switch sessions while transcription is in flight; without this snapshot the
+    // result would route to whatever session is active on completion, since
+    // `sessionId`/`cwd` are the live view props.
+    const targetSessionId = sessionId;
+    const targetCwd = cwd;
+
     // Capture realtime transcript before stopping (for dual-source cleanup)
     const capturedRealtimeTranscript = get(recording).realtimeTranscript;
 
@@ -1120,6 +1141,7 @@
         capturedRealtimeTranscript,
         error instanceof Error ? error.message : "Transcription failed",
         debugId,
+        targetSessionId,
       );
       return;
     }
@@ -1152,7 +1174,7 @@
       if (processed.detectedCommand === "transcribe") {
         console.log("[SdkView] Transcribe command detected, pasting to input");
         // Update draft with the transcript instead of sending
-        sdkSessions.updateDraft(sessionId, processed.transcript, undefined);
+        sdkSessions.updateDraft(targetSessionId, processed.transcript, undefined);
         recording.clearTranscript();
         return;
       }
@@ -1168,9 +1190,12 @@
       let finalTranscript = processed.transcript;
 
       if (isTranscriptionCleanupEnabled()) {
-        // Get repo context for cleanup
+        // Get repo context for cleanup (from the recorded session's repo, not the
+        // now-active one).
         const currentRepo =
-          cwd && cwd !== "." ? $repos.list.find((r) => r.path === cwd) : null;
+          targetCwd && targetCwd !== "."
+            ? $repos.list.find((r) => r.path === targetCwd)
+            : null;
         const repoContext = currentRepo
           ? buildSingleRepoContext(currentRepo)
           : undefined;
@@ -1207,18 +1232,18 @@
       // Combine any typed draft with the voice transcript (draft first) and carry
       // the draft's images along, instead of discarding them. The hold-Space
       // modifier combo picks the send timing.
-      const draft = takeDraftForSend();
+      const draft = takeDraftForSend(targetSessionId);
       const combined = draft.text
         ? `${draft.text}\n\n${finalTranscript}`
         : finalTranscript;
       if (timing === "session_idle") {
-        await sdkSessions.queueTurnAfterSessions(sessionId, combined, draft.images, "session");
+        await sdkSessions.queueTurnAfterSessions(targetSessionId, combined, draft.images, "session");
       } else if (timing === "repo_idle") {
-        await sdkSessions.queueTurnAfterSessions(sessionId, combined, draft.images, "worktree");
+        await sdkSessions.queueTurnAfterSessions(targetSessionId, combined, draft.images, "worktree");
       } else if (timing === "reset_5h") {
-        await sdkSessions.queueTurnForWindow(sessionId, combined, draft.images, "5h");
+        await sdkSessions.queueTurnForWindow(targetSessionId, combined, draft.images, "5h");
       } else {
-        await sdkSessions.sendPrompt(sessionId, combined, draft.images);
+        await sdkSessions.sendPrompt(targetSessionId, combined, draft.images);
       }
       recording.clearTranscript();
     } finally {
@@ -1246,6 +1271,12 @@
   async function transcribeInlineToText(): Promise<string | null> {
     if (!$isRecording) return null;
 
+    // Snapshot the target session (and repo cwd) before awaiting transcription, so a
+    // mid-transcription session switch salvages / cleans up against the recorded
+    // session rather than the now-active one.
+    const targetSessionId = sessionId;
+    const targetCwd = cwd;
+
     // Capture realtime transcript before stopping (for dual-source cleanup)
     const capturedRealtimeTranscript = get(recording).realtimeTranscript;
 
@@ -1267,6 +1298,7 @@
           capturedRealtimeTranscript,
           error instanceof Error ? error.message : "Transcription failed",
           debugId,
+          targetSessionId,
         );
         return null;
       }
@@ -1280,7 +1312,9 @@
 
       if (isTranscriptionCleanupEnabled()) {
         const currentRepo =
-          cwd && cwd !== "." ? $repos.list.find((r) => r.path === cwd) : null;
+          targetCwd && targetCwd !== "."
+            ? $repos.list.find((r) => r.path === targetCwd)
+            : null;
         const repoContext = currentRepo
           ? buildSingleRepoContext(currentRepo)
           : undefined;
@@ -1322,8 +1356,11 @@
   }
 
   async function handleStopInlineRecording() {
+    // Snapshot the target before awaiting so the appended draft lands on the
+    // recorded session even if the user switches sessions during transcription.
+    const targetSessionId = sessionId;
     const text = await transcribeInlineToText();
-    if (text) appendTranscriptToDraft(text);
+    if (text) appendTranscriptToDraft(text, targetSessionId);
   }
 
   // --- Failed follow-up recordings (transcription failed for a live session) ---
@@ -1341,6 +1378,7 @@
     realtimeTranscript: string | undefined,
     error: string,
     debugRecordingId?: string,
+    targetSessionId = sessionId,
   ) {
     const audioData = get(recording).audioData;
     if (!audioData) return;
@@ -1350,7 +1388,7 @@
         id: audioId,
         audioData: Array.from(audioData),
       });
-      sdkSessions.setFailedRecording(sessionId, {
+      sdkSessions.setFailedRecording(targetSessionId, {
         audioId,
         mode,
         realtimeTranscript,
@@ -1366,6 +1404,10 @@
   async function handleRetryFailedRecording() {
     const fr = session?.failedRecording;
     if (!fr || isRetryingFailedRecording) return;
+    // Snapshot the target session (and repo cwd) — a retry re-transcribes, and the
+    // user may switch sessions before it resolves.
+    const targetSessionId = sessionId;
+    const targetCwd = cwd;
     isRetryingFailedRecording = true;
     try {
       const audioData = await invoke<number[]>("read_pile_audio", {
@@ -1374,7 +1416,7 @@
       const transcript = await invoke<string>("transcribe_audio", { audioData });
 
       if (!transcript || !transcript.trim()) {
-        sdkSessions.setFailedRecording(sessionId, {
+        sdkSessions.setFailedRecording(targetSessionId, {
           ...fr,
           error: "No transcription returned",
         });
@@ -1393,7 +1435,9 @@
       let finalTranscript = transcript;
       if (isTranscriptionCleanupEnabled()) {
         const currentRepo =
-          cwd && cwd !== "." ? $repos.list.find((r) => r.path === cwd) : null;
+          targetCwd && targetCwd !== "."
+            ? $repos.list.find((r) => r.path === targetCwd)
+            : null;
         const repoContext = currentRepo
           ? buildSingleRepoContext(currentRepo)
           : undefined;
@@ -1420,19 +1464,19 @@
       // Transcription succeeded — dispatch the transcript, THEN clean up the durable
       // audio (only once it has been consumed, so a send failure stays retriable).
       if (fr.mode === "send") {
-        const draft = takeDraftForSend();
+        const draft = takeDraftForSend(targetSessionId);
         const combined = draft.text
           ? `${draft.text}\n\n${finalTranscript}`
           : finalTranscript;
-        await sdkSessions.sendPrompt(sessionId, combined, draft.images);
+        await sdkSessions.sendPrompt(targetSessionId, combined, draft.images);
       } else {
-        appendTranscriptToDraft(finalTranscript);
+        appendTranscriptToDraft(finalTranscript, targetSessionId);
       }
       invoke("delete_pile_audio", { id: fr.audioId }).catch(() => {});
-      sdkSessions.clearFailedRecording(sessionId);
+      sdkSessions.clearFailedRecording(targetSessionId);
     } catch (error) {
       // Still failing (service down) — keep it retriable, refresh the error.
-      sdkSessions.setFailedRecording(sessionId, {
+      sdkSessions.setFailedRecording(targetSessionId, {
         ...fr,
         error: error instanceof Error ? error.message : "Transcription failed",
       });
@@ -1618,6 +1662,7 @@
   let validationStripStatus = $derived.by(() => {
     const r = validationRun;
     if (!r) return "";
+    if (r.detached) return "Restored (read-only)";
     switch (r.status) {
       case "running":
         return r.pendingFix ? "Agent is fixing…" : "Running…";
@@ -1967,7 +2012,8 @@
     >
       <span
         class="strip-dot"
-        class:pulsing={stripRun.status === "running" || stripRun.status === "gate"}
+        class:pulsing={!stripRun.detached &&
+          (stripRun.status === "running" || stripRun.status === "gate")}
       ></span>
       <span class="strip-label">Validation</span>
       <span class="strip-status">{validationStripStatus}</span>

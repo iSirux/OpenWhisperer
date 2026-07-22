@@ -274,6 +274,21 @@ pub struct PersistedSdkSession {
     /// Rate-limited / scheduled pending-turn state for a live session (opaque JSON)
     #[serde(default)]
     pub rate_limited: Option<serde_json::Value>,
+    /// PR summary detected for the session's branch — drives the restart-surviving
+    /// PR badge (opaque JSON, frontend-owned schema)
+    #[serde(default)]
+    pub pr: Option<serde_json::Value>,
+    /// Whether the PR dock panel was left open, so the dock reopens after restart
+    #[serde(default)]
+    pub pr_panel_open: bool,
+    /// Compact latest validation-run summary — drives the restart-surviving
+    /// validation badge (opaque JSON, frontend-owned schema)
+    #[serde(default)]
+    pub validation: Option<serde_json::Value>,
+    /// Full latest validation-run snapshot (steps/gate/outcome/panel-open) so the
+    /// whole validation panel — not just the badge — survives restart (opaque JSON)
+    #[serde(default)]
+    pub validation_run: Option<serde_json::Value>,
     /// Whether the session is pinned in the sidebar
     #[serde(default)]
     pub pinned: bool,

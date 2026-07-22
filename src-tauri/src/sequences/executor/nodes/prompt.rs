@@ -40,12 +40,6 @@ impl Drop for SdkSessionListeners {
     }
 }
 
-/// Millisecond timestamp for transcript messages (matches the frontend's
-/// `SdkMessage.timestamp`, a `Date.now()` value).
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 impl SequenceExecutor {
     // ─── Prompt Node ─────────────────────────────────────────────────────────
 
@@ -158,8 +152,12 @@ impl SequenceExecutor {
             });
         }
 
-        // 6. Send query (keep a copy of the prompt for the openable-session transcript)
-        let prompt_for_transcript = rendered_prompt.clone();
+        // 6. Send query, then tell the frontend to materialize this run as a real,
+        //    LIVE SDK session immediately (id = the sidecar session id). The
+        //    frontend attaches to the same `sdk-*` event stream, so the session
+        //    appears in the session list from the first moment and streams in real
+        //    time — no post-hoc capture, no waiting for the node to finish.
+        let query_prompt = rendered_prompt.clone();
         self.sidecar
             .send(OutboundMessage::Query {
                 id: session_id.clone(),
@@ -168,82 +166,35 @@ impl SequenceExecutor {
             })
             .map_err(|e| SequenceError::command(format!("Query send error: {}", e)))?;
 
-        // 7. Accumulate text + a full transcript, capture the resumable SDK
-        //    session id, and wait for done/error. The transcript (assistant
-        //    text/tool messages) plus the sdk_session_id let the user reopen this
-        //    run as a real, resumable SDK session (see `set_node_session`).
+        crate::util::emit_or_log(
+            &self.app,
+            &format!("sequence-node-session-{}", execution_id),
+            serde_json::json!({
+                "session_id": session_id,
+                "node_id": node.id,
+                "node_name": node.name,
+                "cwd": cwd,
+                "model": model,
+                "provider": provider,
+                "effort": effort,
+                "prompt": query_prompt,
+            }),
+        );
+
+        // 7. Accumulate assistant text for the node's OUTPUT value and wait for
+        //    done/error. (The live frontend session captures the full transcript
+        //    itself off the same stream — nothing to rebuild here.)
         let accumulated_text = Arc::new(Mutex::new(String::new()));
-        let transcript: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let sdk_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-
-        // Resumable SDK session id (Claude emits this from system/init).
-        let sid_capture = sdk_session_id.clone();
-        let sid_event = format!("sdk-session-id-{}", session_id);
-        listeners.push(self.app.listen(sid_event, move |event| {
-            if let Ok(id) = serde_json::from_str::<String>(event.payload()) {
-                *sid_capture.lock() = Some(id);
-            }
-        }));
-
-        // Assistant text. The event payload is a `{ content, turnUuid,
-        // parentToolUseId }` OBJECT — parsing it as a bare string (as this node
-        // used to) silently dropped every chunk, so prompt nodes produced empty
-        // output. Extract `content`, keeping `turnUuid` for fork support.
         let text_acc = accumulated_text.clone();
-        let text_transcript = transcript.clone();
         let text_event = format!("sdk-text-{}", session_id);
         listeners.push(self.app.listen(text_event, move |event| {
-            let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
-                return;
-            };
-            let content = payload
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if content.is_empty() {
-                return;
-            }
-            text_acc.lock().push_str(&content);
-            text_transcript.lock().push(serde_json::json!({
-                "type": "text",
-                "content": content,
-                "turnUuid": payload.get("turnUuid").cloned().unwrap_or(serde_json::Value::Null),
-                "parentToolUseId": payload.get("parentToolUseId").cloned().unwrap_or(serde_json::Value::Null),
-                "timestamp": now_ms(),
-            }));
-        }));
-
-        // Tool calls — captured so the reopened session renders tool cards in order.
-        let tool_start_transcript = transcript.clone();
-        let tool_start_event = format!("sdk-tool-start-{}", session_id);
-        listeners.push(self.app.listen(tool_start_event, move |event| {
+            // Payload is a `{ content, turnUuid, parentToolUseId }` object; extract
+            // the text (parsing it as a bare string silently dropped every chunk,
+            // which is why prompt nodes used to produce empty output).
             if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
-                tool_start_transcript.lock().push(serde_json::json!({
-                    "type": "tool_start",
-                    "tool": payload.get("tool").cloned().unwrap_or(serde_json::Value::Null),
-                    "toolUseId": payload.get("toolUseId").cloned().unwrap_or(serde_json::Value::Null),
-                    "input": payload.get("input").cloned().unwrap_or(serde_json::Value::Null),
-                    "turnUuid": payload.get("turnUuid").cloned().unwrap_or(serde_json::Value::Null),
-                    "parentToolUseId": payload.get("parentToolUseId").cloned().unwrap_or(serde_json::Value::Null),
-                    "timestamp": now_ms(),
-                }));
-            }
-        }));
-
-        let tool_result_transcript = transcript.clone();
-        let tool_result_event = format!("sdk-tool-result-{}", session_id);
-        listeners.push(self.app.listen(tool_result_event, move |event| {
-            if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
-                tool_result_transcript.lock().push(serde_json::json!({
-                    "type": "tool_result",
-                    "tool": payload.get("tool").cloned().unwrap_or(serde_json::Value::Null),
-                    "toolUseId": payload.get("toolUseId").cloned().unwrap_or(serde_json::Value::Null),
-                    "output": payload.get("output").cloned().unwrap_or(serde_json::Value::Null),
-                    "turnUuid": payload.get("turnUuid").cloned().unwrap_or(serde_json::Value::Null),
-                    "parentToolUseId": payload.get("parentToolUseId").cloned().unwrap_or(serde_json::Value::Null),
-                    "timestamp": now_ms(),
-                }));
+                if let Some(content) = payload.get("content").and_then(|v| v.as_str()) {
+                    text_acc.lock().push_str(content);
+                }
             }
         }));
 
@@ -289,17 +240,27 @@ impl SequenceExecutor {
             }
         }));
 
-        // Apply timeout (node timeout, else sequence default, else 300s)
-        let timeout_secs = node.timeout.or(default_timeout).unwrap_or(300);
-        let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), done_rx)
-            .await
-            .map_err(|_| {
-                SequenceError::timeout(format!(
-                    "Prompt node '{}' timed out after {}s",
-                    node.id, timeout_secs
-                ))
-            })?
-            .map_err(|_| SequenceError::other("Done channel dropped"))?;
+        // Wait for the agent to finish. A timeout applies ONLY when the node or
+        // sequence explicitly sets one — agent runs are open-ended by default
+        // (a coding/analysis turn routinely exceeds any fixed cap), so there is
+        // no implicit 300s ceiling.
+        let timeout_secs = node.timeout.or(default_timeout);
+        let result = match timeout_secs {
+            Some(secs) if secs > 0 => {
+                tokio::time::timeout(std::time::Duration::from_secs(secs), done_rx)
+                    .await
+                    .map_err(|_| {
+                        SequenceError::timeout(format!(
+                            "Prompt node '{}' timed out after {}s",
+                            node.id, secs
+                        ))
+                    })?
+                    .map_err(|_| SequenceError::other("Done channel dropped"))?
+            }
+            _ => done_rx
+                .await
+                .map_err(|_| SequenceError::other("Done channel dropped"))?,
+        };
 
         // 8. Close session
         let _ = self.sidecar.send(OutboundMessage::Close { id: session_id });
@@ -334,35 +295,6 @@ impl SequenceExecutor {
             }
             Err(e) => {
                 self.push_ai_log(&node.id, LogLevel::Error, format!("AI prompt failed: {}", e));
-            }
-        }
-
-        // Build an openable-session snapshot when we captured a resumable SDK
-        // session id (Claude). Stored on the shared map and drained into the node
-        // result by the engine, so the completed node can be reopened as a real,
-        // resumable SDK session. Skipped when no resume id was emitted (e.g. Codex).
-        if result.is_ok() {
-            if let Some(sid) = sdk_session_id.lock().clone() {
-                let captured = transcript.lock();
-                let mut messages = Vec::with_capacity(captured.len() + 1);
-                messages.push(serde_json::json!({
-                    "type": "user",
-                    "content": prompt_for_transcript,
-                    "timestamp": now_ms(),
-                }));
-                messages.extend(captured.iter().cloned());
-                drop(captured);
-                self.store_ai_session(
-                    &node.id,
-                    crate::sequences::state::PromptSessionCapture {
-                        sdk_session_id: sid,
-                        cwd: Some(cwd.clone()),
-                        model: model.clone(),
-                        provider: Some(provider.to_string()),
-                        node_name: node.name.clone(),
-                        messages,
-                    },
-                );
             }
         }
 

@@ -229,13 +229,31 @@ export interface ValidationRunView extends ValidationRun {
   fixTarget: FixTarget;
   /** Client-only: whether the dock panel for this run is shown. Closing it does
    *  NOT cancel/dismiss the run — a collapsed status strip stays visible, and a
-   *  new gate or a terminal outcome reopens the panel. */
+   *  new gate or a terminal outcome reopens the panel. Persisted on the session. */
   panelOpen: boolean;
   /** Client-only: signature of the gate we last seeded selection for. */
   gateSignature?: string;
+  /**
+   * Client-only: the run was restored from a persisted session snapshot but the
+   * backend no longer has it (the app was restarted, so its tokio task and any
+   * live agents are gone). A detached run renders as read-only history — its
+   * gate can't be resolved and it can't be cancelled/resumed. Not persisted.
+   */
+  detached?: boolean;
 }
 
 export type FixTarget = 'session' | 'new-session';
+
+/**
+ * The slice of a run view persisted on `SdkSession.validationRun` so the whole
+ * panel (steps, gate, outcome, PR link, open state) survives an app restart —
+ * not just the compact badge summary. Excludes transient streaming feeds
+ * (`log`/`activity`) and gate-interaction state that is reseeded on restore.
+ */
+export type PersistedValidationRun = Omit<
+  ValidationRunView,
+  'log' | 'activity' | 'responding' | 'selectedFindingIds' | 'userFindings' | 'gateSignature' | 'detached'
+>;
 
 // ---------------------------------------------------------------------------
 // Event payload shapes (camelCase, matching the Rust contract).
@@ -371,6 +389,35 @@ function mirrorToSession(run: ValidationRun): void {
   sdkSessions.setSessionValidation(run.sessionId, summary);
 }
 
+/** Strip the transient/gate-interaction fields from a view for persistence. */
+function toPersistedRun(view: ValidationRunView): PersistedValidationRun {
+  const {
+    log: _log,
+    activity: _activity,
+    responding: _responding,
+    selectedFindingIds: _selected,
+    userFindings: _userFindings,
+    gateSignature: _sig,
+    detached: _detached,
+    ...rest
+  } = view;
+  return rest;
+}
+
+/**
+ * Persist the full run onto its session (`SdkSession.validationRun`) so the
+ * panel — steps, gate, outcome, PR link, and open/closed state — is restored on
+ * the next launch, not just the compact badge. Reads the current view from the
+ * store map. (Rehydration seeds the store map directly without going through
+ * this, so restoring a run never rewrites what it just loaded — meaning
+ * panel open/close on a restored read-only run still persists correctly.)
+ */
+function persistRun(runId: string): void {
+  const view = get(validationRuns).get(runId);
+  if (!view) return;
+  sdkSessions.setSessionValidationRun(view.sessionId, toPersistedRun(view));
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -416,6 +463,7 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
     };
   });
   mirrorToSession(incoming);
+  persistRun(runId);
   // Terminal runs no longer emit events; a live fix watcher (if any) is moot.
   if (!isActiveStatus(incoming.status)) {
     cancelFixWatcher(runId);
@@ -517,6 +565,7 @@ async function startRun(
   };
   await attachRun(runId, seed);
   mirrorToSession(seed);
+  persistRun(runId);
 
   // Resync: the run started before our listeners attached, so pull the
   // current snapshot to cover any state emitted in that gap (e.g. an
@@ -529,6 +578,61 @@ async function startRun(
   }
 
   return runId;
+}
+
+/** Build a live view from a persisted run snapshot, reseeding gate selection. */
+function viewFromPersisted(p: PersistedValidationRun): ValidationRunView {
+  const selectedFindingIds = (p.gate?.findings ?? [])
+    .filter((f) => f.action === 'auto-fix')
+    .map((f) => f.id);
+  return {
+    ...p,
+    panelOpen: p.panelOpen ?? false,
+    fixTarget: p.fixTarget ?? 'session',
+    log: [],
+    activity: [],
+    selectedFindingIds,
+    userFindings: [],
+    responding: false,
+    gateSignature: gateSignature(p.gate),
+    detached: true,
+  };
+}
+
+/**
+ * Restore validation runs persisted on sessions (`SdkSession.validationRun`)
+ * after sessions load from disk, so the full panel — not just the badge —
+ * survives an app restart. Each restored run is seeded read-only (`detached`),
+ * then we probe the backend: if it still has the run (e.g. a webview reload
+ * without a full process restart), we reattach its live listeners and go live;
+ * otherwise the run stays detached history the user can view but not resume.
+ * Idempotent — skips sessions whose run is already in the store.
+ */
+async function rehydrateFromSessions(): Promise<void> {
+  const sessions = get(sdkSessions);
+  for (const s of sessions) {
+    const persisted = s.validationRun;
+    if (!persisted) continue;
+    if (get(validationRuns).has(persisted.id) || getRunForSession(s.id)) continue;
+
+    const view = viewFromPersisted(persisted);
+    validationRuns.update((map) => {
+      const next = new Map(map);
+      next.set(view.id, view);
+      return next;
+    });
+
+    try {
+      const snapshot = await invoke<ValidationUpdatePayload>('validation_get_run', {
+        runId: view.id,
+      });
+      // Backend still owns this run — reattach listeners and refresh from live state.
+      await attachRun(view.id, { ...view, detached: false });
+      applySnapshot(view.id, snapshot);
+    } catch {
+      // Backend no longer has it (a real restart) — leave the detached view.
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -759,16 +863,20 @@ async function cancel(runId: string): Promise<void> {
   }
 }
 
-/** Remove a finished run from the store (its mirrored session badge is kept). */
+/** Remove a finished run from the store. The compact badge summary is kept, but
+ *  the persisted full run is cleared so a dismissed run doesn't rehydrate its
+ *  panel on the next launch. */
 function dismiss(runId: string): void {
   detachListeners(runId);
   cancelFixWatcher(runId);
+  const view = get(validationRuns).get(runId);
   validationRuns.update((map) => {
     if (!map.has(runId)) return map;
     const next = new Map(map);
     next.delete(runId);
     return next;
   });
+  if (view) sdkSessions.setSessionValidationRun(view.sessionId, null);
 }
 
 /** Update the checked findings for the current gate. */
@@ -779,16 +887,19 @@ function selectFindings(runId: string, findingIds: string[]): void {
 /** Show the dock panel for a run. */
 function openPanel(runId: string): void {
   patchView(runId, { panelOpen: true });
+  persistRun(runId);
 }
 
 /** Hide the dock panel without touching the run (a status strip remains). */
 function closePanel(runId: string): void {
   patchView(runId, { panelOpen: false });
+  persistRun(runId);
 }
 
 /** Choose where fix prompts go: the run's session or a fresh one with context. */
 function setFixTarget(runId: string, target: FixTarget): void {
   patchView(runId, { fixTarget: target });
+  persistRun(runId);
 }
 
 /**
@@ -1143,6 +1254,7 @@ export const validation = {
   startRun,
   scheduleRun,
   cancelScheduledRun,
+  rehydrateFromSessions,
   respond,
   executeShip,
   cancel,

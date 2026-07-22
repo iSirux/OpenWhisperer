@@ -113,6 +113,20 @@ impl SequenceExecutor {
             inputs,
         )));
 
+        // Seed the working directory from the sequence's declared repo so prompt
+        // and git nodes run in the intended repository instead of the app's cwd
+        // (which is C:\WINDOWS\system32 on Windows). A later git node that sets
+        // `repo.path` (e.g. a worktree) overrides this.
+        if let Some(first_repo) = super::resolve_repos(&definition.repos, &self.app)
+            .into_iter()
+            .next()
+        {
+            execution
+                .lock()
+                .context
+                .set_repo("path", serde_json::Value::String(first_repo));
+        }
+
         // 3. Dry-run: validate and return early
         if dry_run {
             self.validate_nodes(&definition)?;
@@ -221,11 +235,6 @@ impl SequenceExecutor {
                         ai_tokens,
                         ai_cost,
                     );
-                    // Attach the openable-session snapshot (prompt nodes) so the
-                    // completed node can be reopened as a real SDK session.
-                    if let Some(capture) = self.drain_ai_session(&node_id) {
-                        execution.lock().set_node_session(&node_id, capture);
-                    }
                     self.emit_node_complete(&execution_id, &node_id, 0, ai_cost);
 
                     current_node_id = self.next_node_id(&node_def, &definition, output.as_ref());
@@ -827,12 +836,6 @@ impl SequenceExecutor {
             .map(|u| (u.tokens, u.cost))
     }
 
-    fn drain_ai_session(
-        &self,
-        node_id: &str,
-    ) -> Option<crate::sequences::state::PromptSessionCapture> {
-        self.shared.ai_sessions.lock().remove(node_id)
-    }
 
     // ─── Event emission helpers (T6: short_id + emit_or_log) ─────────────────
 

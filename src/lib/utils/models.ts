@@ -188,6 +188,20 @@ export function getModelById(id: string): ModelInfo | undefined {
 // Default model to use when no other model is available
 export const DEFAULT_MODEL_ID = "claude-sonnet-5";
 
+/**
+ * Resolve a bare provider alias (e.g. "opus", "sonnet", "haiku") to a concrete
+ * model id. Sequence prompt nodes store shorthand model names that the sidecar
+ * expands at runtime; the UI needs the full id so the model selector and labels
+ * match what actually ran. Returns the input unchanged when it's already a known
+ * id, is "auto", or has no alias match.
+ */
+export function resolveModelAlias(modelId: string): string {
+  if (!modelId || isAutoModel(modelId) || getModelById(modelId)) return modelId;
+  const alias = modelId.toLowerCase();
+  const match = [...ALL_MODELS, ...OPENAI_MODELS].find((m) => m.id.toLowerCase().includes(alias));
+  return match?.id ?? modelId;
+}
+
 // Check if a model ID belongs to OpenAI
 export function isOpenAiModel(modelId: string): boolean {
   return OPENAI_MODELS.some((m) => m.id === modelId) ||

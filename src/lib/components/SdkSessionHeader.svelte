@@ -150,7 +150,9 @@
     sessionId ? [...$validationRuns.values()].find((r) => r.sessionId === sessionId) : undefined,
   );
   const validationActive = $derived(
-    !!validationRun && (validationRun.status === 'running' || validationRun.status === 'gate'),
+    !!validationRun &&
+      !validationRun.detached &&
+      (validationRun.status === 'running' || validationRun.status === 'gate'),
   );
   // Enabled with a real cwd, not pending, not querying, and no active run.
   const validationCanStart = $derived(
