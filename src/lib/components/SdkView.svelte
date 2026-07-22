@@ -28,7 +28,7 @@
   import SessionDock from "./sdk/SessionDock.svelte";
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
   import { dockOrientation } from "$lib/stores/dockOrientation";
-  import { sessionPrs, getDefaultBranch, defaultBranchTail } from "$lib/stores/sessionPrs";
+  import { sessionPrs } from "$lib/stores/sessionPrs";
   import { validation, validationRuns } from "$lib/stores/validation";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
@@ -425,34 +425,6 @@
     if (!(s.currentBranch || s.createdBranch)) return;
     void sessionPrs.detectIfStale(s, justFinished);
   });
-
-  // Built-in "ship it" quick action, shown for sessions on a non-default branch
-  // of a GitHub-linked repo. Uses the repo's actual default branch name.
-  let prQuickActionPrompt = $state<string | null>(null);
-  $effect(() => {
-    const s = session;
-    const repo = sessionRepo;
-    const sessionBranch = s?.currentBranch || s?.createdBranch;
-    if (!s || !repo?.github_url || !sessionBranch) {
-      prQuickActionPrompt = null;
-      return;
-    }
-    let cancelled = false;
-    void getDefaultBranch(repo.path).then((defaultBranch) => {
-      if (cancelled) return;
-      const tail = defaultBranchTail(defaultBranch);
-      prQuickActionPrompt =
-        tail && sessionBranch !== tail
-          ? `Commit, push, create PR, merge from ${defaultBranch} if needed`
-          : null;
-    });
-    return () => {
-      cancelled = true;
-    };
-  });
-  let builtinQuickActions = $derived(
-    prQuickActionPrompt ? [{ prompt: prQuickActionPrompt }] : [],
-  );
 
   let branch = $state<string | null>(null);
   let lastFetchedBranchCwd = "";
@@ -2119,7 +2091,6 @@
           onSendRepoIdle={handleQuickSendRepoIdle}
           onSend5hReset={handleQuickSend5hReset}
           generatedActions={generatedQuickActions}
-          builtinActions={builtinQuickActions}
           showContextual={isIdleWithHistory}
         />
       {/snippet}
