@@ -10,6 +10,153 @@ use tauri::{AppHandle, Manager};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+/// Cached absolute path (or bare `"node"`) resolved once at first sidecar start.
+static NODE_EXE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Resolve a usable `node` executable, caching the result for the process life.
+///
+/// A GUI app launched from the macOS Dock / Finder (or a Linux desktop entry)
+/// inherits a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that omits Homebrew,
+/// nvm, fnm, volta, etc. — so a bare `Command::new("node")` fails even when node
+/// is installed and works fine from a terminal. We therefore look harder:
+///   1. the inherited PATH (covers Windows and terminal-launched apps),
+///   2. the user's real login PATH, obtained by running their login shell,
+///   3. well-known install locations for the common version managers.
+/// Falls back to `"node"` so the prior behaviour (and error message) still
+/// applies when nothing is found.
+fn resolve_node_executable() -> String {
+    NODE_EXE.get_or_init(discover_node).clone()
+}
+
+fn discover_node() -> String {
+    // 1. Inherited PATH — the fast path for Windows and terminal launches.
+    if node_runs("node") {
+        return "node".to_string();
+    }
+
+    #[cfg(not(windows))]
+    {
+        // 2. The user's real login PATH (sources ~/.zprofile/.bash_profile/etc.).
+        if let Some(path) = login_shell_path() {
+            for dir in path.split(':').filter(|d| !d.is_empty()) {
+                let cand = std::path::Path::new(dir).join("node");
+                if cand.exists() && node_runs(&cand.to_string_lossy()) {
+                    return cand.to_string_lossy().into_owned();
+                }
+            }
+        }
+        // 3. Known install locations for the common version managers.
+        if let Some(p) = node_from_known_locations() {
+            return p;
+        }
+    }
+
+    "node".to_string()
+}
+
+/// Whether `<exe> --version` runs successfully (verifies it's an executable node,
+/// not just a file that exists).
+fn node_runs(exe: &str) -> bool {
+    let mut cmd = Command::new(exe);
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// The user's login-shell PATH (`$SHELL -ilc 'echo "$PATH"'`), bounded by a
+/// timeout so a misbehaving rc file can't hang startup. Covers sh/bash/zsh (the
+/// default on macOS); exotic shells fall through to `node_from_known_locations`.
+#[cfg(not(windows))]
+fn login_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty())?;
+    let mut cmd = Command::new(&shell);
+    cmd.args(["-ilc", "echo \"$PATH\""]);
+    let out = run_command_capped(&mut cmd, std::time::Duration::from_secs(5))?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .last()?
+        .trim()
+        .to_string();
+    (!path.is_empty()).then_some(path)
+}
+
+/// Run a command, killing it and returning `None` if it exceeds `dur`.
+#[cfg(not(windows))]
+fn run_command_capped(
+    cmd: &mut Command,
+    dur: std::time::Duration,
+) -> Option<std::process::Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) => {
+                if start.elapsed() >= dur {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Probe well-known node install locations (Homebrew, MacPorts, the system path,
+/// and the versioned dirs of nvm / fnm / volta / asdf), returning the first that
+/// actually runs.
+#[cfg(not(windows))]
+fn node_from_known_locations() -> Option<String> {
+    let mut candidates: Vec<std::path::PathBuf> = vec![
+        "/opt/homebrew/bin/node".into(), // Apple Silicon Homebrew
+        "/usr/local/bin/node".into(),    // Intel Homebrew / manual installs
+        "/usr/bin/node".into(),          // system / Linux distro packages
+        "/opt/local/bin/node".into(),    // MacPorts
+    ];
+
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".volta/bin/node"));
+        candidates.push(home.join(".asdf/shims/node"));
+        // nvm and fnm keep one dir per installed version — collect every one and
+        // let node_runs pick a working binary.
+        let versioned = [
+            home.join(".nvm/versions/node"),
+            home.join(".fnm/node-versions"),
+            home.join("Library/Application Support/fnm/node-versions"),
+        ];
+        for base in versioned {
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                for entry in entries.flatten() {
+                    candidates.push(entry.path().join("bin/node")); // nvm layout
+                    candidates.push(entry.path().join("installation/bin/node")); // fnm layout
+                }
+            }
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|p| p.exists() && node_runs(&p.to_string_lossy()))
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Image data for multimodal prompts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageData {
@@ -867,7 +1014,12 @@ impl SidecarManager {
 
         log::info!("[sidecar] Sidecar base directory: {}", sidecar_base);
 
-        let mut cmd = Command::new("node");
+        // Resolve node by absolute path where possible — a Dock/Finder-launched
+        // app on macOS inherits a PATH that omits Homebrew/nvm/etc.
+        let node_exe = resolve_node_executable();
+        log::info!("[sidecar] Using node executable: {}", node_exe);
+
+        let mut cmd = Command::new(&node_exe);
         cmd.arg(&path_str)
             .current_dir(&sidecar_base)
             .stdin(Stdio::piped())
@@ -898,9 +1050,13 @@ impl SidecarManager {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to spawn sidecar with node ('{}'): {}. \
+                 Node.js could not be found — install it (e.g. via Homebrew: `brew install node`) and reopen the app.",
+                node_exe, e
+            )
+        })?;
 
         let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
         let stdin = child.stdin.take().ok_or("Failed to get stdin")?;
