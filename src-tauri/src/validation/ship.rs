@@ -133,8 +133,10 @@ async fn draft_or_fallback(
         guard.clone()
     };
 
-    if let Ok(client) = crate::llm::client_from_config(app, &config) {
-        match client
+    if let Ok(router) =
+        crate::llm::router_from_config(app, &config, crate::llm::LlmFeature::ShipDraft)
+    {
+        match router
             .draft_ship_with_usage(intent, diffstat, validation_summary)
             .await
         {

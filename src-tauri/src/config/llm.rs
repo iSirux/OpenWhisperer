@@ -11,6 +11,8 @@ pub enum LlmProvider {
     Groq,
     Gemini,
     OpenAI,
+    /// xAI (Grok) — OpenAI-compatible chat-completions API.
+    Xai,
     Local,
     Custom,
 }
@@ -142,25 +144,44 @@ impl Default for LlmFeaturesConfig {
     }
 }
 
+/// A named LLM provider profile. Multiple profiles can be configured and wired
+/// into role-based routing chains (fast / quality) for cross-provider fallback.
+/// The migrated legacy single-provider config becomes a profile with id
+/// `"default"` (which reuses the legacy bare keyring account).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmProfile {
+    /// Stable unique id; the migrated legacy profile uses "default".
+    pub id: String,
+    /// Human-readable label shown in the UI.
+    pub label: String,
+    #[serde(default)]
+    pub provider: LlmProvider,
+    /// Model name (varies by provider) — used when auto_model is false.
+    pub model: String,
+    /// API endpoint (only used for Local/Custom providers).
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Keeps intra-provider fallback chains (Gemini/Groq) when enabled.
+    #[serde(default = "default_auto_model")]
+    pub auto_model: bool,
+    #[serde(default)]
+    pub model_priority: LlmModelPriority,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// Provider for the LLM integration
-    #[serde(default)]
-    pub provider: LlmProvider,
-    /// Model name (varies by provider) - used when auto_model is false
-    #[serde(default = "default_llm_model")]
-    pub model: String,
-    /// API endpoint (only used for Local/Custom providers)
-    #[serde(default)]
-    pub endpoint: Option<String>,
-    /// When enabled for Gemini provider, automatically select model with fallbacks
-    #[serde(default = "default_auto_model")]
-    pub auto_model: bool,
-    /// Model priority when auto_model is enabled (Speed or Accuracy)
-    #[serde(default)]
-    pub model_priority: LlmModelPriority,
+    /// Named provider profiles. Defaults to a single "default" profile mirroring
+    /// the historical single-provider defaults.
+    #[serde(default = "default_profiles")]
+    pub profiles: Vec<LlmProfile>,
+    /// Ordered profile ids routed for latency-sensitive (Fast) features.
+    #[serde(default = "default_chain")]
+    pub fast_chain: Vec<String>,
+    /// Ordered profile ids routed for correctness-critical (Quality) features.
+    #[serde(default = "default_chain")]
+    pub quality_chain: Vec<String>,
     #[serde(default)]
     pub features: LlmFeaturesConfig,
     /// When enabled, Claude will question the repo selection if it seems wrong
@@ -169,10 +190,10 @@ pub struct LlmConfig {
     /// Minimum confidence level required for auto-selecting a repository
     #[serde(default)]
     pub min_auto_select_confidence: RepoAutoSelectConfidence,
-    // API key is stored securely, not in config
+    // API keys are stored securely (one per profile), not in config
 }
 
-fn default_llm_model() -> String {
+pub(crate) fn default_llm_model() -> String {
     "openai/gpt-oss-120b".to_string()
 }
 
@@ -180,15 +201,32 @@ fn default_auto_model() -> bool {
     true
 }
 
+/// The default profile set: one "default" profile mirroring the historical
+/// single-provider defaults (Groq / gpt-oss-120b, auto-model, speed priority).
+fn default_profiles() -> Vec<LlmProfile> {
+    vec![LlmProfile {
+        id: "default".to_string(),
+        label: "Default".to_string(),
+        provider: LlmProvider::Groq,
+        model: default_llm_model(),
+        endpoint: None,
+        auto_model: default_auto_model(),
+        model_priority: LlmModelPriority::Speed,
+    }]
+}
+
+/// The default routing chain: just the "default" profile.
+fn default_chain() -> Vec<String> {
+    vec!["default".to_string()]
+}
+
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            provider: LlmProvider::default(),
-            model: default_llm_model(),
-            endpoint: None,
-            auto_model: default_auto_model(),
-            model_priority: LlmModelPriority::default(),
+            profiles: default_profiles(),
+            fast_chain: default_chain(),
+            quality_chain: default_chain(),
             features: LlmFeaturesConfig::default(),
             confirm_repo_selection: false,
             min_auto_select_confidence: RepoAutoSelectConfidence::default(),

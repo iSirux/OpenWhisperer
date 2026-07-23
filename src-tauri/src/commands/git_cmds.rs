@@ -130,15 +130,17 @@ pub async fn generate_worktree_branch_name(
     // Get existing branches to avoid conflicts
     let existing_branches = GitManager::list_branches(&repo_path).unwrap_or_default();
 
-    // Try LLM-generated name first. `client_from_config` errors for non-local
-    // providers with no key (falls through to the fallback), and allows an empty
-    // key for the Local provider.
+    // Try LLM-generated name first. `router_from_config` errors when no profile
+    // has a usable key (falls through to the fallback); Local profiles allow an
+    // empty key.
     if cfg.llm.enabled {
-        if let Ok(client) = crate::llm::client_from_config(&app, &cfg) {
+        if let Ok(router) =
+            crate::llm::router_from_config(&app, &cfg, crate::llm::LlmFeature::BranchName)
+        {
             // Truncate prompt to 10k chars (char-safe) for branch naming.
             let truncated_prompt = crate::util::truncate_chars(&prompt, 10000);
 
-            match client
+            match router
                 .generate_branch_name_with_usage(&truncated_prompt, &existing_branches)
                 .await
             {

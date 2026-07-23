@@ -14,6 +14,7 @@
     Groq: { model: 'openai/gpt-oss-120b', endpoint: null },
     Gemini: { model: 'gemini-3.1-flash-lite', endpoint: null },
     OpenAI: { model: 'gpt-5.4-mini', endpoint: null },
+    Xai: { model: 'grok-4-fast', endpoint: null },
     Local: { model: 'local-model', endpoint: 'http://localhost:1234/v1/chat/completions' },
   };
 
@@ -21,7 +22,12 @@
     Groq: { label: 'Get a free Groq API key', url: 'https://console.groq.com/keys' },
     Gemini: { label: 'Get a free Gemini API key', url: 'https://aistudio.google.com/apikey' },
     OpenAI: { label: 'Get an OpenAI API key', url: 'https://platform.openai.com/api-keys' },
+    Xai: { label: 'Get an xAI API key', url: 'https://console.x.ai' },
   };
+
+  // Onboarding edits only the default profile; the full multi-profile /
+  // routing UI lives in Settings → LLM.
+  const DEFAULT_PROFILE_ID = 'default';
 
   let apiKey = $state('');
   let apiKeySet = $state(false);
@@ -29,33 +35,39 @@
   let testing = $state(false);
   let testResult = $state<LlmTestResult | null>(null);
 
-  const provider = $derived($settings.llm.provider);
+  const provider = $derived($settings.llm.profiles[0]?.provider ?? 'Groq');
   const needsKey = $derived(provider !== 'Local');
   const enabled = $derived($settings.llm.enabled);
   const voice = $derived(!$settings.system.voice_mode_disabled);
 
   onMount(async () => {
     // Default fresh installs to Groq — free tier, fast, one key.
-    if (!get(settings).llm.enabled && get(settings).llm.provider === 'Gemini') {
+    if (!get(settings).llm.enabled && (get(settings).llm.profiles[0]?.provider ?? 'Groq') === 'Gemini') {
       applyProvider('Groq');
     }
     try {
-      apiKeySet = await invoke<boolean>('has_gemini_api_key');
+      apiKeySet = await invoke<boolean>('has_llm_api_key', { profileId: DEFAULT_PROFILE_ID });
     } catch {
       apiKeySet = false;
     }
   });
 
-  function applyProvider(next: LlmProvider) {
-    const preset = PROVIDER_PRESETS[next];
+  function updateDefaultProfile(patch: Partial<{ provider: LlmProvider; model: string; endpoint: string | null }>) {
     settings.update((s) => ({
       ...s,
       llm: {
         ...s.llm,
-        provider: next,
-        ...(preset ? { model: preset.model, endpoint: preset.endpoint } : {}),
+        profiles: s.llm.profiles.map((p, i) => (i === 0 ? { ...p, ...patch } : p)),
       },
     }));
+  }
+
+  function applyProvider(next: LlmProvider) {
+    const preset = PROVIDER_PRESETS[next];
+    updateDefaultProfile({
+      provider: next,
+      ...(preset ? { model: preset.model, endpoint: preset.endpoint } : {}),
+    });
   }
 
   async function enableAndTest() {
@@ -63,8 +75,7 @@
     testResult = null;
     try {
       if (needsKey && apiKey.trim()) {
-        // One keyring slot serves every provider despite the legacy command name.
-        await invoke('save_gemini_api_key', { apiKey: apiKey.trim() });
+        await invoke('save_gemini_api_key', { apiKey: apiKey.trim(), profileId: DEFAULT_PROFILE_ID });
         apiKey = '';
         apiKeySet = true;
       }
@@ -72,7 +83,7 @@
       // The test reads the backend config, so persist before testing.
       await invoke('save_config', { newConfig: get(settings) });
       testing = true;
-      testResult = await invoke<LlmTestResult>('test_gemini_connection');
+      testResult = await invoke<LlmTestResult>('test_gemini_connection', { profileId: DEFAULT_PROFILE_ID });
       if (!testResult.success) {
         settings.update((s) => ({ ...s, llm: { ...s.llm, enabled: false } }));
         await invoke('save_config', { newConfig: get(settings) });
@@ -125,6 +136,7 @@
           <option value="Groq">Groq (free tier — recommended)</option>
           <option value="Gemini">Google Gemini (free tier — limited)</option>
           <option value="OpenAI">OpenAI</option>
+          <option value="Xai">xAI (Grok)</option>
           <option value="Local">Local (LM Studio, Ollama, etc.)</option>
         </select>
       </div>
@@ -152,7 +164,8 @@
           <input
             type="text"
             class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
-            bind:value={$settings.llm.endpoint}
+            value={$settings.llm.profiles[0]?.endpoint ?? ''}
+            oninput={(e) => updateDefaultProfile({ endpoint: (e.target as HTMLInputElement).value })}
             placeholder="http://localhost:1234/v1/chat/completions"
           />
         </div>

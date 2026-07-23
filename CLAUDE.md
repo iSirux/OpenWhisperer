@@ -312,7 +312,7 @@ App config stored in system config directory (`open-whisperer/config.json`), ver
 - `audio` - Recording device, stop action (`record_and_send_action`: send/prepare/pile), screenshot capture, sound settings
 - `voice_commands` / `open_mic` - Voice command and wake-word settings
 - `overlay` / `system` - Overlay position/visibility; tray, autostart, single instance, dev mode, `update_check` (Off | Notify | Auto)
-- `llm` - LLM integration settings (provider, model, API key, features, auto-model priority/effort)
+- `llm` - LLM integration settings (named provider profiles, fast/quality routing chains, features, auto-model priority/effort; API keys per profile in the keyring)
 - `mcp` - MCP server configuration (global servers list, OAuth)
 - `queue` - Smart Queue settings (rate-limit queueing, stagger)
 - `sequences` - Sequence engine settings (notification channels)
@@ -458,15 +458,25 @@ Passive voice listening that activates recording when wake commands are detected
 
 `stores/debugRecordings.ts` keeps a bounded rolling log (20 newest) of every recording: the audio plus each transcription stage (realtime, Whisper raw, LLM-cleaned). Always on. Playback and inspection in Settings → Recordings Log. Persistence via `debug_recordings_cmds.rs`; audio for evicted entries is deleted so storage stays bounded.
 
-## LLM Integration (Gemini/OpenAI/Groq/Local)
+## LLM Integration (Gemini/OpenAI/Groq/xAI/Local)
 
-The app includes an optional LLM integration layer that uses a secondary AI (Gemini by default) to enhance the user experience. This is configured in Settings → LLM.
+The app includes an optional LLM integration layer that uses a secondary AI to enhance the user experience. This is configured in Settings → LLM.
+
+### Provider Profiles & Role Routing
+
+Multi-provider: `LlmConfig` holds **named profiles** (`LlmProfile { id, label, provider, model, endpoint, auto_model, model_priority }`) instead of a single provider, plus two ordered routing chains of profile ids. Each LLM call carries an `LlmFeature` whose `role()` picks the chain (`llm/types.rs`):
+
+- **`fast_chain`** — latency-sensitive/low-stakes calls: model recommendation, repo recommendation, session naming/outcome, branch names
+- **`quality_chain`** — correctness-critical calls: **transcription cleanup** (deliberately Quality — most correctness-critical feature), interaction analysis, quick actions, ship drafts, sequence AI nodes
+
+`router_from_config(app, config, feature)` (`llm/mod.rs`) resolves the chain to an `LlmRouter` (one `LlmClient` per profile; profiles with missing keys skipped, Local exempt; empty/invalid chain falls back to all profiles). `run_chain` tries each profile in order with **unconditional cross-provider fallback on any error**; intra-provider fallbacks (Gemini model chain, Groq sibling models) still run inside each client. Feature methods live on `LlmRouter` (`llm/features.rs`); `test_connection` stays per-`LlmClient`. API keys are per-profile in the system keyring: profile id `default` uses the legacy bare `llm-api-key` account (zero migration), others `llm-api-key:<id>`. The key commands (`save_gemini_api_key`, `delete_gemini_api_key`, `has_llm_api_key`, `test_gemini_connection`) take an optional `profileId` (omitted = `default`). Config migration v6→v7 wraps the legacy flat provider fields into `profiles[0]` (id `default`) and seeds both chains. UI: Settings → LLM has profile cards (per-profile key + test) and the two chain editors; onboarding's `LlmStep` edits only the `default` profile.
 
 ### Supported Providers
 
-- **Gemini** - Google's Gemini API with automatic model fallback (2.5 Flash Lite → 2.5 Flash → 2.0 Flash)
+- **Gemini** - Google's Gemini API with automatic model fallback (3.1 Flash-Lite / 3.5 Flash chains per `model_priority`)
 - **OpenAI** - OpenAI API (GPT-4, etc.)
-- **Groq** - Groq's fast inference API
+- **Groq** - Groq's fast inference API (per-model quotas; sibling-model fallback)
+- **xAI** - Grok via the OpenAI-compatible chat-completions API (`Xai` variant)
 - **Local** - Any OpenAI-compatible local server (LM Studio, Ollama, etc.)
 - **Custom** - Custom OpenAI-compatible endpoint
 

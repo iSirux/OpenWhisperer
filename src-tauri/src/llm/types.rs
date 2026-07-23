@@ -1,5 +1,47 @@
 use serde::{Deserialize, Serialize};
 
+/// Routing role for an LLM feature. Determines which configured chain
+/// (fast_chain or quality_chain) drives the feature.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LlmRole {
+    /// Latency-sensitive, pre-send path.
+    Fast,
+    /// Correctness-critical path.
+    Quality,
+}
+
+/// Every LLM-backed feature, used to pick the routing chain.
+#[derive(Debug, Clone, Copy)]
+pub enum LlmFeature {
+    SessionNaming,
+    SessionOutcome,
+    InteractionAnalysis,
+    TranscriptionCleanup,
+    ModelRecommendation,
+    RepoRecommendation,
+    QuickActions,
+    ShipDraft,
+    BranchName,
+    SequenceAi,
+}
+
+impl LlmFeature {
+    /// Map a feature to its routing role. Pre-send recommendations plus the
+    /// low-stakes metadata generators (naming, outcome, branch names) are Fast;
+    /// everything else — including the correctness-critical transcription
+    /// cleanup — routes to Quality.
+    pub fn role(self) -> LlmRole {
+        match self {
+            LlmFeature::ModelRecommendation
+            | LlmFeature::RepoRecommendation
+            | LlmFeature::SessionNaming
+            | LlmFeature::SessionOutcome
+            | LlmFeature::BranchName => LlmRole::Fast,
+            _ => LlmRole::Quality,
+        }
+    }
+}
+
 /// Result for generating a session name from the initial prompt
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionNameResult {

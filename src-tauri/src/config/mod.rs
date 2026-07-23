@@ -762,8 +762,13 @@ mod tests {
             "theme".to_string(),
             serde_json::Value::String("Snow".to_string()),
         );
-        // Point the LLM at a deprecated Gemini model to exercise the model remap.
+        // Shape the LLM object like a real legacy (pre-profiles) file: strip the
+        // new profiles/chains and point it at a deprecated Gemini model so both
+        // the model remap (v0->v1) and the profile fold (v6->v7) are exercised.
         if let Some(serde_json::Value::Object(llm)) = obj.get_mut("llm") {
+            llm.remove("profiles");
+            llm.remove("fast_chain");
+            llm.remove("quality_chain");
             llm.insert(
                 "provider".to_string(),
                 serde_json::Value::String("Gemini".to_string()),
@@ -786,8 +791,11 @@ mod tests {
         let config: AppConfig = serde_json::from_value(value).unwrap();
         // Unknown theme was reset to the default.
         assert_eq!(config.theme, Theme::Midnight);
-        // Deprecated Gemini model was remapped.
-        assert_eq!(config.llm.model, "gemini-3.1-flash-lite");
+        // Deprecated Gemini model was remapped, then folded into the default
+        // profile by the v6->v7 migration.
+        assert_eq!(config.llm.profiles.len(), 1);
+        assert_eq!(config.llm.profiles[0].model, "gemini-3.1-flash-lite");
+        assert_eq!(config.llm.profiles[0].provider, LlmProvider::Gemini);
     }
 
     #[test]
@@ -884,6 +892,54 @@ mod tests {
         migration::run_migrations(&mut value, 5);
         let config: AppConfig = serde_json::from_value(value).unwrap();
         assert_eq!(config.quick_actions, vec!["Implement this", "go"]);
+    }
+
+    #[test]
+    fn migration_converts_llm_to_profiles() {
+        // A pre-v7 config with legacy single-provider llm fields must become a
+        // single "default" profile, seed both routing chains, and drop the
+        // legacy top-level keys.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(6));
+
+        // Replace the (new-shaped) default llm object with a legacy-shaped one.
+        obj.insert(
+            "llm".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "provider": "Gemini",
+                "model": "gemini-3.5-flash",
+                "endpoint": null,
+                "auto_model": false,
+                "model_priority": "accuracy",
+            }),
+        );
+
+        migration::run_migrations(&mut value, 6);
+
+        // The legacy keys are gone from the raw llm object.
+        let llm_val = value.get("llm").and_then(|v| v.as_object()).unwrap();
+        assert!(llm_val.get("provider").is_none());
+        assert!(llm_val.get("model").is_none());
+        assert!(llm_val.get("endpoint").is_none());
+        assert!(llm_val.get("auto_model").is_none());
+        assert!(llm_val.get("model_priority").is_none());
+
+        // And the migrated config deserializes with the expected profile + chains.
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert!(config.llm.enabled);
+        assert_eq!(config.llm.profiles.len(), 1);
+        let p = &config.llm.profiles[0];
+        assert_eq!(p.id, "default");
+        assert_eq!(p.label, "Default");
+        assert_eq!(p.provider, LlmProvider::Gemini);
+        assert_eq!(p.model, "gemini-3.5-flash");
+        assert_eq!(p.endpoint, None);
+        assert!(!p.auto_model);
+        assert_eq!(p.model_priority, LlmModelPriority::Accuracy);
+        assert_eq!(config.llm.fast_chain, vec!["default".to_string()]);
+        assert_eq!(config.llm.quality_chain, vec!["default".to_string()]);
     }
 
     #[test]

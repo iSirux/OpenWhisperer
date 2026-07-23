@@ -344,10 +344,13 @@ export interface NodeResult {
   tokens?: TokenUsage;
 }
 
-/** Payload of `sequence-node-session-{executionId}` — emitted when a prompt node
- *  starts its agent run, so the frontend can create a live SDK session (id =
- *  `session_id`) that streams in real time. */
+/** Payload of the GLOBAL `sequence-node-session` event — emitted when a prompt
+ *  node starts its agent run, so the frontend can create a live SDK session (id =
+ *  `session_id`) that streams in real time. Global (not per-execution) so its
+ *  listener can be registered once at startup, avoiding the fire-and-forget race
+ *  a lazily-attached per-execution listener had. */
 export interface SequenceNodeSessionEvent {
+  execution_id: string;
   session_id: string;
   node_id: string;
   node_name?: string | null;

@@ -426,14 +426,7 @@
                 onchange={(e) => updateField('trigger_type', { ...triggerType, cron: e.currentTarget.value })}
                 class="{inputCls} font-mono"
                 placeholder="0 0 * * *" />
-              <p class="text-[10px] text-text-muted mt-0.5">e.g. "0 9 * * 1-5" = weekdays at 9am</p>
-            </div>
-            <div>
-              <label class="block text-[10px] text-text-muted mb-0.5">Timezone</label>
-              <input type="text" value={(triggerType.timezone as string) || ''}
-                onchange={(e) => updateField('trigger_type', { ...triggerType, timezone: e.currentTarget.value || undefined })}
-                class={inputCls}
-                placeholder="UTC (default)" />
+              <p class="text-[10px] text-text-muted mt-0.5">e.g. "0 9 * * 1-5" = weekdays at 9am. Runs on this PC's local clock.</p>
             </div>
 
           {:else if triggerKind === 'event'}

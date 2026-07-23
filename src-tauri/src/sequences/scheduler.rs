@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::JoinHandle;
 
@@ -94,7 +94,12 @@ impl SequenceScheduler {
                     break;
                 }
 
+                // `now` is a UTC instant for storage; cron matching happens against
+                // the machine's LOCAL wall clock (see `now_local` below) so
+                // `0 9 * * *` fires at 9am on the user's PC, not 9am UTC. Schedules
+                // deliberately have no timezone knob — the PC clock is the source.
                 let now = Utc::now();
+                let now_local = now.with_timezone(&Local);
                 let definitions = manager.get_definitions();
 
                 for def in &definitions {
@@ -140,10 +145,13 @@ impl SequenceScheduler {
                                 .get(&schedule_key)
                                 .copied()
                                 .unwrap_or_else(|| now - chrono::Duration::seconds(31)); // First run: check last 31s
+                            let last_run_local = last_run.with_timezone(&Local);
 
+                            // Iterate the cron in LOCAL time so the fields (e.g. "9")
+                            // mean 9am on the PC clock.
                             let mut should_fire = false;
-                            for next_time in schedule.after(&last_run) {
-                                if next_time <= now {
+                            for next_time in schedule.after(&last_run_local) {
+                                if next_time <= now_local {
                                     should_fire = true;
                                     break;
                                 } else {
@@ -221,7 +229,7 @@ impl SequenceScheduler {
 
                     // Calculate next fire time using the same parsing behavior as runtime scheduling
                     let next_fire = match parse_cron_schedule(cron) {
-                        Ok(sched) => sched.upcoming(Utc).next().map(|dt| dt.to_rfc3339()),
+                        Ok(sched) => sched.upcoming(Local).next().map(|dt| dt.to_rfc3339()),
                         Err(e) => {
                             log::warn!(
                                 "[scheduler] Could not compute next_fire for sequence '{}' cron '{}': {}",

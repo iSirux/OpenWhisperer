@@ -49,6 +49,7 @@ export const runningCount = derived(executions, ($execs) =>
 
 const listeners: Map<string, UnlistenFn[]> = new Map();
 let globalStartedUnlisten: UnlistenFn | null = null;
+let globalNodeSessionUnlisten: UnlistenFn | null = null;
 let globalNotificationUnlisten: UnlistenFn | null = null;
 
 type SequenceExecutionStartedEvent = {
@@ -121,6 +122,31 @@ export async function initSequenceExecutionListeners(): Promise<void> {
     }
   );
 
+  // Prompt-node live session — GLOBAL listener (payload carries execution_id).
+  // Registered once here, before any execution runs, so it can never miss the
+  // backend's fire-and-forget emit the way a per-execution listener (attached
+  // lazily after the execution starts) could. The moment a prompt node starts its
+  // agent run we materialize a real, LIVE SDK session that streams immediately.
+  globalNodeSessionUnlisten = await listen<SequenceNodeSessionEvent>(
+    "sequence-node-session",
+    (event) => {
+      const p = event.payload;
+      const sequenceName = get(executions).find((e) => e.id === p.execution_id)?.sequence_name;
+      sdkSessions.attachSequenceNodeSession({
+        executionId: p.execution_id,
+        sessionId: p.session_id,
+        nodeId: p.node_id,
+        nodeName: p.node_name ?? undefined,
+        sequenceName,
+        cwd: p.cwd,
+        model: p.model,
+        provider: p.provider,
+        effort: p.effort,
+        prompt: p.prompt,
+      });
+    }
+  );
+
   globalNotificationUnlisten = await listen<SequenceNotificationEvent>(
     "sequence-notification",
     (event) => {
@@ -155,31 +181,6 @@ export async function setupListeners(executionId: string): Promise<void> {
   }
   console.log(`[sequence] Setting up listeners for ${executionId.slice(0, 8)}`);
   const unlisteners: UnlistenFn[] = [];
-
-  // Prompt-node live session: the moment a prompt node starts its agent run, the
-  // backend emits this so we materialize a real, LIVE SDK session (streaming into
-  // the session list immediately) rather than waiting for the node to finish.
-  unlisteners.push(
-    await listen<SequenceNodeSessionEvent>(
-      `sequence-node-session-${executionId}`,
-      (event) => {
-        const p = event.payload;
-        const sequenceName = get(executions).find((e) => e.id === executionId)?.sequence_name;
-        sdkSessions.attachSequenceNodeSession({
-          executionId,
-          sessionId: p.session_id,
-          nodeId: p.node_id,
-          nodeName: p.node_name ?? undefined,
-          sequenceName,
-          cwd: p.cwd,
-          model: p.model,
-          provider: p.provider,
-          effort: p.effort,
-          prompt: p.prompt,
-        });
-      }
-    )
-  );
 
   // Node start
   unlisteners.push(
@@ -384,6 +385,10 @@ export function cleanupAllListeners(): void {
   if (globalStartedUnlisten) {
     globalStartedUnlisten();
     globalStartedUnlisten = null;
+  }
+  if (globalNodeSessionUnlisten) {
+    globalNodeSessionUnlisten();
+    globalNodeSessionUnlisten = null;
   }
   if (globalNotificationUnlisten) {
     globalNotificationUnlisten();

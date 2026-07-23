@@ -22,6 +22,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_v3_to_v4,
     migrate_v4_to_v5,
     migrate_v5_to_v6,
+    migrate_v6_to_v7,
 ];
 
 /// The schema version the current build writes. Derived from the table length so
@@ -201,6 +202,71 @@ fn migrate_v5_to_v6(value: &mut Value) {
     if !already_present {
         actions.insert(0, Value::String("Go".to_string()));
     }
+}
+
+// ============================================================================
+// v6 -> v7: convert the legacy single-provider LLM config into named provider
+// profiles with role-based routing chains. The historical top-level fields
+// (provider/model/endpoint/auto_model/model_priority) collapse into one
+// "default" profile (which reuses the legacy bare keyring account), and both
+// routing chains are seeded to point at it — zero behavior change for existing
+// users. The legacy keys are then removed so the on-disk file matches the new
+// schema.
+// ============================================================================
+
+fn migrate_v6_to_v7(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    let Some(Value::Object(llm)) = obj.get_mut("llm") else {
+        return;
+    };
+
+    // Already migrated (fresh install or re-run) — nothing to do.
+    if llm.contains_key("profiles") {
+        return;
+    }
+
+    log::error!("[config.migrate] Converting legacy single-provider llm config to profiles");
+
+    let provider = llm
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Groq")
+        .to_string();
+    let model = llm
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("openai/gpt-oss-120b")
+        .to_string();
+    let endpoint = llm.get("endpoint").cloned().unwrap_or(Value::Null);
+    let auto_model = llm.get("auto_model").and_then(|v| v.as_bool()).unwrap_or(true);
+    let model_priority = llm
+        .get("model_priority")
+        .and_then(|v| v.as_str())
+        .unwrap_or("speed")
+        .to_string();
+
+    let profile = serde_json::json!({
+        "id": "default",
+        "label": "Default",
+        "provider": provider,
+        "model": model,
+        "endpoint": endpoint,
+        "auto_model": auto_model,
+        "model_priority": model_priority,
+    });
+
+    llm.insert("profiles".to_string(), Value::Array(vec![profile]));
+    llm.insert("fast_chain".to_string(), serde_json::json!(["default"]));
+    llm.insert("quality_chain".to_string(), serde_json::json!(["default"]));
+
+    // Remove the legacy top-level fields now folded into the default profile.
+    llm.remove("provider");
+    llm.remove("model");
+    llm.remove("endpoint");
+    llm.remove("auto_model");
+    llm.remove("model_priority");
 }
 
 /// Remap deprecated Groq/Gemini LLM model IDs on the raw config value.

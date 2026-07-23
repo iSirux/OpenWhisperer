@@ -166,10 +166,18 @@ impl SequenceExecutor {
             })
             .map_err(|e| SequenceError::command(format!("Query send error: {}", e)))?;
 
+        // GLOBAL event (not `-{execution_id}`) so the frontend can register its
+        // listener ONCE at startup. A per-execution listener is registered lazily
+        // after the execution starts and races this emit — with a warm sidecar the
+        // node reaches this point within a few hundred ms, so a listener that
+        // finishes registering a few ms late misses the event entirely and the
+        // session is lost forever (observed: two 9am sequences, the later-attached
+        // one dropped). A global always-on listener has no such race.
         crate::util::emit_or_log(
             &self.app,
-            &format!("sequence-node-session-{}", execution_id),
+            "sequence-node-session",
             serde_json::json!({
+                "execution_id": execution_id,
                 "session_id": session_id,
                 "node_id": node.id,
                 "node_name": node.name,

@@ -11,7 +11,8 @@ mod utils;
 pub use providers::GenerationResult;
 pub use types::*;
 
-use crate::config::{AppConfig, LlmModelPriority, LlmProvider};
+use crate::config::{AppConfig, LlmModelPriority, LlmProfile, LlmProvider};
+use serde::de::DeserializeOwned;
 use tauri::AppHandle;
 use tauri_plugin_keyring::KeyringExt;
 
@@ -22,8 +23,23 @@ use tauri_plugin_keyring::KeyringExt;
 /// Service name for keyring storage. MUST NOT change when the app is renamed,
 /// or existing users' stored credentials become unreadable.
 pub(crate) const KEYRING_SERVICE: &str = "open-whisperer";
-/// Account/user name for the stored LLM API key.
+/// Account/user name for the stored LLM API key of the "default" profile.
+/// Kept bare (no id suffix) so existing single-provider users need zero
+/// migration; every other profile uses `llm-api-key:<id>`.
 pub(crate) const KEYRING_LLM_KEY: &str = "llm-api-key";
+
+/// The reserved id of the migrated legacy profile.
+pub(crate) const DEFAULT_PROFILE_ID: &str = "default";
+
+/// Keyring account name for a profile's API key. The "default" profile uses the
+/// legacy bare account; all others are namespaced by id.
+pub(crate) fn keyring_account(profile_id: &str) -> String {
+    if profile_id == DEFAULT_PROFILE_ID {
+        KEYRING_LLM_KEY.to_string()
+    } else {
+        format!("{}:{}", KEYRING_LLM_KEY, profile_id)
+    }
+}
 
 // --- Legacy XOR obfuscation (migration path only) ---
 
@@ -70,40 +86,91 @@ pub(crate) fn migrate_legacy_key(app: &AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Read the stored LLM API key from the keyring, migrating any legacy key first.
-pub(crate) fn get_api_key(app: &AppHandle) -> Result<String, String> {
-    let _ = migrate_legacy_key(app);
+/// Read the stored LLM API key for a profile from the keyring. The legacy
+/// XOR-file migration only applies to the "default" profile (the only one that
+/// could have a pre-keyring key on disk).
+pub(crate) fn get_api_key(app: &AppHandle, profile_id: &str) -> Result<String, String> {
+    if profile_id == DEFAULT_PROFILE_ID {
+        let _ = migrate_legacy_key(app);
+    }
 
-    match app.keyring().get_password(KEYRING_SERVICE, KEYRING_LLM_KEY) {
+    let account = keyring_account(profile_id);
+    match app.keyring().get_password(KEYRING_SERVICE, &account) {
         Ok(Some(key)) => Ok(key),
         Ok(None) => Err("API key not set".to_string()),
         Err(e) => Err(format!("Failed to get API key from keyring: {}", e)),
     }
 }
 
-/// Canonical LLM client factory: builds an [`LlmClient`] from the app config.
-/// For the Local provider the API key is optional (empty is allowed); for all
-/// other providers a missing key is an error.
-pub(crate) fn client_from_config(
+/// Build an [`LlmClient`] for a single profile. For the Local provider the API
+/// key is optional (empty is allowed); for all other providers a missing key is
+/// an error (the caller skips the profile).
+pub(crate) fn client_for_profile(
     app: &AppHandle,
-    config: &AppConfig,
+    profile: &LlmProfile,
 ) -> Result<LlmClient, String> {
-    let llm = &config.llm;
-
-    let api_key = if matches!(llm.provider, LlmProvider::Local) {
-        get_api_key(app).unwrap_or_default()
+    let api_key = if matches!(profile.provider, LlmProvider::Local) {
+        get_api_key(app, &profile.id).unwrap_or_default()
     } else {
-        get_api_key(app)?
+        get_api_key(app, &profile.id)?
     };
 
     Ok(LlmClient::new(
         api_key,
-        llm.model.clone(),
-        llm.provider.clone(),
-        llm.endpoint.clone(),
-        llm.auto_model,
-        llm.model_priority.clone(),
+        profile.model.clone(),
+        profile.provider.clone(),
+        profile.endpoint.clone(),
+        profile.auto_model,
+        profile.model_priority.clone(),
     ))
+}
+
+/// Canonical LLM router factory: resolves the routing chain for `feature`'s role
+/// into a list of usable [`LlmClient`]s (cross-provider fallback order).
+///
+/// Chain ids that don't match any profile are skipped; if the resolved chain is
+/// empty, ALL profiles are used in config order. Profiles whose API key is
+/// missing are skipped with a warning. Errors only if zero clients are usable.
+pub(crate) fn router_from_config(
+    app: &AppHandle,
+    config: &AppConfig,
+    feature: LlmFeature,
+) -> Result<LlmRouter, String> {
+    let llm = &config.llm;
+    let chain = match feature.role() {
+        LlmRole::Fast => &llm.fast_chain,
+        LlmRole::Quality => &llm.quality_chain,
+    };
+
+    // Resolve the chain ids to profiles, skipping ids that don't match.
+    let mut profiles: Vec<&LlmProfile> = chain
+        .iter()
+        .filter_map(|id| llm.profiles.iter().find(|p| &p.id == id))
+        .collect();
+
+    // Empty resolved chain → fall back to ALL profiles in config order.
+    if profiles.is_empty() {
+        profiles = llm.profiles.iter().collect();
+    }
+
+    let mut clients = Vec::new();
+    for profile in profiles {
+        match client_for_profile(app, profile) {
+            Ok(client) => clients.push((profile.label.clone(), client)),
+            Err(e) => log::warn!(
+                "[llm] skipping profile '{}' ({}): {}",
+                profile.label,
+                profile.id,
+                e
+            ),
+        }
+    }
+
+    if clients.is_empty() {
+        return Err("No usable LLM profiles configured (missing API keys?)".to_string());
+    }
+
+    Ok(LlmRouter { clients })
 }
 
 /// Model fallback chains for Gemini provider
@@ -171,6 +238,7 @@ impl LlmClient {
             }
             LlmProvider::OpenAI => "https://api.openai.com/v1/chat/completions".to_string(),
             LlmProvider::Groq => "https://api.groq.com/openai/v1/chat/completions".to_string(),
+            LlmProvider::Xai => "https://api.x.ai/v1/chat/completions".to_string(),
             LlmProvider::Local | LlmProvider::Custom => self
                 .endpoint
                 .clone()
@@ -185,13 +253,53 @@ impl LlmClient {
     fn is_openai_compatible(&self) -> bool {
         !matches!(self.provider, LlmProvider::Gemini)
     }
+}
 
-    /// Generate structured JSON response with usage tracking
-    pub async fn generate_with_usage<T: serde::de::DeserializeOwned>(
+/// A role-resolved chain of LLM clients (one per usable profile) tried in order
+/// for cross-provider fallback. Intra-provider fallbacks (Gemini model chain,
+/// Groq sibling models) stay inside each [`LlmClient`].
+pub struct LlmRouter {
+    /// (profile label for logging, client), in fallback order.
+    clients: Vec<(String, LlmClient)>,
+}
+
+impl LlmRouter {
+    /// Try each client's structured generation in order. On ANY error, log the
+    /// profile and move to the next client (a different provider may succeed
+    /// where auth/parse/rate-limit failed). Returns the last error if all fail.
+    async fn run_chain<T: DeserializeOwned>(
         &self,
         prompt: &str,
         schema: Option<serde_json::Value>,
     ) -> Result<GenerationResult<T>, String> {
-        self.generate_structured_with_usage(prompt, schema).await
+        let mut last_error = String::new();
+        let mut failures = 0usize;
+        for (label, client) in &self.clients {
+            match client
+                .generate_structured_with_usage(prompt, schema.clone())
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    log::warn!("[llm] profile '{}' failed, trying next: {}", label, e);
+                    last_error = e;
+                    failures += 1;
+                }
+            }
+        }
+        Err(format!(
+            "All {} LLM profile(s) failed. Last error: {}",
+            failures, last_error
+        ))
+    }
+
+    /// Generate a structured JSON response with usage tracking, routed across the
+    /// chain. Used directly by the sequences AI nodes.
+    pub async fn generate_with_usage<T: DeserializeOwned>(
+        &self,
+        prompt: &str,
+        schema: Option<serde_json::Value>,
+    ) -> Result<GenerationResult<T>, String> {
+        self.run_chain(prompt, schema).await
     }
 }

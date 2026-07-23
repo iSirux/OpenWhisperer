@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use tauri::{AppHandle, Manager};
 
 use crate::config::AppConfig;
-use crate::llm::LlmClient;
+use crate::llm::{LlmFeature, LlmRouter};
 use crate::sequences::error::SequenceError;
 use crate::sequences::rate_limiter::SequenceRateLimiter;
 use crate::sequences::state::{LogLevel, TokenUsage};
@@ -203,14 +203,15 @@ pub(crate) fn resolve_repos(repo_specs: &[String], app: &AppHandle) -> Vec<Strin
     resolved
 }
 
-/// Create an LLM client from the app's managed config state.
-/// Thin wrapper around the shared `crate::llm::client_from_config` (T5).
-pub(crate) fn create_llm_client_from_app(app: &AppHandle) -> Result<LlmClient, String> {
+/// Create an LLM router from the app's managed config state, routed for the
+/// sequence-AI feature. Thin wrapper around the shared
+/// `crate::llm::router_from_config` (T5).
+pub(crate) fn create_llm_client_from_app(app: &AppHandle) -> Result<LlmRouter, String> {
     let config: tauri::State<parking_lot::Mutex<AppConfig>> = app
         .try_state()
         .ok_or_else(|| "App config not available".to_string())?;
     let cfg = config.lock().clone();
-    crate::llm::client_from_config(app, &cfg)
+    crate::llm::router_from_config(app, &cfg, LlmFeature::SequenceAi)
 }
 
 // ─── Process helper ──────────────────────────────────────────────────────────

@@ -1,12 +1,13 @@
 use crate::commands::usage_cmds::UsageStatsState;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, LlmProvider};
 use crate::llm::{
-    client_from_config, get_api_key, legacy_secrets_path, GenerationResult, KEYRING_LLM_KEY,
-    KEYRING_SERVICE,
+    client_for_profile, get_api_key, keyring_account, legacy_secrets_path, router_from_config,
+    GenerationResult, KEYRING_SERVICE,
 };
 use crate::llm::{
-    ConnectionTestResult, InteractionAnalysis, LlmClient, ModelRecommendation, QuickActionsResult,
-    RepoRecommendation, SessionNameResult, SessionOutcomeResult, TranscriptionCleanupResult,
+    ConnectionTestResult, InteractionAnalysis, LlmFeature, LlmRouter, ModelRecommendation,
+    QuickActionsResult, RepoRecommendation, SessionNameResult, SessionOutcomeResult,
+    TranscriptionCleanupResult,
 };
 use parking_lot::Mutex;
 use std::fs;
@@ -14,6 +15,9 @@ use tauri::{AppHandle, State};
 use tauri_plugin_keyring::KeyringExt;
 
 type ConfigState = Mutex<AppConfig>;
+
+/// The default profile id used when a command omits `profile_id`.
+const DEFAULT_PROFILE_ID: &str = "default";
 
 /// Track LLM usage in the stats and persist.
 fn track_usage(
@@ -28,13 +32,15 @@ fn track_usage(
 }
 
 /// Lock the config, verify LLM is enabled and (optionally) that a feature flag
-/// is set, then build a client. The `feature_check` closure returns the exact
-/// error string the frontend expects when the feature is disabled.
-fn prepare_client<F>(
+/// is set, then build a router for the given feature's role chain. The
+/// `feature_check` closure returns the exact error string the frontend expects
+/// when the feature is disabled.
+fn prepare_router<F>(
     app: &AppHandle,
     config: &State<'_, ConfigState>,
+    feature: LlmFeature,
     feature_check: F,
-) -> Result<(AppConfig, LlmClient), String>
+) -> Result<(AppConfig, LlmRouter), String>
 where
     F: FnOnce(&AppConfig) -> Result<(), String>,
 {
@@ -43,8 +49,8 @@ where
         return Err("LLM integration is not enabled".to_string());
     }
     feature_check(&cfg)?;
-    let client = client_from_config(app, &cfg)?;
-    Ok((cfg, client))
+    let router = router_from_config(app, &cfg, feature)?;
+    Ok((cfg, router))
 }
 
 /// Track usage from a generation result and unwrap its data payload.
@@ -58,37 +64,62 @@ fn finish<T>(stats: &State<UsageStatsState>, feature: &str, result: GenerationRe
     result.data
 }
 
-/// Save the API key to the system keyring
+/// Save the API key for a profile to the system keyring. `profile_id` defaults
+/// to "default" (the legacy bare keyring account).
 #[tauri::command]
-pub async fn save_gemini_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
+pub async fn save_gemini_api_key(
+    app: AppHandle,
+    api_key: String,
+    profile_id: Option<String>,
+) -> Result<(), String> {
+    let id = profile_id.unwrap_or_else(|| DEFAULT_PROFILE_ID.to_string());
+    let account = keyring_account(&id);
     app.keyring()
-        .set_password(KEYRING_SERVICE, KEYRING_LLM_KEY, &api_key)
+        .set_password(KEYRING_SERVICE, &account, &api_key)
         .map_err(|e| format!("Failed to save API key to keyring: {}", e))?;
 
-    // Clean up any legacy file if it exists
-    let legacy_path = legacy_secrets_path();
-    if legacy_path.exists() {
-        let _ = fs::remove_file(&legacy_path);
+    // The legacy XOR file only ever held the default profile's key; clean it up
+    // only when saving the default profile so a non-default save can't destroy
+    // an un-migrated default key.
+    if id == DEFAULT_PROFILE_ID {
+        let legacy_path = legacy_secrets_path();
+        if legacy_path.exists() {
+            let _ = fs::remove_file(&legacy_path);
+        }
     }
 
     Ok(())
 }
 
-/// Check if API key is configured
+/// Check if an API key is configured for a profile (`profile_id` defaults to
+/// "default"). The Local-provider "no key needed" special case looks up the
+/// profile by id, falling back to the first profile if the id isn't found.
 #[tauri::command]
 pub async fn has_llm_api_key(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    profile_id: Option<String>,
 ) -> Result<bool, String> {
+    let id = profile_id.unwrap_or_else(|| DEFAULT_PROFILE_ID.to_string());
     let llm_config = config.lock().llm.clone();
 
-    // Local provider doesn't require an API key
-    if matches!(llm_config.provider, crate::config::LlmProvider::Local) {
-        return Ok(true);
+    // Resolve the profile by id, falling back to the first configured profile.
+    let profile = llm_config
+        .profiles
+        .iter()
+        .find(|p| p.id == id)
+        .or_else(|| llm_config.profiles.first());
+
+    // Local provider doesn't require an API key.
+    if let Some(p) = profile {
+        if matches!(p.provider, LlmProvider::Local) {
+            return Ok(true);
+        }
     }
 
-    // Check if key exists in keyring (this will also trigger migration if needed)
-    Ok(get_api_key(&app).is_ok())
+    // Check the key for the resolved profile's id (falls back to the requested id).
+    let check_id = profile.map(|p| p.id.clone()).unwrap_or(id);
+    Ok(get_api_key(&app, &check_id).is_ok())
 }
 
 // Alias for backwards compatibility
@@ -96,18 +127,23 @@ pub async fn has_llm_api_key(
 pub async fn has_gemini_api_key(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    profile_id: Option<String>,
 ) -> Result<bool, String> {
-    has_llm_api_key(app, config).await
+    has_llm_api_key(app, config, profile_id).await
 }
 
-/// Delete the API key from the system keyring
+/// Delete a profile's API key from the system keyring (`profile_id` defaults to
+/// "default").
 #[tauri::command]
-pub async fn delete_gemini_api_key(app: AppHandle) -> Result<(), String> {
+pub async fn delete_gemini_api_key(
+    app: AppHandle,
+    profile_id: Option<String>,
+) -> Result<(), String> {
+    let id = profile_id.unwrap_or_else(|| DEFAULT_PROFILE_ID.to_string());
+    let account = keyring_account(&id);
+
     // Delete from keyring
-    match app
-        .keyring()
-        .delete_password(KEYRING_SERVICE, KEYRING_LLM_KEY)
-    {
+    match app.keyring().delete_password(KEYRING_SERVICE, &account) {
         Ok(_) => {}
         Err(e) => {
             // Only error if it's not a "not found" type error
@@ -118,23 +154,35 @@ pub async fn delete_gemini_api_key(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    // Also clean up any legacy file
-    let legacy_path = legacy_secrets_path();
-    if legacy_path.exists() {
-        let _ = fs::remove_file(&legacy_path);
+    // Also clean up the legacy file for the default profile only.
+    if id == DEFAULT_PROFILE_ID {
+        let legacy_path = legacy_secrets_path();
+        if legacy_path.exists() {
+            let _ = fs::remove_file(&legacy_path);
+        }
     }
 
     Ok(())
 }
 
-/// Test connection to the LLM API
+/// Test connection to the LLM API for a specific profile (`profile_id` defaults
+/// to "default").
 #[tauri::command]
 pub async fn test_gemini_connection(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    profile_id: Option<String>,
 ) -> Result<ConnectionTestResult, String> {
+    let id = profile_id.unwrap_or_else(|| DEFAULT_PROFILE_ID.to_string());
     let cfg = config.lock().clone();
-    let client = client_from_config(&app, &cfg)?;
+    let profile = cfg
+        .llm
+        .profiles
+        .iter()
+        .find(|p| p.id == id)
+        .or_else(|| cfg.llm.profiles.first())
+        .ok_or_else(|| "No LLM profile configured".to_string())?;
+    let client = client_for_profile(&app, profile)?;
     client.test_connection().await
 }
 
@@ -146,8 +194,8 @@ pub async fn generate_session_name(
     stats: State<'_, UsageStatsState>,
     user_prompt: String,
 ) -> Result<SessionNameResult, String> {
-    let (_cfg, client) = prepare_client(&app, &config, |_| Ok(()))?;
-    let result = client
+    let (_cfg, router) = prepare_router(&app, &config, LlmFeature::SessionNaming, |_| Ok(()))?;
+    let result = router
         .generate_session_name_with_usage(&user_prompt)
         .await?;
     Ok(finish(&stats, "session_naming", result))
@@ -162,8 +210,8 @@ pub async fn generate_session_outcome(
     user_prompt: String,
     assistant_messages: String,
 ) -> Result<SessionOutcomeResult, String> {
-    let (_cfg, client) = prepare_client(&app, &config, |_| Ok(()))?;
-    let result = client
+    let (_cfg, router) = prepare_router(&app, &config, LlmFeature::SessionOutcome, |_| Ok(()))?;
+    let result = router
         .generate_session_outcome_with_usage(&user_prompt, &assistant_messages)
         .await?;
     Ok(finish(&stats, "session_outcome", result))
@@ -177,8 +225,9 @@ pub async fn analyze_interaction_needed(
     stats: State<'_, UsageStatsState>,
     last_message: String,
 ) -> Result<InteractionAnalysis, String> {
-    let (_cfg, client) = prepare_client(&app, &config, |_| Ok(()))?;
-    let result = client
+    let (_cfg, router) =
+        prepare_router(&app, &config, LlmFeature::InteractionAnalysis, |_| Ok(()))?;
+    let result = router
         .analyze_interaction_needed_with_usage(&last_message)
         .await?;
     Ok(finish(&stats, "interaction_analysis", result))
@@ -196,7 +245,7 @@ pub async fn clean_transcription(
     realtime_transcription: Option<String>,
     repo_context: Option<String>,
 ) -> Result<TranscriptionCleanupResult, String> {
-    let (cfg, client) = prepare_client(&app, &config, |c| {
+    let (cfg, router) = prepare_router(&app, &config, LlmFeature::TranscriptionCleanup, |c| {
         if c.llm.features.clean_transcription {
             Ok(())
         } else {
@@ -211,7 +260,7 @@ pub async fn clean_transcription(
         None
     };
 
-    let result = client
+    let result = router
         .clean_transcription_with_usage(&raw_transcription, realtime, repo_context.as_deref())
         .await?;
     Ok(finish(&stats, "transcription_cleanup", result))
@@ -226,7 +275,7 @@ pub async fn recommend_model(
     prompt: String,
     enabled_models: Option<Vec<String>>,
 ) -> Result<ModelRecommendation, String> {
-    let (cfg, client) = prepare_client(&app, &config, |c| {
+    let (cfg, router) = prepare_router(&app, &config, LlmFeature::ModelRecommendation, |c| {
         if c.llm.features.recommend_model {
             Ok(())
         } else {
@@ -236,7 +285,7 @@ pub async fn recommend_model(
 
     // Use provided enabled_models or fall back to config
     let models_to_consider = enabled_models.as_ref().unwrap_or(&cfg.enabled_models);
-    let result = client
+    let result = router
         .recommend_model_with_usage(&prompt, models_to_consider)
         .await?;
     Ok(finish(&stats, "model_recommendation", result))
@@ -251,7 +300,7 @@ pub async fn recommend_repo(
     prompt: String,
     is_transcribed: Option<bool>,
 ) -> Result<RepoRecommendation, String> {
-    let (cfg, client) = prepare_client(&app, &config, |c| {
+    let (cfg, router) = prepare_router(&app, &config, LlmFeature::RepoRecommendation, |c| {
         if c.llm.features.auto_select_repo {
             Ok(())
         } else {
@@ -286,7 +335,7 @@ pub async fn recommend_repo(
         })
         .collect();
 
-    let result = client
+    let result = router
         .recommend_repo_with_usage(&prompt, &repos, is_transcribed.unwrap_or(false))
         .await?;
 
@@ -318,14 +367,14 @@ pub async fn generate_quick_actions(
     session_activity: Option<String>,
     last_message: String,
 ) -> Result<QuickActionsResult, String> {
-    let (_cfg, client) = prepare_client(&app, &config, |c| {
+    let (_cfg, router) = prepare_router(&app, &config, LlmFeature::QuickActions, |c| {
         if c.llm.features.generate_quick_actions {
             Ok(())
         } else {
             Err("Quick actions generation feature is not enabled".to_string())
         }
     })?;
-    let result = client
+    let result = router
         .generate_quick_actions_with_usage(
             &user_prompt,
             latest_prompt.as_deref(),

@@ -398,7 +398,7 @@ export type EffortLevel = "off" | "low" | "medium" | "high" | "xhigh" | "max";
 /** @deprecated Use EffortLevel instead */
 export type ThinkingLevel = EffortLevel;
 
-export type LlmProvider = "Gemini" | "OpenAI" | "Groq" | "Local" | "Custom";
+export type LlmProvider = "Gemini" | "OpenAI" | "Groq" | "Xai" | "Local" | "Custom";
 // Alias for backwards compatibility
 export type GeminiProvider = LlmProvider;
 
@@ -452,16 +452,34 @@ export interface LlmFeaturesConfig {
 // Alias for backwards compatibility
 export type GeminiFeaturesConfig = LlmFeaturesConfig;
 
-export interface LlmConfig {
-  enabled: boolean;
+/** A named provider profile: one provider + model + credentials.
+ *  Profiles are referenced by id from the fast/quality routing chains. */
+export interface LlmProfile {
+  /** Stable unique id; the migrated legacy profile is "default". Never reuse "default" for new profiles. */
+  id: string;
+  /** User-facing label */
+  label: string;
   provider: LlmProvider;
   /** Model name (varies by provider) - used when auto_model is false */
   model: string;
-  endpoint: string | null;
-  /** When enabled for Gemini provider, automatically select model with fallbacks */
+  /** Custom endpoint for Local/Custom providers */
+  endpoint?: string | null;
+  /** When enabled (Gemini/Groq), automatically select model with intra-provider fallbacks */
   auto_model: boolean;
   /** Model priority when auto_model is enabled (Speed or Accuracy) */
   model_priority: LlmModelPriority;
+}
+
+export interface LlmConfig {
+  enabled: boolean;
+  /** Named provider profiles. The migrated legacy profile has id "default". */
+  profiles: LlmProfile[];
+  /** Ordered profile ids for latency-sensitive calls (model/repo recommendation).
+   *  Tried in order; first success wins. Empty = backend falls back to all profiles. */
+  fast_chain: string[];
+  /** Ordered profile ids for correctness-critical/background calls (transcription cleanup,
+   *  naming, interaction detection, quick actions, branch/commit/PR drafts, sequence AI). */
+  quality_chain: string[];
   features: LlmFeaturesConfig;
   /** When enabled, Claude will question the repo selection if it seems wrong */
   confirm_repo_selection: boolean;
@@ -811,11 +829,19 @@ const defaultConfig: AppConfig = {
   tool_display_mode: "grid",
   llm: {
     enabled: false,
-    provider: "Gemini",
-    model: "gemini-3.1-flash-lite",
-    endpoint: null,
-    auto_model: true,
-    model_priority: "speed",
+    profiles: [
+      {
+        id: "default",
+        label: "Default",
+        provider: "Groq",
+        model: "openai/gpt-oss-120b",
+        endpoint: null,
+        auto_model: true,
+        model_priority: "speed",
+      },
+    ],
+    fast_chain: ["default"],
+    quality_chain: ["default"],
     features: {
       auto_name_sessions: true,
       detect_interaction_needed: true,

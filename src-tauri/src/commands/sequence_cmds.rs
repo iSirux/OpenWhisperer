@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::config::AppConfig;
-use crate::llm::LlmClient;
+use crate::llm::{LlmFeature, LlmRouter};
 use crate::sequences::scheduler::{ScheduleInfo, SequenceScheduler};
 use crate::sequences::state::{ExecutionSummary, SequenceExecution};
 use crate::sequences::types::SequenceDefinition;
@@ -214,9 +214,9 @@ pub fn list_event_triggers(
 
 // ─── AI Generation ─────────────────────────────────────────────────────────
 
-/// Shared LLM client factory (T5) — see `crate::llm::client_from_config`.
-fn create_llm_client(app: &tauri::AppHandle, config: &AppConfig) -> Result<LlmClient, String> {
-    crate::llm::client_from_config(app, config)
+/// Shared LLM router factory (T5) — see `crate::llm::router_from_config`.
+fn create_llm_client(app: &tauri::AppHandle, config: &AppConfig) -> Result<LlmRouter, String> {
+    crate::llm::router_from_config(app, config, LlmFeature::SequenceAi)
 }
 
 #[tauri::command]

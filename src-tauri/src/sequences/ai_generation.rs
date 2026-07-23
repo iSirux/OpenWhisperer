@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::llm::{GenerationResult, LlmClient};
+use crate::llm::{GenerationResult, LlmRouter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequenceYamlResult {
@@ -9,7 +9,7 @@ pub struct SequenceYamlResult {
 
 /// Generate a complete sequence YAML from a natural language description
 pub async fn generate_sequence(
-    client: &LlmClient,
+    client: &LlmRouter,
     description: &str,
     repos: &[String],
 ) -> Result<GenerationResult<SequenceYamlResult>, String> {
@@ -94,7 +94,7 @@ Respond with ONLY a JSON object:
 
 /// Generate configuration for a single node based on description
 pub async fn generate_node(
-    client: &LlmClient,
+    client: &LlmRouter,
     node_type: &str,
     description: &str,
     context: &str,

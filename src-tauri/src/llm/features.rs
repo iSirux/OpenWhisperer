@@ -6,12 +6,12 @@ use super::api_types::LlmUsage;
 use super::providers::GenerationResult;
 use super::types::*;
 use super::utils::truncate_text;
-use super::LlmClient;
+use super::LlmRouter;
 
 /// The single JSON-output instruction shared by every feature prompt.
 const JSON_ONLY_INSTRUCTION: &str = "Respond with ONLY a JSON object in this exact format:";
 
-impl LlmClient {
+impl LlmRouter {
     /// Build the shared "respond with only a JSON object" prompt trailer for a
     /// given `example` instance. The example is kept next to its feature's schema
     /// so the two stay in sync.
@@ -26,8 +26,7 @@ impl LlmClient {
         prompt: String,
         schema: serde_json::Value,
     ) -> Result<GenerationResult<T>, String> {
-        self.generate_structured_with_usage(&prompt, Some(schema))
-            .await
+        self.run_chain(&prompt, Some(schema)).await
     }
 
     /// Generate a session name from the user's prompt (called immediately when prompt is sent).
@@ -199,20 +198,19 @@ Message to analyze:
         let mut result: GenerationResult<TranscriptionCleanupResult> =
             self.run_feature(prompt, Self::cleanup_schema()).await?;
 
-        // Guard against runaway merges: cleaned text substantially longer than the
-        // longest input means the model concatenated both readings (or invented
-        // content) instead of merging — fall back to the raw batch transcript
-        // rather than ship a corrupted prompt.
-        if Self::cleanup_exceeds_length_guard(
+        // Deterministic guards: reject concatenated merges, hallucinated words,
+        // and dropped agreed-on content — the model can't be trusted to follow
+        // these rules from the prompt alone. On rejection, ship the raw batch
+        // transcript: content safety over polish.
+        if let Some(reason) = cleanup_guard_violation(
             whisper_transcription,
             realtime_transcription,
+            repo_context,
             &result.data.cleaned_text,
         ) {
             log::warn!(
-                "[llm] transcription cleanup output ({} words) far exceeds the longest input ({} words); discarding it and falling back to the raw transcript",
-                word_count(&result.data.cleaned_text),
-                word_count(whisper_transcription)
-                    .max(realtime_transcription.map(word_count).unwrap_or(0))
+                "[llm] transcription cleanup rejected ({}); falling back to the raw transcript",
+                reason
             );
             result.data = TranscriptionCleanupResult {
                 cleaned_text: whisper_transcription.to_string(),
@@ -256,11 +254,11 @@ Message to analyze:
 
 Produce ONE merged transcript. Use Transcription A as the base, and use B only to recover words that A clearly missed or misheard.
 
-Where the two disagree at the same position (e.g. A has "select an organization" where B has "select the navigation"), that is one utterance misheard by one engine — choose the more plausible reading and discard the other. NEVER keep both variants, and NEVER append one transcription after the other. The merged result must be roughly the length of the longer transcription, never the two combined.
+Where the two disagree at the same position (e.g. A has "select an organization" where B has "select the navigation"), that is one utterance misheard by one engine — choose the more plausible reading and discard the other; when you cannot tell which is right, prefer A's reading. NEVER keep both variants, and NEVER append one transcription after the other. If B heard extra words mid-sentence, integrate them at the position they were spoken — never repeat a clause or restate part of the sentence to accommodate both readings. The merged result must be roughly the length of the longer transcription, never the two combined.
 
 Choose one reading word-for-word — never blend the two readings into a third phrasing that appears in neither transcription, and never substitute your own wording (e.g. do NOT turn A's "retry a domain" / B's "retry the main" into "retry it"; pick one). Apart from punctuation, capitalization, and the error fixes listed above, every word of the merged result must appear in at least one of the two transcriptions.
 
-A word both engines agree on is real speech — keep it, even if it seems redundant or odd (it may be a proper noun, a product name, or jargon you don't recognize). If B ends with words that A lacks entirely — a continuation of the speech, not a variant reading of A's ending — keep them; engines truncate endings more often than they hallucinate extra words. However, filler sounds and disfluencies ("um", "uh", "hmm", stutters) that appear in only one transcription are NOT missed content — the other engine deliberately filtered them out; never copy them into the merged result."#,
+A word both engines agree on is real speech — keep it, even if it seems redundant or odd (it may be a proper noun, a product name, or jargon you don't recognize). If either transcription ends with words the other lacks — a continuation of the speech, not a variant reading of the other's ending — keep them; engines cut off endings far more often than they hallucinate extra words, and B (realtime) especially often stops early. Trailing words that look like a spoken command or an odd aside (e.g. "... search web") are still real speech — keep them. When the two ENDINGS disagree and B's looks cut off mid-phrase, A's ending is the correct one (e.g. A "...correctly search web?" with B "...Correctly search for" → keep "search web"; B truncated). However, filler sounds and disfluencies ("um", "uh", "hmm", stutters) that appear in only one transcription are NOT missed content — the other engine deliberately filtered them out; never copy them into the merged result, and never let a disfluent fragment from B displace words A heard clearly. When B contains an aside around words A also heard, say those words once with the aside integrated where it was spoken (A "...they were already classified by the job?" with B "...they're already Uh... Or should we say classified by the job?" → "...they were already, or should we say, classified by the job?" — never "...classified by the job? Or should we say classified by the job?")."#,
                 whisper_transcription,
                 realtime
             )
@@ -287,6 +285,8 @@ A word both engines agree on is real speech — keep it, even if it seems redund
 5. Common speech-to-text errors
 {}
 Keep the original meaning and intent. Only fix clear errors, don't rewrite the content.
+
+In corrections_made, list only edits you actually applied to produce cleaned_text — never list a correction you did not make.
 
 {}
 
@@ -734,4 +734,136 @@ Rules:
 /// Whitespace word count used by the cleanup length guard.
 fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
+}
+
+/// Filler sounds excluded from the agreed-phrase guard: the prompt instructs the
+/// model to remove these, so their disappearance is expected, not a violation.
+const CLEANUP_FILLERS: &[&str] = &["um", "uh", "uhm", "ehm", "hmm", "mhm", "ah", "er", "mm"];
+
+/// Function words excluded from the agreed-phrase guard when BOTH words of a
+/// pair are in this list — pairs like "in the" vanish legitimately when the
+/// model cleans a stutter, while content-bearing pairs ("number one", "the
+/// job") must survive.
+const CLEANUP_STOPWORDS: &[&str] = &[
+    "the", "a", "an", "in", "on", "at", "of", "to", "for", "by", "it", "its", "is", "are", "was",
+    "and", "or", "but", "so", "we", "i", "you", "he", "she", "they", "this", "that", "with", "as",
+    "be",
+];
+
+/// Normalized token stream for the cleanup guards: lowercase, split on anything
+/// non-alphanumeric, apostrophes removed (so "they're" == "theyre" and
+/// "back-off" == ["back", "off"] regardless of punctuation choices).
+fn cleanup_tokens(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|t| t.replace('\'', ""))
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Every token the cleaned output is allowed to use: all tokens of all input
+/// texts, plus concatenations of adjacent tokens (so "hub spot" licenses
+/// "HubSpot").
+fn cleanup_lexicon(texts: &[&str]) -> std::collections::HashSet<String> {
+    let mut lexicon = std::collections::HashSet::new();
+    for text in texts {
+        let tokens = cleanup_tokens(text);
+        for pair in tokens.windows(2) {
+            lexicon.insert(format!("{}{}", pair[0], pair[1]));
+        }
+        lexicon.extend(tokens);
+    }
+    lexicon
+}
+
+/// A word in the cleaned output that appears in neither transcription (nor the
+/// repo vocabulary) is a hallucination — the merge task never needs new words.
+pub(crate) fn cleanup_novel_word(
+    whisper_transcription: &str,
+    realtime_transcription: &str,
+    repo_context: Option<&str>,
+    cleaned_text: &str,
+) -> Option<String> {
+    let mut inputs = vec![whisper_transcription, realtime_transcription];
+    if let Some(context) = repo_context {
+        inputs.push(context);
+    }
+    let lexicon = cleanup_lexicon(&inputs);
+    cleanup_tokens(cleaned_text)
+        .into_iter()
+        .find(|token| !lexicon.contains(token))
+}
+
+/// A consecutive word pair BOTH engines heard is real speech; if it's missing
+/// from the cleaned output, content was dropped. Filler pairs and pure
+/// function-word pairs are exempt (their removal is legitimate cleanup).
+pub(crate) fn cleanup_dropped_agreed_phrase(
+    whisper_transcription: &str,
+    realtime_transcription: &str,
+    cleaned_text: &str,
+) -> Option<String> {
+    let bigrams = |s: &str| -> std::collections::HashSet<(String, String)> {
+        cleanup_tokens(s)
+            .windows(2)
+            .map(|pair| (pair[0].clone(), pair[1].clone()))
+            .collect()
+    };
+    let whisper_bigrams = bigrams(whisper_transcription);
+    let cleaned_bigrams = bigrams(cleaned_text);
+    let is_filler = |token: &str| CLEANUP_FILLERS.contains(&token);
+    let is_stopword = |token: &str| CLEANUP_STOPWORDS.contains(&token);
+
+    bigrams(realtime_transcription)
+        .into_iter()
+        .find(|(first, second)| {
+            first != second
+                && !is_filler(first)
+                && !is_filler(second)
+                && !(is_stopword(first) && is_stopword(second))
+                && whisper_bigrams.contains(&(first.clone(), second.clone()))
+                && !cleaned_bigrams.contains(&(first.clone(), second.clone()))
+        })
+        .map(|(first, second)| format!("{first} {second}"))
+}
+
+/// All deterministic checks on a cleanup result. Returns a human-readable
+/// rejection reason, or None when the output is acceptable. On rejection the
+/// caller ships the raw batch transcript instead — content safety over polish.
+pub(crate) fn cleanup_guard_violation(
+    whisper_transcription: &str,
+    realtime_transcription: Option<&str>,
+    repo_context: Option<&str>,
+    cleaned_text: &str,
+) -> Option<String> {
+    if LlmRouter::cleanup_exceeds_length_guard(
+        whisper_transcription,
+        realtime_transcription,
+        cleaned_text,
+    ) {
+        return Some(format!(
+            "output ({} words) far exceeds the longest input ({} words) — looks like a concatenated merge",
+            word_count(cleaned_text),
+            word_count(whisper_transcription)
+                .max(realtime_transcription.map(word_count).unwrap_or(0))
+        ));
+    }
+
+    // The vocabulary and agreed-phrase invariants only hold in dual-source
+    // mode; single-source cleanup legitimately introduces words (homophone and
+    // vocabulary fixes have no second transcript to borrow from).
+    let realtime = realtime_transcription?;
+    if let Some(word) = cleanup_novel_word(whisper_transcription, realtime, repo_context, cleaned_text)
+    {
+        return Some(format!(
+            "output contains \"{word}\", which appears in neither transcription — hallucinated content"
+        ));
+    }
+    if let Some(phrase) =
+        cleanup_dropped_agreed_phrase(whisper_transcription, realtime, cleaned_text)
+    {
+        return Some(format!(
+            "\"{phrase}\" was heard by both engines but is missing from the output — dropped content"
+        ));
+    }
+    None
 }
