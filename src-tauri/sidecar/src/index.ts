@@ -892,9 +892,26 @@ const sidecarRuntimeRoot = process.cwd();
 
 function getCodexInstance(): Codex {
   if (!codexInstance) {
-    codexInstance = new Codex();
+    // Prefer the codex binary bundled with the sidecar over whatever `codex`
+    // happens to be on the user's PATH. A stale PATH codex (e.g. an old Homebrew
+    // cask) can trip macOS XProtect the moment we exec it; the bundled binary is
+    // the same one the app-server session path uses. On Windows the bundled shim
+    // is a `.cmd`, which the codex-sdk spawns without a shell (so it can't be
+    // exec'd directly) — leave the SDK's own vendored-binary resolution there.
+    const bundled = resolveBundledCodexForSdk();
+    codexInstance = bundled
+      ? new Codex({ codexPathOverride: bundled })
+      : new Codex();
   }
   return codexInstance;
+}
+
+/// Path to the bundled codex binary suitable for direct spawn by the codex-sdk,
+/// or undefined to fall back to the SDK's default resolution.
+function resolveBundledCodexForSdk(): string | undefined {
+  if (process.platform === "win32") return undefined;
+  const bin = path.join(sidecarRuntimeRoot, "node_modules", ".bin", "codex");
+  return fs.existsSync(bin) ? bin : undefined;
 }
 
 function setSessionSdkSessionId(session: Session, id: string, eventId: string): void {

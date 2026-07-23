@@ -325,9 +325,10 @@ pub fn check_claude_auth(app: tauri::AppHandle) -> Result<serde_json::Value, Str
     let has_env_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
 
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    // Claude CLI stores credentials at ~/.claude/.credentials.json
+    // Claude CLI stores credentials at ~/.claude/.credentials.json — except on
+    // macOS, where it uses the login Keychain (service "Claude Code-credentials").
     let credentials_path = home.join(".claude").join(".credentials.json");
-    let has_oauth = credentials_path.exists();
+    let has_oauth = credentials_path.exists() || claude_keychain_login_exists();
 
     // Check if we have an API key stored in keyring
     let has_keyring_key = {
@@ -490,20 +491,78 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// Read the Claude credentials JSON, falling back to the macOS Keychain when the
+/// plaintext file is absent.
+///
+/// On macOS the Claude CLI stores its OAuth token in the login Keychain (a
+/// generic-password item under the service name `Claude Code-credentials`) and
+/// only writes `~/.claude/.credentials.json` on other platforms — so reading the
+/// file alone reports "not logged in" on Mac even when the user is authenticated.
+/// The Keychain fallback applies only to the machine-default login
+/// (`allow_keychain`); configured account profiles always keep a plaintext file
+/// inside their `CLAUDE_CONFIG_DIR`.
+fn load_claude_credentials(
+    path: &std::path::Path,
+    allow_keychain: bool,
+) -> Result<serde_json::Value, String> {
+    if path.exists() {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read credentials: {}", e))?;
+        return serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse credentials: {}", e));
+    }
+
+    #[cfg(target_os = "macos")]
+    if allow_keychain {
+        if let Some(value) = read_claude_keychain_credentials() {
+            return Ok(value);
+        }
+    }
+    let _ = allow_keychain; // used only on macOS
+
+    Err("Claude OAuth credentials not found. Please log in via Claude CLI.".to_string())
+}
+
+/// Read the Claude Code OAuth credentials JSON from the macOS login Keychain.
+/// Returns `None` if the item is missing or the user declines the access prompt.
+#[cfg(target_os = "macos")]
+fn read_claude_keychain_credentials() -> Option<serde_json::Value> {
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(raw.trim()).ok()
+}
+
+/// Whether a Claude Code login exists in the macOS Keychain. Uses a metadata-only
+/// lookup (no `-w`) so it never triggers the secret-access prompt. Always false
+/// off macOS.
+fn claude_keychain_login_exists() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("security")
+            .args(["find-generic-password", "-s", "Claude Code-credentials"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// Read accessToken, refreshToken, and expiresAt (epoch ms) from the Claude
-/// credentials file.
+/// credentials (plaintext file, or the macOS Keychain when `allow_keychain`).
 fn read_claude_oauth(
     path: &std::path::Path,
+    allow_keychain: bool,
 ) -> Result<(String, Option<String>, Option<u64>), String> {
-    if !path.exists() {
-        return Err(
-            "Claude OAuth credentials not found. Please log in via Claude CLI.".to_string(),
-        );
-    }
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read credentials: {}", e))?;
-    let value: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse credentials: {}", e))?;
+    let value = load_claude_credentials(path, allow_keychain)?;
     let oauth = value.get("claudeAiOauth");
     let access = oauth
         .and_then(|o| o.get("accessToken"))
@@ -589,9 +648,15 @@ async fn refresh_claude_oauth(
         }
     }
 
-    if let Ok(serialized) = serde_json::to_string_pretty(&creds) {
-        // Best-effort write-back; a write failure doesn't invalidate the fetched token.
-        let _ = std::fs::write(credentials_path, serialized);
+    // Only mirror back to a file that already exists — on macOS the token lives
+    // in the Keychain (no plaintext file), and writing one would leave stale
+    // credentials the CLI never rotates. The refreshed token is still returned
+    // and used for the current request regardless.
+    if credentials_path.exists() {
+        if let Ok(serialized) = serde_json::to_string_pretty(&creds) {
+            // Best-effort write-back; a write failure doesn't invalidate the fetched token.
+            let _ = std::fs::write(credentials_path, serialized);
+        }
     }
 
     Ok(new_access)
@@ -611,6 +676,9 @@ pub async fn fetch_claude_rate_limits(
         account_id.as_deref(),
         crate::config::SdkProvider::Claude,
     )?;
+    // The macOS Keychain fallback applies only to the machine-default login;
+    // configured account profiles always use a plaintext file in their dir.
+    let allow_keychain = account_path.is_none();
     let credentials_path = match account_path {
         Some(p) => p,
         None => {
@@ -619,7 +687,8 @@ pub async fn fetch_claude_rate_limits(
         }
     };
 
-    let (mut token, refresh_token, expires_at) = read_claude_oauth(&credentials_path)?;
+    let (mut token, refresh_token, expires_at) =
+        read_claude_oauth(&credentials_path, allow_keychain)?;
 
     // Proactively refresh if the stored access token is expired or about to expire
     // (60s buffer) — the common overnight-idle case that otherwise 401s and hides

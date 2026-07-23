@@ -11,6 +11,8 @@
     transcription_error: string | null;
   }
 
+  const isWindows = navigator.userAgent.includes("Windows");
+
   let testingWhisper = $state(false);
   let whisperStatus: "idle" | "success" | "partial" | "error" = $state("idle");
   let whisperTestResult: ConnectionTestResult | null = $state(null);
@@ -314,7 +316,11 @@
 
       // Port mapping and volume
       parts.push("-p 8000:8000");
-      parts.push("-v ~/.cache/huggingface:/root/.cache/huggingface");
+      parts.push(
+        isWindows
+          ? "-v %USERPROFILE%\\.cache\\huggingface:/root/.cache/huggingface"
+          : "-v ~/.cache/huggingface:/root/.cache/huggingface"
+      );
 
       // Image tag based on compute type
       const imageTag =

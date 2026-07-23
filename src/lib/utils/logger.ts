@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -56,9 +57,19 @@ export function initLogger() {
     sendToFile("debug", args);
   };
 
-  // Write a startup marker so it's easy to find session boundaries in the log
-  const version = __APP_VERSION__ ?? "unknown";
-  sendToFile("info", [`=== OpenWhisperer ${version} frontend started ===`]);
+  // Write a startup marker so it's easy to find session boundaries in the log.
+  // Read the version from Tauri at runtime (the authoritative tauri.conf.json
+  // value) rather than the build-time package.json constant, which lags a
+  // release by one version since the workflow only commits it back post-build.
+  getVersion()
+    .then((version) =>
+      sendToFile("info", [`=== OpenWhisperer ${version} frontend started ===`])
+    )
+    .catch(() =>
+      sendToFile("info", [
+        `=== OpenWhisperer ${__APP_VERSION__ ?? "unknown"} frontend started ===`,
+      ])
+    );
 }
 
 // Vite injects this at build time via define in vite.config.ts
