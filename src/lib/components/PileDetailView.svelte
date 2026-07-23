@@ -200,8 +200,13 @@
 
   async function deleteItem() {
     confirmDeleteOpen = false;
+    // Capture the id before closing the view: `item` is a live prop bound to
+    // `$selectedPileItem`, so clearing the selection first makes `item` null and
+    // `item.id` throw, silently aborting the delete (the view closes but nothing
+    // is removed).
+    const id = item.id;
     selectedPileItemId.set(null);
-    await pile.removeItem(item.id);
+    await pile.removeItem(id);
   }
 
   function openSession(sessionId: string) {

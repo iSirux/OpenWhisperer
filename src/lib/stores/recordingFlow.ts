@@ -224,51 +224,64 @@ function createRecordingFlowStore() {
         // and, for the main path, let the transcript pipeline attach cleanup below.
         debugRecordings.update(debugId, { destination: stopAction });
 
-        if (shouldPileOnStop) {
-          // Pile mode keeps failed transcriptions too (audio is preserved)
-          await handlePileTranscriptReady(
-            transcript || '',
-            sessionIdToProcess,
-            capturedRealtimeTranscript,
-            transcript ? undefined : 'No transcription returned',
-            debugId
-          );
-        } else if (transcript) {
-          if (shouldDraftOnStop && sessionIdToProcess) {
-            await handlePrepareTranscriptReady(
-              transcript,
+        // Transcription has already succeeded here. Any error thrown below comes from
+        // *processing* the transcript (LLM helpers, session init/backend registration),
+        // NOT from transcription — so it must NOT be reclassified as a transcription
+        // failure and salvaged to the pile. Session-init failures already flip the
+        // session to an 'error' state the user can see and retry; wiping it into the
+        // pile would make it "disappear completely" instead.
+        try {
+          if (shouldPileOnStop) {
+            // Pile mode keeps failed transcriptions too (audio is preserved)
+            await handlePileTranscriptReady(
+              transcript || '',
               sessionIdToProcess,
               capturedRealtimeTranscript,
+              transcript ? undefined : 'No transcription returned',
               debugId
             );
+          } else if (transcript) {
+            if (shouldDraftOnStop && sessionIdToProcess) {
+              await handlePrepareTranscriptReady(
+                transcript,
+                sessionIdToProcess,
+                capturedRealtimeTranscript,
+                debugId
+              );
+            } else {
+              await handleTranscriptReady(
+                transcript,
+                sessionIdToProcess,
+                capturedRealtimeTranscript,
+                debugId
+              );
+            }
           } else {
-            await handleTranscriptReady(
-              transcript,
+            // No transcription returned — salvage the recording to the pile (audio is
+            // preserved, retriable) regardless of the intended destination, instead of
+            // leaving a stuck session.
+            await handlePileTranscriptReady(
+              '',
               sessionIdToProcess,
               capturedRealtimeTranscript,
+              'No transcription returned',
               debugId
             );
           }
-        } else {
-          // No transcription returned — salvage the recording to the pile (audio is
-          // preserved, retriable) regardless of the intended destination, instead of
-          // leaving a stuck session.
-          await handlePileTranscriptReady(
-            '',
-            sessionIdToProcess,
-            capturedRealtimeTranscript,
-            'No transcription returned',
-            debugId
-          );
-        }
-
-        if (pendingTranscriptionSessionId === sessionIdToProcess) {
-          pendingTranscriptionSessionId = null;
+        } catch (processError) {
+          // Post-transcription processing/session-init failure. Leave the session in
+          // whatever state processing set it to (typically 'error') so it stays visible
+          // and retriable — do not treat this as a transcription failure.
+          console.error('[recordingFlow] Failed to process transcript:', processError);
+        } finally {
+          if (pendingTranscriptionSessionId === sessionIdToProcess) {
+            pendingTranscriptionSessionId = null;
+          }
         }
       })
       .catch(async (error) => {
-        // Transcription failed (service down/network/5xx) — salvage the recording to
-        // the pile so it survives and can be retried, regardless of intended destination.
+        // Transcription itself failed (service down/network/5xx) — salvage the recording
+        // to the pile so it survives and can be retried, regardless of intended destination.
         await handlePileTranscriptReady(
           '',
           sessionIdToProcess,

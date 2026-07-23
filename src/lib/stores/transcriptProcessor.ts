@@ -73,10 +73,19 @@ export async function handleTranscriptReady(
   debugRecordingId?: string
 ) {
   if (!transcript.trim()) {
-    console.log('[transcript] Empty transcript, skipping');
-    if (pendingSessionId) {
-      sdkSessions.cancelPendingTranscription(pendingSessionId);
-    }
+    // Whisper returned nothing usable (empty or whitespace-only), even though the
+    // realtime engine may have produced text that already landed in the recordings
+    // log. Don't silently hard-delete the pending session — salvage the recording to
+    // the pile (audio preserved, retriable), consistent with the app-wide
+    // transcription-failure sink, so it doesn't just vanish.
+    console.log('[transcript] Empty transcript, salvaging recording to pile');
+    await handlePileTranscriptReady(
+      '',
+      pendingSessionId,
+      realtimeTranscript,
+      'No transcription returned',
+      debugRecordingId
+    );
     return;
   }
 

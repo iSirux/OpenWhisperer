@@ -1952,7 +1952,7 @@
 
     </div>
 
-    {#if showGoToTop}
+    {#if showGoToTop && !isWaitingForUserInput}
       <button
         class="go-to-top-button"
         onclick={scrollToTop}
