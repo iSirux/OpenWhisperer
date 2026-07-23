@@ -76,6 +76,18 @@ pub enum OutboundMessage {
         ///   None/100 -> neither var set; Claude's built-in default (~83%) applies
         #[serde(skip_serializing_if = "Option::is_none")]
         autocompact_pct: Option<u32>,
+        /// Claude-only interactive permission mode (SDK `permissionMode`), e.g.
+        /// `"acceptEdits"` (default) or `"auto"`. None -> sidecar default (acceptEdits).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<String>,
+        /// Codex-only app-server `approvalPolicy` (e.g. `"never"` or `"on-request"`).
+        /// None -> sidecar default ("never").
+        #[serde(skip_serializing_if = "Option::is_none")]
+        codex_approval_policy: Option<String>,
+        /// Codex-only app-server `sandbox` (e.g. `"workspace-write"`).
+        /// None -> leave unset (app-server default sandbox).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        codex_sandbox_mode: Option<String>,
         /// Extra env vars for the session's agent process (e.g., GH_TOKEN to pin
         /// a gh account per repo)
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,6 +172,15 @@ pub enum OutboundMessage {
         action: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         feedback: Option<String>,
+    },
+    /// User's decision on a Codex app-server approval request (exec/file change).
+    AnswerCodexApproval {
+        id: String,
+        /// JSON-RPC request id of the pending approval, echoed back so the
+        /// sidecar can respond to the correct app-server request.
+        request_id: u64,
+        /// One of: "accept" | "acceptForSession" | "decline" | "cancel".
+        decision: String,
     },
 }
 
@@ -345,6 +366,22 @@ pub enum InboundMessage {
         #[serde(rename = "allowedPrompts")]
         allowed_prompts: Vec<serde_json::Value>,
         plan: Option<String>,
+    },
+    /// Codex app-server requested approval for a command execution or file change.
+    CodexApprovalRequest {
+        id: String,
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        /// "exec" (command execution) | "patch" (file change).
+        kind: String,
+        #[serde(default)]
+        command: Option<String>,
+        #[serde(default)]
+        cwd: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default, rename = "grantRoot")]
+        grant_root: Option<String>,
     },
     /// Result from Claude SDK repo description generation
     RepoDescriptionResult {
@@ -642,6 +679,18 @@ struct PlanApprovalRequestPayload {
 }
 
 #[derive(Serialize, Clone)]
+struct CodexApprovalRequestPayload {
+    #[serde(rename = "requestId")]
+    request_id: u64,
+    kind: String,
+    command: Option<String>,
+    cwd: Option<String>,
+    reason: Option<String>,
+    #[serde(rename = "grantRoot")]
+    grant_root: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
 struct RepoDescriptionResultPayload {
     description: String,
     keywords: Vec<String>,
@@ -706,6 +755,7 @@ impl InboundMessage {
             InboundMessage::TaskCompleted { .. } => "sdk-task-completed",
             InboundMessage::AskUserQuestions { .. } => "sdk-ask-user-questions",
             InboundMessage::PlanApprovalRequest { .. } => "sdk-plan-approval-request",
+            InboundMessage::CodexApprovalRequest { .. } => "sdk-codex-approval-request",
             InboundMessage::RepoDescriptionResult { .. } => "repo-description-result",
             InboundMessage::RepoDescriptionError { .. } => "repo-description-error",
             InboundMessage::LaunchProfileResult { .. } => "launch-profile-result",
@@ -1264,6 +1314,35 @@ impl SidecarManager {
                     PlanApprovalRequestPayload {
                         allowed_prompts,
                         plan,
+                    },
+                );
+            }
+            InboundMessage::CodexApprovalRequest {
+                id,
+                request_id,
+                kind,
+                command,
+                cwd,
+                reason,
+                grant_root,
+            } => {
+                log::info!(
+                    "[sidecar] Codex approval request for session {} (req {}): kind={}",
+                    id,
+                    request_id,
+                    kind
+                );
+                Self::emit(
+                    app,
+                    suffix,
+                    &id,
+                    CodexApprovalRequestPayload {
+                        request_id,
+                        kind,
+                        command,
+                        cwd,
+                        reason,
+                        grant_root,
                     },
                 );
             }

@@ -11,7 +11,7 @@ mod utils;
 pub use providers::GenerationResult;
 pub use types::*;
 
-use crate::config::{AppConfig, LlmModelPriority, LlmProfile, LlmProvider};
+use crate::config::{AppConfig, LlmProfile, LlmProvider};
 use serde::de::DeserializeOwned;
 use tauri::AppHandle;
 use tauri_plugin_keyring::KeyringExt;
@@ -121,7 +121,6 @@ pub(crate) fn client_for_profile(
         profile.provider.clone(),
         profile.endpoint.clone(),
         profile.auto_model,
-        profile.model_priority.clone(),
     ))
 }
 
@@ -173,14 +172,17 @@ pub(crate) fn router_from_config(
     Ok(LlmRouter { clients })
 }
 
-/// Model fallback chains for Gemini provider
-/// As of mid-2026 the free tier centers on the Gemini 3 series (3.5 Flash /
-/// 3.1 Flash-Lite, both free) with the 2.5 Flash models kept as fallbacks.
-const GEMINI_MODELS_SPEED: &[&str] =
-    &["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash-lite"];
-
-const GEMINI_MODELS_ACCURACY: &[&str] =
-    &["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+/// Model fallback chain for the Gemini provider (single order, priority-agnostic).
+/// Newest Flash-Lite models first (fastest/cheapest), then the Flash models,
+/// then the 2.5 series kept as fallbacks.
+const GEMINI_MODELS: &[&str] = &[
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+];
 
 /// Unified LLM client that supports multiple providers (Gemini, OpenAI, Groq, Local)
 pub struct LlmClient {
@@ -191,8 +193,6 @@ pub struct LlmClient {
     endpoint: Option<String>,
     /// When true and provider is Gemini, automatically select model with fallbacks
     auto_model: bool,
-    /// Model priority when auto_model is enabled
-    model_priority: LlmModelPriority,
 }
 
 impl LlmClient {
@@ -202,7 +202,6 @@ impl LlmClient {
         provider: LlmProvider,
         endpoint: Option<String>,
         auto_model: bool,
-        model_priority: LlmModelPriority,
     ) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -211,7 +210,6 @@ impl LlmClient {
             provider,
             endpoint,
             auto_model,
-            model_priority,
         }
     }
 
@@ -222,10 +220,8 @@ impl LlmClient {
             return vec![];
         }
 
-        match self.model_priority {
-            LlmModelPriority::Speed => GEMINI_MODELS_SPEED.to_vec(),
-            LlmModelPriority::Accuracy => GEMINI_MODELS_ACCURACY.to_vec(),
-        }
+        // Single fallback order regardless of the configured priority.
+        GEMINI_MODELS.to_vec()
     }
 
     fn api_url_for_model(&self, model: &str) -> String {

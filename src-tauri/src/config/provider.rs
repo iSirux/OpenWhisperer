@@ -54,3 +54,62 @@ pub enum CodexMode {
     Sdk,
 }
 
+/// Permission mode for interactive Claude sessions (maps to the Claude Agent
+/// SDK's `permissionMode`). Only affects Claude sessions; OpenAI/Codex ignores it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum ClaudePermissionMode {
+    /// Current behavior: auto-approve file edits; other tools are allowed via the
+    /// sidecar's `canUseTool` callback (no prompts). Maps to SDK `"acceptEdits"`.
+    #[default]
+    AcceptEdits,
+    /// Research-preview auto mode: an AI classifier reviews each tool call
+    /// (including Bash) and runs safe ones automatically, blocking/escalating
+    /// risky ones server-side. Maps to SDK `"auto"`.
+    Auto,
+}
+
+impl ClaudePermissionMode {
+    /// The SDK `permissionMode` string this maps to.
+    pub fn as_sdk_str(&self) -> &'static str {
+        match self {
+            ClaudePermissionMode::AcceptEdits => "acceptEdits",
+            ClaudePermissionMode::Auto => "auto",
+        }
+    }
+}
+
+/// Permission mode for interactive Codex (OpenAI app-server) sessions. Maps to
+/// the app-server's `approvalPolicy` + `sandbox` on `thread/start`/`thread/resume`.
+/// Only affects OpenAI/Codex sessions; Claude ignores it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum CodexPermissionMode {
+    /// Current behavior: `approvalPolicy: "never"`, sandbox left at the
+    /// app-server default. Codex never pauses to ask; nothing is confined.
+    #[default]
+    AutoApprove,
+    /// Codex "Auto" preset: `sandbox: "workspace-write"` +
+    /// `approvalPolicy: "on-request"`. Edits/commands inside the workspace run
+    /// automatically; leaving the workspace or hitting the network prompts for
+    /// approval (surfaced as an approval dialog).
+    Auto,
+}
+
+impl CodexPermissionMode {
+    /// The app-server `approvalPolicy` value (kebab-case, per the protocol schema).
+    pub fn approval_policy(&self) -> &'static str {
+        match self {
+            CodexPermissionMode::AutoApprove => "never",
+            CodexPermissionMode::Auto => "on-request",
+        }
+    }
+
+    /// The app-server `sandbox` value, or None to leave it at the server default
+    /// (preserving the historical AutoApprove behavior).
+    pub fn sandbox_mode(&self) -> Option<&'static str> {
+        match self {
+            CodexPermissionMode::AutoApprove => None,
+            CodexPermissionMode::Auto => Some("workspace-write"),
+        }
+    }
+}
+

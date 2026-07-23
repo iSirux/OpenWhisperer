@@ -209,6 +209,34 @@
     </div>
   </div>
 
+  <!-- Permission mode -->
+  <div class="border-b border-border pb-4 mb-4">
+    <h3 class="text-sm font-medium text-text-primary mb-2">Permission mode</h3>
+    <p class="text-xs text-text-muted mb-3">
+      Controls how new Codex sessions handle command and file-change approvals.
+      <strong class="text-text-secondary">Auto-approve</strong> is the current
+      behavior — Codex runs everything without pausing (approval policy
+      <code class="px-1 py-0.5 bg-background rounded text-text-secondary">never</code>).
+      <strong class="text-text-secondary">Auto (sandboxed)</strong> confines Codex to a
+      <code class="px-1 py-0.5 bg-background rounded text-text-secondary">workspace-write</code>
+      sandbox and prompts for approval when it wants to leave the workspace or use the
+      network (
+      <code class="px-1 py-0.5 bg-background rounded text-text-secondary">on-request</code>).
+      Applies to new Codex sessions only.
+    </p>
+    <div class="p-3 bg-surface rounded border border-border">
+      <label for="codex-permission-mode" class="block text-xs text-text-muted mb-1">Mode</label>
+      <select
+        id="codex-permission-mode"
+        class="w-full px-2 py-1.5 bg-background border border-border rounded text-xs focus:outline-none focus:border-accent"
+        bind:value={$settings.codex_permission_mode}
+      >
+        <option value="AutoApprove">Auto-approve (default)</option>
+        <option value="Auto">Auto (sandboxed, prompts on request)</option>
+      </select>
+    </div>
+  </div>
+
   <!-- Enabled Models -->
   <div>
     <h3 class="text-sm font-medium text-text-primary mb-2">Enabled Models</h3>

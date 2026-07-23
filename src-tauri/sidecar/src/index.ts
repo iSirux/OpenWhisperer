@@ -295,6 +295,9 @@ interface CreateMessage {
   fork_from_sdk_session_id?: string; // SDK session ID to fork from
   fork_at_message_uuid?: string; // Message UUID to fork at (resumeSessionAt)
   autocompact_pct?: number; // Claude-only: 0 = DISABLE_AUTO_COMPACT=1; 1-99 = CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; null/undefined/100 = Claude default
+  permission_mode?: string; // Claude-only interactive permission mode (SDK permissionMode): "acceptEdits" (default) | "auto". Ignored for OpenAI/Codex.
+  codex_approval_policy?: string; // Codex-only app-server approvalPolicy: "never" (default) | "on-request". Ignored for Claude.
+  codex_sandbox_mode?: string; // Codex-only app-server sandbox: e.g. "workspace-write". Undefined = server default. Ignored for Claude.
   env?: Record<string, string>; // Extra env vars for the session's agent process (e.g., GH_TOKEN to pin a gh account per repo)
 }
 
@@ -416,6 +419,14 @@ interface AnswerPlanApprovalMessage {
   feedback?: string; // Feedback text for deny
 }
 
+// User's decision on a Codex app-server approval request (from frontend via Rust)
+interface AnswerCodexApprovalMessage {
+  type: "answer_codex_approval";
+  id: string; // Session ID
+  request_id: number; // JSON-RPC id of the pending app-server approval request
+  decision: string; // "accept" | "acceptForSession" | "decline" | "cancel"
+}
+
 // One-shot Validation pipeline agent (simplify/review/verify/evidence/docs/lint).
 // Most roles run a restricted, read-only-ish Claude query() that must finish by
 // calling a single role-specific submit tool (structured output). The simplify
@@ -453,6 +464,7 @@ type InboundMessage =
   | GenerateLaunchProfileWithCodexMessage
   | AnswerAskUserQuestionMessage
   | AnswerPlanApprovalMessage
+  | AnswerCodexApprovalMessage
   | ValidationAgentMessage;
 
 type OpenAiExecutionMode = "sdk" | "app_server";
@@ -515,6 +527,11 @@ interface Session {
   appServer?: AppServerState; // Active Codex app-server process state
   extraEnv?: Record<string, string>; // Per-session extra env vars (e.g., GH_TOKEN) applied to spawned agent processes
   appServerTurnId?: string; // Active app-server turn ID
+  codexApprovalPolicy?: string; // Codex app-server approvalPolicy for thread/start|resume ("never" default)
+  codexSandboxMode?: string; // Codex app-server sandbox for thread/start|resume ("workspace-write" for Auto mode)
+  // Outstanding Codex approval requests (JSON-RPC request id -> nothing; presence = pending).
+  // The app-server blocks the turn until we respond via appServerWriteJson.
+  pendingCodexApprovalIds?: Set<number>;
   // Pending manual compaction (Codex app-server). thread/compact/start returns
   // immediately and streams its own turn via notifications; this waiter is
   // resolved by that turn's turn/completed so handleCompact can emit `done`.
@@ -1402,6 +1419,68 @@ function handleAppServerItemEvent(
   }
 }
 
+// A Codex app-server approval request (command execution or file change) arrived.
+// Surface it to the user via Rust; the app-server blocks the turn until we send a
+// JSON-RPC response (done later in respondCodexApproval when the decision lands).
+function handleCodexApprovalRequest(
+  sessionId: string,
+  requestId: number,
+  method: string,
+  params: unknown,
+): void {
+  const session = sessions.get(sessionId);
+  const p = (params ?? {}) as Record<string, unknown>;
+  const kind = method === "item/fileChange/requestApproval" ? "patch" : "exec";
+
+  if (!session || !session.appServer) {
+    send({
+      type: "debug",
+      id: sessionId,
+      message: `Codex approval request ${requestId} arrived without a live app-server session; ignoring`,
+    });
+    return;
+  }
+
+  if (!session.pendingCodexApprovalIds) {
+    session.pendingCodexApprovalIds = new Set();
+  }
+  session.pendingCodexApprovalIds.add(requestId);
+
+  send({
+    type: "codex_approval_request",
+    id: sessionId,
+    requestId,
+    kind,
+    command: typeof p.command === "string" ? p.command : undefined,
+    cwd: typeof p.cwd === "string" ? p.cwd : undefined,
+    reason: typeof p.reason === "string" ? p.reason : undefined,
+    grantRoot: typeof p.grantRoot === "string" ? p.grantRoot : undefined,
+  });
+}
+
+// Respond to a pending Codex approval request with a decision string
+// ("accept" | "acceptForSession" | "decline" | "cancel"). No-op if the request
+// is unknown (already answered, or the session/app-server is gone).
+function respondCodexApproval(
+  sessionId: string,
+  requestId: number,
+  decision: string,
+): void {
+  const session = sessions.get(sessionId);
+  if (!session || !session.appServer) return;
+  if (!session.pendingCodexApprovalIds?.has(requestId)) return;
+  session.pendingCodexApprovalIds.delete(requestId);
+  appServerWriteJson(session.appServer, {
+    id: requestId,
+    result: { decision },
+  });
+  send({
+    type: "debug",
+    id: sessionId,
+    message: `Codex approval ${requestId} resolved: ${decision}`,
+  });
+}
+
 function handleAppServerNotification(id: string, notification: JsonRpcNotification): void {
   const session = sessions.get(id);
   if (!session) return;
@@ -1925,7 +2004,17 @@ async function ensureCodexAppServer(
 
     if (typeof msg.method === "string") {
       if (typeof msg.id === "number") {
-        // Server-initiated request not currently handled by this client.
+        // Codex approval requests (on-request policy): surface to the user and
+        // respond with their decision once it arrives. Until then the app-server
+        // blocks the turn awaiting our JSON-RPC response.
+        if (
+          msg.method === "item/commandExecution/requestApproval" ||
+          msg.method === "item/fileChange/requestApproval"
+        ) {
+          handleCodexApprovalRequest(id, msg.id, msg.method, msg.params);
+          return;
+        }
+        // Any other server-initiated request is not handled by this client.
         appServerWriteJson(state, {
           id: msg.id,
           error: {
@@ -2033,6 +2122,14 @@ async function handleCodexAppServerQuery(
         `resumeThreadId=${session.sdkSessionId || session.passedSdkSessionId || "none"}`,
     });
 
+    // Permission fragment shared by thread/start and thread/resume. Defaults to
+    // the historical "never" (auto-approve) when the session carries no override.
+    // A workspace-write sandbox + on-request policy drives the approval dialog.
+    const approvalParams: Record<string, unknown> = {
+      approvalPolicy: session.codexApprovalPolicy ?? "never",
+      ...(session.codexSandboxMode ? { sandbox: session.codexSandboxMode } : {}),
+    };
+
     let threadId = session.sdkSessionId || session.passedSdkSessionId;
     if (threadId) {
       send({
@@ -2046,6 +2143,7 @@ async function handleCodexAppServerQuery(
         {
           threadId,
           ...(session.codexModel ? { model: session.codexModel } : {}),
+          ...approvalParams,
         },
         abortController.signal
       );
@@ -2061,7 +2159,7 @@ async function handleCodexAppServerQuery(
         {
           ...(session.codexModel ? { model: session.codexModel } : {}),
           cwd: session.cwd,
-          approvalPolicy: "never",
+          ...approvalParams,
         },
         abortController.signal
       )) as Record<string, unknown>;
@@ -3791,9 +3889,15 @@ async function handleValidationAgent(msg: ValidationAgentMessage): Promise<void>
 }
 
 async function handleCreate(msg: CreateMessage): Promise<void> {
+  // Interactive permission mode (Claude only). "auto" opts into the SDK's
+  // AI-classified permission preview; anything else keeps the "acceptEdits"
+  // default. OpenAI/Codex sessions ignore this (they don't use `options`).
+  const permissionMode = (
+    msg.permission_mode === "auto" ? "auto" : "acceptEdits"
+  ) as Options["permissionMode"];
   const options: Options = {
     cwd: msg.cwd,
-    permissionMode: "acceptEdits",
+    permissionMode,
     // Load CLAUDE.md, settings, and filesystem-backed Skills like Claude Code does
     settingSources: ["user", "project", "local"],
     ...(msg.model && { model: msg.model }),
@@ -4065,6 +4169,8 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     conversationHistory: msg.messages, // Store conversation history for restored sessions (DEPRECATED)
     codexModel: provider === "openai" ? msg.model : undefined,
     codexSystemPrompt: provider === "openai" ? msg.system_prompt : undefined,
+    codexApprovalPolicy: provider === "openai" ? msg.codex_approval_policy : undefined,
+    codexSandboxMode: provider === "openai" ? msg.codex_sandbox_mode : undefined,
     extraEnv: msg.env,
     claudeQueue: [],
     claudeProcessing: false,
@@ -5371,6 +5477,12 @@ async function handleStop(msg: StopMessage): Promise<void> {
 
   // OpenAI Codex: use AbortController to cancel
   if (session.provider === "openai") {
+    // Cancel any outstanding approval prompts so the app-server unblocks cleanly.
+    if (session.pendingCodexApprovalIds?.size && session.appServer) {
+      for (const reqId of [...session.pendingCodexApprovalIds]) {
+        respondCodexApproval(msg.id, reqId, "cancel");
+      }
+    }
     const interruptedTurnId = session.appServerTurnId;
     if (
       session.openaiMode === "app_server" &&
@@ -5683,6 +5795,10 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       } else {
         send({ type: "debug", id: msg.id, message: "No pending plan approval to resolve" });
       }
+      break;
+    }
+    case "answer_codex_approval": {
+      respondCodexApproval(msg.id, msg.request_id, msg.decision);
       break;
     }
     default:

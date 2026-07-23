@@ -177,6 +177,31 @@
 
   <div class="pt-1 pb-4 mb-4 border-b border-border">
     <h3 class="text-sm font-medium text-text-primary mb-2">
+      Permission mode
+    </h3>
+    <p class="text-xs text-text-muted mb-3">
+      Controls how new Claude sessions handle tool permissions.
+      <strong class="text-text-secondary">Accept edits</strong> is the current behavior — file
+      edits auto-apply and other tools (including Bash) run without prompts.
+      <strong class="text-text-secondary">Auto</strong> opts into the SDK's research-preview
+      mode: an AI classifier reviews each tool call and runs safe ones automatically while
+      blocking risky ones server-side. Applies to new Claude sessions only.
+    </p>
+    <div class="p-3 bg-surface rounded border border-border">
+      <label for="claude-permission-mode" class="block text-xs text-text-muted mb-1">Mode</label>
+      <select
+        id="claude-permission-mode"
+        class="w-full px-2 py-1.5 bg-background border border-border rounded text-xs focus:outline-none focus:border-accent"
+        bind:value={$settings.claude_permission_mode}
+      >
+        <option value="AcceptEdits">Accept edits (default)</option>
+        <option value="Auto">Auto (AI-classified, research preview)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="pt-1 pb-4 mb-4 border-b border-border">
+    <h3 class="text-sm font-medium text-text-primary mb-2">
       Auto-compaction
     </h3>
     <p class="text-xs text-text-muted mb-3">

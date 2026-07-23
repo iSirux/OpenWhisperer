@@ -34,6 +34,18 @@ pub async fn create_sdk_session(
     // Pin the session to an agent account by injecting its login-profile env var
     // (rides the same rail as gh). Reserved/unknown ids inject nothing.
     let account_env = crate::config::account_session_env(&config.lock(), account_id.as_deref());
+    // Claude-only interactive permission mode (acceptEdits by default; opt-in "auto").
+    // Read from config here so no per-session frontend plumbing is needed. The sidecar
+    // applies it only on the Claude path; OpenAI/Codex sessions ignore it.
+    // Codex-only permission mode maps to the app-server's approvalPolicy + sandbox.
+    let (permission_mode, codex_approval_policy, codex_sandbox_mode) = {
+        let cfg = config.lock();
+        (
+            Some(cfg.claude_permission_mode.as_sdk_str().to_string()),
+            Some(cfg.codex_permission_mode.approval_policy().to_string()),
+            cfg.codex_permission_mode.sandbox_mode().map(str::to_string),
+        )
+    };
     let mut env_pairs = gh_env;
     env_pairs.extend(account_env);
     let env = if env_pairs.is_empty() {
@@ -56,6 +68,9 @@ pub async fn create_sdk_session(
         fork_from_sdk_session_id,
         fork_at_message_uuid,
         autocompact_pct,
+        permission_mode,
+        codex_approval_policy,
+        codex_sandbox_mode,
         env,
     })
 }
@@ -129,6 +144,22 @@ pub fn answer_plan_approval(
         id,
         action,
         feedback,
+    })
+}
+
+/// Send user's Codex app-server approval decision back to the sidecar, which
+/// responds to the pending JSON-RPC approval request identified by `request_id`.
+#[tauri::command]
+pub fn answer_codex_approval(
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    request_id: u64,
+    decision: String,
+) -> Result<(), String> {
+    sidecar.send(OutboundMessage::AnswerCodexApproval {
+        id,
+        request_id,
+        decision,
     })
 }
 

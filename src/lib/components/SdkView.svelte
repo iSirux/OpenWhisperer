@@ -32,6 +32,7 @@
   import { validation, validationRuns } from "$lib/stores/validation";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
+  import CodexApprovalDialog from "./sdk/CodexApprovalDialog.svelte";
   import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
   import RateLimitBanner from "./sdk/RateLimitBanner.svelte";
   import QueuedTurnGhost from "./sdk/QueuedTurnGhost.svelte";
@@ -163,7 +164,7 @@
   let isPendingTranscription = $derived(status === "pending_transcription");
   // Note: isLoading is suppressed when the session is waiting for user input
   // (plan approval or AskUserQuestion) to avoid showing a spinner alongside the dialog.
-  let isWaitingForUserInput = $derived(!!session?.pendingPlanApproval || !!(session?.askUserQuestion?.questions?.length));
+  let isWaitingForUserInput = $derived(!!session?.pendingPlanApproval || !!session?.pendingCodexApproval || !!(session?.askUserQuestion?.questions?.length));
   let isLoading = $derived((isQuerying || isInitializing) && !isWaitingForUserInput);
 
   // Idle with history: gates the outcome banner and the AI-generated contextual
@@ -537,6 +538,9 @@
         const planApprovalChanged =
           JSON.stringify(found?.pendingPlanApproval) !==
             JSON.stringify(session?.pendingPlanApproval);
+        const codexApprovalChanged =
+          found?.pendingCodexApproval?.requestId !==
+            session?.pendingCodexApproval?.requestId;
         const autocompactChanged =
           found?.autocompactEnabled !== session?.autocompactEnabled;
         const contextOverflowChanged =
@@ -558,6 +562,7 @@
           askUserQuestionChanged ||
           draftChanged ||
           planApprovalChanged ||
+          codexApprovalChanged ||
           autocompactChanged ||
           contextOverflowChanged ||
           failedRecordingChanged
@@ -1661,6 +1666,11 @@
   function handleDenyPlan(feedback: string) {
     sdkSessions.denyPlan(sessionId, feedback);
   }
+
+  // Codex approval handler (Codex "Auto" permission mode)
+  function handleCodexDecision(decision: string) {
+    sdkSessions.answerCodexApproval(sessionId, decision);
+  }
 </script>
 
 <svelte:window onkeydown={(e) => {
@@ -2056,6 +2066,12 @@
           Discard
         </button>
       </div>
+    {/if}
+    {#if session?.pendingCodexApproval}
+      <CodexApprovalDialog
+        pending={session.pendingCodexApproval}
+        onDecision={handleCodexDecision}
+      />
     {/if}
     <SdkPromptInput
       bind:this={promptInputRef}

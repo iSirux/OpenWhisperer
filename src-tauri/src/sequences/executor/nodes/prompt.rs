@@ -122,6 +122,10 @@ impl SequenceExecutor {
                 fork_from_sdk_session_id: None,
                 fork_at_message_uuid: None,
                 autocompact_pct: None,
+                // Sequence sessions keep the sidecar defaults (acceptEdits / never), like env pinning.
+                permission_mode: None,
+                codex_approval_policy: None,
+                codex_sandbox_mode: None,
                 env: None,
             })
             .map_err(|e| SequenceError::command(format!("Sidecar send error: {}", e)))?;

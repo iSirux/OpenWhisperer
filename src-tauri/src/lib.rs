@@ -445,6 +445,7 @@ pub fn run() {
             sdk_cmds::close_sdk_session,
             sdk_cmds::answer_ask_user_question,
             sdk_cmds::answer_plan_approval,
+            sdk_cmds::answer_codex_approval,
             sdk_cmds::generate_repo_description_with_claude,
             sdk_cmds::generate_repo_description_with_codex,
             sdk_cmds::generate_launch_profile_with_claude,

@@ -281,6 +281,19 @@ export interface PlanApprovalState {
   plan?: string;
 }
 
+/** A pending Codex app-server approval request (command execution or file change).
+ *  Only occurs when the session's Codex permission mode is "Auto" (on-request). */
+export interface CodexApprovalState {
+  /** JSON-RPC request id echoed back to the sidecar with the decision. */
+  requestId: number;
+  /** "exec" (command execution) | "patch" (file change). */
+  kind: 'exec' | 'patch';
+  command?: string;
+  cwd?: string;
+  reason?: string;
+  grantRoot?: string;
+}
+
 export type EffortLevel = null | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type SelectableEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type SettingsEffortLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -552,6 +565,8 @@ export interface SdkSession {
   failedRecording?: FailedRecording;
   askUserQuestion?: AskUserQuestionState;
   pendingPlanApproval?: PlanApprovalState;
+  /** Pending Codex approval request (Codex "Auto" permission mode only). */
+  pendingCodexApproval?: CodexApprovalState;
   draftPrompt?: string;
   draftImages?: SdkImageContent[];
   /** SDK session ID for proper resume after app restart (persisted) */
@@ -1870,6 +1885,36 @@ function createSdkSessionsStore() {
       )
     );
 
+    // Codex approval request - app-server wants approval for a command/file change
+    // (Codex "Auto" permission mode). Waiting for the user's decision.
+    unlisteners.push(
+      await listen<{ requestId: number; kind: 'exec' | 'patch'; command?: string | null; cwd?: string | null; reason?: string | null; grantRoot?: string | null }>(
+        `sdk-codex-approval-request-${id}`, (e) => {
+          console.log(`[sdkSessions] Codex approval request received (session: ${id}, req: ${e.payload.requestId}, kind: ${e.payload.kind})`);
+          update(sessions => sessions.map(s => {
+            if (s.id !== id) return s;
+            // Pause the timer while waiting for approval, mirroring plan approval.
+            const workPeriod = calculateWorkPeriod(s);
+            return {
+              ...s,
+              ...workPeriod,
+              pendingCodexApproval: {
+                requestId: e.payload.requestId,
+                kind: e.payload.kind,
+                command: e.payload.command || undefined,
+                cwd: e.payload.cwd || undefined,
+                reason: e.payload.reason || undefined,
+                grantRoot: e.payload.grantRoot || undefined,
+              },
+            };
+          }));
+          if (get(settings).audio.play_sound_on_question) {
+            playQuestionSound();
+          }
+        }
+      )
+    );
+
     // SDK session ID events - capture for proper resume after app restart
     unlisteners.push(
       await listen<string>(`sdk-session-id-${id}`, (e) => {
@@ -2700,6 +2745,7 @@ function createSdkSessionsStore() {
           liveBackgroundTasks: [],
           // Clear stale blocking-UI state so dialogs don't persist after stop
           pendingPlanApproval: undefined,
+          pendingCodexApproval: undefined,
           askUserQuestion: undefined,
         };
       }));
@@ -3842,6 +3888,27 @@ function createSdkSessionsStore() {
       update(sessions => sessions.map(s => {
         if (s.id !== id) return s;
         return { ...s, pendingPlanApproval: undefined };
+      }));
+    },
+
+    /** Answer a pending Codex approval request. `decision` is one of
+     *  "accept" | "acceptForSession" | "decline" | "cancel". */
+    async answerCodexApproval(id: string, decision: string): Promise<void> {
+      const session = get({ subscribe }).find(s => s.id === id);
+      const requestId = session?.pendingCodexApproval?.requestId;
+      this.clearCodexApproval(id);
+      if (requestId === undefined) {
+        console.warn(`[sdkSessions] answerCodexApproval: no pending request (session: ${id})`);
+        return;
+      }
+      console.log(`[sdkSessions] Answering Codex approval (session: ${id}, req: ${requestId}, decision: ${decision})`);
+      await invoke('answer_codex_approval', { id, requestId, decision });
+    },
+
+    clearCodexApproval(id: string): void {
+      update(sessions => sessions.map(s => {
+        if (s.id !== id) return s;
+        return { ...s, pendingCodexApproval: undefined };
       }));
     },
 

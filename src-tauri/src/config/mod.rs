@@ -172,6 +172,18 @@ pub struct AppConfig {
     pub claude_auth_method: ClaudeAuthMethod,
     #[serde(default)]
     pub skip_permissions: bool,
+    /// Claude-only: permission mode for new interactive Claude sessions.
+    /// Defaults to `AcceptEdits` (current behavior). `Auto` opts into the SDK's
+    /// research-preview AI-classified permission mode. Missing on legacy configs
+    /// deserializes to the default, so no migration is needed.
+    #[serde(default)]
+    pub claude_permission_mode: ClaudePermissionMode,
+    /// Codex-only: permission mode for new interactive Codex sessions.
+    /// Defaults to `AutoApprove` (current behavior: approvalPolicy "never").
+    /// `Auto` opts into a workspace-write sandbox with on-request approvals.
+    /// Missing on legacy configs deserializes to the default, so no migration.
+    #[serde(default)]
+    pub codex_permission_mode: CodexPermissionMode,
     /// Claude-only: default auto-compaction toggle for new sessions.
     /// When false, sidecar sets DISABLE_AUTO_COMPACT=1 (PCT_OVERRIDE cannot disable — it's clamped to ~83%).
     /// When true, no override is set; Claude's built-in default (~83.5%, 33K-token buffer) applies —
@@ -383,6 +395,8 @@ impl Default for AppConfig {
             openai_auth_method: OpenAiAuthMethod::default(),
             claude_auth_method: ClaudeAuthMethod::default(),
             skip_permissions: false,
+            claude_permission_mode: ClaudePermissionMode::default(),
+            codex_permission_mode: CodexPermissionMode::default(),
             default_autocompact_enabled: default_autocompact_enabled(),
             theme: Theme::default(),
             system: SystemConfig::default(),

@@ -27,7 +27,7 @@
 
 use super::types::TranscriptionCleanupResult;
 use super::{LlmClient, LlmRouter};
-use crate::config::{LlmModelPriority, LlmProvider};
+use crate::config::LlmProvider;
 
 /// The production cleanup model (Settings → LLM: Groq / gpt-oss-120b).
 const MODEL: &str = "openai/gpt-oss-120b";
@@ -72,7 +72,6 @@ fn run_case(name: &str, case: &Case) {
         LlmProvider::Groq,
         None,
         false,
-        LlmModelPriority::Speed,
     );
     let prompt = LlmRouter::build_cleanup_prompt(case.whisper, case.realtime, None);
     let schema = LlmRouter::cleanup_schema();
