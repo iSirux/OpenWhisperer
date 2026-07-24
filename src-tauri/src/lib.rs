@@ -233,6 +233,15 @@ fn shutdown_app(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // macOS launches GUI apps with launchd's minimal PATH (/usr/bin:/bin:...), not the
+    // user's shell PATH, so lookups of CLI tools (docker, claude, codex) fail whenever
+    // the app is started from Finder or the Dock. Adopt the login shell's PATH before
+    // anything spawns a subprocess.
+    #[cfg(target_os = "macos")]
+    if let Err(err) = fix_path_env::fix() {
+        eprintln!("failed to inherit shell PATH: {err}");
+    }
+
     let context = tauri::generate_context!();
 
     // Windows requires the AppUserModelID to be set before the process shows any UI;
