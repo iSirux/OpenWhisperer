@@ -45,14 +45,24 @@ The CLI writes `<inbox>/<id>.request.json` **atomically** (write `<id>.tmp`,
 rename) so the app never reads a partial file. The app polls the inbox every 2 s
 (`take_cli_requests`), deletes each request file after reading it, applies it,
 and writes `<inbox>/<id>.ack.json` (`write_cli_ack`, atomic). The CLI polls for
-the ack (150 ms) up to `--timeout` seconds (default 10), prints it, deletes it.
+the ack (150 ms) up to `--timeout` seconds (default 120 for `run`, 10 otherwise),
+prints it, deletes it. A run's ack is sent after worktree creation and session
+launch, which can take longer than the original 10-second timeout.
 
 If no ack arrives in time:
 - `schedule` → the request is **left in the inbox** (durable; applied on next
   app launch). CLI prints a warning with the request id and exits 0.
-- `run` / `cancel` / `list` / `ping` → the CLI deletes its request and exits 1
-  ("OpenWhisperer is not running"). The app additionally ignores non-`schedule`
-  requests older than 60 s, so a stale `run` can never fire days later.
+- `run` / `cancel` / `list` / `ping` → the CLI attempts to delete its request
+  and checks once more for a racing ack. Successful deletion cancels an unclaimed
+  request (exit 1). If deletion fails, the app may already be executing it:
+  report an unknown outcome (exit 3), request id and ack path. Never claim that
+  the app is closed or that the action did not run in this case. Retrying may
+  duplicate the action; inspect the app or late ack first. `--json` emits the
+  same distinction as `status: "cancelled" | "unknown"`.
+  The app only applies a request after successfully removing its file, so a
+  cancellation that wins the deletion race prevents execution. The app also
+  refuses non-`schedule` requests older than 60 s before handling them; the
+  longer run timeout allows an already-claimed launch to finish.
 - Acks older than 1 h are swept by the app on each poll.
 
 ### Request
@@ -185,5 +195,5 @@ Git detection (in cwd): `git rev-parse --show-toplevel` (worktree root),
 when it ends in `/.git`, else itself), `git rev-parse --abbrev-ref HEAD`
 (`HEAD` → null). Paths normalized to absolute forward-slash form.
 
-Exit codes: 0 ok (incl. schedule left in inbox), 1 app error / not running,
-2 usage error.
+Exit codes: 0 ok (incl. schedule left in inbox), 1 app error / cancelled before
+execution, 2 usage error, 3 timeout with unknown outcome (may already be running).

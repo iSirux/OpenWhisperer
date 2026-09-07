@@ -32,8 +32,12 @@ pub fn resolve_dir(dev: bool) -> Result<PathBuf, String> {
 
 /// Create the inbox directory if it does not exist yet.
 pub fn ensure_dir(dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(dir)
-        .map_err(|err| format!("could not create the inbox directory {}: {err}", dir.display()))
+    fs::create_dir_all(dir).map_err(|err| {
+        format!(
+            "could not create the inbox directory {}: {err}",
+            dir.display()
+        )
+    })
 }
 
 /// Write `<id>.request.json` atomically.
@@ -42,8 +46,7 @@ pub fn write_request(dir: &Path, id: &str, request: &Value) -> Result<PathBuf, S
         .map_err(|err| format!("could not serialize the request: {err}"))?;
     let tmp = dir.join(format!("{id}.tmp"));
     let final_path = dir.join(format!("{id}.request.json"));
-    fs::write(&tmp, &body)
-        .map_err(|err| format!("could not write {}: {err}", tmp.display()))?;
+    fs::write(&tmp, &body).map_err(|err| format!("could not write {}: {err}", tmp.display()))?;
     if let Err(err) = fs::rename(&tmp, &final_path) {
         let _ = fs::remove_file(&tmp);
         return Err(format!(
@@ -56,9 +59,13 @@ pub fn write_request(dir: &Path, id: &str, request: &Value) -> Result<PathBuf, S
 
 /// Delete a request the app never picked up (used when a non-`schedule`
 /// request times out, so a stale command can never fire later).
-pub fn remove_request(dir: &Path, id: &str) {
-    let _ = fs::remove_file(dir.join(format!("{id}.request.json")));
+pub fn remove_request(dir: &Path, id: &str) -> std::io::Result<()> {
+    // The app also removes the request before applying it, and only applies it
+    // if that removal succeeds. Winning this race therefore cancels the request;
+    // NotFound means the app may already be executing it, not that it is closed.
+    let result = fs::remove_file(dir.join(format!("{id}.request.json")));
     let _ = fs::remove_file(dir.join(format!("{id}.tmp")));
+    result
 }
 
 /// Poll for `<id>.ack.json` until `timeout` elapses. The ack file is deleted

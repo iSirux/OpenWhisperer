@@ -132,15 +132,14 @@ struct Cli {
     #[arg(long, global = true, help_heading = "Common options")]
     json: bool,
 
-    /// Seconds to wait for OpenWhisperer to respond
+    /// Seconds to wait for completion (default: 120 for run, 10 otherwise)
     #[arg(
         long,
         value_name = "SECONDS",
-        default_value_t = 10,
         global = true,
         help_heading = "Common options"
     )]
-    timeout: u64,
+    timeout: Option<u64>,
 
     /// Use the development inbox directory (cli-inbox-dev)
     #[arg(long, global = true, help_heading = "Common options")]
@@ -279,7 +278,12 @@ struct TimingArgs {
     max_runs: Option<u32>,
 
     /// What to do about occurrences missed while the app was closed
-    #[arg(long = "catch-up", value_enum, value_name = "MODE", default_value = "run-once")]
+    #[arg(
+        long = "catch-up",
+        value_enum,
+        value_name = "MODE",
+        default_value = "run-once"
+    )]
     catch_up: CatchUp,
 }
 
@@ -305,7 +309,6 @@ impl Effort {
         }
     }
 }
-
 
 #[derive(Copy, Clone, ValueEnum)]
 enum CatchUp {
@@ -359,7 +362,9 @@ enum Payload {
         wait_for_idle: bool,
     },
     #[serde(rename_all = "camelCase")]
-    Cancel { schedule_id: String },
+    Cancel {
+        schedule_id: String,
+    },
     Empty {},
 }
 
@@ -509,7 +514,8 @@ fn send(cli: &Cli, kind: &'static str, cwd: String, payload: Payload) -> ! {
         exit(0);
     }
 
-    match inbox::poll_ack(&dir, &id, Duration::from_secs(cli.timeout)) {
+    let timeout = cli.timeout.unwrap_or(if kind == "run" { 120 } else { 10 });
+    match inbox::poll_ack(&dir, &id, Duration::from_secs(timeout)) {
         Some(ack) => print_ack(cli, kind, &ack),
         None if kind == "schedule" => {
             // Durable: the app applies leftover schedule requests on launch.
@@ -520,12 +526,29 @@ fn send(cli: &Cli, kind: &'static str, cwd: String, payload: Payload) -> ! {
             exit(0);
         }
         None => {
-            inbox::remove_request(&dir, &id);
-            eprintln!(
-                "OpenWhisperer is not running (no response from {}).",
-                dir.display()
-            );
-            exit(1);
+            let removed = inbox::remove_request(&dir, &id);
+            // Completion may have raced the deadline and cancellation attempt.
+            if let Some(ack) = inbox::poll_ack(&dir, &id, Duration::ZERO) {
+                print_ack(cli, kind, &ack);
+            }
+            let cancelled = removed.is_ok();
+            let message = if cancelled {
+                format!("OpenWhisperer did not pick up request {id} within {timeout}s. The request was cancelled before execution. Check that the app is running and responsive.")
+            } else {
+                format!("Timed out waiting for completion of request {id} after {timeout}s. The request may already be running or completed; it was NOT cancelled. Do not retry automatically, as that could duplicate the action. Check the app or the response file {}.", dir.join(format!("{id}.ack.json")).display())
+            };
+            if cli.json {
+                print_json(&serde_json::json!({
+                    "ok": false, "kind": kind, "id": id,
+                    "status": if cancelled { "cancelled" } else { "unknown" },
+                    "error": message,
+                    "ackPath": dir.join(format!("{id}.ack.json")),
+                }));
+            } else {
+                eprintln!("{message}");
+            }
+            // Distinguish an uncertain outcome from a confirmed rejection.
+            exit(if cancelled { 1 } else { 3 });
         }
     }
 }
