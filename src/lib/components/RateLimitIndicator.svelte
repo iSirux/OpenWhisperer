@@ -139,7 +139,6 @@
         {/if}
         {#if data?.five_hour && data.seven_day}<span class="sep">·</span>{/if}
         {#if data?.seven_day}
-          {#if !data.five_hour}<span class="window-label">7d</span>{/if}
           <span class="val" style="color: {p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">
             {Math.round(data.seven_day.utilization)}%
           </span>
@@ -188,7 +187,6 @@
         {/if}
         {#if data.five_hour && data.seven_day}<span class="sep">·</span>{/if}
         {#if data.seven_day}
-          {#if !data.five_hour}<span class="window-label">7d</span>{/if}
           <span class="val" style="color: {p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">
             {Math.round(data.seven_day.utilization)}%
           </span>
