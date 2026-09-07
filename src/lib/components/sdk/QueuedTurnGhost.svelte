@@ -1,23 +1,26 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { sdkSessions, type SdkSession, type SdkImageContent, type SdkMessage } from "$lib/stores/sdkSessions";
+  import { sdkSessions, type SdkSession, type SdkImageContent, type SdkMessage, type RateLimitedState } from "$lib/stores/sdkSessions";
   import { sendTimingLabel, type SendTiming } from "$lib/utils/sendTiming";
   import { formatScheduleTarget } from "$lib/utils/duration";
   import SendTimingIcon from "./SendTimingIcon.svelte";
 
-  // The parked (not-yet-sent) turn. `message` is the flagged ghost bubble pulled
-  // out of the scrolling transcript; actions operate on the session's rateLimited
-  // state (the single source of truth for the deferred turn).
-  let { session, message }: { session: SdkSession; message: SdkMessage } = $props();
+  // `turn` is the parked (not-yet-sent) turn — the source of truth for what will be
+  // sent and when; `message` is its flagged ghost bubble, pulled out of the scrolling
+  // transcript. A session can hold several parked turns, so both are passed in.
+  let {
+    session,
+    turn,
+    message,
+  }: { session: SdkSession; turn: RateLimitedState; message: SdkMessage } = $props();
 
-  // Prefer the flag the turn was parked with; fall back to the rateLimited reason for
+  // Prefer the flag the turn was parked with; fall back to the turn's reason for
   // turns parked before the `queued` flag existed. 'at_time' (native scheduling) has no
   // SendTiming equivalent — it's a custom wall-clock target, handled alongside them here.
   let timing = $derived.by<SendTiming | "at_time">(() => {
     if (message.queued) return message.queued;
-    const rl = session.rateLimited;
-    if (rl?.reason === "scheduled") return "reset_5h";
-    if (rl?.reason === "after_sessions") return rl.scope === "session" ? "session_idle" : "repo_idle";
+    if (turn.reason === "scheduled") return "reset_5h";
+    if (turn.reason === "after_sessions") return turn.scope === "session" ? "session_idle" : "repo_idle";
     return "session_idle";
   });
 
@@ -26,7 +29,7 @@
   const timer = setInterval(() => (now = Date.now()), 1000);
   onDestroy(() => clearInterval(timer));
 
-  let targetMs = $derived(session.rateLimited?.targetStartAt);
+  let targetMs = $derived(turn.targetStartAt);
   let label = $derived(
     timing === "at_time"
       ? targetMs != null
@@ -58,7 +61,7 @@
     if (busy) return;
     busy = true;
     try {
-      await sdkSessions.continueRateLimited(session.id);
+      await sdkSessions.continueRateLimited(session.id, turn.id);
     } catch (err) {
       console.error("[QueuedTurnGhost] Send now failed:", err);
     } finally {
@@ -67,7 +70,7 @@
   }
 
   function handleCancel() {
-    sdkSessions.clearRateLimited(session.id);
+    sdkSessions.clearRateLimited(session.id, turn.id);
   }
 </script>
 

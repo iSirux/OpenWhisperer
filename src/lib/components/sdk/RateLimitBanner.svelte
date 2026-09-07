@@ -1,14 +1,16 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { sdkSessions, type SdkSession } from '$lib/stores/sdkSessions';
+  import { sdkSessions, type SdkSession, type RateLimitedState } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import { formatScheduleTarget } from '$lib/utils/duration';
 
   interface Props {
     session: SdkSession;
+    /** The parked turn this banner represents (a session can hold several). */
+    turn: RateLimitedState;
   }
 
-  let { session }: Props = $props();
+  let { session, turn }: Props = $props();
 
   let busy = $state(false);
   // Local dismiss: hides the banner in this view without cancelling the parked
@@ -23,7 +25,7 @@
   }, 1000);
   onDestroy(() => clearInterval(timer));
 
-  let rl = $derived(session.rateLimited);
+  let rl = $derived(turn);
   let reason = $derived(rl?.reason ?? 'rate_limit');
   // 'after_sessions' waits on just this session or the whole repo+worktree scope.
   let afterSessionsScope = $derived(rl?.scope ?? 'worktree');
@@ -86,7 +88,7 @@
     if (busy) return;
     busy = true;
     try {
-      await sdkSessions.continueRateLimited(session.id);
+      await sdkSessions.continueRateLimited(session.id, turn.id);
     } catch (err) {
       console.error('[RateLimitBanner] Continue failed:', err);
     } finally {
@@ -95,14 +97,14 @@
   }
 
   // The labeled action button. For a scheduled turn "Cancel" truly cancels the
-  // parked send (clears rateLimited + drops the pending bubble). For a rate-limit
+  // parked send (drops the parked turn + its pending bubble). For a rate-limit
   // turn "Dismiss" only hides the banner locally — the driver still auto-continues
   // the rejected turn when the window resets, which is the desired behavior.
   function handleCancel() {
     if (reason === 'rate_limit') {
       dismissed = true;
     } else {
-      sdkSessions.clearRateLimited(session.id);
+      sdkSessions.clearRateLimited(session.id, turn.id);
     }
   }
 

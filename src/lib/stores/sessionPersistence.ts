@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { settings } from './settings';
-import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo, type AskUserQuestionState } from './sdkSessions';
+import { sdkSessions, activeSdkSessionId, newParkedTurnId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo, type AskUserQuestionState, type RateLimitedState } from './sdkSessions';
 import { getProviderForModel, type SdkProvider } from '$lib/utils/models';
 import { repos } from './repos';
 import { panes } from './panes';
@@ -251,6 +251,10 @@ export interface PersistedSdkMessage {
   taskStatus?: string;
   summary?: string;
   taskUsage?: { total_tokens: number; tool_uses: number; duration_ms: number };
+  /** Deferred-send marker on a parked ghost turn (see SdkMessage.queued) */
+  queued?: string | null;
+  /** Id of the parked turn this ghost bubble belongs to */
+  queuedTurnId?: string | null;
   timestamp: number;
 }
 
@@ -322,6 +326,10 @@ export interface PersistedSdkSession {
   askUserQuestion?: AskUserQuestionState;
   pinned?: boolean;
   pinnedAt?: number | null;
+  /** Pending turns parked on a live session, oldest first */
+  parkedTurns?: RateLimitedState[];
+  /** @deprecated Legacy single parked turn — migrated into parkedTurns on load */
+  rateLimited?: RateLimitedState | null;
 }
 
 export interface PersistedSessions {
@@ -395,6 +403,8 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
     session.messages = persisted.messages.map(msg => ({
       ...msg,
       type: msg.type as SdkMessage['type'],
+      queued: (msg.queued ?? undefined) as SdkMessage['queued'],
+      queuedTurnId: msg.queuedTurnId ?? undefined,
       // Cast images mediaType back to the union type
       images: msg.images?.map(img => ({
         ...img,
@@ -402,6 +412,20 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
       })),
     }));
   }
+
+  // Parked turns: normalize the array and migrate the legacy single `rateLimited`
+  // slot (one turn per session) into it. Turns persisted before ids existed get one
+  // now, so every action can target a specific turn.
+  const legacyRateLimited = (persisted as { rateLimited?: RateLimitedState | null }).rateLimited;
+  const parked = Array.isArray(session.parkedTurns)
+    ? session.parkedTurns
+    : legacyRateLimited
+      ? [legacyRateLimited]
+      : [];
+  session.parkedTurns = parked.length
+    ? parked.map(turn => ({ ...turn, id: turn.id || newParkedTurnId() }))
+    : undefined;
+  delete (session as { rateLimited?: unknown }).rateLimited;
 
   if (typeof session.draftPrompt !== 'string') {
     session.draftPrompt = undefined;

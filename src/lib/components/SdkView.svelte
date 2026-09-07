@@ -2,11 +2,15 @@
   import { onMount, onDestroy, tick } from "svelte";
   import {
     sdkSessions,
+    parkedTurnsOf,
+    primaryParkedTurn,
+    findParkedGhostMessage,
     type SdkMessage,
     type SdkSession,
     type SdkImageContent,
     type EffortLevel,
     type PlanningAnswer,
+    type RateLimitedState,
   } from "$lib/stores/sdkSessions";
   import {
     recording,
@@ -101,19 +105,26 @@
   // "ghost" bubble at the bottom instead — so pull it out of the scrolling flow. It
   // can be buried mid-array when the still-running turn keeps appending, so we find
   // it by flag (findLast, to match the latest parked turn) rather than by position.
-  let ghostMessage = $derived.by(() => {
-    const rl = session?.rateLimited;
-    // Only deliberately-parked turns (not a real mid-run rate-limit rejection) render
-    // as a ghost; the latter keeps the top banner.
-    if (!rl || rl.reason === "rate_limit") return undefined;
-    const flagged = messages.findLast((m) => m.queued);
-    if (flagged) return flagged;
-    // Legacy fallback: turns parked before the `queued` flag existed have no flag, so
-    // match the trailing user bubble against the parked prompt (as clearRateLimited does).
-    const last = messages[messages.length - 1];
-    return last && last.type === "user" && last.content === rl.prompt ? last : undefined;
+  // Several turns can be parked at once; each gets its own ghost, oldest first.
+  let ghosts = $derived.by(() => {
+    const pairs: { turn: RateLimitedState; message: SdkMessage }[] = [];
+    if (!session) return pairs;
+    for (const turn of parkedTurnsOf(session)) {
+      // Only deliberately-parked turns (not a real mid-run rate-limit rejection) render
+      // as a ghost; the latter keeps the top banner.
+      if (turn.reason === "rate_limit") continue;
+      const message = findParkedGhostMessage(messages, turn);
+      // Never pair one bubble with two turns (possible only for legacy unpaired ghosts).
+      if (message && !pairs.some((p) => p.message === message)) pairs.push({ turn, message });
+    }
+    return pairs;
   });
-  let visibleMessages = $derived(ghostMessage ? messages.filter((m) => m !== ghostMessage) : messages);
+  let ghostMessages = $derived(new Set(ghosts.map((g) => g.message)));
+  // A turn rejected mid-run by a rate limit keeps the top banner instead of a ghost.
+  let rateLimitTurn = $derived(session ? primaryParkedTurn(session, "rate_limit") : undefined);
+  let visibleMessages = $derived(
+    ghostMessages.size > 0 ? messages.filter((m) => !ghostMessages.has(m)) : messages,
+  );
   let processedMessages = $derived(processSdkMessages(visibleMessages));
   let renderItems = $derived(
     buildRenderItems(processedMessages, $settings.tool_display_mode === "grid"),
@@ -1728,10 +1739,12 @@
         : "Queued — rate limited",
   );
 
-  // Only offer "send on next reset" for a live/active session that can take a
-  // follow-up turn (has history and isn't querying).
+  // Offer the schedule menu for any live session that can take a follow-up turn
+  // (has history). A running query is included on purpose: scheduling a turn while
+  // the agent is working is the main reason to defer it in the first place.
   let canScheduleSend = $derived(
-    (status === "idle" || status === "done") && messages.length > 0,
+    (status === "idle" || status === "done" || status === "querying") &&
+      messages.length > 0,
   );
 
   function handleRunQueuedNow() {
@@ -1975,8 +1988,8 @@
   <!-- Deliberately-parked turns ("send when idle" / "at next reset") render as a
        ghost bubble pinned at the bottom of the transcript; the top banner is kept
        only for a real turn rejected mid-run by a rate limit. -->
-  {#if session?.rateLimited && session.rateLimited.reason === 'rate_limit'}
-    <RateLimitBanner session={session} />
+  {#if session && rateLimitTurn}
+    <RateLimitBanner session={session} turn={rateLimitTurn} />
   {/if}
 
   {#if hasUsageData && usage}
@@ -2232,10 +2245,12 @@
         />
       {/if}
 
-      <!-- Parked ("send when idle" / "at next reset") turn, pinned at the bottom so
-           it doesn't get buried by the still-running turn's streaming. -->
-      {#if ghostMessage && session}
-        <QueuedTurnGhost {session} message={ghostMessage} />
+      <!-- Parked ("send when idle" / "at next reset") turns, pinned at the bottom so
+           they don't get buried by the still-running turn's streaming. -->
+      {#if session}
+        {#each ghosts as ghost (ghost.turn.id)}
+          <QueuedTurnGhost {session} turn={ghost.turn} message={ghost.message} />
+        {/each}
       {/if}
 
     </div>

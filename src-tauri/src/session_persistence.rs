@@ -95,6 +95,13 @@ pub struct PersistedSdkMessage {
     /// Task usage statistics (opaque JSON: { total_tokens, tool_uses, duration_ms })
     #[serde(default)]
     pub task_usage: Option<serde_json::Value>,
+    /// Deferred-send marker on a parked ghost turn that hasn't been sent yet
+    /// ("session_idle" | "repo_idle" | "reset_5h" | "at_time")
+    #[serde(default)]
+    pub queued: Option<String>,
+    /// Id of the parked turn this ghost bubble belongs to
+    #[serde(default)]
+    pub queued_turn_id: Option<String>,
     pub timestamp: u64,
 }
 
@@ -271,9 +278,14 @@ pub struct PersistedSdkSession {
     /// Smart queue info for a queued session (opaque JSON: reason/provider/window/queuedAt/targetStartAt)
     #[serde(default)]
     pub queue_info: Option<serde_json::Value>,
-    /// Rate-limited / scheduled pending-turn state for a live session (opaque JSON)
+    /// Legacy single rate-limited / scheduled pending turn (opaque JSON). Read-only:
+    /// the frontend migrates it into `parked_turns` on load and stops writing it.
     #[serde(default)]
     pub rate_limited: Option<serde_json::Value>,
+    /// Pending turns parked on a live session — rate-limited, deferred or scheduled —
+    /// oldest first (opaque JSON array, frontend-owned schema)
+    #[serde(default)]
+    pub parked_turns: Option<serde_json::Value>,
     /// Source-schedule tag for sessions launched by a native schedule — drives the
     /// restart-surviving schedule badge (opaque JSON, frontend-owned schema)
     #[serde(default)]

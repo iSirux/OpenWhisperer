@@ -14,7 +14,7 @@
 //
 // Two waiting shapes, one driver:
 //   - `status: 'queued'`  → a never-launched session, dispatched via `launchPrepared`.
-//   - `rateLimited != null` → a live session with a pending turn to re-send, dispatched
+//   - `parkedTurns[]`      → a live session's pending turns to send, each dispatched
 //                              via `continueRateLimited` (covers mid-run rejection,
 //                              deferred follow-ups, and scheduled turns).
 //
@@ -26,7 +26,7 @@
 // =============================================================================
 
 import { derived, get, writable } from 'svelte/store';
-import { sdkSessions, hasBusySessionsInScope, type AfterSessionsScope, type QueueReason, type SdkSession } from './sdkSessions';
+import { sdkSessions, hasBusySessionsInScope, parkedTurnsOf, type AfterSessionsScope, type QueueReason, type SdkSession } from './sdkSessions';
 import { rateLimitData, codexRateLimitData, type ProviderRateLimits } from './rateLimits';
 import { providerExhaustion } from './queueDetection';
 import { settings } from './settings';
@@ -39,9 +39,11 @@ const PROVIDERS: SdkProvider[] = ['claude', 'openai'];
 /** Time-based tick so scheduled items fire without needing a rate-limit change. */
 const TICK_MS = 30_000;
 
-/** A session waiting to be dispatched, normalized from its `queued`/`rateLimited` shape. */
+/** A waiting item, normalized from a session's `queued` status or one of its parked turns. */
 interface PendingItem {
   id: string;
+  /** For a `rateLimited` item: which parked turn on that session this is. */
+  turnId?: string;
   provider: SdkProvider;
   /** The session's agent account (undefined/`default-*` = machine-default login). */
   accountId?: string;
@@ -94,43 +96,55 @@ function rateLimitStoreValue(provider: SdkProvider): ProviderRateLimits | null {
   return provider === 'openai' ? get(codexRateLimitData) : get(rateLimitData);
 }
 
-/** Normalize a session into a pending item, or null if it isn't waiting. */
-function toPendingItem(session: SdkSession): PendingItem | null {
+/**
+ * Normalize a session into its pending items (possibly several: a session can hold
+ * more than one parked turn, each with its own trigger). Empty if it isn't waiting.
+ */
+function toPendingItems(session: SdkSession): PendingItem[] {
   const provider = providerOf(session);
   if (session.status === 'queued' && session.queueInfo) {
-    return {
-      id: session.id,
-      provider,
-      accountId: session.accountId,
-      reason: session.queueInfo.reason,
-      kind: 'queued',
-      queuedAt: session.queueInfo.queuedAt ?? session.createdAt ?? 0,
-      targetStartAt: session.queueInfo.targetStartAt,
-      cwd: session.cwd,
-    };
+    return [
+      {
+        id: session.id,
+        provider,
+        accountId: session.accountId,
+        reason: session.queueInfo.reason,
+        kind: 'queued',
+        queuedAt: session.queueInfo.queuedAt ?? session.createdAt ?? 0,
+        targetStartAt: session.queueInfo.targetStartAt,
+        cwd: session.cwd,
+      },
+    ];
   }
-  if (session.rateLimited) {
-    return {
-      id: session.id,
-      provider,
-      accountId: session.accountId,
-      reason: session.rateLimited.reason,
-      kind: 'rateLimited',
-      queuedAt: session.rateLimited.queuedAt ?? session.lastActivityAt ?? 0,
-      targetStartAt: session.rateLimited.targetStartAt ?? session.rateLimited.resetsAt,
-      cwd: session.cwd,
-      scope: session.rateLimited.scope,
-    };
-  }
-  return null;
+  return parkedTurnsOf(session).map((turn) => ({
+    id: session.id,
+    turnId: turn.id,
+    provider,
+    accountId: session.accountId,
+    reason: turn.reason,
+    kind: 'rateLimited' as const,
+    queuedAt: turn.queuedAt ?? session.lastActivityAt ?? 0,
+    targetStartAt: turn.targetStartAt ?? turn.resetsAt,
+    cwd: session.cwd,
+    scope: turn.scope,
+  }));
+}
+
+/** Re-read a single item's live state, or null if it's gone (dispatched/cancelled). */
+function refreshPendingItem(sessions: SdkSession[], item: PendingItem): PendingItem | null {
+  const session = sessions.find((s) => s.id === item.id);
+  if (!session) return null;
+  const items = toPendingItems(session);
+  return items.find((i) => i.turnId === item.turnId && i.kind === item.kind) ?? null;
 }
 
 /** All pending items belonging to `provider`, unordered. */
 function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider): PendingItem[] {
   const items: PendingItem[] = [];
   for (const session of sessions) {
-    const item = toPendingItem(session);
-    if (item && item.provider === provider) items.push(item);
+    for (const item of toPendingItems(session)) {
+      if (item.provider === provider) items.push(item);
+    }
   }
   return items;
 }
@@ -155,9 +169,18 @@ function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider):
  *   (same cwd) is actively working. A never-launched `queued` item excludes itself
  *   from the scope check (it isn't running); a parked follow-up turn does NOT — its
  *   own session may still be mid-query, and the turn should fire only after it finishes.
+ *
+ * Across ALL reasons, a parked turn additionally waits for its own session to go idle:
+ * dispatching into a running query would interrupt the agent mid-work, which is never
+ * what "send this later" meant (and matches how native message schedules behave).
  */
 function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolean {
   const exhausted = providerExhaustion(item.provider, item.accountId).exhausted;
+
+  if (item.kind === 'rateLimited') {
+    const own = sessions.find((s) => s.id === item.id);
+    if (!own || own.status === 'querying' || own.status === 'initializing') return false;
+  }
 
   if (item.reason === 'rate_limit') {
     if (rateLimitStoreValue(item.provider) == null) return false; // limit state unknown yet
@@ -166,10 +189,8 @@ function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolea
 
   if (item.reason === 'after_sessions') {
     if (exhausted) return false; // it would only get re-rejected — hold and roll forward
-    if (item.kind === 'rateLimited' && item.scope === 'session') {
-      const own = sessions.find((s) => s.id === item.id);
-      return !!own && own.status !== 'querying' && own.status !== 'initializing';
-    }
+    // Scope 'session' is fully covered by the own-session idle check above.
+    if (item.kind === 'rateLimited' && item.scope === 'session') return true;
     const excludeId = item.kind === 'queued' ? item.id : undefined;
     return !item.cwd || !hasBusySessionsInScope(sessions, item.cwd, excludeId);
   }
@@ -254,14 +275,13 @@ async function drain(provider: SdkProvider): Promise<void> {
         }
       }
 
-      // Re-read the session — it may have been removed, launched, or re-exhausted
-      // while we were waiting (this is the graceful roll-forward on re-rejection).
-      // For after_sessions items this re-check also serializes same-scope items:
-      // dispatching one makes the scope busy, so the next waits for it to finish.
+      // Re-read the item — its session may have been removed, launched, or re-exhausted
+      // while we were waiting (this is the graceful roll-forward on re-rejection), and
+      // the turn itself may have been cancelled. For after_sessions items this re-check
+      // also serializes same-scope items: dispatching one makes the scope busy, so the
+      // next waits for it to finish.
       const freshSessions = get(sdkSessions);
-      const current = freshSessions.find((s) => s.id === item.id);
-      if (!current) continue;
-      const fresh = toPendingItem(current);
+      const fresh = refreshPendingItem(freshSessions, item);
       if (!fresh || fresh.provider !== provider) continue;
       if (!isReady(fresh, Date.now(), freshSessions)) continue;
 
@@ -281,7 +301,7 @@ async function drain(provider: SdkProvider): Promise<void> {
         if (fresh.kind === 'queued') {
           await sdkSessions.launchPrepared(item.id);
         } else {
-          await sdkSessions.continueRateLimited(item.id);
+          await sdkSessions.continueRateLimited(item.id, item.turnId);
         }
       } catch (err) {
         // One bad dispatch must not abort the rest of the drain.
@@ -372,10 +392,10 @@ export function startSmartQueue(): () => void {
 // Derived stores for the UI
 // -----------------------------------------------------------------------------
 
-/** Number of sessions currently waiting (queued first-launches + rate-limited turns). */
+/** Number of waiting items (queued first-launches + every parked turn). */
 export const queuedCount = derived(sdkSessions, ($sessions) =>
   $sessions.reduce(
-    (count, s) => count + (s.status === 'queued' || s.rateLimited != null ? 1 : 0),
+    (count, s) => count + (s.status === 'queued' ? 1 : 0) + parkedTurnsOf(s).length,
     0
   )
 );
@@ -390,21 +410,22 @@ export const nextQueueResetAt = derived(sdkSessions, ($sessions) => {
   let earliestFuture: number | undefined;
   let earliestAny: number | undefined;
 
-  for (const s of $sessions) {
-    let target: number | undefined;
-    if (s.status === 'queued' && s.queueInfo) {
-      target = s.queueInfo.targetStartAt;
-    } else if (s.rateLimited) {
-      // `targetStartAt` first (same precedence as `toPendingItem` and RateLimitBanner):
-      // it's what the driver actually fires on, and a custom-time schedule has no `resetsAt`.
-      target = s.rateLimited.targetStartAt ?? s.rateLimited.resetsAt;
-    }
-    if (target == null) continue;
-
+  const consider = (target: number | undefined) => {
+    if (target == null) return;
     if (earliestAny == null || target < earliestAny) earliestAny = target;
     if (target >= now && (earliestFuture == null || target < earliestFuture)) {
       earliestFuture = target;
     }
+  };
+
+  for (const s of $sessions) {
+    if (s.status === 'queued' && s.queueInfo) {
+      consider(s.queueInfo.targetStartAt);
+      continue;
+    }
+    // `targetStartAt` first (same precedence as `toPendingItems` and RateLimitBanner):
+    // it's what the driver actually fires on, and a custom-time schedule has no `resetsAt`.
+    for (const turn of parkedTurnsOf(s)) consider(turn.targetStartAt ?? turn.resetsAt);
   }
 
   return earliestFuture ?? earliestAny;

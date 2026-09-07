@@ -398,13 +398,12 @@
   // disabled when it can't be acted on rather than hidden.
   let showScheduleCaret = $derived(showScheduleSend && !!onScheduleSend);
   // The dropdown can only be acted on for a live session that can take a
-  // follow-up turn: not while querying/recording, and only with a draft.
+  // follow-up turn, and only with a draft. A running query is deliberately NOT a
+  // blocker — deferring a turn while the agent works ("when this session is idle",
+  // "at 09:00") is exactly when scheduling is most useful, and it matches the Send
+  // button, which stays enabled mid-query.
   let canScheduleSend = $derived(
-    showScheduleCaret &&
-      !isQuerying &&
-      !isRecording &&
-      !isTranscribing &&
-      hasDraft,
+    showScheduleCaret && !isRecording && !isTranscribing && hasDraft,
   );
 
   $effect(() => {

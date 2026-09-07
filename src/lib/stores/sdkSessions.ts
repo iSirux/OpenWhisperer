@@ -177,6 +177,8 @@ export interface SdkMessage {
    * (`continueRateLimited`) or removed entirely on cancel (`clearRateLimited`).
    */
   queued?: 'session_idle' | 'repo_idle' | 'reset_5h' | 'at_time';
+  /** `RateLimitedState.id` of the parked turn this ghost bubble belongs to (several can be parked at once). */
+  queuedTurnId?: string;
   timestamp: number;
 }
 
@@ -431,6 +433,14 @@ export interface QueueInfo {
  * user to fire on the next window reset. Holds the exact prompt/images to re-send later.
  */
 export interface RateLimitedState {
+  /**
+   * Stable id of this parked turn. A session can hold several at once (e.g. a turn
+   * scheduled for 09:00 plus a turn rejected mid-run by a rate limit), so every
+   * action — dispatch, cancel, ghost-bubble pairing — targets a turn by id.
+   * Optional only for turns persisted before the multi-turn queue existed; those
+   * are given an id on load.
+   */
+  id: string;
   reason: QueueReason;
   provider: SdkProvider;
   window?: QueueWindow;
@@ -448,6 +458,45 @@ export interface RateLimitedState {
    */
   action?: 'compact';
   queuedAt: number;
+}
+
+/** Mint an id for a newly parked turn. */
+export function newParkedTurnId(): string {
+  return `pt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Every turn parked on a session, oldest first. Never null — safe to iterate. */
+export function parkedTurnsOf(session: { parkedTurns?: RateLimitedState[] | null }): RateLimitedState[] {
+  return session.parkedTurns ?? [];
+}
+
+/**
+ * The turn a single-slot UI acts on when no specific turn is named: the oldest
+ * parked one (FIFO), optionally filtered by reason.
+ */
+export function primaryParkedTurn(
+  session: { parkedTurns?: RateLimitedState[] | null },
+  reason?: QueueReason
+): RateLimitedState | undefined {
+  const turns = parkedTurnsOf(session);
+  return reason ? turns.find(t => t.reason === reason) : turns[0];
+}
+
+/**
+ * The transcript bubble standing in for a parked turn (rendered as a pinned "ghost"
+ * instead of inline). Paired by id; falls back to an unpaired flagged bubble and then
+ * to a trailing prompt match for turns parked before those markers existed.
+ */
+export function findParkedGhostMessage(
+  messages: SdkMessage[],
+  turn: RateLimitedState
+): SdkMessage | undefined {
+  const byId = messages.findLast(m => m.queued && m.queuedTurnId === turn.id);
+  if (byId) return byId;
+  const unpaired = messages.findLast(m => m.queued && !m.queuedTurnId);
+  if (unpaired) return unpaired;
+  const last = messages[messages.length - 1];
+  return last && last.type === 'user' && last.content === turn.prompt ? last : undefined;
 }
 
 /** Normalize a filesystem path for equality checks (Windows-tolerant: slashes + case). */
@@ -480,12 +529,12 @@ export function hasBusySessionsInScope(sessions: SdkSession[], cwd: string, excl
  * we also relocate it to the end (with a fresh timestamp) so it lands at the bottom where
  * the user last saw it instead of snapping back to its original scheduled slot.
  */
-function releaseQueuedToEnd(messages: SdkMessage[]): SdkMessage[] {
-  if (!messages.some(m => m.queued)) return messages;
+function releaseQueuedToEnd(messages: SdkMessage[], turn: RateLimitedState): SdkMessage[] {
+  const ghost = findParkedGhostMessage(messages, turn);
+  if (!ghost || !ghost.queued) return messages;
   const now = Date.now();
-  const rest = messages.filter(m => !m.queued);
-  const released = messages.filter(m => m.queued).map(m => ({ ...m, queued: undefined, timestamp: now }));
-  return [...rest, ...released];
+  const rest = messages.filter(m => m !== ghost);
+  return [...rest, { ...ghost, queued: undefined, queuedTurnId: undefined, timestamp: now }];
 }
 
 /** Summary of the PR detected for a session's branch (badges in header/list).
@@ -590,8 +639,13 @@ export interface SdkSession {
   preparedRepoRecommendation?: { recommendedIndex: number | null; reasoning: string; confidence: string };
   /** Smart Queue: set on a `status: 'queued'` session (rate-limited first-launch or a scheduled launch). Persisted. */
   queueInfo?: QueueInfo | null;
-  /** Smart Queue: a pending turn on a live session waiting to be re-sent (mid-run rejection or deferred follow-up). Persisted. */
-  rateLimited?: RateLimitedState | null;
+  /**
+   * Smart Queue: pending turns on a live session waiting to be sent (mid-run rejection,
+   * deferred follow-up, or a scheduled send), oldest first. A session can hold several —
+   * they are dispatched one at a time, and only while the session is idle. Persisted.
+   * Replaces the single `rateLimited` slot (migrated on load).
+   */
+  parkedTurns?: RateLimitedState[];
   /** Smart Queue (transient, not persisted): the exact prompt of the turn currently in flight, so a mid-run rejection can recover it. */
   inFlightPrompt?: string | null;
   /** Smart Queue (transient, not persisted): the images of the turn currently in flight. */
@@ -1693,7 +1747,7 @@ function createSdkSessionsStore() {
 
     // Mid-run rate-limit rejection events (Smart Queue). The SDK signalled that the
     // provider's usage window is exhausted; instead of erroring, keep the session alive and
-    // stash the in-flight turn in `rateLimited` so it can be re-sent when the window resets.
+    // stash the in-flight turn in `parkedTurns` so it can be re-sent when the window resets.
     unlisteners.push(
       await listen<{ status: string; resetsAt: number | null; utilization: number | null }>(`sdk-rate-limit-${id}`, (e) => {
         if (e.payload.status !== 'rejected') return;
@@ -1725,15 +1779,21 @@ function createSdkSessionsStore() {
               ...workPeriod,
               usage: clearProgressiveUsage(s.usage),
               messages: closedThinkingMessages,
-              rateLimited: {
-                reason: 'rate_limit' as const,
-                provider,
-                window: exhaustion.window,
-                resetsAt: resetsAt ?? undefined,
-                prompt: s.inFlightPrompt ?? lastUserMsg?.content ?? '',
-                images: s.inFlightImages ?? undefined,
-                queuedAt: now,
-              },
+              // Appended, never overwriting: the user may already have parked a
+              // scheduled turn on this session while it was running.
+              parkedTurns: [
+                ...parkedTurnsOf(s),
+                {
+                  id: newParkedTurnId(),
+                  reason: 'rate_limit' as const,
+                  provider,
+                  window: exhaustion.window,
+                  resetsAt: resetsAt ?? undefined,
+                  prompt: s.inFlightPrompt ?? lastUserMsg?.content ?? '',
+                  images: s.inFlightImages ?? undefined,
+                  queuedAt: now,
+                },
+              ],
               inFlightPrompt: null,
               inFlightImages: null,
             };
@@ -2751,7 +2811,7 @@ function createSdkSessionsStore() {
 
       // Smart Queue (follow-up gate): if the provider's usage window is exhausted, don't dispatch.
       // The user message stays in the transcript so the queued turn is visible; the turn itself is
-      // parked in `rateLimited` and re-sent later by the driver (or manually via "Continue now").
+      // parked in `parkedTurns` and re-sent later by the driver (or manually via "Continue now").
       // A prompt sent while the agent is already querying is stream-injected into that accepted
       // turn. Never replace the live status with a rate-limit banner based only on a usage snapshot.
       if (!sessionWasQuerying && shouldQueue(sessionProvider, sessionAccountId)) {
@@ -2762,15 +2822,19 @@ function createSdkSessionsStore() {
               ? {
                   ...s,
                   status: 'idle' as const,
-                  rateLimited: {
-                    reason: 'rate_limit' as const,
-                    provider: sessionProvider,
-                    window: rlWindow,
-                    resetsAt,
-                    prompt: finalPrompt,
-                    images: images ?? undefined,
-                    queuedAt: Date.now(),
-                  },
+                  parkedTurns: [
+                    ...parkedTurnsOf(s),
+                    {
+                      id: newParkedTurnId(),
+                      reason: 'rate_limit' as const,
+                      provider: sessionProvider,
+                      window: rlWindow,
+                      resetsAt,
+                      prompt: finalPrompt,
+                      images: images ?? undefined,
+                      queuedAt: Date.now(),
+                    },
+                  ],
                 }
               : s
           )
@@ -3703,7 +3767,7 @@ function createSdkSessionsStore() {
      * Smart Queue ("Send on next reset"): from a live/active session, queue a follow-up turn to
      * fire on the next 5h/7d window reset instead of sending it now. Pushes the user message to the
      * transcript (so the queued turn is visible, like a normal send) but does NOT invoke the backend;
-     * the turn is parked in `rateLimited` with reason 'scheduled'. The driver re-sends it at the
+     * the turn is parked in `parkedTurns` with reason 'scheduled'. The driver re-sends it at the
      * window boundary via `continueRateLimited` (which is prompt-agnostic and handles it unchanged).
      */
     async queueTurnForWindow(id: string, prompt: string, images: SdkImageContent[] | undefined, window: QueueWindow, action?: 'compact'): Promise<void> {
@@ -3714,29 +3778,36 @@ function createSdkSessionsStore() {
       const provider = session.provider ?? getProviderForModel(session.model);
       const targetStartAt = nextWindowResetAt(provider, window, session.accountId);
       const now = Date.now();
+      const turnId = newParkedTurnId();
 
       update(sessions =>
         sessions.map(s =>
           s.id === id
             ? {
                 ...s,
-                // Keep the session out of an active/error state — the turn is deferred, not running.
-                status: s.status === 'querying' ? ('idle' as const) : s.status,
+                // Status is deliberately left untouched: parking a turn says nothing about
+                // the session's current query. Forcing 'idle' while one is actually running
+                // would hide the stream in the UI and make the session look free to the
+                // 'after_sessions' scope check, firing sibling turns early.
                 lastActivityAt: now,
-                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: 'reset_5h' as const, timestamp: now }],
+                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: 'reset_5h' as const, queuedTurnId: turnId, timestamp: now }],
                 draftPrompt: undefined,
                 draftImages: undefined,
-                rateLimited: {
-                  reason: 'scheduled' as const,
-                  provider,
-                  window,
-                  targetStartAt,
-                  resetsAt: targetStartAt,
-                  prompt,
-                  images,
-                  action,
-                  queuedAt: now,
-                },
+                parkedTurns: [
+                  ...parkedTurnsOf(s),
+                  {
+                    id: turnId,
+                    reason: 'scheduled' as const,
+                    provider,
+                    window,
+                    targetStartAt,
+                    resetsAt: targetStartAt,
+                    prompt,
+                    images,
+                    action,
+                    queuedAt: now,
+                  },
+                ],
               }
             : s
         )
@@ -3747,7 +3818,7 @@ function createSdkSessionsStore() {
     /**
      * Native scheduling ("Send at a time…"): from a live/active session, park a follow-up turn
      * until an arbitrary wall-clock instant instead of a usage-window boundary. Identical
-     * bookkeeping to queueTurnForWindow — the turn is parked in `rateLimited` with reason
+     * bookkeeping to queueTurnForWindow — the turn is parked in `parkedTurns` with reason
      * 'scheduled' and the ghost user message is pushed to the transcript — except that the
      * target is the caller's `at` with NO `resetsAt` and NO `window` (there is no usage window
      * involved). The Smart Queue's `scheduled` branch fires it via `continueRateLimited` once
@@ -3760,27 +3831,31 @@ function createSdkSessionsStore() {
 
       const provider = session.provider ?? getProviderForModel(session.model);
       const now = Date.now();
+      const turnId = newParkedTurnId();
 
       update(sessions =>
         sessions.map(s =>
           s.id === id
             ? {
                 ...s,
-                // Keep the session out of an active/error state — the turn is deferred, not running.
-                status: s.status === 'querying' ? ('idle' as const) : s.status,
+                // Status left untouched — see queueTurnForWindow.
                 lastActivityAt: now,
-                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: 'at_time' as const, timestamp: now }],
+                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: 'at_time' as const, queuedTurnId: turnId, timestamp: now }],
                 draftPrompt: undefined,
                 draftImages: undefined,
-                rateLimited: {
-                  reason: 'scheduled' as const,
-                  provider,
-                  targetStartAt: at,
-                  prompt,
-                  images,
-                  action,
-                  queuedAt: now,
-                },
+                parkedTurns: [
+                  ...parkedTurnsOf(s),
+                  {
+                    id: turnId,
+                    reason: 'scheduled' as const,
+                    provider,
+                    targetStartAt: at,
+                    prompt,
+                    images,
+                    action,
+                    queuedAt: now,
+                  },
+                ],
               }
             : s
         )
@@ -3802,8 +3877,11 @@ function createSdkSessionsStore() {
       const session = sessions.find(s => s.id === id);
       if (!session) return;
 
-      // Nothing to wait for (own session included) — run immediately.
+      // Nothing to wait for (own session included) — run immediately. Turns already
+      // parked on this session count as something to wait for: sending now would
+      // jump the queue and land out of order.
       if (
+        parkedTurnsOf(session).length === 0 &&
         (scope === 'session' || !hasBusySessionsInScope(sessions, session.cwd, id)) &&
         session.status !== 'querying' &&
         session.status !== 'initializing'
@@ -3815,24 +3893,29 @@ function createSdkSessionsStore() {
 
       const provider = session.provider ?? getProviderForModel(session.model);
       const now = Date.now();
+      const turnId = newParkedTurnId();
       update(list =>
         list.map(s =>
           s.id === id
             ? {
                 ...s,
                 lastActivityAt: now,
-                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: scope === 'session' ? ('session_idle' as const) : ('repo_idle' as const), timestamp: now }],
+                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: scope === 'session' ? ('session_idle' as const) : ('repo_idle' as const), queuedTurnId: turnId, timestamp: now }],
                 draftPrompt: undefined,
                 draftImages: undefined,
-                rateLimited: {
-                  reason: 'after_sessions' as const,
-                  provider,
-                  scope,
-                  prompt,
-                  images,
-                  action,
-                  queuedAt: now,
-                },
+                parkedTurns: [
+                  ...parkedTurnsOf(s),
+                  {
+                    id: turnId,
+                    reason: 'after_sessions' as const,
+                    provider,
+                    scope,
+                    prompt,
+                    images,
+                    action,
+                    queuedAt: now,
+                  },
+                ],
               }
             : s
         )
@@ -3841,16 +3924,22 @@ function createSdkSessionsStore() {
     },
 
     /**
-     * Smart Queue: re-send a `rateLimited` pending turn WITHOUT duplicating the user message
+     * Smart Queue: send a parked pending turn WITHOUT duplicating the user message
      * (it's already in the transcript). Used by the "Continue now" button and the drain driver.
+     * `turnId` picks one of possibly several parked turns; omitted = the oldest.
      * Re-stashes the in-flight turn so a fresh mid-run rejection can recover it. If the provider
-     * is still exhausted, the query will be rejected again and re-parked in `rateLimited`.
+     * is still exhausted, the query will be rejected again and re-parked as a rate-limit turn.
      */
-    async continueRateLimited(id: string): Promise<void> {
+    async continueRateLimited(id: string, turnId?: string): Promise<void> {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
-      if (!session || !session.rateLimited) return;
-      const rl = session.rateLimited;
+      if (!session) return;
+      const rl = turnId
+        ? parkedTurnsOf(session).find(t => t.id === turnId)
+        : primaryParkedTurn(session);
+      if (!rl) return;
+      /** Drop just this turn from the session's parked queue, leaving the others. */
+      const withoutTurn = (s: SdkSession) => parkedTurnsOf(s).filter(t => t.id !== rl.id);
 
       await this.ensureSessionLive(id);
 
@@ -3863,8 +3952,8 @@ function createSdkSessionsStore() {
             s.id === id
               ? {
                   ...s,
-                  rateLimited: null,
-                  messages: releaseQueuedToEnd(s.messages),
+                  parkedTurns: withoutTurn(s),
+                  messages: releaseQueuedToEnd(s.messages, rl),
                 }
               : s
           )
@@ -3913,7 +4002,7 @@ function createSdkSessionsStore() {
                 ...s,
                 status: 'querying' as const,
                 lastActivityAt: Date.now(),
-                rateLimited: null,
+                parkedTurns: withoutTurn(s),
                 // The parked ghost turn is now sending — drop the queued flag AND
                 // move it to the end with a fresh timestamp. While parked it was
                 // pinned to the bottom of the transcript, but in the array it can be
@@ -3921,7 +4010,7 @@ function createSdkSessionsStore() {
                 // while the scope stayed busy). buildRenderItems orders by array
                 // position, so re-appending keeps it at the bottom where the user
                 // last saw it instead of snapping back to its original slot.
-                messages: releaseQueuedToEnd(s.messages),
+                messages: releaseQueuedToEnd(s.messages, rl),
                 inFlightPrompt: rl.prompt,
                 inFlightImages: rl.images ?? null,
               }
@@ -3944,34 +4033,29 @@ function createSdkSessionsStore() {
     },
 
     /**
-     * Smart Queue: cancel a parked `rateLimited` pending turn.
+     * Smart Queue: cancel a parked pending turn. `turnId` picks one of possibly several;
+     * omitted = the oldest.
      * - For a user-deferred turn (`reason === 'scheduled'` or `'after_sessions'`), the user
-     *   message was pushed but never sent — remove it, but ONLY when it's the trailing message
-     *   AND its text matches the cleared prompt (so a real turn is never deleted).
+     *   message was pushed but never sent — remove its ghost bubble (paired by turn id, with
+     *   the legacy trailing prompt-match fallback, so a real turn is never deleted).
      * - For a rate-limit turn (`reason === 'rate_limit'`, a real turn that got rejected mid-run),
-     *   leave the transcript untouched — just clear `rateLimited`.
+     *   leave the transcript untouched — just drop the parked turn.
      */
-    clearRateLimited(id: string): void {
+    clearRateLimited(id: string, turnId?: string): void {
       update(sessions =>
         sessions.map(s => {
-          if (s.id !== id || !s.rateLimited) return s;
-          const rl = s.rateLimited;
+          if (s.id !== id) return s;
+          const rl = turnId ? parkedTurnsOf(s).find(t => t.id === turnId) : primaryParkedTurn(s);
+          if (!rl) return s;
           let messages = s.messages;
           if (rl.reason !== 'rate_limit') {
-            // Drop the parked ghost bubble. It carries a `queued` flag and may be
-            // buried mid-transcript (a still-running turn keeps appending after it),
-            // so remove by flag rather than assuming it's the trailing message. Fall
-            // back to the legacy trailing prompt-match for pre-flag persisted turns.
-            if (messages.some(m => m.queued)) {
-              messages = messages.filter(m => !m.queued);
-            } else {
-              const last = messages[messages.length - 1];
-              if (last && last.type === 'user' && last.content === rl.prompt) {
-                messages = messages.slice(0, -1);
-              }
-            }
+            // Drop this turn's ghost bubble. It may be buried mid-transcript (a still-running
+            // turn keeps appending after it), so remove it by identity rather than assuming
+            // it's the trailing message.
+            const ghost = findParkedGhostMessage(messages, rl);
+            if (ghost) messages = messages.filter(m => m !== ghost);
           }
-          return { ...s, rateLimited: null, messages };
+          return { ...s, parkedTurns: parkedTurnsOf(s).filter(t => t.id !== rl.id), messages };
         })
       );
       debouncedSave(id);
