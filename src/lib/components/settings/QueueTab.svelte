@@ -9,8 +9,9 @@
     <div>
       <label class="text-sm font-medium text-text-secondary">Smart Queue</label>
       <p class="text-xs text-text-muted">
-        When your usage limit is reached, new sessions wait in the queue and
-        launch automatically after the usage window resets.
+        When your usage limit is reached, new sessions wait and interrupted sessions
+        continue automatically after the limit resets. Cancel automatic continuation
+        from the session's usage-limit banner.
       </p>
     </div>
     <input

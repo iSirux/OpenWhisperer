@@ -3,6 +3,7 @@
   import { sdkSessions, type SdkSession, type RateLimitedState } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import { formatScheduleTarget } from '$lib/utils/duration';
+  import { MAX_USAGE_LIMIT_RETRIES } from '$lib/utils/usageLimitRecovery';
 
   interface Props {
     session: SdkSession;
@@ -13,9 +14,7 @@
   let { session, turn }: Props = $props();
 
   let busy = $state(false);
-  // Local dismiss: hides the banner in this view without cancelling the parked
-  // turn (used by the X and by rate-limit "Dismiss"). A real cancel of a scheduled
-  // send goes through sdkSessions.clearRateLimited() — see handleCancel.
+  // The X hides this view; the labeled Cancel action removes the pending turn.
   let dismissed = $state(false);
 
   // Live countdown tick.
@@ -37,6 +36,7 @@
       : (rl?.targetStartAt ?? rl?.resetsAt),
   );
   let queueEnabled = $derived($settings.queue?.enabled ?? false);
+  let retriesPaused = $derived((rl.retryAttempts ?? 0) >= MAX_USAGE_LIMIT_RETRIES);
 
   const WINDOW_LABELS: Record<string, string> = {
     '5h': '5-hour',
@@ -96,16 +96,9 @@
     }
   }
 
-  // The labeled action button. For a scheduled turn "Cancel" truly cancels the
-  // parked send (drops the parked turn + its pending bubble). For a rate-limit
-  // turn "Dismiss" only hides the banner locally — the driver still auto-continues
-  // the rejected turn when the window resets, which is the desired behavior.
+  // Keep cancellation available while a manual continuation restores the session.
   function handleCancel() {
-    if (reason === 'rate_limit') {
-      dismissed = true;
-    } else {
-      sdkSessions.clearRateLimited(session.id, turn.id);
-    }
+    sdkSessions.clearRateLimited(session.id, turn.id);
   }
 
   // The top-right X always just hides the banner in this view (never cancels a send).
@@ -136,9 +129,13 @@
             This turn is parked and will send automatically once every session in this repo/worktree has finished.
           {/if}
         {:else}
-          {windowLabel ? `The ${windowLabel} usage window is exhausted. ` : ''}Your turn is saved and can be re-sent.
-          {#if queueEnabled}
-            It will continue automatically when the window resets.
+          {windowLabel ? `The ${windowLabel} usage window is exhausted. ` : ''}Your work is saved.
+          {#if retriesPaused}
+            Automatic continuation paused after repeated usage-limit rejections. Continue manually to try again.
+          {:else if queueEnabled}
+            This session will continue automatically after the limit resets while OpenWhisperer is running.
+          {:else}
+            Enable Smart Queue in Settings to continue automatically after the limit resets.
           {/if}
         {/if}
       </div>
@@ -147,17 +144,16 @@
           class="banner-btn primary"
           onclick={handleContinue}
           disabled={busy}
-          title={reason === 'rate_limit' ? 'Re-send this turn now' : 'Send this turn now'}
+          title={reason === 'rate_limit' ? 'Continue this session now' : 'Send this turn now'}
         >
           {primaryLabel}
         </button>
         <button
           class="banner-btn"
           onclick={handleCancel}
-          disabled={busy}
-          title={reason === 'rate_limit' ? 'Hide this banner' : 'Cancel this deferred send'}
+          title={reason === 'rate_limit' ? 'Cancel automatic continuation for this turn' : 'Cancel this deferred send'}
         >
-          {reason === 'rate_limit' ? 'Dismiss' : 'Cancel'}
+          {reason === 'rate_limit' ? 'Cancel auto-continue' : 'Cancel'}
         </button>
       </div>
     </div>

@@ -22,6 +22,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
+import { isUsageLimitError, appServerErrorMessage } from "./usageLimit";
 
 const OPENAI_MODEL_FALLBACK = "gpt-5.6-terra";
 
@@ -427,6 +428,7 @@ interface AppServerState {
 }
 
 interface Session {
+  pendingUsageLimit?: { status: string; resetsAt?: number; utilization?: number };
   cwd: string;
   provider: "claude" | "openai"; // SDK provider
   openaiMode?: OpenAiExecutionMode; // OpenAI execution mode (SDK vs app-server)
@@ -640,14 +642,7 @@ function sendRateLimit(
 // surface a recoverable rate-limited state (in addition to the normal error) when the SDK
 // only gives us an opaque error string rather than an explicit rate_limit_event.
 function isRateLimitError(message: string): boolean {
-  const lower = message.toLowerCase();
-  return (
-    lower.includes("rate limit") ||
-    lower.includes("rate_limit") ||
-    lower.includes("ratelimit") ||
-    lower.includes("usage limit") ||
-    lower.includes("429")
-  );
+  return isUsageLimitError(message);
 }
 
 function sendSubagentStart(
@@ -1626,7 +1621,7 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
         const pending = session.appServer?.pendingTurns.get(turnId);
         const status = String(turn?.status || "");
         const error = turn?.error as Record<string, unknown> | undefined;
-        const errorMessage = String(error?.message || "Turn failed");
+        const errorMessage = appServerErrorMessage(error);
         send({
           type: "debug",
           id,
@@ -4815,9 +4810,10 @@ async function runClaudeQueryItem(
     if (sessions.get(msg.id) === session && session.currentQueryId === queryId) {
       sendError(msg.id, errorMessage);
       // Fallback rate-limit detection when the SDK gives only an opaque error string.
-      if (isRateLimitError(errorMessage)) {
-        sendRateLimit(msg.id, { status: "rejected" });
+      if (!session.abortController?.signal.aborted && (session.pendingUsageLimit || isRateLimitError(errorMessage))) {
+        sendRateLimit(msg.id, session.pendingUsageLimit ?? { status: "rejected" });
       }
+      session.pendingUsageLimit = undefined;
     } else {
       send({
         type: "debug",
@@ -5003,6 +4999,13 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       // Capture the assistant message UUID for fork support
       const turnUuid = (message as { uuid?: string }).uuid || null;
       const session = sessions.get(id);
+      if (!parentToolUseId && message.error === "rate_limit" && session) {
+        const errorText = message.message.content
+          .filter(block => block.type === "text")
+          .map(block => block.text).join(" ");
+        if (isRateLimitError(errorText)) session.pendingUsageLimit ??= { status: "rejected" };
+        break;
+      }
       if (session && turnUuid) {
         session.lastAssistantTurnUuid = turnUuid;
       }
@@ -5193,6 +5196,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         : 0;
 
       if (message.subtype === "success") {
+        if (resultSession) resultSession.pendingUsageLimit = undefined;
         if (remainingTurns > 0 && resultSession) {
           send({
             type: "debug",
@@ -5246,8 +5250,9 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         sendError(id, errorText);
         // Fallback rate-limit detection: some rejections surface here as an error result
         // subtype (e.g. error: 'rate_limit') rather than an explicit rate_limit_event.
-        if (isRateLimitError(message.subtype) || isRateLimitError(errorText)) {
-          sendRateLimit(id, { status: "rejected" });
+        if (resultSession?.pendingUsageLimit || isRateLimitError(errorText)) {
+          sendRateLimit(id, resultSession?.pendingUsageLimit ?? { status: "rejected" });
+          if (resultSession) resultSession.pendingUsageLimit = undefined;
         }
       }
       break;
@@ -5375,12 +5380,13 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           utilization?: number;
         };
       }).rate_limit_info;
-      if (rateLimitInfo?.status === "rejected") {
-        sendRateLimit(id, {
-          status: "rejected",
-          resetsAt: rateLimitInfo.resetsAt,
-          utilization: rateLimitInfo.utilization,
-        });
+      const limitSession = sessions.get(id);
+      if (limitSession && rateLimitInfo?.status) {
+        // Telemetry alone does not terminate a turn: paid usage or a native
+        // retry may still succeed. Park only when its result actually fails.
+        limitSession.pendingUsageLimit = rateLimitInfo.status === "rejected"
+          ? { status: "rejected", resetsAt: rateLimitInfo.resetsAt, utilization: rateLimitInfo.utilization }
+          : undefined;
       }
       break;
     }
@@ -5453,6 +5459,7 @@ async function handleStop(msg: StopMessage): Promise<void> {
   // the streamInject path while we tear down, so a new prompt arriving during
   // the stop is queued instead of being swallowed by an interrupted iterator.
   session.claudeStopping = true;
+  session.pendingUsageLimit = undefined;
 
   // Reject any pending blocking Promises so runClaudeQueryItem / canUseTool
   // can unblock.  Without this, the queue worker stays permanently stuck if

@@ -12,7 +12,8 @@ import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, 
 import { clampEffortForModel, DEFAULT_MODEL_ID, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelAlias, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
-import { shouldQueue, providerExhaustion, hasUsableExtraUsage, nextWindowResetAt } from './queueDetection';
+import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
+import { USAGE_LIMIT_CONTINUATION, MAX_USAGE_LIMIT_RETRIES } from '$lib/utils/usageLimitRecovery';
 import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
 import { defaultAccountIdForRepo } from '$lib/utils/accounts';
 // Type-only import (erased at build; no runtime cycle with the validation store,
@@ -445,6 +446,12 @@ export interface RateLimitedState {
   provider: SdkProvider;
   window?: QueueWindow;
   resetsAt?: number;
+  /** A provider rejected this running turn (as opposed to a send queued locally). */
+  interrupted?: boolean;
+  /** Resume accepted, interrupted work instead of replaying the originating prompt. */
+  continuation?: boolean;
+  /** Consecutive automatic continuation attempts, persisted with the parked turn. */
+  retryAttempts?: number;
   /** For a user-scheduled turn: snapshot of the target window's reset time (epoch ms). */
   targetStartAt?: number;
   /** For 'after_sessions': what to wait on. Absent = 'worktree' (pre-existing persisted turns). */
@@ -648,6 +655,10 @@ export interface SdkSession {
   parkedTurns?: RateLimitedState[];
   /** Smart Queue (transient, not persisted): the exact prompt of the turn currently in flight, so a mid-run rejection can recover it. */
   inFlightPrompt?: string | null;
+  /** Runtime state for deduplication/cancellation of late provider limit events. */
+  rateLimitCancelled?: boolean;
+  rateLimitRetryAttempts?: number;
+  rateLimitRetryMessageOffset?: number;
   /** Smart Queue (transient, not persisted): the images of the turn currently in flight. */
   inFlightImages?: SdkImageContent[] | null;
   /** Queued system notifications to prepend to the next query (e.g., parallel agent alerts) */
@@ -1542,6 +1553,9 @@ function createSdkSessionsStore() {
         let snapshot: SdkSession | undefined;
         subscribe(ss => { snapshot = ss.find(s => s.id === id); })();
         if (!snapshot) return;
+        // A rejected turn can be followed by an iterator's done event. It is
+        // waiting for a reset, not a successful task completion.
+        if (parkedTurnsOf(snapshot).some(t => t.interrupted)) return;
 
         const wasStoppedByUser = !!snapshot.stopRequestedAt;
         const recovery = snapshot.overflowRecovery ?? null;
@@ -1756,17 +1770,27 @@ function createSdkSessionsStore() {
           sessions.map(s => {
             if (s.id !== id) return s;
             const provider = s.provider ?? getProviderForModel(s.model);
-            // The SDK can report the included-window rejection while continuing
-            // the same turn against paid/credit-backed usage. In that case this
-            // is telemetry, not a terminal rejection, so leave the live session
-            // and its in-flight turn untouched.
-            if (hasUsableExtraUsage(provider, s.accountId)) return s;
+            if (s.rateLimitCancelled || s.stopRequestedAt) return s;
+            // Claude can report both a structured event and an error result for
+            // one rejection. Keep a single continuation, preserving its reset.
+            const existing = parkedTurnsOf(s).find(t => t.interrupted);
+            if (existing) return s;
+            // The sidecar emits this only for a terminal failure, even when a
+            // cached extra-usage snapshot still claims credit is available.
             const exhaustion = providerExhaustion(provider, s.accountId);
             // Prefer the explicit event reset time (normalized to ms); fall back to the store-derived one.
             const eventReset = normalizeEpochMs(e.payload.resetsAt);
             const resetsAt = eventReset ?? exhaustion.resetsAt;
             // Recover the turn that was rejected: the stashed in-flight prompt, else the last user message.
             const lastUserMsg = [...s.messages].reverse().find(m => m.type === 'user');
+            const lastUserIndex = findLastIndex(s.messages, m => m.type === 'user');
+            const madeProgress = s.messages.slice(lastUserIndex + 1).some(m =>
+              m.type === 'tool_start' || m.type === 'tool_result' || m.type === 'text'
+            );
+            const progressedSinceRetry = s.rateLimitRetryMessageOffset != null &&
+              s.messages.slice(s.rateLimitRetryMessageOffset).some(m =>
+                m.type === 'tool_start' || m.type === 'tool_result' || m.type === 'text'
+              );
             const workPeriod = calculateWorkPeriod(s);
             const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
             return {
@@ -1789,6 +1813,10 @@ function createSdkSessionsStore() {
                   provider,
                   window: exhaustion.window,
                   resetsAt: resetsAt ?? undefined,
+                  interrupted: true,
+                  continuation: s.inFlightPrompt !== '/compact' &&
+                    (madeProgress || s.inFlightPrompt === USAGE_LIMIT_CONTINUATION),
+                  retryAttempts: progressedSinceRetry ? 0 : s.rateLimitRetryAttempts ?? 0,
                   prompt: s.inFlightPrompt ?? lastUserMsg?.content ?? '',
                   images: s.inFlightImages ?? undefined,
                   queuedAt: now,
@@ -2761,6 +2789,10 @@ function createSdkSessionsStore() {
                 // A fresh turn is never a "stop": clear any pending stop flag so a not-yet-landed
                 // terminal event from the prior turn can't settle this turn as stopped.
                 stopRequestedAt: undefined,
+                rateLimitCancelled: false,
+                rateLimitRetryAttempts: 0,
+                rateLimitRetryMessageOffset: undefined,
+                parkedTurns: parkedTurnsOf(s).filter(t => !t.interrupted),
                 draftPrompt: undefined,
                 draftImages: undefined,
                 // Screenshots now live in the message — clear them so later prompts don't re-attach
@@ -2913,6 +2945,12 @@ function createSdkSessionsStore() {
     async stopQuery(id: string): Promise<void> {
       // A user stop settles the turn — drop any pending deferred-completion grace finalize.
       cancelDeferredFinalize(id);
+      update(sessions => sessions.map(s => s.id === id ? {
+        ...s,
+        rateLimitCancelled: true,
+        parkedTurns: parkedTurnsOf(s).filter(t => t.reason !== 'rate_limit'),
+      } : s));
+      debouncedSave(id);
       if (!liveSessions.has(id)) {
         const now = Date.now();
         update(sessions => sessions.map(s => {
@@ -3930,7 +3968,7 @@ function createSdkSessionsStore() {
      * Re-stashes the in-flight turn so a fresh mid-run rejection can recover it. If the provider
      * is still exhausted, the query will be rejected again and re-parked as a rate-limit turn.
      */
-    async continueRateLimited(id: string, turnId?: string): Promise<void> {
+    async continueRateLimited(id: string, turnId?: string, automatic = false): Promise<void> {
       let session: SdkSession | undefined;
       subscribe(sessions => { session = sessions.find(s => s.id === id); })();
       if (!session) return;
@@ -3938,10 +3976,20 @@ function createSdkSessionsStore() {
         ? parkedTurnsOf(session).find(t => t.id === turnId)
         : primaryParkedTurn(session);
       if (!rl) return;
+      if (session.status === 'querying' || session.status === 'initializing') return;
       /** Drop just this turn from the session's parked queue, leaving the others. */
       const withoutTurn = (s: SdkSession) => parkedTurnsOf(s).filter(t => t.id !== rl.id);
 
       await this.ensureSessionLive(id);
+      // Restoration can await process startup. Cancellation, a manual send, or
+      // another continuation may have won in the meantime.
+      const restored = get({ subscribe }).find(s => s.id === id);
+      if (!restored || !parkedTurnsOf(restored).some(t => t.id === rl.id) ||
+          restored.status === 'querying' || restored.status === 'initializing') return;
+      if (automatic && rl.reason === 'rate_limit' &&
+          (!get(settings).queue.enabled || (rl.retryAttempts ?? 0) >= MAX_USAGE_LIMIT_RETRIES)) return;
+      const prompt = rl.continuation ? USAGE_LIMIT_CONTINUATION : rl.prompt;
+      const images = rl.continuation ? null : rl.images ?? null;
 
       // A parked compaction fires through the provider-correct compact path
       // (Codex uses a dedicated RPC), not as a text turn. Drop the ghost flag so
@@ -4010,16 +4058,23 @@ function createSdkSessionsStore() {
                 // while the scope stayed busy). buildRenderItems orders by array
                 // position, so re-appending keeps it at the bottom where the user
                 // last saw it instead of snapping back to its original slot.
-                messages: releaseQueuedToEnd(s.messages, rl),
-                inFlightPrompt: rl.prompt,
-                inFlightImages: rl.images ?? null,
+                messages: rl.continuation
+                  ? [...s.messages, { type: 'notification' as const, content: 'Continuing after the usage limit.', timestamp: Date.now() }]
+                  : releaseQueuedToEnd(s.messages, rl),
+                inFlightPrompt: prompt,
+                inFlightImages: images,
+                stopRequestedAt: undefined,
+                rateLimitCancelled: false,
+                rateLimitRetryAttempts: automatic ? (rl.retryAttempts ?? 0) + 1 : 0,
+                rateLimitRetryMessageOffset: s.messages.length,
               }
             : s
         )
       );
 
       try {
-        await invoke('send_sdk_prompt', { id, prompt: rl.prompt, images: rl.images ?? null });
+        debouncedSave(id);
+        await invoke('send_sdk_prompt', { id, prompt, images });
       } catch (error) {
         update(sessions =>
           sessions.map(s =>
@@ -4055,7 +4110,13 @@ function createSdkSessionsStore() {
             const ghost = findParkedGhostMessage(messages, rl);
             if (ghost) messages = messages.filter(m => m !== ghost);
           }
-          return { ...s, parkedTurns: parkedTurnsOf(s).filter(t => t.id !== rl.id), messages };
+          return {
+            ...s,
+            parkedTurns: parkedTurnsOf(s).filter(t => t.id !== rl.id),
+            rateLimitCancelled: rl.interrupted || (rl.reason === 'rate_limit' && s.status !== 'querying')
+              ? true : s.rateLimitCancelled,
+            messages,
+          };
         })
       );
       debouncedSave(id);

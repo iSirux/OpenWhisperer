@@ -27,7 +27,9 @@
 
 import { derived, get, writable } from 'svelte/store';
 import { sdkSessions, hasBusySessionsInScope, parkedTurnsOf, type AfterSessionsScope, type QueueReason, type SdkSession } from './sdkSessions';
-import { rateLimitData, codexRateLimitData, type ProviderRateLimits } from './rateLimits';
+import { rateLimitData, codexRateLimitData, rateLimits, codexRateLimits, accountRateLimits, rateLimitStoreForAccount } from './rateLimits';
+import { isDefaultAccountId } from '$lib/utils/accounts';
+import { usageLimitReady, MAX_USAGE_LIMIT_RETRIES, USAGE_LIMIT_RETRY_DELAY_MS } from '$lib/utils/usageLimitRecovery';
 import { providerExhaustion } from './queueDetection';
 import { settings } from './settings';
 import { playQueueResume } from '$lib/utils/sound';
@@ -53,6 +55,7 @@ interface PendingItem {
   queuedAt: number;
   /** For scheduled items: when to fire (epoch ms) — a window boundary or a custom time. */
   targetStartAt?: number;
+  retryAttempts?: number;
   /** For after_sessions items: the repo/worktree scope to wait on (the session's cwd). */
   cwd?: string;
   /** For after_sessions rateLimited items: wait on just the own session, or the whole cwd scope. */
@@ -91,9 +94,10 @@ function providerOf(session: SdkSession): SdkProvider {
   return (session.provider ?? 'claude') as SdkProvider;
 }
 
-/** Direct read of a provider's rate-limit snapshot — null means "not yet fetched". */
-function rateLimitStoreValue(provider: SdkProvider): ProviderRateLimits | null {
-  return provider === 'openai' ? get(codexRateLimitData) : get(rateLimitData);
+function snapshotFor(item: PendingItem) {
+  return item.accountId && !isDefaultAccountId(item.accountId)
+    ? get(accountRateLimits)[item.accountId]
+    : get(item.provider === 'openai' ? codexRateLimits : rateLimits);
 }
 
 /**
@@ -125,6 +129,7 @@ function toPendingItems(session: SdkSession): PendingItem[] {
     kind: 'rateLimited' as const,
     queuedAt: turn.queuedAt ?? session.lastActivityAt ?? 0,
     targetStartAt: turn.targetStartAt ?? turn.resetsAt,
+    retryAttempts: turn.retryAttempts,
     cwd: session.cwd,
     scope: turn.scope,
   }));
@@ -152,11 +157,9 @@ function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider):
 /**
  * Is this item ready to dispatch *right now*?
  *
- * - `rate_limit`: ready ONLY IF the provider's rate-limit store is non-null (we
- *   actually know the limit state) AND the provider is no longer exhausted. When
- *   the store is still null (e.g. right after app startup, before the first
- *   rate-limit fetch) we deliberately hold — otherwise every queued session would
- *   false-drain immediately on launch.
+ * - `rate_limit`: wait for the reset/cooldown and a successful account-specific
+ *   usage fetch after that boundary. All applicable windows must be available.
+ *   Missing/stale data and the automatic retry cap keep the item parked.
  * - `scheduled`: ready as soon as `now` passes the target time — a user-picked
  *   window boundary or an arbitrary wall-clock time (native scheduling). Exhaustion
  *   is deliberately NOT checked: the user asked for this moment, and holding here
@@ -183,8 +186,8 @@ function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolea
   }
 
   if (item.reason === 'rate_limit') {
-    if (rateLimitStoreValue(item.provider) == null) return false; // limit state unknown yet
-    return !exhausted;
+    const snapshot = snapshotFor(item);
+    return snapshot != null && usageLimitReady(item, snapshot, exhausted, now);
   }
 
   if (item.reason === 'after_sessions') {
@@ -283,6 +286,7 @@ async function drain(provider: SdkProvider): Promise<void> {
       const freshSessions = get(sdkSessions);
       const fresh = refreshPendingItem(freshSessions, item);
       if (!fresh || fresh.provider !== provider) continue;
+      if (!started || (fresh.reason === 'rate_limit' && !get(settings).queue.enabled)) continue;
       if (!isReady(fresh, Date.now(), freshSessions)) continue;
 
       // Reset sound on the first *actual* dispatch of this cycle.
@@ -301,7 +305,7 @@ async function drain(provider: SdkProvider): Promise<void> {
         if (fresh.kind === 'queued') {
           await sdkSessions.launchPrepared(item.id);
         } else {
-          await sdkSessions.continueRateLimited(item.id, item.turnId);
+          await sdkSessions.continueRateLimited(item.id, item.turnId, true);
         }
       } catch (err) {
         // One bad dispatch must not abort the rest of the drain.
@@ -319,7 +323,26 @@ async function drain(provider: SdkProvider): Promise<void> {
  * `rate_limit` items require the queue to be enabled; `scheduled` and `after_sessions`
  * items (explicit per-item user actions) always dispatch.
  */
+const lastRefreshAttempt = new Map<string, number>();
+
 function evaluate(provider: SdkProvider): void {
+  if (!started) return;
+  // Refresh the correct account after the reset, even when its old snapshot still
+  // says 100%. Throttle failures and coalesce sessions sharing an account.
+  if (get(settings).queue.enabled) {
+    const now = Date.now();
+    for (const item of pendingItemsForProvider(get(sdkSessions), provider)) {
+      if (item.reason !== 'rate_limit' || (item.retryAttempts ?? 0) >= MAX_USAGE_LIMIT_RETRIES) continue;
+      const earliest = Math.max(item.queuedAt + USAGE_LIMIT_RETRY_DELAY_MS, item.targetStartAt ?? 0);
+      if (now < earliest) continue;
+      const key = `${provider}:${item.accountId ?? 'default'}`;
+      const snapshot = snapshotFor(item);
+      if (snapshot?.loading || now - (lastRefreshAttempt.get(key) ?? 0) < TICK_MS) continue;
+      if (snapshot?.lastFetched != null && snapshot.lastFetched >= earliest && now - snapshot.lastFetched < TICK_MS) continue;
+      lastRefreshAttempt.set(key, now);
+      void rateLimitStoreForAccount(item.accountId, provider).fetch();
+    }
+  }
   void drain(provider);
 }
 
@@ -342,6 +365,12 @@ export function startSmartQueue(): () => void {
   // Rate-limit changes (auto-poll ~every 3 min) → re-evaluate the matching provider.
   const unsubClaude = rateLimitData.subscribe(() => evaluate('claude'));
   const unsubCodex = codexRateLimitData.subscribe(() => evaluate('openai'));
+  const unsubAccounts = accountRateLimits.subscribe(() => {
+    for (const p of PROVIDERS) evaluate(p);
+  });
+  const unsubSettings = settings.subscribe(() => {
+    for (const p of PROVIDERS) evaluate(p);
+  });
 
   // Newly-queued items should be considered promptly. Coalesce the flood of store
   // updates during streaming into a single evaluation per microtask.
@@ -367,6 +396,9 @@ export function startSmartQueue(): () => void {
     if (!started) return;
     started = false;
     currentTeardown = null;
+    unsubAccounts();
+    unsubSettings();
+    lastRefreshAttempt.clear();
     try {
       unsubClaude();
     } catch {

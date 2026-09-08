@@ -35,6 +35,9 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
     'completionDeferred', // Runtime-only: deferred-completion flag, meaningless after restart
     'inFlightPrompt', // Smart Queue: transient capture of the current turn's prompt for mid-run recovery
     'inFlightImages', // Smart Queue: transient capture of the current turn's images for mid-run recovery
+    'rateLimitCancelled', // Runtime-only suppression of late events from the cancelled turn
+    'rateLimitRetryAttempts', // The durable retry count lives on its parked turn
+    'rateLimitRetryMessageOffset', // Runtime transcript boundary for detecting retry progress
     'pendingCodexApproval', // Runtime-only: tied to a live app-server JSON-RPC request id, meaningless after restart
   ]),
   // PendingTranscriptionInfo fields that shouldn't be persisted
