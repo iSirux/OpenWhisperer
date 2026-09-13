@@ -23,6 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
 import { isUsageLimitError, appServerErrorMessage } from "./usageLimit";
+import { CodexSubagents } from "./codexSubagents";
 
 const OPENAI_MODEL_FALLBACK = "gpt-5.6-terra";
 
@@ -400,6 +401,7 @@ interface JsonRpcNotification {
 }
 
 interface AppServerState {
+  subagents: CodexSubagents;
   process: ChildProcessWithoutNullStreams;
   rl: readline.Interface;
   nextRequestId: number;
@@ -1051,7 +1053,8 @@ function updateReasoningState(
   sessionId: string,
   itemId: string,
   phase: "started" | "updated" | "completed",
-  content: string
+  content: string,
+  parentToolUseId?: string | null
 ): void {
   const key = reasoningStateKey(sessionId, itemId);
   const existing = reasoningByItemId.get(key);
@@ -1061,7 +1064,7 @@ function updateReasoningState(
       startTime: Date.now(),
       content: content || existing?.content || "",
     });
-    sendThinkingStart(sessionId, content || existing?.content || "");
+    sendThinkingStart(sessionId, content || existing?.content || "", parentToolUseId);
     return;
   }
 
@@ -1075,14 +1078,14 @@ function updateReasoningState(
         startTime: Date.now(),
         content: content || "",
       });
-      sendThinkingStart(sessionId, content || "");
+      sendThinkingStart(sessionId, content || "", parentToolUseId);
     }
     return;
   }
 
   const finalContent = content || existing?.content || "";
   const durationMs = existing ? Math.max(0, Date.now() - existing.startTime) : 0;
-  sendThinkingEnd(sessionId, durationMs, finalContent);
+  sendThinkingEnd(sessionId, durationMs, finalContent, parentToolUseId);
   reasoningByItemId.delete(key);
 }
 
@@ -1223,53 +1226,12 @@ function handleAppServerItemEvent(
     return;
   }
 
-  if (type === "collabtoolcall") {
-    const tool = String(item.tool || "Task");
-    const prompt = typeof item.prompt === "string" ? item.prompt : "";
-    const agentStatus = String(item.agentStatus || item.agent_status || "");
-    const agentId =
-      (item.receiverThreadId as string | undefined) ||
-      (item.receiver_thread_id as string | undefined) ||
-      (item.newThreadId as string | undefined) ||
-      (item.new_thread_id as string | undefined) ||
-      itemId;
-    const taskInput = {
-      prompt,
-      description: prompt,
-      subagent_type: tool,
-      senderThreadId:
-        (item.senderThreadId as string | undefined) ||
-        (item.sender_thread_id as string | undefined),
-      receiverThreadId:
-        (item.receiverThreadId as string | undefined) ||
-        (item.receiver_thread_id as string | undefined),
-      newThreadId:
-        (item.newThreadId as string | undefined) ||
-        (item.new_thread_id as string | undefined),
-    };
-
+  if (type === "codexcollaboration") {
+    const toolName = `codex__${String(item.tool || "collaboration")}`;
     if (phase === "started") {
-      sendTaskStarted(id, itemId, itemId, prompt, tool);
-      sendToolStart(id, "Task", taskInput, itemId, parentToolUseId, turnUuid);
-      sendSubagentStart(id, agentId, tool);
+      sendToolStart(id, toolName, { prompt: item.prompt, receiverThreadIds: item.receiverThreadIds }, itemId, parentToolUseId, turnUuid);
     } else if (phase === "completed") {
-      sendToolResult(
-        id,
-        "Task",
-        agentStatus || `Task ${String(item.status || "completed")}`,
-        itemId,
-        parentToolUseId,
-        turnUuid
-      );
-      sendTaskCompleted(
-        id,
-        itemId,
-        itemId,
-        String(item.status || "completed"),
-        agentStatus,
-        tool,
-      );
-      sendSubagentStop(id, agentId, "");
+      sendToolResult(id, toolName, JSON.stringify(item.agentsStates ?? item.status ?? "completed"), itemId, parentToolUseId, turnUuid);
     }
     return;
   }
@@ -1299,7 +1261,7 @@ function handleAppServerItemEvent(
 
   if (type === "reasoning") {
     const reasoningText = extractReasoningText(item);
-    updateReasoningState(id, itemId, phase, reasoningText);
+    updateReasoningState(id, itemId, phase, reasoningText, parentToolUseId);
     return;
   }
 
@@ -1399,6 +1361,11 @@ function respondCodexApproval(
 function handleAppServerNotification(id: string, notification: JsonRpcNotification): void {
   const session = sessions.get(id);
   if (!session) return;
+  if (session.appServer?.subagents.handle(
+    notification,
+    session.sdkSessionId || session.passedSdkSessionId,
+    (item, phase) => handleAppServerItemEvent(id, item, phase),
+  )) return;
 
   const asNumber = (value: unknown, fallback = 0): number => {
     if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -1830,6 +1797,7 @@ async function ensureCodexAppServer(
   });
 
   const state: AppServerState = {
+    subagents: new CodexSubagents((event) => send({ ...event, id })),
     process: child,
     rl,
     nextRequestId: 1,

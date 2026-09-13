@@ -779,7 +779,7 @@ The fuzzy file search session API emits per-query notifications:
 - `commandExecution` - `{id, command, cwd, status, commandActions, aggregatedOutput?, exitCode?, durationMs?}`.
 - `fileChange` - `{id, changes, status}` describing proposed edits; `changes` list `{path, kind, diff}`.
 - `mcpToolCall` - `{id, server, tool, status, arguments, result?, error?}`.
-- `collabToolCall` - `{id, tool, status, senderThreadId, receiverThreadId?, newThreadId?, prompt?, agentStatus?}`. This is the main collaboration/subagent item. In current Codex multi-agent flows, items like `spawn_agent`, `send_input`, and `wait_agent` are surfaced through collaboration events and related thread/item activity.
+- `collabAgentToolCall` - `{id, tool, status, senderThreadId, receiverThreadIds, prompt, model, reasoningEffort, agentsStates}`. Represents a collaboration operation; see the thread routing and lifecycle notes below.
 - `webSearch` - `{id, query, action?}` for web search requests issued by the agent.
 - `imageView` - `{id, path}` emitted when the agent invokes the image viewer tool.
 - `enteredReviewMode` - `{id, review}` sent when the reviewer starts.
@@ -797,21 +797,25 @@ All items emit two shared lifecycle events:
 
 ### Collaboration and subagents
 
-Codex subagents are represented through collaboration items rather than a separate dedicated `subagent/*` event family.
+Codex subagents use separate threads on the app-server connection. Verify the installed
+protocol with `codex app-server generate-ts --out ./schemas`, as recommended by the
+[official documentation](https://learn.chatgpt.com/docs/app-server#message-schema).
 
-- `collabToolCall` is the key item to watch for delegated work.
-- `tool` identifies the collaboration action or mode.
-- `prompt` contains the delegated task text when available.
-- `receiverThreadId` or `newThreadId` identifies the spawned or targeted collaborator thread.
-- `agentStatus` is the best concise completion summary when the delegated task finishes.
+- Current collaboration items are `collabAgentToolCall`, with `senderThreadId`,
+  `receiverThreadIds`, and an `agentsStates` map containing each receiver's status and message.
+- `tool` distinguishes `spawnAgent` from coordination operations such as `wait` and `sendInput`.
+  Completing a spawn call means the spawn operation finished, not that the child finished.
+- Notification `params.threadId` identifies the owner of item, turn, and usage events.
+  Items do not supply Claude's `parentToolUseId`; the client must map child threads to task blocks.
+- Child `thread/started` metadata uses `source.subAgent.thread_spawn.parent_thread_id`.
+  These notifications must never overwrite the root session ID.
 
-For rich clients, the practical pattern is:
-
-1. Treat `item/started` for `collabToolCall` as the start of a delegated task/subagent block.
-2. Scope subsequent child messages and tool calls using the item's thread/task relationship metadata when available.
-3. Treat `item/completed` for the same `collabToolCall` as task completion, using `status` and `agentStatus` for the final state.
-
-OpenWhisperer follows this pattern and maps `collabToolCall` into the same task/subagent UI used for Claude task delegation so Codex child work renders as grouped task blocks instead of a flat tool stream.
+OpenWhisperer's app-server router creates an Agent task block per child thread/run,
+routes child text, reasoning, and tools into that block, and keeps child usage and
+turn lifecycle events out of root state. Child turn completion or terminal
+`agentsStates` updates settle the task. Early child output is buffered until its
+thread relationship is known. Coordination calls are ordinary tools, not new agents.
+Legacy `collabToolCall` and singular receiver fields are also recognized.
 
 ### Item deltas
 
