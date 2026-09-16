@@ -8,9 +8,18 @@
     type StepStatus,
     type AgentActivityItem,
   } from '$lib/stores/validation';
-  import type { EffortLevel } from '$lib/stores/sdkSessions';
-  import { settings } from '$lib/stores/settings';
-  import { getEnabledModels } from '$lib/utils/models';
+  import { sdkSessions, type EffortLevel } from '$lib/stores/sdkSessions';
+  import { settings, type SdkProvider as AccountProvider } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
+  import {
+    getEnabledModels,
+    getProviderForModel,
+    type SdkProvider,
+  } from '$lib/utils/models';
+  import {
+    allowedAccountsForRepo,
+    defaultAccountIdForRepo,
+  } from '$lib/utils/accounts';
   import { dockOrientation } from '$lib/stores/dockOrientation';
   import EffortToggle from '$lib/components/EffortToggle.svelte';
 
@@ -128,6 +137,27 @@
       : [],
   );
   let fixModels = $derived([...claudeFixModels, ...openaiFixModels]);
+  let fixProvider = $derived(getProviderForModel(run.fixModel));
+  let providerFixModels = $derived(
+    fixProvider === 'openai' ? openaiFixModels : claudeFixModels,
+  );
+  let originSession = $derived($sdkSessions.find((session) => session.id === run.sessionId));
+  let fixRepo = $derived(
+    $repos.list.find((repo) => repo.id === originSession?.repoId) ??
+      $repos.list.find((repo) =>
+        run.cwd.replaceAll('\\', '/').startsWith(repo.path.replaceAll('\\', '/')),
+      ) ??
+      null,
+  );
+  let fixAccountProvider = $derived<AccountProvider>(
+    fixProvider === 'openai' ? 'OpenAI' : 'Claude',
+  );
+  let fixAccounts = $derived(
+    allowedAccountsForRepo($settings.accounts, fixRepo, fixAccountProvider),
+  );
+  let showFixProviderChoice = $derived(
+    $settings.enabled_providers.claude && $settings.enabled_providers.openai,
+  );
 
   // Legacy/live runs may predate the chooser or reference a model that has
   // since been disabled. Keep their fresh-session choice launchable.
@@ -137,6 +167,28 @@
     const validationModel = fixModels.find((model) => model.id === run.options.reviewerModel);
     validation.setFixModel(run.id, validationModel?.id ?? fixModels[0].id);
   });
+
+  $effect(() => {
+    if (run.fixTarget !== 'new-session') return;
+    const ids = fixAccounts.map((account) => account.id);
+    if (run.fixAccountId && ids.includes(run.fixAccountId)) return;
+    validation.setFixAccount(
+      run.id,
+      defaultAccountIdForRepo($settings.accounts, fixRepo, fixAccountProvider) ??
+        fixAccounts[0]?.id,
+    );
+  });
+
+  function selectFixProvider(provider: SdkProvider) {
+    if (provider === fixProvider) return;
+    const providerModels = provider === 'openai' ? openaiFixModels : claudeFixModels;
+    const configuredModel =
+      provider === 'openai' ? $settings.openai_model : $settings.default_model;
+    const nextModel =
+      providerModels.find((model) => model.id === configuredModel)?.id ?? providerModels[0]?.id;
+    if (nextModel) validation.setFixModel(run.id, nextModel);
+    validation.setFixAccount(run.id, undefined);
+  }
 
   function toggleFinding(id: string) {
     const next = new Set(run.selectedFindingIds);
@@ -760,8 +812,23 @@
           </select>
         </label>
         {#if run.fixTarget === 'new-session'}
+          {#if showFixProviderChoice}
+            <label class="v-fix-target" title="Provider for the new fix session">
+              using
+              <select
+                class="v-fix-target-select"
+                value={fixProvider}
+                disabled={run.responding}
+                aria-label="Fix session provider"
+                onchange={(e) => selectFixProvider(e.currentTarget.value as SdkProvider)}
+              >
+                <option value="claude">Claude</option>
+                <option value="openai">Codex</option>
+              </select>
+            </label>
+          {/if}
           <label class="v-fix-target" title="Model for the new fix session">
-            using
+            {showFixProviderChoice ? '' : 'using'}
             <select
               class="v-fix-target-select v-fix-model-select"
               value={run.fixModel}
@@ -769,20 +836,9 @@
               aria-label="Fix session model"
               onchange={(e) => validation.setFixModel(run.id, e.currentTarget.value)}
             >
-              {#if claudeFixModels.length > 0}
-                <optgroup label="Claude">
-                  {#each claudeFixModels as model (model.id)}
-                    <option value={model.id}>{model.label}</option>
-                  {/each}
-                </optgroup>
-              {/if}
-              {#if openaiFixModels.length > 0}
-                <optgroup label="Codex">
-                  {#each openaiFixModels as model (model.id)}
-                    <option value={model.id}>{model.label}</option>
-                  {/each}
-                </optgroup>
-              {/if}
+              {#each providerFixModels as model (model.id)}
+                <option value={model.id}>{model.label}</option>
+              {/each}
             </select>
           </label>
           <span class="v-fix-effort" title="Effort for the new fix session">
@@ -793,6 +849,22 @@
               size="sm"
             />
           </span>
+          {#if fixAccounts.length > 1}
+            <label class="v-fix-target" title="Account for the new fix session">
+              account
+              <select
+                class="v-fix-target-select"
+                value={run.fixAccountId}
+                disabled={run.responding}
+                aria-label="Fix session account"
+                onchange={(e) => validation.setFixAccount(run.id, e.currentTarget.value)}
+              >
+                {#each fixAccounts as account (account.id)}
+                  <option value={account.id}>{account.label}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
         {/if}
         {#if gate.kind !== 'ci_failure'}
           <button class="v-btn" onclick={approve} disabled={run.responding} title="Approve — accept the findings and continue">

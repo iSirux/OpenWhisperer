@@ -35,6 +35,7 @@ import {
   modelSupportsEffort,
   type SdkProvider,
 } from '$lib/utils/models';
+import { isDefaultAccountId } from '$lib/utils/accounts';
 import type { SendTiming } from '$lib/utils/sendTiming';
 
 // ---------------------------------------------------------------------------
@@ -234,9 +235,10 @@ export interface ValidationRunView extends ValidationRun {
   /** Where fix prompts are sent: the run's own session, or a fresh session
    *  created in the same cwd with the run's context prepended. */
   fixTarget: FixTarget;
-  /** Model and effort used when `fixTarget` is a fresh session. */
+  /** Model, effort, and provider-specific account used for a fresh fix session. */
   fixModel: string;
   fixEffort: EffortLevel;
+  fixAccountId?: string;
   /** Client-only: whether the dock panel for this run is shown. Closing it does
    *  NOT cancel/dismiss the run — a collapsed status strip stays visible, and a
    *  new gate or a terminal outcome reopens the panel. Persisted on the session. */
@@ -475,6 +477,7 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
       fixTarget: prev.fixTarget,
       fixModel: prev.fixModel,
       fixEffort: prev.fixEffort,
+      fixAccountId: prev.fixAccountId,
       panelOpen,
       selectedFindingIds,
       userFindings,
@@ -587,6 +590,7 @@ async function startRun(
       fixModel,
       origin?.effortLevel ?? options.reviewerEffort ?? undefined,
     ),
+    fixAccountId: origin?.accountId ?? options.reviewerAccountId ?? undefined,
     panelOpen: true,
     selectedFindingIds: [],
     userFindings: [],
@@ -623,6 +627,7 @@ function viewFromPersisted(p: PersistedValidationRun): ValidationRunView {
       p.fixModel ?? origin?.model ?? p.options.reviewerModel,
       p.fixEffort ?? origin?.effortLevel ?? p.options.reviewerEffort ?? undefined,
     ),
+    fixAccountId: p.fixAccountId ?? origin?.accountId ?? p.options.reviewerAccountId ?? undefined,
     log: [],
     activity: [],
     selectedFindingIds,
@@ -1023,6 +1028,12 @@ function setFixEffort(runId: string, effort: EffortLevel): void {
   persistRun(runId);
 }
 
+/** Choose the provider-specific account for fixes dispatched to a fresh session. */
+function setFixAccount(runId: string, accountId: string | undefined): void {
+  patchView(runId, { fixAccountId: accountId });
+  persistRun(runId);
+}
+
 /**
  * Add a user-authored finding to the current gate and select it. Sent to the
  * fixer as an `addedFinding` on the next `fix` response.
@@ -1164,14 +1175,14 @@ async function startFixInNewSession(
   try {
     const model = view.fixModel || origin.model;
     const provider = getProviderForModel(model);
-    const originProvider = origin.provider ?? getProviderForModel(origin.model);
     const effort = normalizeFixEffort(
       model,
       view.fixEffort ?? origin.effortLevel ?? undefined,
     );
-    // Account pins are provider-specific. Preserve the pin when the chosen
-    // model stays on the origin provider; otherwise use that provider's default.
-    const accountId = provider === originProvider ? origin.accountId : undefined;
+    const accountId =
+      view.fixAccountId && !isDefaultAccountId(view.fixAccountId)
+        ? view.fixAccountId
+        : undefined;
     const newId = sdkSessions.createSetupSession(
       model,
       effort,
@@ -1395,6 +1406,7 @@ export const validation = {
   setFixTarget,
   setFixModel,
   setFixEffort,
+  setFixAccount,
   addUserFinding,
   openPanel,
   closePanel,
