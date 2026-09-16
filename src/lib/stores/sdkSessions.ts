@@ -2298,7 +2298,7 @@ function createSdkSessionsStore() {
       console.log(`[sdkSessions] Using legacy history messages: ${historyMessages.length} messages`);
     }
 
-    await invoke('create_sdk_session', {
+    const backendAccountId = await invoke<string | null>('create_sdk_session', {
       id,
       cwd,
       model: resolvedModel,
@@ -2322,6 +2322,20 @@ function createSdkSessionsStore() {
       ghUser,
       accountId: resolvedAccountId ?? null,
     });
+
+    // The backend can recover the owning CODEX_HOME for legacy sessions whose
+    // accountId was lost by older persistence schemas. Store the repaired id so
+    // subsequent autosaves, archives, and revives remain pinned correctly.
+    const canonicalBackendAccountId = backendAccountId ?? undefined;
+    if (canonicalBackendAccountId !== resolvedAccountId) {
+      update((all) => all.map((s) => (
+        s.id === id ? { ...s, accountId: canonicalBackendAccountId } : s
+      )));
+      console.log(
+        `[sdkSessions] Recovered account for resumed Codex thread: ${backendAccountId ?? 'default'}`
+      );
+      debouncedSave(id);
+    }
 
     if (effortLevel && modelSupportsEffort(model)) {
       // Clamp to a value the target provider actually supports (OpenAI/Codex caps at 'high')

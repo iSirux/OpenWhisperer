@@ -1,5 +1,5 @@
 use crate::commands::settings_cmds::ConfigState;
-use crate::config::McpServerConfig;
+use crate::config::{CodexThreadOwner, McpServerConfig};
 use crate::sidecar::{HistoryMessage, ImageData, OutboundMessage, SidecarManager};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -26,14 +26,52 @@ pub async fn create_sdk_session(
     fork_at_message_uuid: Option<String>, // Message UUID to fork at (resumeSessionAt)
     autocompact_pct: Option<u32>, // Claude-only: 0=DISABLE_AUTO_COMPACT, 1..=99=PCT_OVERRIDE, None/100=default
     gh_user: Option<String>,      // GitHub CLI account to pin this session to (via GH_TOKEN)
-    account_id: Option<String>,   // Agent account to pin this session to (CLAUDE_CONFIG_DIR / CODEX_HOME)
-) -> Result<(), String> {
+    account_id: Option<String>, // Agent account to pin this session to (CLAUDE_CONFIG_DIR / CODEX_HOME)
+) -> Result<Option<String>, String> {
+    let is_openai = provider
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("openai"));
+    let thread_to_resume = sdk_session_id
+        .as_deref()
+        .or(fork_from_sdk_session_id.as_deref());
+
+    // Sessions created before accountId was persisted can point at a valid
+    // rollout in another CODEX_HOME. Resolve its owner before spawning app-server
+    // so thread/resume sees the correct local store.
+    let mut resolved_account_id = account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && !crate::config::is_default_account_id(id))
+        .map(str::to_string);
+    if is_openai {
+        if let Some(thread_id) = thread_to_resume {
+            let cfg = config.lock();
+            if let Some(owner) =
+                crate::config::resolve_codex_thread_owner(&cfg, account_id.as_deref(), thread_id)
+            {
+                let owner_account_id = match owner {
+                    CodexThreadOwner::Default => None,
+                    CodexThreadOwner::Account(id) => Some(id),
+                };
+                if owner_account_id != resolved_account_id {
+                    log::info!(
+                        "[accounts] Recovered Codex account for thread {}: {}",
+                        thread_id,
+                        owner_account_id.as_deref().unwrap_or("machine default")
+                    );
+                }
+                resolved_account_id = owner_account_id;
+            }
+        }
+    }
+
     // Pin gh to a specific account for this session by injecting its token.
     // Best-effort: a resolution failure falls back to gh's active account.
     let gh_env = crate::commands::github_cmds::gh_session_env(gh_user.as_deref()).await;
     // Pin the session to an agent account by injecting its login-profile env var
     // (rides the same rail as gh). Reserved/unknown ids inject nothing.
-    let account_env = crate::config::account_session_env(&config.lock(), account_id.as_deref());
+    let account_env =
+        crate::config::account_session_env(&config.lock(), resolved_account_id.as_deref());
     // Claude-only interactive permission mode (acceptEdits by default; opt-in "auto").
     // Read from config here so no per-session frontend plumbing is needed. The sidecar
     // applies it only on the Claude path; OpenAI/Codex sessions ignore it.
@@ -75,7 +113,9 @@ pub async fn create_sdk_session(
         codex_approval_policy,
         codex_sandbox_mode,
         env,
-    })
+    })?;
+
+    Ok(resolved_account_id)
 }
 
 #[tauri::command]

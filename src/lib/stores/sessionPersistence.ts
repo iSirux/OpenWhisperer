@@ -307,6 +307,8 @@ export interface PersistedSdkSession {
   currentBranch?: string | null;
   model: string;
   provider?: SdkProvider;
+  /** Agent account that owns the provider session data (Codex rollout, Claude transcript). */
+  accountId?: string;
   autoModelRequested?: boolean;
   effortLevel?: EffortLevel;
   /** @deprecated Use effortLevel - kept for backward compat loading */

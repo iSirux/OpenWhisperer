@@ -224,6 +224,10 @@ pub struct PersistedSdkSession {
     /// SDK provider ("anthropic", "openai", etc.)
     #[serde(default)]
     pub provider: Option<String>,
+    /// Agent account this session is pinned to. For Codex this selects the
+    /// CODEX_HOME that owns the persisted rollout used by thread/resume.
+    #[serde(default)]
+    pub account_id: Option<String>,
     /// Whether 'auto' model was requested (before resolution)
     #[serde(default)]
     pub auto_model_requested: bool,
