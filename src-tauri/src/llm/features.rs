@@ -195,8 +195,15 @@ Message to analyze:
         let prompt =
             Self::build_cleanup_prompt(whisper_transcription, realtime_transcription, repo_context);
 
-        let mut result: GenerationResult<TranscriptionCleanupResult> =
-            self.run_feature(prompt, Self::cleanup_schema()).await?;
+        let started = std::time::Instant::now();
+        let (mut result, route) = self
+            .run_cleanup_chain::<TranscriptionCleanupResult>(&prompt, Some(Self::cleanup_schema()))
+            .await?;
+        result.data.cleanup_profile = Some(route.profile);
+        result.data.cleanup_provider = Some(route.provider);
+        result.data.cleanup_model = Some(route.model);
+        result.data.cleanup_duration_ms = Some(started.elapsed().as_millis() as u64);
+        result.data.cleanup_attempts = Some(route.attempts);
 
         // Deterministic guards: reject concatenated merges, hallucinated words,
         // and dropped agreed-on content — the model can't be trusted to follow
@@ -215,6 +222,11 @@ Message to analyze:
             result.data = TranscriptionCleanupResult {
                 cleaned_text: whisper_transcription.to_string(),
                 corrections_made: Vec::new(),
+                cleanup_profile: result.data.cleanup_profile,
+                cleanup_provider: result.data.cleanup_provider,
+                cleanup_model: result.data.cleanup_model,
+                cleanup_duration_ms: result.data.cleanup_duration_ms,
+                cleanup_attempts: result.data.cleanup_attempts,
             };
         }
 
@@ -259,8 +271,7 @@ Where the two disagree at the same position (e.g. A has "select an organization"
 Choose one reading word-for-word — never blend the two readings into a third phrasing that appears in neither transcription, and never substitute your own wording (e.g. do NOT turn A's "retry a domain" / B's "retry the main" into "retry it"; pick one). Apart from punctuation, capitalization, and the error fixes listed above, every word of the merged result must appear in at least one of the two transcriptions.
 
 A word both engines agree on is real speech — keep it, even if it seems redundant or odd (it may be a proper noun, a product name, or jargon you don't recognize). If either transcription ends with words the other lacks — a continuation of the speech, not a variant reading of the other's ending — keep them; engines cut off endings far more often than they hallucinate extra words, and B (realtime) especially often stops early. Trailing words that look like a spoken command or an odd aside (e.g. "... search web") are still real speech — keep them. When the two ENDINGS disagree and B's looks cut off mid-phrase, A's ending is the correct one (e.g. A "...correctly search web?" with B "...Correctly search for" → keep "search web"; B truncated). However, filler sounds and disfluencies ("um", "uh", "hmm", stutters) that appear in only one transcription are NOT missed content — the other engine deliberately filtered them out; never copy them into the merged result, and never let a disfluent fragment from B displace words A heard clearly. When B contains an aside around words A also heard, say those words once with the aside integrated where it was spoken (A "...they were already classified by the job?" with B "...they're already Uh... Or should we say classified by the job?" → "...they were already, or should we say, classified by the job?" — never "...classified by the job? Or should we say classified by the job?")."#,
-                whisper_transcription,
-                realtime
+                whisper_transcription, realtime
             )
         } else {
             format!("Transcription to clean:\n{}", whisper_transcription)
@@ -852,7 +863,8 @@ pub(crate) fn cleanup_guard_violation(
     // mode; single-source cleanup legitimately introduces words (homophone and
     // vocabulary fixes have no second transcript to borrow from).
     let realtime = realtime_transcription?;
-    if let Some(word) = cleanup_novel_word(whisper_transcription, realtime, repo_context, cleaned_text)
+    if let Some(word) =
+        cleanup_novel_word(whisper_transcription, realtime, repo_context, cleaned_text)
     {
         return Some(format!(
             "output contains \"{word}\", which appears in neither transcription — hallucinated content"

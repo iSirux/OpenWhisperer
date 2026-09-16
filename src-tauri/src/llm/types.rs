@@ -67,6 +67,18 @@ pub struct InteractionAnalysis {
 pub struct TranscriptionCleanupResult {
     pub cleaned_text: String,
     pub corrections_made: Vec<String>,
+    /// Runtime route metadata. These fields are filled by the backend after the
+    /// model response is parsed; cleanup models are not asked to produce them.
+    #[serde(default)]
+    pub cleanup_profile: Option<String>,
+    #[serde(default)]
+    pub cleanup_provider: Option<String>,
+    #[serde(default)]
+    pub cleanup_model: Option<String>,
+    #[serde(default)]
+    pub cleanup_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub cleanup_attempts: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

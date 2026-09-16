@@ -1377,6 +1377,11 @@
             wasCleanedUp: cleanupResult.wasCleanedUp,
             cleanupCorrections: cleanupResult.corrections,
             usedDualSource: cleanupResult.usedDualSource,
+            cleanupDurationMs: cleanupResult.durationMs,
+            cleanupProfile: cleanupResult.profile,
+            cleanupProvider: cleanupResult.provider,
+            cleanupModel: cleanupResult.model,
+            cleanupAttempts: cleanupResult.attempts,
           });
 
           if (cleanupResult.wasCleanedUp) {
@@ -1502,6 +1507,11 @@
             wasCleanedUp: cleanupResult.wasCleanedUp,
             cleanupCorrections: cleanupResult.corrections,
             usedDualSource: cleanupResult.usedDualSource,
+            cleanupDurationMs: cleanupResult.durationMs,
+            cleanupProfile: cleanupResult.profile,
+            cleanupProvider: cleanupResult.provider,
+            cleanupModel: cleanupResult.model,
+            cleanupAttempts: cleanupResult.attempts,
           });
 
           if (cleanupResult.wasCleanedUp) {
@@ -1625,6 +1635,11 @@
               wasCleanedUp: cleanupResult.wasCleanedUp,
               cleanupCorrections: cleanupResult.corrections,
               usedDualSource: cleanupResult.usedDualSource,
+              cleanupDurationMs: cleanupResult.durationMs,
+              cleanupProfile: cleanupResult.profile,
+              cleanupProvider: cleanupResult.provider,
+              cleanupModel: cleanupResult.model,
+              cleanupAttempts: cleanupResult.attempts,
             });
           }
         } catch (e) {

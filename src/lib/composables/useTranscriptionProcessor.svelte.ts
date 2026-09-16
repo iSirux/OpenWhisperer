@@ -69,6 +69,11 @@ export interface CleanupResult {
   corrections?: string[];
   /** Whether dual-source (Whisper + realtime) cleanup was used */
   usedDualSource?: boolean;
+  durationMs?: number;
+  profile?: string;
+  provider?: string;
+  model?: string;
+  attempts?: number;
 }
 
 export interface RepoRecommendation {
@@ -156,6 +161,11 @@ export async function cleanupTranscript(
       wasCleanedUp: cleanupResult.wasCleanedUp,
       corrections: cleanupResult.corrections,
       usedDualSource: cleanupResult.usedDualSource,
+      durationMs: cleanupResult.durationMs,
+      profile: cleanupResult.profile,
+      provider: cleanupResult.provider,
+      model: cleanupResult.model,
+      attempts: cleanupResult.attempts,
     };
   } catch (error) {
     console.error('[llm] Transcription cleanup failed, using original:', error);

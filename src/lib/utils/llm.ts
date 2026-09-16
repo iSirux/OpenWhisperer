@@ -59,6 +59,11 @@ export interface InteractionAnalysis {
 export interface TranscriptionCleanupResult {
   cleaned_text: string;
   corrections_made: string[];
+  cleanup_profile?: string | null;
+  cleanup_provider?: string | null;
+  cleanup_model?: string | null;
+  cleanup_duration_ms?: number | null;
+  cleanup_attempts?: number | null;
 }
 
 export interface ModelRecommendation {
@@ -389,7 +394,17 @@ export async function cleanTranscription(
   whisperTranscription: string,
   realtimeTranscription?: string,
   repoContext?: string
-): Promise<{ text: string; wasCleanedUp: boolean; corrections: string[]; usedDualSource: boolean }> {
+): Promise<{
+  text: string;
+  wasCleanedUp: boolean;
+  corrections: string[];
+  usedDualSource: boolean;
+  durationMs?: number;
+  profile?: string;
+  provider?: string;
+  model?: string;
+  attempts?: number;
+}> {
   if (!isTranscriptionCleanupEnabled()) {
     return { text: whisperTranscription, wasCleanedUp: false, corrections: [], usedDualSource: false };
   }
@@ -397,12 +412,21 @@ export async function cleanTranscription(
   // Only pass the realtime transcription if dual-source is enabled
   const realtimeToUse = isDualTranscriptionEnabled() ? realtimeTranscription : undefined;
 
+  const startedAt = performance.now();
   try {
     const result = await invoke<TranscriptionCleanupResult>('clean_transcription', {
       rawTranscription: whisperTranscription,
       realtimeTranscription: realtimeToUse || null,
       repoContext: repoContext || null,
     });
+    const durationMs = result.cleanup_duration_ms ?? Math.round(performance.now() - startedAt);
+    const route = [result.cleanup_profile, result.cleanup_provider, result.cleanup_model]
+      .filter(Boolean)
+      .join(' / ');
+    console.info(
+      `[llm] Transcription cleanup completed in ${durationMs}ms${route ? ` via ${route}` : ''}` +
+      `${result.cleanup_attempts ? ` (attempt ${result.cleanup_attempts})` : ''}`
+    );
     console.log('[llm] Transcription cleaned:', result.corrections_made, realtimeToUse ? '(dual-source)' : '(whisper only)');
 
     // Cleanup is allowed to leave text unchanged, but never to erase a valid
@@ -419,6 +443,11 @@ export async function cleanTranscription(
           wasCleanedUp: false,
           corrections: [],
           usedDualSource: !!realtimeToUse,
+          durationMs,
+          profile: result.cleanup_profile ?? undefined,
+          provider: result.cleanup_provider ?? undefined,
+          model: result.cleanup_model ?? undefined,
+          attempts: result.cleanup_attempts ?? undefined,
         };
       }
     }
@@ -428,11 +457,23 @@ export async function cleanTranscription(
       wasCleanedUp: result.corrections_made.length > 0,
       corrections: result.corrections_made,
       usedDualSource: !!realtimeToUse,
+      durationMs,
+      profile: result.cleanup_profile ?? undefined,
+      provider: result.cleanup_provider ?? undefined,
+      model: result.cleanup_model ?? undefined,
+      attempts: result.cleanup_attempts ?? undefined,
     };
   } catch (error) {
-    console.error('[llm] Failed to clean transcription:', error);
+    const durationMs = Math.round(performance.now() - startedAt);
+    console.error(`[llm] Failed to clean transcription after ${durationMs}ms:`, error);
     // Fall back to original text on error
-    return { text: whisperTranscription, wasCleanedUp: false, corrections: [], usedDualSource: false };
+    return {
+      text: whisperTranscription,
+      wasCleanedUp: false,
+      corrections: [],
+      usedDualSource: false,
+      durationMs,
+    };
   }
 }
 

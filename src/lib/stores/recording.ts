@@ -526,10 +526,15 @@ function createRecordingStore() {
     }));
 
     try {
+      const whisperStartedAt = performance.now();
       const whisperTranscript = await invoke<string>('transcribe_audio', {
         audioData: Array.from(pendingRecording.audioData),
       });
-      debugRecordings.update(pendingRecording.id, { whisperTranscript });
+      const whisperDurationMs = Math.round(performance.now() - whisperStartedAt);
+      console.info(
+        `[transcription][${pendingRecording.id}] Whisper completed in ${whisperDurationMs}ms`
+      );
+      debugRecordings.update(pendingRecording.id, { whisperTranscript, whisperDurationMs });
 
       // A punctuation-only response (commonly "." for a short clip) is not a
       // usable transcription. In Both mode, wait for the finalized realtime
@@ -746,6 +751,7 @@ function createRecordingStore() {
           // Realtime-only mode (it IS the transcript) and the 'Both'-mode
           // Whisper-failure fallback. Settling a still-connecting background
           // start first ensures we can't miss a session registering mid-stop.
+          const realtimeFinalizeStartedAt = performance.now();
           const harvestPromise: Promise<string> = (async () => {
             try {
               await settleRealtimeStart();
@@ -759,7 +765,16 @@ function createRecordingStore() {
           // Debug log (dev mode): attach the raw harvest whenever it lands.
           const attachHarvestToDebugLog = () => {
             harvestPromise.then((harvest) => {
-              if (harvest) debugRecordings.update(debugId, { realtimeTranscript: harvest });
+              const realtimeFinalizeDurationMs = Math.round(
+                performance.now() - realtimeFinalizeStartedAt
+              );
+              console.info(
+                `[transcription][${debugId}] Realtime finalize completed in ${realtimeFinalizeDurationMs}ms`
+              );
+              debugRecordings.update(debugId, {
+                ...(harvest ? { realtimeTranscript: harvest } : {}),
+                realtimeFinalizeDurationMs,
+              });
             });
           };
 

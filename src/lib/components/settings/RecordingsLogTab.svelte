@@ -61,6 +61,7 @@
 
   function formatDuration(ms?: number): string {
     if (!ms) return "";
+    if (ms < 1000) return `${Math.round(ms)}ms`;
     const s = ms / 1000;
     return `${s.toFixed(1)}s`;
   }
@@ -193,7 +194,9 @@
             {#if rec.realtimeTranscript}
               <div class="group">
                 <div class="flex items-center gap-1.5">
-                  <span class="text-text-muted uppercase tracking-wide text-[10px]">Real-time ({realtimeLabel})</span>
+                  <span class="text-text-muted uppercase tracking-wide text-[10px]">
+                    Real-time ({realtimeLabel}){rec.realtimeFinalizeDurationMs != null ? ` · finalize ${formatDuration(rec.realtimeFinalizeDurationMs)}` : ""}
+                  </span>
                   {@render copyButton(`${rec.id}:realtime`, rec.realtimeTranscript)}
                 </div>
                 <p class="text-text-secondary whitespace-pre-wrap">{rec.realtimeTranscript}</p>
@@ -202,7 +205,9 @@
             {#if rec.whisperTranscript}
               <div class="group">
                 <div class="flex items-center gap-1.5">
-                  <span class="text-text-muted uppercase tracking-wide text-[10px]">Whisper (raw)</span>
+                  <span class="text-text-muted uppercase tracking-wide text-[10px]">
+                    Whisper (raw){rec.whisperDurationMs != null ? ` · ${formatDuration(rec.whisperDurationMs)}` : ""}
+                  </span>
                   {@render copyButton(`${rec.id}:whisper`, rec.whisperTranscript)}
                 </div>
                 <p class="text-text-secondary whitespace-pre-wrap">{rec.whisperTranscript}</p>
@@ -212,7 +217,7 @@
               <div class="group">
                 <div class="flex items-center gap-1.5">
                   <span class="text-text-muted uppercase tracking-wide text-[10px]">
-                    Cleaned{rec.usedDualSource ? " (dual-source)" : ""}{rec.wasCleanedUp === false ? " (unchanged)" : ""}
+                    Cleaned{rec.usedDualSource ? " (dual-source)" : ""}{rec.wasCleanedUp === false ? " (unchanged)" : ""}{rec.cleanupDurationMs != null ? ` · ${formatDuration(rec.cleanupDurationMs)}` : ""}{rec.cleanupProvider ? ` · ${rec.cleanupProvider}` : ""}{rec.cleanupModel ? `/${rec.cleanupModel}` : ""}{rec.cleanupAttempts && rec.cleanupAttempts > 1 ? ` · attempt ${rec.cleanupAttempts}` : ""}
                   </span>
                   {@render copyButton(`${rec.id}:cleaned`, rec.cleanedTranscript)}
                 </div>

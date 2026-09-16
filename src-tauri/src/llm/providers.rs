@@ -101,6 +101,21 @@ impl ProviderResponse for OpenAIResponse {
 }
 
 impl LlmClient {
+    pub(super) fn provider_name(&self) -> &'static str {
+        match self.provider {
+            LlmProvider::Groq => "Groq",
+            LlmProvider::Gemini => "Gemini",
+            LlmProvider::OpenAI => "OpenAI",
+            LlmProvider::Xai => "xAI",
+            LlmProvider::Local => "Local",
+            LlmProvider::Custom => "Custom",
+        }
+    }
+
+    pub(super) fn model_name(&self) -> &str {
+        &self.model
+    }
+
     /// Attach the Authorization header for OpenAI-compatible, non-local providers
     /// that have a key. Gemini authenticates via the URL query string, so it is
     /// intentionally excluded here.
@@ -222,6 +237,7 @@ impl LlmClient {
         prompt: &str,
         schema: &Option<serde_json::Value>,
     ) -> Result<(String, LlmUsage), String> {
+        let started = std::time::Instant::now();
         let request = GeminiRequest {
             contents: vec![GeminiContent {
                 parts: vec![GeminiPart {
@@ -234,8 +250,23 @@ impl LlmClient {
             }),
         };
 
-        self.send_and_parse::<_, GeminiResponse>(&self.api_url_for_model(model), &request)
-            .await
+        let result = self
+            .send_and_parse::<_, GeminiResponse>(&self.api_url_for_model(model), &request)
+            .await;
+        match &result {
+            Ok(_) => log::info!(
+                "[llm][provider] provider='Gemini' model='{}' completed duration_ms={}",
+                model,
+                started.elapsed().as_millis(),
+            ),
+            Err(error) => log::warn!(
+                "[llm][provider] provider='Gemini' model='{}' failed duration_ms={}: {}",
+                model,
+                started.elapsed().as_millis(),
+                error,
+            ),
+        }
+        result
     }
 
     async fn generate_gemini_with_usage(
@@ -279,6 +310,7 @@ impl LlmClient {
         model: &str,
         prompt: &str,
     ) -> Result<(String, LlmUsage), String> {
+        let started = std::time::Instant::now();
         let request = OpenAIRequest {
             model: model.to_string(),
             messages: vec![
@@ -297,8 +329,25 @@ impl LlmClient {
             temperature: Some(0.0),
         };
 
-        self.send_and_parse::<_, OpenAIResponse>(&self.api_url(), &request)
-            .await
+        let result = self
+            .send_and_parse::<_, OpenAIResponse>(&self.api_url(), &request)
+            .await;
+        match &result {
+            Ok(_) => log::info!(
+                "[llm][provider] provider='{}' model='{}' completed duration_ms={}",
+                self.provider_name(),
+                model,
+                started.elapsed().as_millis(),
+            ),
+            Err(error) => log::warn!(
+                "[llm][provider] provider='{}' model='{}' failed duration_ms={}: {}",
+                self.provider_name(),
+                model,
+                started.elapsed().as_millis(),
+                error,
+            ),
+        }
+        result
     }
 
     async fn generate_openai_with_usage(&self, prompt: &str) -> Result<(String, LlmUsage), String> {

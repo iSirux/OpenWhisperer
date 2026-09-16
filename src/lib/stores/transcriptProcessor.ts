@@ -138,6 +138,11 @@ async function processSdkTranscript(
         wasCleanedUp: cleanupResult.wasCleanedUp,
         cleanupCorrections: cleanupResult.corrections,
         usedDualSource: cleanupResult.usedDualSource,
+        cleanupDurationMs: cleanupResult.durationMs,
+        cleanupProfile: cleanupResult.profile,
+        cleanupProvider: cleanupResult.provider,
+        cleanupModel: cleanupResult.model,
+        cleanupAttempts: cleanupResult.attempts,
       });
     }
   }
@@ -359,6 +364,11 @@ export async function handlePrepareTranscriptReady(
         wasCleanedUp: cleanupResult.wasCleanedUp,
         cleanupCorrections: cleanupResult.corrections,
         usedDualSource: cleanupResult.usedDualSource,
+        cleanupDurationMs: cleanupResult.durationMs,
+        cleanupProfile: cleanupResult.profile,
+        cleanupProvider: cleanupResult.provider,
+        cleanupModel: cleanupResult.model,
+        cleanupAttempts: cleanupResult.attempts,
       });
     }
   }
@@ -959,6 +969,11 @@ export async function handleRepoSelectionForSession(
         wasCleanedUp: cleanupResult.wasCleanedUp,
         cleanupCorrections: cleanupResult.corrections,
         usedDualSource: cleanupResult.usedDualSource,
+        cleanupDurationMs: cleanupResult.durationMs,
+        cleanupProfile: cleanupResult.profile,
+        cleanupProvider: cleanupResult.provider,
+        cleanupModel: cleanupResult.model,
+        cleanupAttempts: cleanupResult.attempts,
       });
     }
   }

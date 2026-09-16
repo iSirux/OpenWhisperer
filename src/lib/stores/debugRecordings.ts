@@ -44,13 +44,20 @@ export interface DebugRecording {
 
   /** Whisper batch transcription (raw). */
   whisperTranscript?: string;
+  whisperDurationMs?: number;
   /** Real-time harvest. */
   realtimeTranscript?: string;
+  realtimeFinalizeDurationMs?: number;
   /** LLM-cleaned transcript. */
   cleanedTranscript?: string;
   wasCleanedUp?: boolean;
   cleanupCorrections?: string[];
   usedDualSource?: boolean;
+  cleanupDurationMs?: number;
+  cleanupProfile?: string;
+  cleanupProvider?: string;
+  cleanupModel?: string;
+  cleanupAttempts?: number;
 
   /** Recommendations (when the LLM layer ran). */
   model?: string;
