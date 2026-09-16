@@ -2,17 +2,34 @@
   import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
-  import { sdkSessions, activeSdkSessionId } from "$lib/stores/sdkSessions";
+  import {
+    sdkSessions,
+    activeSdkSessionId,
+    settingsToStoreEffort,
+    type EffortLevel,
+  } from "$lib/stores/sdkSessions";
   import { navigation } from "$lib/stores/navigation";
   import { activeRepo } from "$lib/stores/repos";
   import {
     createSessionQueue,
     launchSession,
-    snapshotLaunchConfig,
+    type LaunchConfig,
   } from "$lib/utils/sessionLaunch";
   import { sendTimingFromEvent, launchScheduleFromTiming } from "$lib/utils/sendTiming";
   import { modifierCombo } from "$lib/stores/ctrlHint";
   import SendTimingIcon from "./sdk/SendTimingIcon.svelte";
+  import EffortToggle from "./EffortToggle.svelte";
+  import { settings } from "$lib/stores/settings";
+  import {
+    getEnabledModels,
+    modelSupportsEffort,
+    type SdkProvider,
+  } from "$lib/utils/models";
+  import {
+    allowedAccountsForRepo,
+    defaultAccountIdForRepo,
+    isDefaultAccountId,
+  } from "$lib/utils/accounts";
 
   interface NotionCard {
     id: string;
@@ -49,6 +66,65 @@
   const queueProcessingStore = launchQueue.processing;
   let useWorktree = $state(true);
   let pendingAction = $state<string | null>(null);
+  let launchProvider = $state<SdkProvider>(
+    $settings.sdk_provider === 'OpenAI' ? 'openai' : 'claude',
+  );
+  let launchModel = $state(
+    launchProvider === 'openai' ? $settings.openai_model : $settings.default_model,
+  );
+  let launchEffort = $state<EffortLevel>(settingsToStoreEffort($settings.default_effort_level));
+  let launchAccountId = $state<string | undefined>(undefined);
+
+  const showProviderChoice = $derived(
+    $settings.enabled_providers.claude && $settings.enabled_providers.openai,
+  );
+  const launchModels = $derived(
+    launchProvider === 'openai'
+      ? getEnabledModels($settings.enabled_openai_models, 'openai')
+      : getEnabledModels($settings.enabled_models, 'claude'),
+  );
+  const accountProvider = $derived(launchProvider === 'openai' ? 'OpenAI' : 'Claude');
+  const launchAccounts = $derived(
+    allowedAccountsForRepo($settings.accounts, $activeRepo, accountProvider),
+  );
+
+  $effect(() => {
+    if (launchProvider === 'openai' && !$settings.enabled_providers.openai) launchProvider = 'claude';
+    if (launchProvider === 'claude' && !$settings.enabled_providers.claude) launchProvider = 'openai';
+  });
+
+  $effect(() => {
+    if (launchModels.some((model) => model.id === launchModel)) return;
+    launchModel = launchModels[0]?.id ??
+      (launchProvider === 'openai' ? $settings.openai_model : $settings.default_model);
+  });
+
+  $effect(() => {
+    const ids = launchAccounts.map((account) => account.id);
+    if (launchAccountId && ids.includes(launchAccountId)) return;
+    launchAccountId =
+      defaultAccountIdForRepo($settings.accounts, $activeRepo, accountProvider) ??
+      launchAccounts[0]?.id;
+  });
+
+  function selectLaunchProvider(provider: SdkProvider) {
+    if (provider === launchProvider) return;
+    launchProvider = provider;
+    launchModel = provider === 'openai' ? $settings.openai_model : $settings.default_model;
+    launchAccountId = undefined;
+  }
+
+  function selectedLaunchConfig(): LaunchConfig | null {
+    if (!$activeRepo) return null;
+    return {
+      repo: $activeRepo,
+      provider: launchProvider,
+      model: launchModel,
+      effortLevel: launchEffort,
+      accountId:
+        launchAccountId && !isDefaultAccountId(launchAccountId) ? launchAccountId : undefined,
+    };
+  }
 
   const ACTION_DEFAULTS: Record<string, { worktree: boolean }> = {
     implement: { worktree: true },
@@ -256,7 +332,7 @@
 
   function runAction(action: string, e?: MouseEvent) {
     if (selectedCards.length === 0) return;
-    const config = snapshotLaunchConfig();
+    const config = selectedLaunchConfig();
     if (!config) return;
 
     const cardsSnapshot = [...selectedCards];
@@ -275,6 +351,7 @@
           model: config.model,
           effortLevel: config.effortLevel,
           provider: config.provider,
+          accountId: config.accountId,
           useWorktree: worktree,
           branchNameHint: card.title,
           tag: { notionCard: { id: card.id, title: card.title } },
@@ -293,7 +370,7 @@
    */
   function draftAction(action: string) {
     if (selectedCards.length === 0) return;
-    const config = snapshotLaunchConfig();
+    const config = selectedLaunchConfig();
     if (!config) return;
 
     const cardsSnapshot = [...selectedCards];
@@ -311,6 +388,7 @@
       );
       sdkSessions.updateSetupConfig(sessionId, {
         setupWorktreeMode: worktree ? 'new' : 'main',
+        accountId: config.accountId,
       });
       sdkSessions.set(
         get(sdkSessions).map((s) =>
@@ -403,7 +481,7 @@
   }
 
   function boardAction(prompt: string) {
-    const config = snapshotLaunchConfig();
+    const config = selectedLaunchConfig();
     if (!config) return;
     launchQueue.enqueue([
       () =>
@@ -413,6 +491,7 @@
           model: config.model,
           effortLevel: config.effortLevel,
           provider: config.provider,
+          accountId: config.accountId,
         }).then(() => {}),
     ]);
   }
@@ -525,6 +604,60 @@
         {loading ? "Loading..." : "Refresh"}
       </button>
     </div>
+  </div>
+
+  <!-- Launch configuration shared by card actions and board-wide actions. -->
+  <div class="flex items-center gap-3 px-4 py-2 border-b border-border bg-surface-elevated/30 shrink-0">
+    <span class="text-[10px] uppercase tracking-wide text-text-muted">Run with</span>
+    {#if showProviderChoice}
+      <div class="flex rounded border border-border overflow-hidden">
+        <button
+          class="h-7 px-2.5 text-[11px] transition-colors {launchProvider === 'claude' ? 'bg-accent text-white' : 'text-text-secondary hover:bg-surface-elevated'}"
+          onclick={() => selectLaunchProvider('claude')}
+        >Claude</button>
+        <button
+          class="h-7 px-2.5 text-[11px] border-l border-border transition-colors {launchProvider === 'openai' ? 'bg-emerald-600 text-white' : 'text-text-secondary hover:bg-surface-elevated'}"
+          onclick={() => selectLaunchProvider('openai')}
+        >Codex</button>
+      </div>
+    {:else}
+      <span class="text-[11px] text-text-secondary">{launchProvider === 'openai' ? 'Codex' : 'Claude'}</span>
+    {/if}
+    <label class="flex items-center gap-1.5 text-[10px] text-text-muted">
+      Model
+      <select
+        class="h-7 px-2 rounded border border-border bg-surface text-[11px] text-text-primary focus:outline-none focus:border-accent"
+        bind:value={launchModel}
+      >
+        {#each launchModels as model (model.id)}
+          <option value={model.id}>{model.label}</option>
+        {/each}
+      </select>
+    </label>
+    {#if modelSupportsEffort(launchModel)}
+      <div class="flex items-center gap-1.5">
+        <span class="text-[10px] text-text-muted">Effort</span>
+        <EffortToggle
+          effortLevel={launchEffort}
+          onchange={(level) => (launchEffort = level)}
+          modelId={launchModel}
+          size="sm"
+        />
+      </div>
+    {/if}
+    {#if launchAccounts.length > 1}
+      <label class="flex items-center gap-1.5 text-[10px] text-text-muted">
+        Account
+        <select
+          class="h-7 px-2 rounded border border-border bg-surface text-[11px] text-text-primary focus:outline-none focus:border-accent"
+          bind:value={launchAccountId}
+        >
+          {#each launchAccounts as account (account.id)}
+            <option value={account.id}>{account.label}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
   </div>
 
   <!-- Filters -->

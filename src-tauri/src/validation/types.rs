@@ -385,6 +385,10 @@ pub struct RunOptions {
     /// Effort used by every validation agent.
     #[serde(default)]
     pub reviewer_effort: Option<String>,
+    /// Agent account used by every headless validation agent. `None` (or a
+    /// reserved `default-*` id) uses the machine-default provider login.
+    #[serde(default)]
+    pub reviewer_account_id: Option<String>,
     #[serde(default)]
     pub adversarial_verify: bool,
     #[serde(default)]
@@ -461,6 +465,21 @@ mod tests {
         let f: ValidationFinding =
             serde_json::from_str(r#"{ "description": "x", "action": "ship-it" }"#).unwrap();
         assert_eq!(f.action, FindingAction::AskUser);
+    }
+
+    #[test]
+    fn run_options_account_is_optional_and_uses_camel_case() {
+        let legacy: RunOptions = serde_json::from_str(
+            r#"{"steps":["review"],"reviewerModel":"claude-sonnet-5","adversarialVerify":false}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.reviewer_account_id, None);
+
+        let pinned: RunOptions = serde_json::from_str(
+            r#"{"steps":["review"],"reviewerModel":"gpt-5.6-terra","reviewerAccountId":"acct-work","adversarialVerify":false}"#,
+        )
+        .unwrap();
+        assert_eq!(pinned.reviewer_account_id.as_deref(), Some("acct-work"));
     }
 
     #[test]

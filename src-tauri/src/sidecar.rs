@@ -292,6 +292,10 @@ pub enum OutboundMessage {
         model: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        /// Extra env vars for the selected agent account
+        /// (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<std::collections::HashMap<String, String>>,
         /// SDK session id to resume (durable reviewer across rounds).
         #[serde(rename = "resumeSessionId", skip_serializing_if = "Option::is_none")]
         resume_session_id: Option<String>,

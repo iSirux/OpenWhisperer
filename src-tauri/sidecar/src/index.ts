@@ -369,6 +369,7 @@ interface ValidationAgentMessage {
   prompt: string; // Fully-composed prompt (built in Rust)
   model: string; // Model id from either configured provider
   effort?: string; // UI effort level ('low'|'medium'|'high'|'xhigh'|'max'); omit/undefined = off
+  env?: Record<string, string>; // Selected provider login profile.
   resumeSessionId?: string; // SDK session id to resume (durable reviewer across rounds)
 }
 
@@ -3379,6 +3380,7 @@ async function runValidationQuery(
     },
     env: {
       ...process.env,
+      ...(msg.env ?? {}),
       // Validation agents run autonomously: unlike interactive sessions there
       // can be NO SDK->CLI traffic for many minutes (long generations, built-in
       // tools that never hit canUseTool). MCP responses don't reset the CLI's
@@ -3389,6 +3391,11 @@ async function runValidationQuery(
       CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "14400000",
     },
   };
+
+  // Profile OAuth credentials must win over a process-global API key.
+  if (msg.env?.CLAUDE_CONFIG_DIR && !msg.env.ANTHROPIC_API_KEY && options.env) {
+    delete options.env.ANTHROPIC_API_KEY;
+  }
 
   // Effort: reuse the same native Claude effort plumbing sessions use.
   const mappedEffort = mapEffortForProvider(msg.effort, "claude");
@@ -3536,7 +3543,27 @@ async function runValidationCodexThread(msg: ValidationAgentMessage): Promise<vo
   };
 
   try {
-    const codex = getCodexInstance();
+    const codexEnv = msg.env?.CODEX_HOME
+      ? Object.fromEntries(
+          Object.entries({ ...process.env, ...msg.env }).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string"
+          )
+        )
+      : undefined;
+    if (codexEnv?.CODEX_HOME && !msg.env?.OPENAI_API_KEY) {
+      delete codexEnv.OPENAI_API_KEY;
+    }
+    // A pinned account needs its own SDK instance because CodexOptions.env is
+    // constructor-scoped. The shared instance remains the fast path for the
+    // machine-default login.
+    const codex = codexEnv
+      ? new Codex({
+          ...(resolveBundledCodexForSdk()
+            ? { codexPathOverride: resolveBundledCodexForSdk() }
+            : {}),
+          env: codexEnv,
+        })
+      : getCodexInstance();
     const effort = mapEffortForProvider(msg.effort, "openai", msg.model);
     const role = buildValidationRole(msg.role);
     const threadOptions: ThreadOptions = {

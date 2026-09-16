@@ -186,16 +186,23 @@ impl ValidationManager {
         let (signal_tx, signal_rx) = mpsc::unbounded_channel::<RunSignal>();
 
         // Snapshot the config bits the run needs (never re-read stale state mid-run).
-        let (validation_cfg, repo_cfg, gh_user, default_model) = {
+        let (validation_cfg, repo_cfg, gh_user, default_model, account_env) = {
             let state = app.state::<ConfigState>();
             let cfg = state.lock();
             let repo = resolve_repo(&cfg, repo_id.as_deref(), &cwd);
             let gh_user = repo.as_ref().and_then(|r| r.gh_user.clone());
+            let account_env = crate::config::account_session_env(
+                &cfg,
+                run.options.reviewer_account_id.as_deref(),
+            )
+            .into_iter()
+            .collect::<HashMap<_, _>>();
             (
                 cfg.validation.clone(),
                 repo,
                 gh_user,
                 cfg.default_model.clone(),
+                account_env,
             )
         };
 
@@ -218,6 +225,7 @@ impl ValidationManager {
             repo_cfg,
             gh_user,
             default_model,
+            account_env,
             resume_gate,
         };
 
@@ -365,6 +373,8 @@ struct RunCtx {
     repo_cfg: Option<RepoConfig>,
     gh_user: Option<String>,
     default_model: String,
+    /// Provider login profile selected when the run was started.
+    account_env: HashMap<String, String>,
     /// Set only on a resumed run: the gate the run was parked on before the
     /// restart. Consumed by the first non-terminal step (see `execute`).
     resume_gate: Option<GateState>,
@@ -685,6 +695,11 @@ impl RunCtx {
                     prompt,
                     model,
                     effort: self.run.options.reviewer_effort.clone(),
+                    env: if self.account_env.is_empty() {
+                        None
+                    } else {
+                        Some(self.account_env.clone())
+                    },
                     resume_session_id: None,
                 },
             )

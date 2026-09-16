@@ -14,9 +14,16 @@
     isAutoModel,
     modelSupportsEffort,
     DEFAULT_MODEL_ID,
+    type SdkProvider,
   } from '$lib/utils/models';
   import type { SdkSession, EffortLevel } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
+  import { repos } from '$lib/stores/repos';
+  import {
+    allowedAccountsForRepo,
+    defaultAccountIdForRepo,
+    isDefaultAccountId,
+  } from '$lib/utils/accounts';
   import EffortToggle from '$lib/components/EffortToggle.svelte';
   import SendTimingIcon from '$lib/components/sdk/SendTimingIcon.svelte';
   import { modifierCombo } from '$lib/stores/ctrlHint';
@@ -54,27 +61,66 @@
     seedRunOptions({ repoId, repoSteps, defaults: $settings.validation }),
   );
 
-  // One model/effort pair drives every validation agent. Offer models from
-  // every provider the user enabled during onboarding.
+  // One provider/model/effort/account configuration drives every validation agent.
   const claudeModels = $settings.enabled_providers.claude
     ? getEnabledModels($settings.enabled_models, 'claude')
     : [];
   const openaiModels = $settings.enabled_providers.openai
     ? getEnabledModels($settings.enabled_openai_models, 'openai')
     : [];
-  const models = [...claudeModels, ...openaiModels];
+  const sessionProvider = $derived(session.provider ?? getProviderForModel(session.model));
+  const savedProvider = seeded.reviewerModel === 'session'
+    ? (session.provider ?? getProviderForModel(session.model))
+    : getProviderForModel(seeded.reviewerModel);
+  let reviewerProvider = $state<SdkProvider>(
+    savedProvider === 'openai' && $settings.enabled_providers.openai
+      ? 'openai'
+      : savedProvider === 'claude' && $settings.enabled_providers.claude
+        ? 'claude'
+        : $settings.enabled_providers.openai
+          ? 'openai'
+          : 'claude',
+  );
+  const showProviderChoice = $derived(
+    $settings.enabled_providers.claude && $settings.enabled_providers.openai,
+  );
+  const models = $derived(reviewerProvider === 'openai' ? openaiModels : claudeModels);
 
   let selectedSteps = $state<Set<StepName>>(new Set(seeded.steps));
   let reviewerModel = $state(
-    seeded.reviewerModel === 'session' || models.some((m) => m.id === seeded.reviewerModel)
+    (seeded.reviewerModel === 'session' && reviewerProvider === sessionProvider) ||
+      models.some((m) => m.id === seeded.reviewerModel)
       ? seeded.reviewerModel
-      : 'session',
+      : models[0]?.id ?? 'session',
   );
   // Effort is always on; older saved options may carry null.
   let reviewerEffort = $state<EffortLevel>(
     (seeded.reviewerEffort || $settings.validation.reviewer_effort || 'medium') as EffortLevel,
   );
   let adversarialVerify = $state(seeded.adversarialVerify);
+  const repo = $derived(
+    $repos.list.find((r) => r.id === repoId) ??
+      $repos.list.find((r) => cwd.replaceAll('\\', '/').startsWith(r.path.replaceAll('\\', '/'))) ??
+      null,
+  );
+  const accountProvider = $derived(reviewerProvider === 'openai' ? 'OpenAI' : 'Claude');
+  const accounts = $derived(allowedAccountsForRepo($settings.accounts, repo, accountProvider));
+  let reviewerAccountId = $state<string | undefined>(seeded.reviewerAccountId ?? undefined);
+
+  $effect(() => {
+    const sessionChoiceIsValid =
+      reviewerModel === 'session' && reviewerProvider === sessionProvider;
+    if (sessionChoiceIsValid || models.some((model) => model.id === reviewerModel)) return;
+    reviewerModel = models[0]?.id ??
+      (reviewerProvider === 'openai' ? $settings.openai_model : $settings.default_model);
+  });
+
+  $effect(() => {
+    const ids = accounts.map((account) => account.id);
+    if (reviewerAccountId && ids.includes(reviewerAccountId)) return;
+    reviewerAccountId =
+      defaultAccountIdForRepo($settings.accounts, repo, accountProvider) ?? accounts[0]?.id;
+  });
 
   // The model the effort toggle caps itself against (resolved like the run will be).
   const effortModelId = $derived(
@@ -92,6 +138,15 @@
     if (next.has(step)) next.delete(step);
     else next.add(step);
     selectedSteps = next;
+  }
+
+  function selectProvider(provider: SdkProvider) {
+    if (provider === reviewerProvider) return;
+    reviewerProvider = provider;
+    reviewerModel = provider === 'openai'
+      ? ($settings.openai_model || openaiModels[0]?.id || DEFAULT_MODEL_ID)
+      : ($settings.default_model || claudeModels[0]?.id || DEFAULT_MODEL_ID);
+    reviewerAccountId = undefined;
   }
 
   let orderedSelected = $derived(VALIDATION_STEP_ORDER.filter((s) => selectedSteps.has(s)));
@@ -127,6 +182,10 @@
     const base = {
       steps: orderedSelected,
       reviewerEffort: reviewerEffort && effortSupported ? reviewerEffort : null,
+      reviewerAccountId:
+        reviewerAccountId && !isDefaultAccountId(reviewerAccountId)
+          ? reviewerAccountId
+          : null,
       adversarialVerify,
       baseBranch: seeded.baseBranch ?? null,
     };
@@ -140,10 +199,8 @@
     try {
       saveRunOptions(repoId, persisted);
       const intent = buildValidationIntent(session);
-      const provider = getProviderForModel(resolvedModel);
-      // An account id belongs to one provider. When validation crosses to the
-      // other provider, use that provider's default configured credentials.
-      const accountId = provider === (session.provider ?? 'claude') ? session.accountId : undefined;
+      const provider = reviewerProvider;
+      const accountId = runOptions.reviewerAccountId ?? undefined;
       await validation.scheduleRun(
         session.id,
         cwd,
@@ -192,24 +249,29 @@
   </div>
 
   <div class="vsp-section vsp-grid">
+    {#if showProviderChoice}
+      <div class="vsp-field">
+        <span class="vsp-section-label">Provider</span>
+        <div class="vsp-provider">
+          <button class:active={reviewerProvider === 'claude'} onclick={() => selectProvider('claude')}>Claude</button>
+          <button class:active={reviewerProvider === 'openai'} onclick={() => selectProvider('openai')}>Codex</button>
+        </div>
+      </div>
+    {:else}
+      <div class="vsp-field">
+        <span class="vsp-section-label">Provider</span>
+        <div class="vsp-provider-label">{reviewerProvider === 'openai' ? 'Codex' : 'Claude'}</div>
+      </div>
+    {/if}
     <div class="vsp-field">
       <label class="vsp-section-label" for="vsp-model">Model</label>
       <select id="vsp-model" class="vsp-select" bind:value={reviewerModel}>
-        <option value="session">Session model</option>
-        {#if claudeModels.length > 0}
-          <optgroup label="Claude">
-            {#each claudeModels as m (m.id)}
-              <option value={m.id}>{m.label}</option>
-            {/each}
-          </optgroup>
+        {#if reviewerProvider === sessionProvider}
+          <option value="session">Session model</option>
         {/if}
-        {#if openaiModels.length > 0}
-          <optgroup label="Codex">
-            {#each openaiModels as m (m.id)}
-              <option value={m.id}>{m.label}</option>
-            {/each}
-          </optgroup>
-        {/if}
+        {#each models as m (m.id)}
+          <option value={m.id}>{m.label}</option>
+        {/each}
       </select>
     </div>
     <div class="vsp-field">
@@ -224,6 +286,17 @@
       </div>
     </div>
   </div>
+
+  {#if accounts.length > 1}
+    <div class="vsp-section">
+      <label class="vsp-section-label" for="vsp-account">Account</label>
+      <select id="vsp-account" class="vsp-select" bind:value={reviewerAccountId}>
+        {#each accounts as account (account.id)}
+          <option value={account.id}>{account.label}</option>
+        {/each}
+      </select>
+    </div>
+  {/if}
 
   <label class="vsp-toggle-row">
     <input type="checkbox" bind:checked={adversarialVerify} />
@@ -361,6 +434,36 @@
   .vsp-select:focus {
     outline: none;
     border-color: var(--color-accent);
+  }
+  .vsp-provider {
+    display: flex;
+    min-height: 30px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .vsp-provider button {
+    flex: 1;
+    color: var(--color-text-secondary);
+    font-size: 0.74rem;
+  }
+  .vsp-provider button.active {
+    color: #fff;
+    background: var(--color-accent);
+  }
+  .vsp-provider button + button {
+    border-left: 1px solid var(--color-border);
+  }
+  .vsp-provider-label {
+    display: flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 0 0.45rem;
+    color: var(--color-text-secondary);
+    background: var(--color-background);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    font-size: 0.74rem;
   }
   .vsp-effort {
     display: flex;

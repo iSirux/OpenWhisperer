@@ -169,6 +169,8 @@ export interface RunOptions {
   reviewerModel: string;
   /** Effort used by every validation agent. */
   reviewerEffort?: string | null;
+  /** Agent account id for the reviewer provider; absent means machine default. */
+  reviewerAccountId?: string | null;
   /** Error findings get a verify pass before gating. */
   adversarialVerify: boolean;
   /** Defaults to the repo's default branch. */
@@ -1321,6 +1323,7 @@ export function loadRunOptions(repoId: string | undefined): RunOptions | null {
       steps,
       reviewerModel: parsed.reviewerModel,
       reviewerEffort: parsed.reviewerEffort ?? null,
+      reviewerAccountId: parsed.reviewerAccountId ?? null,
       adversarialVerify: !!parsed.adversarialVerify,
       baseBranch: parsed.baseBranch ?? null,
     };
@@ -1368,6 +1371,7 @@ export function seedRunOptions(args: {
     steps: steps.length > 0 ? steps : ['review'],
     reviewerModel: saved?.reviewerModel ?? defaults.reviewer_model,
     reviewerEffort: saved?.reviewerEffort ?? defaults.reviewer_effort ?? null,
+    reviewerAccountId: saved?.reviewerAccountId ?? null,
     adversarialVerify: saved?.adversarialVerify ?? defaults.adversarial_verify,
     baseBranch: saved?.baseBranch ?? null,
   };
