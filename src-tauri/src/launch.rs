@@ -13,6 +13,7 @@ struct RunningProcess {
     command_id: String,
     command_name: String,
     child: Child,
+    task: Option<crate::launch_task::TaskTerminal>,
 }
 
 /// Manages spawned terminal processes for launch profiles.
@@ -20,6 +21,12 @@ struct RunningProcess {
 pub struct LaunchManager {
     /// Map of repo_id -> list of running processes
     running: Arc<Mutex<HashMap<String, Vec<RunningProcess>>>>,
+    completed: Mutex<HashMap<String, Vec<RunningProcess>>>,
+}
+
+#[derive(serde::Serialize)]
+pub struct TaskStatus {
+    pub status: &'static str,
 }
 
 impl Default for LaunchManager {
@@ -32,6 +39,7 @@ impl LaunchManager {
     pub fn new() -> Self {
         Self {
             running: Arc::new(Mutex::new(HashMap::new())),
+            completed: Mutex::new(HashMap::new()),
         }
     }
 
@@ -42,7 +50,33 @@ impl LaunchManager {
         repo_path: &str,
         commands: &[LaunchCommand],
         terminal: &LaunchTerminal,
+        task_options: Option<bool>,
     ) -> Result<(), String> {
+        if commands.is_empty() {
+            return Err("No commands to launch".to_string());
+        }
+        let mut running = self.running.lock();
+        if let Some(completed) = self.completed.lock().get_mut(repo_id) {
+            completed.retain_mut(|p| {
+                !matches!(p.child.try_wait(), Ok(Some(_)))
+                    || p.task.as_ref().is_some_and(|t| t.is_open())
+            });
+        }
+        // Release running services before starting their replacements. Keep completed
+        // task terminals available for inspection until the user closes/stops them.
+        if let Some(existing) = running.remove(repo_id) {
+            for proc in existing {
+                if proc.task.as_ref().and_then(|t| t.status()).is_some() {
+                    self.completed
+                        .lock()
+                        .entry(repo_id.to_string())
+                        .or_default()
+                        .push(proc);
+                } else {
+                    stop_process(proc);
+                }
+            }
+        }
         let mut processes = Vec::new();
 
         for cmd in commands {
@@ -58,30 +92,45 @@ impl LaunchManager {
                 PathBuf::from(repo_path)
             };
 
-            let child = spawn_terminal_with_command(
-                &cwd,
-                &cmd.command,
-                &cmd.name,
-                cmd.env.as_ref(),
-                terminal,
-            )?;
+            let spawned = if let Some(close) = task_options {
+                crate::launch_task::spawn(
+                    &cwd,
+                    &cmd.command,
+                    &cmd.name,
+                    cmd.env.as_ref(),
+                    terminal,
+                    close,
+                )
+                .map(|(child, task)| (child, Some(task)))
+            } else {
+                spawn_terminal_with_command(
+                    &cwd,
+                    &cmd.command,
+                    &cmd.name,
+                    cmd.env.as_ref(),
+                    terminal,
+                )
+                .map(|child| (child, None))
+            };
+            let (child, task) = match spawned {
+                Ok(spawned) => spawned,
+                Err(error) => {
+                    for proc in processes {
+                        stop_process(proc);
+                    }
+                    return Err(error);
+                }
+            };
 
             log::debug!("[launch] spawned '{}' for repo {}", cmd.name, repo_id);
             processes.push(RunningProcess {
                 command_id: cmd.id.clone(),
                 command_name: cmd.name.clone(),
                 child,
+                task,
             });
         }
 
-        let mut running = self.running.lock();
-        // Stop any existing processes for this repo first
-        if let Some(existing) = running.remove(repo_id) {
-            for proc in existing {
-                log::debug!("[launch] replacing running '{}'", proc.command_name);
-                kill_process(proc.child);
-            }
-        }
         running.insert(repo_id.to_string(), processes);
 
         Ok(())
@@ -93,7 +142,12 @@ impl LaunchManager {
         if let Some(processes) = running.remove(repo_id) {
             for proc in processes {
                 log::debug!("[launch] stopping '{}'", proc.command_name);
-                kill_process(proc.child);
+                stop_process(proc);
+            }
+        }
+        if let Some(processes) = self.completed.lock().remove(repo_id) {
+            for proc in processes {
+                stop_process(proc);
             }
         }
         Ok(())
@@ -104,7 +158,12 @@ impl LaunchManager {
         let mut running = self.running.lock();
         for (_, processes) in running.drain() {
             for proc in processes {
-                kill_process(proc.child);
+                stop_process(proc);
+            }
+        }
+        for (_, processes) in self.completed.lock().drain() {
+            for proc in processes {
+                stop_process(proc);
             }
         }
     }
@@ -116,6 +175,9 @@ impl LaunchManager {
         if let Some(procs) = running.get_mut(repo_id) {
             // Prune processes that have exited
             procs.retain_mut(|p| {
+                if p.task.is_some() {
+                    return true;
+                }
                 match p.child.try_wait() {
                     Ok(Some(_)) => false, // Process has exited, remove it
                     Ok(None) => true,     // Still running
@@ -133,6 +195,66 @@ impl LaunchManager {
         }
     }
 
+    pub fn task_status(&self, repo_id: &str) -> TaskStatus {
+        let running = self.running.lock();
+        let Some(processes) = running.get(repo_id) else {
+            return TaskStatus { status: "failed" };
+        };
+        let results: Vec<_> = processes
+            .iter()
+            .filter_map(|p| p.task.as_ref())
+            .map(|t| t.status())
+            .collect();
+        let status = if results.is_empty() || results.contains(&Some(false)) {
+            "failed"
+        } else if results.iter().all(|r| *r == Some(true)) {
+            "succeeded"
+        } else {
+            "running"
+        };
+        TaskStatus { status }
+    }
+}
+
+fn stop_process(proc: RunningProcess) {
+    if let Some(task) = &proc.task {
+        task.stop();
+    }
+    kill_process(proc.child);
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_task_waits_for_every_command_and_reports_failure() {
+        let manager = LaunchManager::new();
+        let commands: Vec<LaunchCommand> = serde_json::from_value(serde_json::json!([
+            { "id": "quick", "name": "Quick", "command": "exit /b 0" },
+            { "id": "slow", "name": "Slow", "command": "ping -n 3 127.0.0.1 >nul & exit /b 9" }
+        ]))
+        .unwrap();
+        manager
+            .launch_commands(
+                "test",
+                &std::env::temp_dir().to_string_lossy(),
+                &commands,
+                &LaunchTerminal::Cmd,
+                Some(true),
+            )
+            .unwrap();
+        assert_eq!(manager.task_status("test").status, "running");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while manager.task_status("test").status == "running"
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let status = manager.task_status("test").status;
+        manager.stop_all("test").unwrap();
+        assert_eq!(status, "failed");
+    }
 }
 
 /// Spawn a separate OS terminal window running the given command.
@@ -248,10 +370,7 @@ fn spawn_terminal_with_command(
                 "konsole",
                 vec!["--title", title, "-e", "bash", "-c", &full_cmd],
             ),
-            (
-                "xfce4-terminal",
-                vec!["--title", title, "-e", &wrapped_cmd],
-            ),
+            ("xfce4-terminal", vec!["--title", title, "-e", &wrapped_cmd]),
             (
                 "xterm",
                 vec!["-title", title, "-e", "bash", "-c", &full_cmd],
@@ -278,6 +397,9 @@ fn spawn_terminal_with_command(
 
 /// Kill a spawned process and its children.
 fn kill_process(mut child: Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
     #[cfg(target_os = "windows")]
     {
         // On Windows, use taskkill with /T (tree) to kill child processes too

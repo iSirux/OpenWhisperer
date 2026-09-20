@@ -119,6 +119,22 @@ pub struct LaunchProfile {
     pub name: String,
     /// List of LaunchCommand IDs to include in this profile
     pub command_ids: Vec<String>,
+    #[serde(default)]
+    pub execution_type: LaunchExecutionType,
+    #[serde(default = "default_close_on_success")]
+    pub close_on_success: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchExecutionType {
+    #[default]
+    Service,
+    Task,
+}
+
+fn default_close_on_success() -> bool {
+    true
 }
 
 fn default_worktree_mode() -> String {

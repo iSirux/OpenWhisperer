@@ -232,6 +232,14 @@
     repos.updateRepo(repoIndex, { launch_profiles: profiles });
   }
 
+  function updateLaunchProfile(repoIndex: number, profileId: string, changes: Partial<LaunchProfile>) {
+    const repo = $repos.list[repoIndex];
+    repos.updateRepo(repoIndex, {
+      launch_profiles: (repo.launch_profiles ?? []).map(profile =>
+        profile.id === profileId ? { ...profile, ...changes } : profile),
+    });
+  }
+
   function toggleProfileCommand(repoIndex: number, cmdId: string) {
     const current = newProfileCmdIds[repoIndex] ?? new Set<string>();
     const next = new Set(current);
@@ -653,6 +661,22 @@
                     {#each repo.launch_profiles as profile (profile.id)}
                       <div class="flex items-center gap-2 bg-background/50 px-2 py-1 rounded group">
                         <span class="text-text-primary font-medium">{profile.name}</span>
+                        <select
+                          aria-label={`Execution type for ${profile.name}`}
+                          class="bg-background border border-border rounded text-[10px]"
+                          value={profile.execution_type ?? 'service'}
+                          onchange={(e) => updateLaunchProfile(index, profile.id, { execution_type: e.currentTarget.value as 'task' | 'service' })}
+                        >
+                          <option value="service">Service</option>
+                          <option value="task">Task</option>
+                        </select>
+                        {#if profile.execution_type === 'task'}
+                          <label class="text-[10px] text-text-muted flex items-center gap-1">
+                            <input type="checkbox" checked={profile.close_on_success ?? true}
+                              onchange={(e) => updateLaunchProfile(index, profile.id, { close_on_success: e.currentTarget.checked })} />
+                            Close terminal on success
+                          </label>
+                        {/if}
                         <div class="flex gap-1 flex-1 min-w-0 overflow-hidden">
                           {#each profile.command_ids as cmdId}
                             {@const cmd = repo.launch_commands?.find(c => c.id === cmdId)}

@@ -97,8 +97,12 @@
     const launchCwd = runtime.launchedFromCwd ?? repoPath;
     isRestarting = true;
     try {
-      await launchStore.stopAll(repoId);
-      await launchStore.launchProfile(repoId, profileId, launchCwd);
+      if (runtime.executionType === 'task') {
+        await launchStore.retryTask(repoId);
+      } else {
+        await launchStore.stopAll(repoId);
+        await launchStore.launchProfile(repoId, profileId, launchCwd);
+      }
     } catch (e) {
       console.error("[LaunchBar] Restart failed:", e);
     } finally {
@@ -128,6 +132,10 @@
   }
 
   function handleProfileClick(e: MouseEvent, profileId: string) {
+    if (runtime?.executionType === 'task') {
+      handleLaunchProfile(profileId);
+      return;
+    }
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && e.shiftKey) {
       // Ctrl+Shift+click = queue until EVERY session in this repo/worktree has
@@ -187,6 +195,7 @@
 
   const isRunning = $derived(!!runtime);
   const isQueued = $derived(!!queued && queued.repoId === repoId);
+  const taskQueue = $derived($launchStore.taskQueues[repoId] ?? []);
 
   /** Worktree folder name to show when the launch was started from a worktree */
   const worktreeName = $derived((): string | null => {
@@ -214,9 +223,9 @@
     {#if isRunning && runtime}
       <!-- Running state -->
       <div class="launch-running">
-        <span class="running-dot"></span>
+        <span class="running-dot" class:failed={runtime.taskStatus === 'failed'}></span>
         <span class="running-label">
-          {runtime.profileName ?? "Custom"} running
+          {runtime.profileName ?? "Custom"} {runtime.taskStatus === 'failed' ? 'failed — queue paused' : 'running'}
         </span>
         {#if worktreeName()}
           <span class="worktree-badge" title={runtime.launchedFromCwd}>
@@ -240,7 +249,7 @@
           {/if}
         </button>
         {#if runtime.profileId}
-          <button class="restart-btn" onclick={handleRestart} disabled={isStopping || isRestarting} title="Restart">
+          <button class="restart-btn" onclick={handleRestart} disabled={isStopping || isRestarting} title={runtime.taskStatus === 'failed' ? 'Retry task and resume queue on success' : 'Restart'}>
             {#if isRestarting}
               <svg class="spin" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                 <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5A.75.75 0 0 1 16 8a8 8 0 1 1-8-8 .75.75 0 0 1 0 1.5z"/>
@@ -251,11 +260,13 @@
                 <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/>
                 <path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/>
               </svg>
-              Restart
+              {runtime.taskStatus === 'failed' ? 'Retry' : 'Restart'}
             {/if}
           </button>
         {/if}
-        <span class="elapsed">{formatElapsed(elapsedMs)}</span>
+        {#if runtime.taskStatus !== 'failed'}
+          <span class="elapsed">{formatElapsed(elapsedMs)}</span>
+        {/if}
       </div>
     {:else if isQueued && queued}
       <!-- Queued state -->
@@ -276,21 +287,25 @@
           Cancel
         </button>
       </div>
-    {:else}
-      <!-- Idle state: show profile buttons -->
+    {/if}
+    {#if !isQueued || isRunning}
+      <!-- Profiles remain available to queue tasks or launch services. -->
       <div class="launch-idle">
         {#each profiles as profile (profile.id)}
           <button
             class="profile-btn"
+            disabled={isStopping || isRestarting}
             onclick={(e) => handleProfileClick(e, profile.id)}
             oncontextmenu={(e) => handleContextMenu(e, profile.id)}
-            title={(isAgentRunning
+            title={runtime?.executionType === 'task' ? `Queue ${profile.name} after the task succeeds` : (isAgentRunning
               ? "Click/Shift+click: queue after agent, Ctrl+click: launch now"
               : `Launch ${profile.name}`) + " — Ctrl+Shift+click: run when this repo/worktree is idle"}
           >
             {profile.name}
             <span class="profile-count">{profile.command_ids.length}</span>
-            {#if $modifierCombo === "ctrl+shift"}
+            {#if runtime?.executionType === 'task'}
+              <span class="profile-count" aria-hidden="true">+</span>
+            {:else if $modifierCombo === "ctrl+shift"}
               <span class="ctrl-hint-badge" aria-hidden="true">
                 <SendTimingIcon timing="repo_idle" />
               </span>
@@ -308,6 +323,20 @@
       </div>
     {/if}
   </div>
+
+  {#if taskQueue.length > 0}
+    <div class="launch-commands-row" aria-label="Task queue">
+      <span class="queued-label">Next:</span>
+      {#each taskQueue as item, index}
+        <button class="command-btn" onclick={() => launchStore.removeTaskQueueItem(repoId, index)} title={`Remove ${item.profileName} from queue`}>
+          {index + 1}. {item.profileName} ×
+        </button>
+      {/each}
+    </div>
+  {/if}
+  {#if $launchStore.errors[repoId]}
+    <div class="launch-commands-row" role="alert">{$launchStore.errors[repoId]}</div>
+  {/if}
 
   {#if commandsExpanded}
     <div class="launch-commands-row">
@@ -351,6 +380,11 @@
 {/if}
 
 <style>
+  .running-dot.failed {
+    background: var(--color-error, #ef4444);
+    animation: none;
+  }
+
   .launch-bar {
     display: flex;
     flex-direction: column;

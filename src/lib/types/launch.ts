@@ -22,6 +22,8 @@ export interface LaunchProfile {
   name: string;
   /** List of LaunchCommand IDs to include in this profile */
   command_ids: string[];
+  execution_type?: 'task' | 'service';
+  close_on_success?: boolean;
 }
 
 /** Runtime state for a currently running launch profile */
@@ -31,6 +33,8 @@ export interface LaunchRuntime {
   profileName?: string;
   runningCommandIds: string[];
   startedAt: number;
+  executionType?: 'task' | 'service';
+  taskStatus?: 'running' | 'succeeded' | 'failed';
   /** The session cwd at the time of launch — may be a worktree path */
   launchedFromCwd?: string;
 }

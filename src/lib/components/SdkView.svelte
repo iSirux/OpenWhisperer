@@ -1894,6 +1894,37 @@
   let dockPrOpen = $derived(!!(session && prEntry?.panelOpen));
   let dockValidationOpen = $derived(!!validationRun?.panelOpen);
   let dockOpen = $derived(!!session && (dockPrOpen || dockValidationOpen));
+
+  // Capture bottom anchoring before the dock changes the pane layout. The
+  // resulting resize can emit a scroll event before ResizeObserver runs, which
+  // would otherwise overwrite the saved stick-to-bottom state and leave the
+  // latest transcript content pushed above the fold.
+  let dockOpenInitialized = false;
+  let previousDockOpen = false;
+  $effect.pre(() => {
+    const open = dockOpen;
+
+    if (!dockOpenInitialized) {
+      dockOpenInitialized = true;
+      previousDockOpen = open;
+      return;
+    }
+
+    const justOpened = open && !previousDockOpen;
+    previousDockOpen = open;
+    if (!justOpened || !messagesEl) return;
+
+    const distanceFromBottom =
+      messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+    if (distanceFromBottom >= 100) return;
+
+    tick().then(() => {
+      if (!messagesEl || !dockOpen) return;
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      checkIfNearBottom();
+    });
+  });
+
   // Global bottom/right preference; paneforge's direction is reactive, and the
   // shared autoSaveId keeps one split ratio across both orientations.
   let dockRight = $derived($dockOrientation === "right");

@@ -43,9 +43,17 @@ pub fn launch_profile(
     // Use the provided cwd override (worktree path) if given, otherwise fall back to the repo's configured path.
     let repo_path = cwd.unwrap_or_else(|| repo.path.clone());
     let terminal = cfg.system.launch_terminal.clone();
+    let task_options = (profile.execution_type == crate::config::LaunchExecutionType::Task)
+        .then_some(profile.close_on_success);
     drop(cfg);
 
-    launch_mgr.launch_commands(&repo_id, &repo_path, &commands_to_launch, &terminal)
+    launch_mgr.launch_commands(
+        &repo_id,
+        &repo_path,
+        &commands_to_launch,
+        &terminal,
+        task_options,
+    )
 }
 
 /// Launch specific commands directly (for ad-hoc subset launches)
@@ -58,7 +66,7 @@ pub fn launch_commands(
     commands: Vec<LaunchCommand>,
 ) -> Result<(), String> {
     let terminal = config.lock().system.launch_terminal.clone();
-    launch_mgr.launch_commands(&repo_id, &repo_path, &commands, &terminal)
+    launch_mgr.launch_commands(&repo_id, &repo_path, &commands, &terminal, None)
 }
 
 /// Stop all running processes for a given repo
@@ -74,4 +82,12 @@ pub fn stop_launch_profile(
 #[tauri::command]
 pub fn get_launch_status(launch_mgr: State<Arc<LaunchManager>>, repo_id: String) -> Vec<String> {
     launch_mgr.get_running_command_ids(&repo_id)
+}
+
+#[tauri::command]
+pub fn get_launch_task_status(
+    launch_mgr: State<Arc<LaunchManager>>,
+    repo_id: String,
+) -> crate::launch::TaskStatus {
+    launch_mgr.task_status(&repo_id)
 }

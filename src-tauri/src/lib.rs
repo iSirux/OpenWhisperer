@@ -4,6 +4,7 @@ mod config;
 mod docker;
 mod git;
 mod launch;
+mod launch_task;
 mod llm;
 mod notion;
 mod persist;
@@ -572,6 +573,7 @@ pub fn run() {
             launch_cmds::launch_commands,
             launch_cmds::stop_launch_profile,
             launch_cmds::get_launch_status,
+            launch_cmds::get_launch_task_status,
             // --- Validation pipeline ---
             validation_cmds::validation_start_run,
             validation_cmds::validation_resume_run,

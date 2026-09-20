@@ -17,17 +17,24 @@ interface LaunchState {
   runtimes: Record<string, LaunchRuntime>;
   /** Queued launch waiting for an agent to finish */
   queued: QueuedLaunch | null;
+  taskQueues: Record<string, QueuedLaunch[]>;
+  errors: Record<string, string | undefined>;
 }
 
 const defaultState: LaunchState = {
   runtimes: {},
   queued: null,
+  taskQueues: {},
+  errors: {},
 };
 
 // ---- Store Implementation ----
 
 // Cleanup functions for queued launch event listeners
 let queueCleanup: (() => void) | null = null;
+const refreshing = new Set<string>();
+const launching = new Set<string>();
+const launchFinished = new Map<string, Promise<void>>();
 
 function createLaunchStore() {
   const { subscribe, set, update } = writable<LaunchState>(defaultState);
@@ -36,17 +43,33 @@ function createLaunchStore() {
     subscribe,
 
     /** Launch a specific profile by its ID */
-    async launchProfile(repoId: string, profileId: string, launchedFromCwd?: string): Promise<void> {
+    async launchProfile(repoId: string, profileId: string, launchedFromCwd?: string, force = false): Promise<void> {
+      const state = get({ subscribe });
+      const current = state.runtimes[repoId];
+      const repo = findRepoById(get(repos).list, repoId);
+      const profile = repo?.launch_profiles?.find(p => p.id === profileId);
+      if (!profile) throw new Error('Launch profile no longer exists');
+      if (!force && current?.executionType === 'task' && current.taskStatus !== 'succeeded') {
+        const queue = state.taskQueues[repoId] ?? [];
+        const last = queue.at(-1);
+        if (last && repo?.launch_profiles?.find(p => p.id === last.profileId)?.execution_type !== 'task') {
+          update(s => ({ ...s, errors: { ...s.errors, [repoId]: 'A service must be the final queue item. Remove it to add more tasks.' } }));
+          return;
+        }
+        update(s => ({ ...s, errors: { ...s.errors, [repoId]: undefined }, taskQueues: { ...s.taskQueues,
+          [repoId]: [...queue, { repoId, profileId, profileName: profile.name, launchedFromCwd: current.launchedFromCwd }],
+        } }));
+        return;
+      }
+      if (launching.has(repoId)) return;
+      launching.add(repoId);
+      let finish!: () => void;
+      launchFinished.set(repoId, new Promise<void>(resolve => { finish = resolve; }));
       try {
-        await invoke("launch_profile", { repoId, profileId, cwd: launchedFromCwd });
-
-        // Get profile info for display
-        const reposList = get(repos).list;
-        const repo = findRepoById(reposList, repoId);
-        const profile = repo?.launch_profiles?.find((p) => p.id === profileId);
-
+        // Publish the task immediately so another click can queue while its terminal opens.
         update((s) => ({
           ...s,
+          errors: { ...s.errors, [repoId]: undefined },
           runtimes: {
             ...s.runtimes,
             [repoId]: {
@@ -55,18 +78,45 @@ function createLaunchStore() {
               profileName: profile?.name,
               runningCommandIds: profile?.command_ids ?? [],
               startedAt: Date.now(),
+              executionType: profile?.execution_type ?? 'service',
+              taskStatus: profile?.execution_type === 'task' ? 'running' : undefined,
               launchedFromCwd,
             },
           },
         }));
+        await invoke("launch_profile", { repoId, profileId, cwd: launchedFromCwd });
       } catch (error) {
+        update(s => {
+          const runtimes = { ...s.runtimes };
+          if (current?.executionType === 'task') runtimes[repoId] = { ...current, taskStatus: 'failed' };
+          else if (profile.execution_type === 'task') runtimes[repoId] = { ...runtimes[repoId], taskStatus: 'failed' };
+          else delete runtimes[repoId];
+          return { ...s, runtimes, errors: { ...s.errors, [repoId]: String(error) } };
+        });
         console.error("[launch] Failed to launch profile:", error);
         throw error;
+      } finally {
+        launching.delete(repoId);
+        launchFinished.delete(repoId);
+        finish();
       }
+    },
+
+    removeTaskQueueItem(repoId: string, index: number): void {
+      update(s => ({ ...s, taskQueues: { ...s.taskQueues, [repoId]: (s.taskQueues[repoId] ?? []).filter((_, i) => i !== index) }, errors: { ...s.errors, [repoId]: undefined } }));
+    },
+
+    async retryTask(repoId: string): Promise<void> {
+      const runtime = get({ subscribe }).runtimes[repoId];
+      if (runtime?.profileId) await this.launchProfile(repoId, runtime.profileId, runtime.launchedFromCwd, true);
     },
 
     /** Launch specific commands directly */
     async launchCommands(repoId: string, repoPath: string, commands: LaunchCommand[], launchedFromCwd?: string): Promise<void> {
+      if (get({ subscribe }).runtimes[repoId]?.executionType === 'task') {
+        update(s => ({ ...s, errors: { ...s.errors, [repoId]: 'Create a profile to queue these commands, or stop the current task first.' } }));
+        return;
+      }
       try {
         await invoke("launch_commands", { repoId, repoPath, commands });
 
@@ -90,22 +140,51 @@ function createLaunchStore() {
 
     /** Stop all running processes for a repo */
     async stopAll(repoId: string): Promise<void> {
+      await launchFinished.get(repoId);
+      if (launching.has(repoId)) return;
+      launching.add(repoId);
       try {
         await invoke("stop_launch_profile", { repoId });
         update((s) => {
           const { [repoId]: _, ...rest } = s.runtimes;
-          return { ...s, runtimes: rest };
+          return { ...s, runtimes: rest, taskQueues: { ...s.taskQueues, [repoId]: [] }, errors: { ...s.errors, [repoId]: undefined } };
         });
       } catch (error) {
         console.error("[launch] Failed to stop profile:", error);
         throw error;
+      } finally {
+        launching.delete(repoId);
       }
     },
 
     /** Refresh runtime status from backend */
     async refreshStatus(repoId: string): Promise<void> {
+      if (refreshing.has(repoId) || launching.has(repoId)) return;
+      const runtime = get({ subscribe }).runtimes[repoId];
+      if (!runtime) return;
+      if (runtime.executionType === 'task' && runtime.taskStatus !== 'running') return;
+      refreshing.add(repoId);
       try {
+        if (runtime.executionType === 'task') {
+          const result = await invoke<{ status: 'running' | 'succeeded' | 'failed' }>('get_launch_task_status', { repoId });
+          if (get({ subscribe }).runtimes[repoId] !== runtime || launching.has(repoId)) return;
+          if (result.status === 'running') return;
+          update(s => ({ ...s, runtimes: { ...s.runtimes, [repoId]: { ...runtime, taskStatus: result.status } } }));
+          if (result.status === 'failed') return;
+          const next = get({ subscribe }).taskQueues[repoId]?.[0];
+          if (next) {
+            await this.launchProfile(repoId, next.profileId, next.launchedFromCwd, true);
+            update(s => ({ ...s, taskQueues: { ...s.taskQueues, [repoId]: (s.taskQueues[repoId] ?? []).filter(item => item !== next) } }));
+          } else {
+            update(s => {
+              const { [repoId]: _, ...rest } = s.runtimes;
+              return { ...s, runtimes: rest };
+            });
+          }
+          return;
+        }
         const runningIds = await invoke<string[]>("get_launch_status", { repoId });
+        if (get({ subscribe }).runtimes[repoId] !== runtime || launching.has(repoId)) return;
         update((s) => {
           if (runningIds.length === 0) {
             const { [repoId]: _, ...rest } = s.runtimes;
@@ -127,6 +206,11 @@ function createLaunchStore() {
         });
       } catch (error) {
         console.error("[launch] Failed to refresh status:", error);
+        update(s => ({ ...s, errors: { ...s.errors, [repoId]: String(error) }, runtimes: {
+          ...s.runtimes, ...(s.runtimes[repoId]?.taskStatus === 'succeeded' ? { [repoId]: { ...s.runtimes[repoId], taskStatus: 'failed' as const } } : {}),
+        } }));
+      } finally {
+        refreshing.delete(repoId);
       }
     },
 
@@ -232,6 +316,16 @@ function createLaunchStore() {
 }
 
 export const launchStore = createLaunchStore();
+
+// Task queues continue while the user views a different session or repository.
+if (typeof window !== 'undefined') {
+  const timer = setInterval(() => {
+    for (const [repoId, runtime] of Object.entries(get(launchStore).runtimes)) {
+      if (runtime.executionType === 'task' && runtime.taskStatus === 'running') void launchStore.refreshStatus(repoId);
+    }
+  }, 1000);
+  if (import.meta.hot) import.meta.hot.dispose(() => clearInterval(timer));
+}
 
 // ---- Derived Stores ----
 
