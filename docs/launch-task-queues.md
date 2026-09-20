@@ -1,6 +1,6 @@
 # Launch task queues
 
-In Settings → Repositories, each launch profile has an execution type:
+On the repository page, under Launch Profiles → Profiles, each launch profile has an execution type:
 
 - **Service** starts its commands together and keeps running. Existing profiles default to Service.
 - **Task** starts its commands together and completes when all succeed. A failed command pauses the queue.

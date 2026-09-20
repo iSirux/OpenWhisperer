@@ -982,6 +982,29 @@
                       <span class="status-pill status-pill-muted">{profile.command_ids.length} cmds</span>
                     </div>
                     <div class="chip-list">
+                      <label class="checkbox-chip">
+                        <span>Execution type</span>
+                        <select
+                          aria-label={`Execution type for ${profile.name}`}
+                          value={profile.execution_type ?? 'service'}
+                          onchange={(event) => updateLaunchProfile(profile.id, { execution_type: event.currentTarget.value as 'task' | 'service' })}
+                        >
+                          <option value="service">Service</option>
+                          <option value="task">Task</option>
+                        </select>
+                      </label>
+                      {#if profile.execution_type === 'task'}
+                        <label class="checkbox-chip">
+                          <input
+                            type="checkbox"
+                            checked={profile.close_on_success ?? true}
+                            onchange={(event) => updateLaunchProfile(profile.id, { close_on_success: event.currentTarget.checked })}
+                          />
+                          <span>Close terminal on success</span>
+                        </label>
+                      {/if}
+                    </div>
+                    <div class="chip-list">
                       {#each selectedRepo.launch_commands ?? [] as command (command.id)}
                         <label class="checkbox-chip">
                           <input type="checkbox" checked={profile.command_ids.includes(command.id)} onchange={() => toggleProfileMembership(profile.id, command.id)} />
