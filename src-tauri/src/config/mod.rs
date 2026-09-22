@@ -256,7 +256,7 @@ pub struct AppConfig {
 }
 
 fn default_model() -> String {
-    "claude-opus-5".to_string()
+    "claude-opus-5-5".to_string()
 }
 
 fn default_notify_parallel_agents() -> bool {
@@ -349,9 +349,9 @@ fn default_autocompact_enabled() -> bool {
 fn default_enabled_models() -> Vec<String> {
     vec![
         "claude-fable-5-1".to_string(),
+        "claude-opus-5-5".to_string(),
         "claude-fable-5".to_string(),
         "claude-opus-5".to_string(),
-        "claude-opus-4-8".to_string(),
     ]
 }
 
@@ -975,9 +975,15 @@ mod tests {
 
         migration::run_migrations(&mut value, 7);
         let config: AppConfig = serde_json::from_value(value).unwrap();
+        // v9 -> v10 later prepends Opus 5.5 to the same list.
         assert_eq!(
             config.enabled_models,
-            vec!["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5"]
+            vec![
+                "claude-opus-5-5",
+                "claude-fable-5-1",
+                "claude-opus-5",
+                "claude-sonnet-5"
+            ]
         );
     }
 
@@ -997,7 +1003,53 @@ mod tests {
         let config: AppConfig = serde_json::from_value(value).unwrap();
         assert_eq!(
             config.enabled_models,
-            vec!["claude-fable-5-1", "claude-opus-5"]
+            vec!["claude-opus-5-5", "claude-fable-5-1", "claude-opus-5"]
+        );
+    }
+
+    #[test]
+    fn migration_surfaces_opus_5_5() {
+        // A pre-v10 config gains Opus 5.5 at the front of the model selector
+        // without losing the rest of the selection or having its chosen
+        // default model swapped out (Opus 5.5 deprecates nothing).
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(9));
+        obj.insert(
+            "default_model".to_string(),
+            serde_json::json!("claude-opus-5"),
+        );
+        obj.insert(
+            "enabled_models".to_string(),
+            serde_json::json!(["claude-opus-5", "claude-sonnet-5"]),
+        );
+
+        migration::run_migrations(&mut value, 9);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.enabled_models,
+            vec!["claude-opus-5-5", "claude-opus-5", "claude-sonnet-5"]
+        );
+        assert_eq!(config.default_model, "claude-opus-5");
+    }
+
+    #[test]
+    fn migration_opus_5_5_is_not_duplicated() {
+        // Re-running the migration over a config that already lists Opus 5.5
+        // must not add a second entry.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(9));
+        obj.insert(
+            "enabled_models".to_string(),
+            serde_json::json!(["claude-opus-5", "claude-opus-5-5"]),
+        );
+
+        migration::run_migrations(&mut value, 9);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.enabled_models,
+            vec!["claude-opus-5-5", "claude-opus-5"]
         );
     }
 

@@ -46,7 +46,7 @@ Prompt goes as the positional argument, via `--prompt-file <path>`, or `-` to re
 - `--new-worktree`: create a fresh worktree for the run (independent branch).
 - If the worktree no longer exists when the schedule fires, the run happens in the main repository checkout instead.
 - `--repo <name>`: only when the user asks for a different repository, or you are not inside a git repo.
-- `--model <name>`: only when the user names a model. Short names work — `opus`, `sonnet`, `haiku`, `fable` (Claude) and `astra`, `sol`, `terra`, `luna` (Codex/GPT); a full id like `claude-opus-5` works too. **The provider follows from the model**, so `--model astra` runs the session on Codex — there is no separate provider flag. An unknown name is refused with the list of available models.
+- `--model <name>`: only when the user names a model. Short names work — `opus`, `sonnet`, `haiku`, `fable` (Claude) and `astra`, `sol`, `terra`, `luna` (Codex/GPT); a full id like `claude-opus-5-5` works too. **The provider follows from the model**, so `--model astra` runs the session on Codex — there is no separate provider flag. An unknown name is refused with the list of available models.
 - `--effort off|low|medium|high|xhigh|max`: only when the user asks. Defaults to the effort of the session you are in, clamped to what the model supports.
 - `--wait-idle`: hold the run until nothing else is working in that worktree. Good for "after the current work is done".
 - `--label "<short title>"`: optional; defaults to the first line of the prompt.

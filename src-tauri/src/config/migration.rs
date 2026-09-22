@@ -25,6 +25,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_v6_to_v7,
     migrate_v7_to_v8,
     migrate_v8_to_v9,
+    migrate_v9_to_v10,
 ];
 
 /// The schema version the current build writes. Derived from the table length so
@@ -305,6 +306,28 @@ fn migrate_v8_to_v9(value: &mut Value) {
 
     if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_openai_models") {
         enabled_models.insert(0, Value::String("gpt-6-astra".to_string()));
+        let mut seen = std::collections::HashSet::new();
+        enabled_models.retain(|v| match v {
+            Value::String(s) => seen.insert(s.clone()),
+            _ => true,
+        });
+    }
+}
+
+// ============================================================================
+// v9 -> v10: Claude Opus 5.5 rollout — surface the new flagship in existing
+// configs without disturbing the rest of the user's selection. Opus 5 is not
+// deprecated by it, so nothing is removed and the user's chosen `model` is
+// left alone.
+// ============================================================================
+
+fn migrate_v9_to_v10(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+
+    if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_models") {
+        enabled_models.insert(0, Value::String("claude-opus-5-5".to_string()));
         let mut seen = std::collections::HashSet::new();
         enabled_models.retain(|v| match v {
             Value::String(s) => seen.insert(s.clone()),

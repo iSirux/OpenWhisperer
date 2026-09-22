@@ -54,9 +54,17 @@ export const ALL_MODELS: ModelInfo[] = [
     maxEffort: "max",
   },
   {
+    id: "claude-opus-5-5",
+    label: "Opus 5.5",
+    title: "Opus 5.5 - Flagship for long-running agentic coding (1M context, adaptive thinking)",
+    maxContextTokens: 1000000,
+    supportsEffort: true,
+    maxEffort: "max",
+  },
+  {
     id: "claude-opus-5",
     label: "Opus 5",
-    title: "Opus 5 - Most capable model (1M context, adaptive thinking)",
+    title: "Opus 5 - Previous flagship (1M context, adaptive thinking)",
     maxContextTokens: 1000000,
     supportsEffort: true,
     maxEffort: "max",
@@ -223,7 +231,15 @@ export const DEFAULT_MODEL_ID = "claude-sonnet-5";
 export function resolveModelAlias(modelId: string): string {
   if (!modelId || isAutoModel(modelId) || getModelById(modelId)) return modelId;
   const alias = modelId.toLowerCase();
-  const match = [...ALL_MODELS, ...OPENAI_MODELS].find((m) => m.id.toLowerCase().includes(alias));
+  const all = [...ALL_MODELS, ...OPENAI_MODELS];
+  // Exact match on the un-prefixed id wins over the substring scan below, so a
+  // version-qualified alias still resolves to that exact version once a newer
+  // model shares its prefix ("opus-5" must not drift onto "claude-opus-5-5").
+  const exact = all.find(
+    (m) => m.id.toLowerCase() === `claude-${alias.replace(/\./g, "-")}`,
+  );
+  if (exact) return exact.id;
+  const match = all.find((m) => m.id.toLowerCase().includes(alias));
   return match?.id ?? modelId;
 }
 

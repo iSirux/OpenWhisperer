@@ -48,6 +48,7 @@ function inferClaudeContextWindow(model: string | undefined): number {
   const normalized = model?.toLowerCase() ?? "";
   if (
     normalized.startsWith("claude-fable-5") ||
+    normalized.startsWith("claude-opus-5-5") ||
     normalized.startsWith("claude-opus-5") ||
     normalized.startsWith("claude-opus-4-8") ||
     normalized.startsWith("claude-opus-4-7") ||

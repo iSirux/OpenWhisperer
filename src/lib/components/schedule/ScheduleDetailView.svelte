@@ -126,7 +126,7 @@
     const model =
       provider === 'openai'
         ? $settings.openai_model || 'gpt-5.6-terra'
-        : $settings.default_model || 'claude-opus-5';
+        : $settings.default_model || 'claude-opus-5-5';
     patchSessionTarget({ provider, model, accountId: undefined });
   }
 

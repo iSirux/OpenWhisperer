@@ -34,6 +34,7 @@ export function getShortModelName(model: string): string {
     return 'Fable 5';
   }
   if (model.includes('opus')) {
+    if (model.includes('opus-5-5')) return 'Opus 5.5';
     if (model.includes('opus-5')) return 'Opus 5';
     if (model.includes('opus-4-8')) return 'Opus 4.8';
     if (model.includes('opus-4-7')) return 'Opus 4.7';
