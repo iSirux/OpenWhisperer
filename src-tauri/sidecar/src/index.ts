@@ -29,7 +29,7 @@ const OPENAI_MODEL_FALLBACK = "gpt-5.6-terra";
 
 function inferOpenAiContextWindow(model: string | undefined): number {
   const normalized = model?.toLowerCase() ?? "";
-  // GPT-6 Astra has a 1.05M context window.
+  // The GPT-6 family has a 1.05M context window.
   if (normalized.includes("gpt-6")) {
     return 1050000;
   }
@@ -279,7 +279,7 @@ interface UpdateEffortMessage {
   id: string;
   // Effort level: null, 'low', 'medium', 'high', 'xhigh', 'max'.
   // The Claude SDK accepts the full range natively; OpenAI clamps per model
-  // (GPT-6 Astra accepts 'max', GPT-5.6 caps at 'xhigh', older Codex models at 'high').
+  // (GPT-6 accepts 'max', GPT-5.6 caps at 'xhigh', older Codex models at 'high').
   effortLevel: string | null;
 }
 
@@ -289,7 +289,7 @@ interface UpdateEffortMessage {
  * - Claude Agent SDK natively supports: 'low' | 'medium' | 'high' | 'xhigh' |
  *   'max' (EffortLevel), and it handles its own fallback for models that don't
  *   support a given level ('xhigh' -> 'high'). So every level passes through.
- * - Codex / OpenAI: GPT-6 Astra accepts the full range through 'max' (Codex's
+ * - Codex / OpenAI: GPT-6 models accept the full range through 'max' (Codex's
  *   ModelReasoningEffort gained 'max' in 0.153). The GPT-5.6 family accepts up
  *   to 'xhigh' ('max' is clamped to 'xhigh'); older models only accept
  *   'low' | 'medium' | 'high' ('xhigh'/'max' clamped to 'high').

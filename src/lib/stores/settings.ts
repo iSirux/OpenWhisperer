@@ -806,6 +806,8 @@ const defaultConfig: AppConfig = {
   openai_model: "gpt-5.6-terra",
   enabled_openai_models: [
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",

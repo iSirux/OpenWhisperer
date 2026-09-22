@@ -132,6 +132,8 @@ pub struct ModelUsageStats {
     pub sonnet_sessions: u64,
     pub haiku_sessions: u64,
     pub codex_6_astra_sessions: u64,
+    pub codex_6_sol_sessions: u64,
+    pub codex_6_luna_sessions: u64,
     pub codex_56_sol_sessions: u64,
     pub codex_56_terra_sessions: u64,
     pub codex_56_luna_sessions: u64,
@@ -166,6 +168,8 @@ pub enum ModelFamily {
     Sonnet,
     Haiku,
     Codex6Astra,
+    Codex6Sol,
+    Codex6Luna,
     Codex56Sol,
     Codex56Terra,
     Codex56Luna,
@@ -189,6 +193,10 @@ pub fn classify_model(model: &str) -> ModelFamily {
         ModelFamily::Haiku
     } else if m == "gpt-6-astra" {
         ModelFamily::Codex6Astra
+    } else if m == "gpt-6-sol" {
+        ModelFamily::Codex6Sol
+    } else if m == "gpt-6-luna" {
+        ModelFamily::Codex6Luna
     } else if m == "gpt-5.6-sol" {
         ModelFamily::Codex56Sol
     } else if m == "gpt-5.6-terra" {
@@ -340,6 +348,8 @@ impl UsageStats {
             ModelFamily::Sonnet => self.model_usage.sonnet_sessions += 1,
             ModelFamily::Haiku => self.model_usage.haiku_sessions += 1,
             ModelFamily::Codex6Astra => self.model_usage.codex_6_astra_sessions += 1,
+            ModelFamily::Codex6Sol => self.model_usage.codex_6_sol_sessions += 1,
+            ModelFamily::Codex6Luna => self.model_usage.codex_6_luna_sessions += 1,
             ModelFamily::Codex56Sol => self.model_usage.codex_56_sol_sessions += 1,
             ModelFamily::Codex56Terra => self.model_usage.codex_56_terra_sessions += 1,
             ModelFamily::Codex56Luna => self.model_usage.codex_56_luna_sessions += 1,
@@ -472,5 +482,17 @@ impl UsageStats {
 
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_model, ModelFamily};
+
+    #[test]
+    fn classifies_gpt_6_variants_separately() {
+        assert_eq!(classify_model("gpt-6-astra"), ModelFamily::Codex6Astra);
+        assert_eq!(classify_model("gpt-6-sol"), ModelFamily::Codex6Sol);
+        assert_eq!(classify_model("gpt-6-luna"), ModelFamily::Codex6Luna);
     }
 }

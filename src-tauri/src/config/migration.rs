@@ -26,6 +26,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_v7_to_v8,
     migrate_v8_to_v9,
     migrate_v9_to_v10,
+    migrate_v10_to_v11,
 ];
 
 /// The schema version the current build writes. Derived from the table length so
@@ -328,6 +329,29 @@ fn migrate_v9_to_v10(value: &mut Value) {
 
     if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_models") {
         enabled_models.insert(0, Value::String("claude-opus-5-5".to_string()));
+        let mut seen = std::collections::HashSet::new();
+        enabled_models.retain(|v| match v {
+            Value::String(s) => seen.insert(s.clone()),
+            _ => true,
+        });
+    }
+}
+
+// ============================================================================
+// v10 -> v11: GPT-6 Sol and Luna rollout — surface both models in existing
+// configs without changing the user's selected Codex model.
+// ============================================================================
+
+fn migrate_v10_to_v11(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+
+    if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_openai_models") {
+        // Insert in reverse order so Sol appears before Luna while preserving
+        // the user's existing list after the two newly available models.
+        enabled_models.insert(0, Value::String("gpt-6-luna".to_string()));
+        enabled_models.insert(0, Value::String("gpt-6-sol".to_string()));
         let mut seen = std::collections::HashSet::new();
         enabled_models.retain(|v| match v {
             Value::String(s) => seen.insert(s.clone()),

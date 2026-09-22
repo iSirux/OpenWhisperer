@@ -18,6 +18,8 @@ export function getModelType(modelId: string): ModelType {
   // OpenAI/Codex models share colors with the equivalent Claude capability
   // class rather than receiving a separate color for every model name.
   if (modelId.startsWith('gpt-6-astra')) return 'fable';
+  if (modelId.startsWith('gpt-6-sol')) return 'opus';
+  if (modelId.startsWith('gpt-6-luna')) return 'haiku';
   if (modelId.startsWith('gpt-5.6-sol')) return 'opus';
   if (modelId.startsWith('gpt-5.6-terra')) return 'sonnet';
   if (modelId.startsWith('gpt-5.6-luna')) return 'haiku';
@@ -50,6 +52,8 @@ export function getShortModelName(model: string): string {
   if (model.startsWith('codex-mini')) return 'Codex Mini';
   if (model.startsWith('codex')) return 'Codex';
   if (model === 'gpt-6-astra') return '6 Astra';
+  if (model === 'gpt-6-sol') return '6 Sol';
+  if (model === 'gpt-6-luna') return '6 Luna';
   if (model === 'gpt-5.6-sol') return '5.6 Sol';
   if (model === 'gpt-5.6-terra') return '5.6 Terra';
   if (model === 'gpt-5.6-luna') return '5.6 Luna';

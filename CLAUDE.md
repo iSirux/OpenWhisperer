@@ -260,7 +260,7 @@ Located in `src-tauri/sidecar/`:
 - **Codex execution:** always via `codex app-server` — a full JSON-RPC client implementation (turn tracking, item events, usage emission). The former `codex_mode: "Sdk" | "AppServer"` choice is gone; the sidecar hardcodes app-server for OpenAI sessions (the SDK-based session-query path `handleCodexQuery` and the `codex_mode` config field remain as unreachable vestiges). `@openai/codex-sdk` itself is still in active use — the generation helper `generate_repo_description_with_codex` runs one-off Codex threads through it
 - Handles session creation, query execution, tool calls, and streaming responses
 - Supports multimodal prompts (text + images via base64 content blocks)
-- **Effort levels** via `update_effort` (`low|medium|high|xhigh|max` or off); Claude passes through natively, OpenAI clamps per model (GPT-6 Astra accepts `max`, the GPT-5.6 family caps at `xhigh`, older Codex models at `high`); effort is plumbed to Codex via `effort` on `turn/start`
+- **Effort levels** via `update_effort` (`low|medium|high|xhigh|max` or off); Claude passes through natively, OpenAI clamps per model (the GPT-6 family accepts `max`, the GPT-5.6 family caps at `xhigh`, older Codex models at `high`); effort is plumbed to Codex via `effort` on `turn/start`
 - Live model switching via `update_model`
 - Permission mode defaults to `acceptEdits`; the SDK's native `ExitPlanMode` is intercepted via `canUseTool` and surfaced to the user as a plan-approval dialog (approve / deny / approve-with-note)
 - Session restoration with conversation history context injection
@@ -272,7 +272,7 @@ Located in `src-tauri/sidecar/`:
 
 ## Effort Levels
 
-SDK sessions carry a per-session effort level (off, `low`, `medium`, `high`, `xhigh`, `max`) selected via `EffortToggle` or recommended by the LLM integration. Claude maps effort natively; OpenAI clamps to the model's supported ceiling (`max` for GPT-6 Astra, `xhigh` for the GPT-5.6 family, `high` for older Codex models).
+SDK sessions carry a per-session effort level (off, `low`, `medium`, `high`, `xhigh`, `max`) selected via `EffortToggle` or recommended by the LLM integration. Claude maps effort natively; OpenAI clamps to the model's supported ceiling (`max` for the GPT-6 family, `xhigh` for the GPT-5.6 family, `high` for older Codex models).
 
 ## Key Data Flow
 

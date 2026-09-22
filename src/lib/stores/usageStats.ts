@@ -55,6 +55,8 @@ export interface ModelUsageStats {
   sonnet_sessions: number;
   haiku_sessions: number;
   codex_6_astra_sessions: number;
+  codex_6_sol_sessions: number;
+  codex_6_luna_sessions: number;
   codex_56_sol_sessions: number;
   codex_56_terra_sessions: number;
   codex_56_luna_sessions: number;
@@ -144,6 +146,8 @@ const defaultStats: UsageStats = {
     sonnet_sessions: 0,
     haiku_sessions: 0,
     codex_6_astra_sessions: 0,
+    codex_6_sol_sessions: 0,
+    codex_6_luna_sessions: 0,
     codex_56_sol_sessions: 0,
     codex_56_terra_sessions: 0,
     codex_56_luna_sessions: 0,

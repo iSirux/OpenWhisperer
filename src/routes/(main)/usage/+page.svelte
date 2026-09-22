@@ -22,7 +22,7 @@
 
   // Model usage totals by provider
   let totalClaude = $derived($usageStats.model_usage.opus_sessions + $usageStats.model_usage.sonnet_sessions + $usageStats.model_usage.haiku_sessions);
-  let totalCodex = $derived(($usageStats.model_usage.codex_6_astra_sessions || 0) + ($usageStats.model_usage.codex_56_sol_sessions || 0) + ($usageStats.model_usage.codex_56_terra_sessions || 0) + ($usageStats.model_usage.codex_56_luna_sessions || 0) + ($usageStats.model_usage.codex_54_sessions || 0) + ($usageStats.model_usage.codex_53_sessions || 0) + ($usageStats.model_usage.codex_53_spark_sessions || 0) + ($usageStats.model_usage.codex_52_sessions || 0) + ($usageStats.model_usage.codex_51_mini_sessions || 0));
+  let totalCodex = $derived(($usageStats.model_usage.codex_6_astra_sessions || 0) + ($usageStats.model_usage.codex_6_sol_sessions || 0) + ($usageStats.model_usage.codex_6_luna_sessions || 0) + ($usageStats.model_usage.codex_56_sol_sessions || 0) + ($usageStats.model_usage.codex_56_terra_sessions || 0) + ($usageStats.model_usage.codex_56_luna_sessions || 0) + ($usageStats.model_usage.codex_54_sessions || 0) + ($usageStats.model_usage.codex_53_sessions || 0) + ($usageStats.model_usage.codex_53_spark_sessions || 0) + ($usageStats.model_usage.codex_52_sessions || 0) + ($usageStats.model_usage.codex_51_mini_sessions || 0));
   let totalModelsAll = $derived(totalClaude + totalCodex);
 
   let resettingStats = $state(false);
@@ -721,6 +721,24 @@
                       <div class="bg-green-600 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_6_astra_sessions || 0, totalModelsAll)}%"></div>
                     </div>
                     <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_6_astra_sessions || 0}</div>
+                  </div>
+                {/if}
+                {#if ($usageStats.model_usage.codex_6_sol_sessions || 0) > 0}
+                  <div class="flex items-center gap-3">
+                    <div class="w-20 text-sm text-text-secondary">6 Sol</div>
+                    <div class="flex-1 bg-border rounded-full h-2">
+                      <div class="bg-green-500 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_6_sol_sessions || 0, totalModelsAll)}%"></div>
+                    </div>
+                    <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_6_sol_sessions || 0}</div>
+                  </div>
+                {/if}
+                {#if ($usageStats.model_usage.codex_6_luna_sessions || 0) > 0}
+                  <div class="flex items-center gap-3">
+                    <div class="w-20 text-sm text-text-secondary">6 Luna</div>
+                    <div class="flex-1 bg-border rounded-full h-2">
+                      <div class="bg-green-300 h-2 rounded-full" style="width: {getModelPercentage($usageStats.model_usage.codex_6_luna_sessions || 0, totalModelsAll)}%"></div>
+                    </div>
+                    <div class="w-10 text-right text-sm text-text-primary">{$usageStats.model_usage.codex_6_luna_sessions || 0}</div>
                   </div>
                 {/if}
                 {#if ($usageStats.model_usage.codex_56_sol_sessions || 0) > 0}

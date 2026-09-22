@@ -364,6 +364,8 @@ pub(crate) fn default_openai_model() -> String {
 fn default_enabled_openai_models() -> Vec<String> {
     vec![
         "gpt-6-astra".to_string(),
+        "gpt-6-sol".to_string(),
+        "gpt-6-luna".to_string(),
         "gpt-5.6-sol".to_string(),
         "gpt-5.6-terra".to_string(),
         "gpt-5.6-luna".to_string(),
@@ -1071,7 +1073,13 @@ mod tests {
         let config: AppConfig = serde_json::from_value(value).unwrap();
         assert_eq!(
             config.enabled_openai_models,
-            vec!["gpt-6-astra", "gpt-5.6-terra", "gpt-5.6-luna"]
+            vec![
+                "gpt-6-sol",
+                "gpt-6-luna",
+                "gpt-6-astra",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna"
+            ]
         );
         assert_eq!(config.openai_model, "gpt-5.6-luna");
     }
@@ -1092,7 +1100,45 @@ mod tests {
         let config: AppConfig = serde_json::from_value(value).unwrap();
         assert_eq!(
             config.enabled_openai_models,
-            vec!["gpt-6-astra", "gpt-5.6-terra"]
+            vec!["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-terra"]
+        );
+    }
+
+    #[test]
+    fn migration_surfaces_gpt_6_sol_and_luna() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(10));
+        obj.insert("openai_model".to_string(), serde_json::json!("gpt-6-astra"));
+        obj.insert(
+            "enabled_openai_models".to_string(),
+            serde_json::json!(["gpt-6-astra", "gpt-5.6-terra"]),
+        );
+
+        migration::run_migrations(&mut value, 10);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.enabled_openai_models,
+            vec!["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-terra"]
+        );
+        assert_eq!(config.openai_model, "gpt-6-astra");
+    }
+
+    #[test]
+    fn migration_gpt_6_sol_and_luna_are_not_duplicated() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(10));
+        obj.insert(
+            "enabled_openai_models".to_string(),
+            serde_json::json!(["gpt-6-luna", "gpt-6-astra", "gpt-6-sol"]),
+        );
+
+        migration::run_migrations(&mut value, 10);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.enabled_openai_models,
+            vec!["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]
         );
     }
 

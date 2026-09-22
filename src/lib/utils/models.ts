@@ -15,8 +15,8 @@ export interface ModelInfo {
    * - 'high': Older OpenAI/Codex models (pre-5.6) cap out here
    * - 'xhigh': GPT-5.6 family (Codex's ModelReasoningEffort capped at 'xhigh'
    *   until GPT-6) and an intermediate Anthropic tier between 'high' and 'max'
-   * - 'max': Full "max" reasoning (native Anthropic SDK value; GPT-6 Astra also
-   *   accepts it — Codex's ModelReasoningEffort gained 'max' in 0.153)
+   * - 'max': Full "max" reasoning (native Anthropic SDK value; the GPT-6
+   *   family also accepts it — Codex's ModelReasoningEffort gained 'max' in 0.153)
    */
   maxEffort?: 'high' | 'xhigh' | 'max';
   /**
@@ -116,6 +116,22 @@ export const OPENAI_MODELS: ModelInfo[] = [
     id: "gpt-6-astra",
     label: "6 Astra",
     title: "GPT-6 Astra - Most capable OpenAI model (1.05M context, effort up to max)",
+    maxContextTokens: 1050000,
+    supportsEffort: true,
+    maxEffort: "max",
+  },
+  {
+    id: "gpt-6-sol",
+    label: "6 Sol",
+    title: "GPT-6 Sol - Complex coding and agentic workflows (1.05M context, effort up to max)",
+    maxContextTokens: 1050000,
+    supportsEffort: true,
+    maxEffort: "max",
+  },
+  {
+    id: "gpt-6-luna",
+    label: "6 Luna",
+    title: "GPT-6 Luna - Fast, efficient model for focused tasks (1.05M context, effort up to max)",
     maxContextTokens: 1050000,
     supportsEffort: true,
     maxEffort: "max",
@@ -291,7 +307,7 @@ export function modelSupportsEffort(modelId: string): boolean {
  * Get the maximum effort level supported by a model.
  * - 'high' for older OpenAI/Codex models and older Claude tiers
  * - 'xhigh' for the GPT-5.6 family (Codex caps those at xhigh)
- * - 'max' for Opus, Sonnet 5, Fable 5, and GPT-6 Astra
+ * - 'max' for Opus, Sonnet 5, Fable 5, and the GPT-6 family
  */
 export function getMaxEffort(modelId: string): 'high' | 'xhigh' | 'max' {
   const model = getModelById(modelId);
@@ -315,7 +331,7 @@ const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 /**
  * Clamp an effort level down to a value the given model/provider actually supports.
  *
- * - OpenAI/Codex models are clamped to the model's `maxEffort`: GPT-6 Astra accepts
+ * - OpenAI/Codex models are clamped to the model's `maxEffort`: GPT-6 models accept
  *   the full range through 'max'; the GPT-5.6 family accepts up to 'xhigh' (so
  *   'max' -> 'xhigh'); older models cap at 'high'. Unknown OpenAI model IDs
  *   conservatively clamp 'xhigh'/'max' -> 'high'.
