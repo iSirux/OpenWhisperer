@@ -3571,19 +3571,14 @@ async function runValidationCodexThread(msg: ValidationAgentMessage): Promise<vo
       workingDirectory: msg.cwd,
       skipGitRepoCheck: true,
       model: msg.model,
-      // Evidence/lint may need build caches or formatter output just as their
-      // Claude rail may run unrestricted shell commands. Review/docs/verify
-      // remain read-only. Simplify edits AND commits+pushes its own work, so it
-      // gets the same treatment as an interactive Auto-approve Codex session
-      // (see CodexPermissionMode in config/provider.rs): workspace-write leaves
-      // `.git` unwritable (`git add` dies on "Unable to create .git/index.lock")
-      // and blocks git's schannel TLS, and with approvalPolicy "never" there is
-      // no approval path out of either.
-      sandboxMode: role.readOnly
-        ? "read-only"
-        : msg.role === "simplify"
-          ? "danger-full-access"
-          : "workspace-write",
+      // Codex read-only denies command execution without approval, including
+      // git diff/log. Validation is unattended (approvalPolicy "never"), so
+      // inspection roles need workspace-write to run local commands. Their
+      // prompt still forbids edits. Simplify also commits and pushes, which
+      // requires access to protected .git paths and network access.
+      sandboxMode: msg.role === "simplify"
+        ? "danger-full-access"
+        : "workspace-write",
       approvalPolicy: "never",
       ...(effort
         ? { modelReasoningEffort: effort as ThreadOptions["modelReasoningEffort"] }
@@ -3594,8 +3589,11 @@ async function runValidationCodexThread(msg: ValidationAgentMessage): Promise<vo
       : codex.startThread(threadOptions);
 
     const texts: string[] = [];
+    let inspectedGitDiff = false;
     let usage: Record<string, number> | undefined;
     const prompt = `${msg.prompt}
+
+${role.readOnly ? "This is an inspection-only validation step. Do not edit files or run commands that change the repository." : ""}
 
 Provider-specific completion requirement: you are running through Codex, so the submit_* tools
 named above are not available. Do the requested work, then return the result as your final response
@@ -3609,6 +3607,8 @@ using the provided JSON schema. Do not merely describe the JSON and do not wrap 
           type: string;
           text?: string;
           command?: string;
+          status?: string;
+          exit_code?: number;
           changes?: Array<{ path?: string }>;
         };
         if (item.type === "agent_message" && event.type === "item.completed" && item.text) {
@@ -3628,6 +3628,15 @@ using the provided JSON schema. Do not merely describe the JSON and do not wrap 
             tool: "Bash",
             detail: truncate(item.command ?? "", 200),
           });
+        } else if (item.type === "command_execution" && event.type === "item.completed") {
+          if (
+            (msg.role === "review" || msg.role === "verify") &&
+            item.status === "completed" &&
+            item.exit_code === 0 &&
+            /\bgit(?:\.exe)?\s+(?:-C\s+(?:"[^"]+"|'[^']+'|\S+)\s+)?(?:--no-pager\s+)?diff\b/i.test(item.command ?? "")
+          ) {
+            inspectedGitDiff = true;
+          }
         } else if (item.type === "file_change" && event.type === "item.completed") {
           const paths = (item.changes ?? [])
             .map((c) => c.path)
@@ -3666,6 +3675,10 @@ using the provided JSON schema. Do not merely describe the JSON and do not wrap 
         const m = (event as { message?: string }).message;
         throw new Error(m || "Codex thread error");
       }
+    }
+
+    if ((msg.role === "review" || msg.role === "verify") && !inspectedGitDiff) {
+      throw new Error(`Codex ${msg.role} could not inspect a Git diff; the validation step was not completed`);
     }
 
     let structured: unknown;
