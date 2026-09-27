@@ -488,11 +488,33 @@ impl SessionIndex {
     pub fn load_all_sessions(&mut self) -> PersistedSessions {
         let mut sdk_sessions = Vec::new();
         let mut corrupted_ids: Vec<String> = Vec::new();
+        // Sessions rewritten with display-sized images, with their new content hash.
+        let mut rewritten: Vec<(String, Option<u64>)> = Vec::new();
 
         for entry in &self.entries {
             match entry.session_type.as_str() {
                 "sdk" => match self.load_session_data::<PersistedSdkSession>(&entry.id) {
-                    Ok(session) => sdk_sessions.push(session),
+                    Ok(mut session) => {
+                        // One-time shrink for sessions persisted before tool-result
+                        // images were display-sized on arrival (see image_shrink).
+                        let shrunk = shrink_tool_result_images(&mut session);
+                        if shrunk > 0 {
+                            log::info!(
+                                "[session_persistence] Shrank {} tool-result image(s) in session {}",
+                                shrunk,
+                                entry.id
+                            );
+                            match self.save_session_data(&entry.id, &session) {
+                                Ok(()) => rewritten.push((entry.id.clone(), compute_content_hash(&session))),
+                                Err(e) => log::error!(
+                                    "[session_persistence] Failed to rewrite shrunk session {}: {}",
+                                    entry.id,
+                                    e
+                                ),
+                            }
+                        }
+                        sdk_sessions.push(session);
+                    }
                     Err(e) => {
                         log::error!(
                             "[session_persistence] Skipping corrupted SDK session {}: {}",
@@ -523,9 +545,17 @@ impl SessionIndex {
                     );
                 }
             }
+        }
 
+        for (id, hash) in &rewritten {
+            if let Some(entry) = self.entries.iter_mut().find(|e| &e.id == id) {
+                entry.content_hash = *hash;
+            }
+        }
+
+        if !corrupted_ids.is_empty() || !rewritten.is_empty() {
             if let Err(e) = self.save() {
-                log::error!("[session_persistence] Failed to save pruned index: {}", e);
+                log::error!("[session_persistence] Failed to save updated index: {}", e);
             }
         }
 
@@ -545,12 +575,22 @@ impl SessionIndex {
 
     /// Accept a bulk PersistedSessions from the frontend, write each session
     /// to its own file, rebuild the index, and delete stale data files.
-    pub fn save_from_bulk(&mut self, sessions: &PersistedSessions) -> Result<(), String> {
+    ///
+    /// `unchanged_ids` are live sessions the frontend didn't resend because they
+    /// haven't changed since it last persisted them — they keep their existing
+    /// index entry and data file. Any of those the index doesn't actually hold
+    /// (entry or file gone) are returned, so the frontend can send them in full.
+    pub fn save_from_bulk(
+        &mut self,
+        sessions: &PersistedSessions,
+        unchanged_ids: &[String],
+    ) -> Result<Vec<String>, String> {
         // Build the set of incoming session IDs
         let incoming_ids: HashSet<String> = sessions
             .sdk_sessions
             .iter()
             .map(|s| s.id.clone())
+            .chain(unchanged_ids.iter().cloned())
             .collect();
 
         // Snapshot the previously-stored content hashes so we can skip rewriting
@@ -589,6 +629,15 @@ impl SessionIndex {
             }
             new_entries.push(entry);
         }
+
+        let mut missing_ids = Vec::new();
+        for id in unchanged_ids {
+            let on_disk = Self::data_dir().join(format!("{}.json", id)).exists();
+            match self.entries.iter().find(|e| &e.id == id) {
+                Some(existing) if on_disk => new_entries.push(existing.clone()),
+                _ => missing_ids.push(id.clone()),
+            }
+        }
         self.entries = new_entries;
 
         // Copy active ID and timestamp
@@ -596,7 +645,8 @@ impl SessionIndex {
         self.saved_at = sessions.saved_at;
 
         // Save index
-        self.save()
+        self.save()?;
+        Ok(missing_ids)
     }
 
     /// Decide whether a session's data file must be (re)written. Writes when the
@@ -819,6 +869,47 @@ fn compute_content_hash<T: Serialize>(value: &T) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     hasher.write(&bytes);
     Some(hasher.finish())
+}
+
+/// Re-encode a session's oversized tool-result images to display size (see
+/// `image_shrink`). Returns how many were re-encoded; 0 leaves the session untouched.
+fn shrink_tool_result_images(session: &mut PersistedSdkSession) -> usize {
+    use crate::image_shrink::{budget_for, par_sum, shrink};
+
+    let is_subagent = |m: &PersistedSdkMessage| m.parent_tool_use_id.as_deref().is_some_and(|p| !p.is_empty());
+    // Cheap scan first: nearly every session has nothing to do, and the parallel
+    // pass would otherwise spin up threads for each of them.
+    let has_work = session.messages.iter().any(|m| {
+        m.msg_type == "tool_result"
+            && m.images.as_ref().is_some_and(|imgs| {
+                imgs.iter()
+                    .any(|i| budget_for(is_subagent(m)).wants(i.base64_data.len(), (i.width, i.height)))
+            })
+    });
+    if !has_work {
+        return 0;
+    }
+
+    par_sum(&mut session.messages, |msg| {
+        if msg.msg_type != "tool_result" {
+            return 0;
+        }
+        let budget = budget_for(is_subagent(msg));
+        let Some(images) = msg.images.as_mut() else {
+            return 0;
+        };
+        let mut shrunk = 0;
+        for img in images.iter_mut() {
+            if let Some(out) = shrink(&img.base64_data, (img.width, img.height), budget) {
+                img.media_type = out.media_type.to_string();
+                img.base64_data = out.base64_data;
+                img.width = Some(out.width);
+                img.height = Some(out.height);
+                shrunk += 1;
+            }
+        }
+        shrunk
+    })
 }
 
 /// Extract lightweight index metadata from an SDK session

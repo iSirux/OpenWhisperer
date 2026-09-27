@@ -1,42 +1,72 @@
 use crate::session_persistence::{PersistedSdkSession, PersistedSessions, SessionIndex};
 use serde::Serialize;
+use std::sync::Mutex;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveSessionsResult {
     pub overflow_sdk_sessions: Vec<PersistedSdkSession>,
+    /// Ids sent as unchanged that the index doesn't hold — the frontend must
+    /// resend them in full.
+    pub missing_sdk_session_ids: Vec<String>,
+}
+
+/// Serializes every session-index read-modify-write. These commands are async so a
+/// save (session payloads can run to megabytes) never blocks the main thread, which
+/// means two could otherwise run at once and interleave their index load/save.
+static SESSION_IO: Mutex<()> = Mutex::new(());
+
+/// Run session persistence work on the blocking pool, one operation at a time.
+async fn run_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = SESSION_IO.lock().unwrap_or_else(|e| e.into_inner());
+        work()
+    })
+    .await
+    .map_err(|e| format!("Session persistence task failed: {}", e))?
 }
 
 #[tauri::command]
-pub fn get_persisted_sessions() -> PersistedSessions {
-    let mut index = SessionIndex::load();
-    index.load_all_sessions()
+pub async fn get_persisted_sessions() -> Result<PersistedSessions, String> {
+    run_blocking(|| {
+        let mut index = SessionIndex::load();
+        Ok(index.load_all_sessions())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_persisted_sessions(
+pub async fn save_persisted_sessions(
     sessions: PersistedSessions,
     max_sessions: usize,
+    unchanged_sdk_session_ids: Option<Vec<String>>,
 ) -> Result<SaveSessionsResult, String> {
-    let mut sessions = sessions;
-    sessions.saved_at = crate::util::now_secs();
+    run_blocking(move || {
+        let mut sessions = sessions;
+        sessions.saved_at = crate::util::now_secs();
 
-    let mut index = SessionIndex::load();
+        let mut index = SessionIndex::load();
 
-    // Write all sessions to individual files and rebuild index
-    index.save_from_bulk(&sessions)?;
+        // Write changed sessions to their files and rebuild the index
+        let missing_sdk_session_ids =
+            index.save_from_bulk(&sessions, unchanged_sdk_session_ids.as_deref().unwrap_or(&[]))?;
 
-    // Handle overflow: extract sessions beyond max, load their data, delete their files
-    let overflow_sdk = index.separate_overflow(max_sessions);
+        // Handle overflow: extract sessions beyond max, load their data, delete their files
+        let overflow_sdk = index.separate_overflow(max_sessions);
 
-    // Save index again after overflow removal
-    if !overflow_sdk.is_empty() {
-        index.save()?;
-    }
+        // Save index again after overflow removal
+        if !overflow_sdk.is_empty() {
+            index.save()?;
+        }
 
-    Ok(SaveSessionsResult {
-        overflow_sdk_sessions: overflow_sdk,
+        Ok(SaveSessionsResult {
+            overflow_sdk_sessions: overflow_sdk,
+            missing_sdk_session_ids,
+        })
     })
+    .await
 }
 
 /// Partial autosave: upsert only the given SDK sessions (the hot path during a
@@ -44,16 +74,22 @@ pub fn save_persisted_sessions(
 /// index; does not delete stale files or enforce overflow — that stays with the
 /// full `save_persisted_sessions` path.
 #[tauri::command]
-pub fn upsert_persisted_sdk_sessions(
+pub async fn upsert_persisted_sdk_sessions(
     sessions: Vec<PersistedSdkSession>,
     active_sdk_session_id: Option<String>,
 ) -> Result<(), String> {
-    let mut index = SessionIndex::load();
-    index.upsert_sdk_sessions(&sessions, active_sdk_session_id)
+    run_blocking(move || {
+        let mut index = SessionIndex::load();
+        index.upsert_sdk_sessions(&sessions, active_sdk_session_id)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn clear_persisted_sessions() -> Result<(), String> {
-    let mut index = SessionIndex::load();
-    index.clear()
+pub async fn clear_persisted_sessions() -> Result<(), String> {
+    run_blocking(|| {
+        let mut index = SessionIndex::load();
+        index.clear()
+    })
+    .await
 }

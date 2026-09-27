@@ -1145,8 +1145,14 @@ impl SidecarManager {
                 tool_use_id,
                 parent_tool_use_id,
                 turn_uuid,
-                images,
+                mut images,
             } => {
+                // Display-size the agent's image results before they reach the store —
+                // they're persisted with the session, and full-res reads bloat it.
+                if let Some(images) = images.as_mut() {
+                    let is_subagent = parent_tool_use_id.as_deref().is_some_and(|p| !p.is_empty());
+                    crate::image_shrink::shrink_json_images(images, is_subagent);
+                }
                 Self::emit(
                     app,
                     suffix,

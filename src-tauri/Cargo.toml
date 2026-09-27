@@ -49,6 +49,8 @@ tauri-plugin-log = "2"
 log = "0.4"
 windows-sys = { version = "0.59", features = ["Win32_UI_Shell"] }
 xcap = "0.9.6"
+# Downscales agent tool-result images to display size — see src/image_shrink.rs.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 

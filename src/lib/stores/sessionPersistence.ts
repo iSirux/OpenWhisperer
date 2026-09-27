@@ -562,11 +562,38 @@ function isSdkSessionPersistable(s: SdkSession): boolean {
   return !!(hasTranscript || hasLlmReasoning);
 }
 
+// The session object last written to disk, by id. The store is immutable — every
+// mutation spreads into a new session object — so a matching identity means the
+// session's file is already current and it needn't be sent again. Without this,
+// every full save shipped every session's entire history through IPC, and a
+// running session's ticking duration made the backend rewrite its whole file.
+// (A running session's duration is therefore only re-persisted when it next
+// changes — at most a few seconds stale during a live query.)
+const lastPersisted = new Map<string, SdkSession>();
+
+// The backend runs saves off the main thread, so two in flight at once could land
+// out of order and let an older snapshot overwrite a newer one. Run them one at a
+// time; each reads the store when it starts, so a queued save is never stale.
+let saveChain: Promise<unknown> = Promise.resolve();
+function enqueueSave(work: () => Promise<void>): Promise<void> {
+  const run = saveChain.then(work, work);
+  saveChain = run.catch(() => {});
+  return run;
+}
+
+function markPersisted(sessions: SdkSession[]): void {
+  for (const s of sessions) lastPersisted.set(s.id, s);
+}
+
 /**
  * Save current sessions to disk.
  * All session fields are automatically persisted except those in NON_PERSISTABLE_FIELDS.
  */
-export async function saveSessionsToDisk(): Promise<void> {
+export function saveSessionsToDisk(): Promise<void> {
+  return enqueueSave(() => fullSave(true));
+}
+
+async function fullSave(allowResend: boolean): Promise<void> {
   const currentSettings = get(settings);
 
   if (!currentSettings.session_persistence.enabled) {
@@ -577,9 +604,11 @@ export async function saveSessionsToDisk(): Promise<void> {
   const currentActiveSdkId = get(activeSdkSessionId);
 
   const persistableSdkSessions = currentSdkSessions.filter(isSdkSessionPersistable);
+  const changedSessions = persistableSdkSessions.filter(s => lastPersisted.get(s.id) !== s);
+  const unchangedIds = persistableSdkSessions.filter(s => lastPersisted.get(s.id) === s).map(s => s.id);
 
   const persistedData: PersistedSessions = {
-    sdk_sessions: persistableSdkSessions.map(sdkSessionToPersisted),
+    sdk_sessions: changedSessions.map(sdkSessionToPersisted),
     active_sdk_session_id: currentActiveSdkId && persistableSdkSessions.some(s => s.id === currentActiveSdkId)
       ? currentActiveSdkId
       : null,
@@ -589,10 +618,24 @@ export async function saveSessionsToDisk(): Promise<void> {
   try {
     const result = await invoke<{
       overflowSdkSessions: PersistedSdkSession[];
+      missingSdkSessionIds: string[];
     }>('save_persisted_sessions', {
       sessions: persistedData,
       maxSessions: currentSettings.session_persistence.max_sessions,
+      unchangedSdkSessionIds: unchangedIds,
     });
+
+    // Sessions removed by the frontend drop out of the backend index too; forget them.
+    const liveIds = new Set(persistableSdkSessions.map(s => s.id));
+    for (const id of lastPersisted.keys()) {
+      if (!liveIds.has(id)) lastPersisted.delete(id);
+    }
+    markPersisted(changedSessions);
+
+    // The backend didn't have a file for some "unchanged" sessions (deleted or
+    // pruned behind our back) — forget them so the resend below sends them in full.
+    const missingIds = result.missingSdkSessionIds ?? [];
+    for (const id of missingIds) lastPersisted.delete(id);
 
     // Archive overflow sessions instead of losing them
     if (result.overflowSdkSessions?.length > 0) {
@@ -649,7 +692,12 @@ export async function saveSessionsToDisk(): Promise<void> {
       }
     }
 
-    console.log('[sessionPersistence] Sessions saved to disk');
+    console.log(`[sessionPersistence] Sessions saved to disk (${changedSessions.length} changed, ${unchangedIds.length} unchanged)`);
+
+    if (missingIds.length > 0 && allowResend) {
+      console.warn(`[sessionPersistence] Backend lacked ${missingIds.length} unchanged session(s); resending in full`);
+      await fullSave(false);
+    }
   } catch (error) {
     console.error('[sessionPersistence] Failed to save sessions:', error);
   }
@@ -663,7 +711,11 @@ export async function saveSessionsToDisk(): Promise<void> {
  * `saveSessionsToDisk` path (which still runs on structural changes,
  * the periodic timer, and visibility/unload).
  */
-export async function saveSdkSessionsPartial(dirtyIds: Set<string>): Promise<void> {
+export function saveSdkSessionsPartial(dirtyIds: Set<string>): Promise<void> {
+  return enqueueSave(() => partialSave(dirtyIds));
+}
+
+async function partialSave(dirtyIds: Set<string>): Promise<void> {
   const currentSettings = get(settings);
   if (!currentSettings.session_persistence.enabled) {
     return;
@@ -672,24 +724,27 @@ export async function saveSdkSessionsPartial(dirtyIds: Set<string>): Promise<voi
   const allSdkSessions = get(sdkSessions);
   const activeId = get(activeSdkSessionId);
 
-  const toPersist: PersistedSdkSession[] = [];
+  const sessions: SdkSession[] = [];
   for (const id of dirtyIds) {
     const session = allSdkSessions.find(s => s.id === id);
     // Missing → removed since being marked dirty; removal paths trigger a full
     // save that reconciles the stale file, so it's safe to skip here.
     if (!session || !isSdkSessionPersistable(session)) continue;
-    toPersist.push(sdkSessionToPersisted(session));
+    // Already written by an earlier save (e.g. a full save that ran in between).
+    if (lastPersisted.get(id) === session) continue;
+    sessions.push(session);
   }
 
-  if (toPersist.length === 0) {
+  if (sessions.length === 0) {
     return;
   }
 
   try {
     await invoke('upsert_persisted_sdk_sessions', {
-      sessions: toPersist,
+      sessions: sessions.map(sdkSessionToPersisted),
       activeSdkSessionId: activeId && allSdkSessions.some(s => s.id === activeId) ? activeId : null,
     });
+    markPersisted(sessions);
   } catch (error) {
     console.error('[sessionPersistence] Failed to partial-save sessions:', error);
   }
@@ -771,7 +826,8 @@ export async function loadSessionsFromDisk(): Promise<void> {
  */
 export async function clearPersistedSessions(): Promise<void> {
   try {
-    await invoke('clear_persisted_sessions');
+    await enqueueSave(() => invoke<void>('clear_persisted_sessions'));
+    lastPersisted.clear();
     console.log('[sessionPersistence] Persisted sessions cleared');
   } catch (error) {
     console.error('[sessionPersistence] Failed to clear sessions:', error);

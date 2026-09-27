@@ -347,8 +347,13 @@ impl ArchiveIndex {
             .session_type
             .clone();
 
-        // Load full session data before removing
-        let data = self.load_session_data(id)?;
+        // Load full session data before removing. Restored SDK sessions go back into
+        // the live store, so display-size their tool-result images the same way the
+        // live path does (archives made before that can hold hundreds of MB of them).
+        let mut data = self.load_session_data(id)?;
+        if session_type == "sdk" {
+            crate::image_shrink::shrink_session_value(&mut data);
+        }
 
         // Remove from index
         self.entries.retain(|e| e.id != id);

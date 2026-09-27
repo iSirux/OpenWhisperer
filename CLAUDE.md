@@ -207,6 +207,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `realtime.rs` - Multi-provider real-time STT WebSocket clients (replaces the old `vosk.rs`): common `RealtimeSession` trait dispatched via `RealtimeSessionType`, `RealtimeSessionManager`, per-provider connection tests, `RealtimeResponse` (Partial/Final)
 - `git.rs` - GitManager for repository operations (branch/worktree creation, changed-file counts)
 - `session_persistence.rs` - Session persistence layer for disk storage
+- `image_shrink.rs` - Downscales agent tool-result images to display size (800px main agent, 384px subagent thumbnails) as they arrive from the sidecar, once on session load, and on unarchive — full-res `Read` results once bloated a session to 142 MB. Prompt images the user attaches are never touched
 - `archive.rs` - Archived-session index (`ArchiveEntry`/`ArchiveIndex`)
 - `launch.rs` - Launch-profile/command execution
 - `notion.rs` - Notion API client

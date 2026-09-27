@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod docker;
 mod git;
+mod image_shrink;
 mod launch;
 mod launch_task;
 mod llm;
