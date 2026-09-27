@@ -7,6 +7,7 @@ mod image_shrink;
 mod launch;
 mod launch_task;
 mod llm;
+mod local_llm;
 mod meeting;
 mod notion;
 mod persist;
@@ -24,7 +25,7 @@ mod win_env;
 
 use commands::{
     account_cmds, archive_cmds, audio_cmds, cli_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
-    launch_cmds, llm_cmds, log_cmds,
+    launch_cmds, llm_cmds, local_llm_cmds, log_cmds,
     mcp_cmds, notion_cmds, pile_cmds, realtime_cmds, schedule_cmds, screenshot_cmds, sdk_cmds,
     sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds, validation_cmds,
 };
@@ -232,6 +233,10 @@ fn shutdown_app(app: &tauri::AppHandle) {
 
     let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
     sidecar.shutdown();
+    // Free the local model's VRAM (the Windows job object is the backstop
+    // for exits that skip this path).
+    let local_llm_mgr: tauri::State<Arc<local_llm::LocalLlmManager>> = app.state();
+    local_llm_mgr.shutdown();
     let launch_mgr: tauri::State<Arc<launch::LaunchManager>> = app.state();
     launch_mgr.stop_all_repos();
     // Remove tray icon before exit to prevent orphaned icon on Windows
@@ -344,6 +349,7 @@ pub fn run() {
         .manage(launch_manager)
         .manage(validation_manager)
         .manage(Arc::new(meeting::MeetingManager::new()))
+        .manage(Arc::new(local_llm::LocalLlmManager::new()))
         .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
             // The config loads before the log plugin exists, so its outcome was
@@ -399,6 +405,12 @@ pub fn run() {
 
             // Initialize sequence manager, scheduler, and event-trigger listeners
             init_sequences(app);
+
+            // Local LLM: connect the manager to the app, then start the
+            // managed llama-server if it was set up.
+            app.state::<Arc<local_llm::LocalLlmManager>>()
+                .set_host(Arc::new(local_llm::TauriHost(app.handle().clone())));
+            local_llm::spawn_auto_start(app.handle().clone());
 
             // Meeting mode: mark meetings a dead process left live as
             // `interrupted`, then apply audio retention (file IO only).
@@ -600,6 +612,17 @@ pub fn run() {
             llm_cmds::generate_quick_actions,
             llm_cmds::meeting_triage,
             llm_cmds::meeting_consolidate,
+            // --- Local LLM (llama.cpp) ---
+            local_llm_cmds::local_llm_probe,
+            local_llm_cmds::local_llm_presets,
+            local_llm_cmds::local_llm_status,
+            local_llm_cmds::local_llm_install,
+            local_llm_cmds::local_llm_cancel,
+            local_llm_cmds::local_llm_start,
+            local_llm_cmds::local_llm_stop,
+            local_llm_cmds::local_llm_uninstall,
+            local_llm_cmds::local_llm_benchmark,
+            local_llm_cmds::local_llm_set_routing,
             // --- Realtime transcription ---
             docker_cmds::run_docker_setup,
             docker_cmds::check_docker,

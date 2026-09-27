@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { get } from 'svelte/store';
   import { settings, type LlmProvider } from '$lib/stores/settings';
+  import LocalLlmSetup from '$lib/components/settings/LocalLlmSetup.svelte';
 
   interface LlmTestResult {
     success: boolean;
@@ -34,6 +35,9 @@
   let saving = $state(false);
   let testing = $state(false);
   let testResult = $state<LlmTestResult | null>(null);
+  /** "api" = hosted provider + key; "local" = one-click llama.cpp setup. */
+  let mode = $state<'api' | 'local'>('api');
+  const localReady = $derived(!!$settings.local_llm?.runtime_dir && !!$settings.local_llm?.model_path);
 
   const provider = $derived($settings.llm.profiles[0]?.provider ?? 'Groq');
   const needsKey = $derived(provider !== 'Local');
@@ -41,6 +45,8 @@
   const voice = $derived(!$settings.system.voice_mode_disabled);
 
   onMount(async () => {
+    const local = get(settings).local_llm;
+    if (local?.runtime_dir && local?.model_path) mode = 'local';
     // Default fresh installs to Groq — free tier, fast, one key.
     if (!get(settings).llm.enabled && (get(settings).llm.profiles[0]?.provider ?? 'Groq') === 'Gemini') {
       applyProvider('Groq');
@@ -111,7 +117,39 @@
     </ul>
   </div>
 
-  {#if enabled && testResult?.success}
+  <div class="grid grid-cols-2 gap-2">
+    <button
+      class="p-3 rounded-lg border-2 text-left transition-colors {mode === 'api'
+        ? 'border-accent bg-accent/10'
+        : 'border-border hover:border-border/80'}"
+      onclick={() => (mode = 'api')}
+    >
+      <span class="block text-sm font-medium text-text-primary">Use an API</span>
+      <span class="block text-xs text-text-muted">Fastest. Free Groq key, one paste.</span>
+    </button>
+    <button
+      class="p-3 rounded-lg border-2 text-left transition-colors {mode === 'local'
+        ? 'border-accent bg-accent/10'
+        : 'border-border hover:border-border/80'}"
+      onclick={() => (mode = 'local')}
+    >
+      <span class="block text-sm font-medium text-text-primary">Run locally (free, private)</span>
+      <span class="block text-xs text-text-muted">Downloads an open model; nothing leaves this machine.</span>
+    </button>
+  </div>
+
+  {#if mode === 'local'}
+    <div class="p-4 bg-surface-elevated border border-border rounded-lg space-y-3">
+      <LocalLlmSetup variant="onboarding" />
+      {#if localReady}
+        <p class="text-sm text-success">Smart features are on and run on your own machine.</p>
+      {:else}
+        <p class="text-xs text-text-muted">
+          Large download — you can continue the setup and it keeps running, or manage it later in Settings → LLM.
+        </p>
+      {/if}
+    </div>
+  {:else if enabled && testResult?.success}
     <div class="p-4 bg-surface-elevated border border-border rounded-lg">
       <p class="text-sm text-success flex items-center gap-1.5">
         <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">

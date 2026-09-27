@@ -183,6 +183,8 @@ pub fn reset_config(
         // Accounts are user data too (repo whitelists and sessions point at them).
         fresh.accounts = std::mem::take(&mut cfg.accounts);
         crate::config::ensure_default_accounts(&mut fresh.accounts);
+        // The local LLM block records what is installed on disk (runtime, model).
+        fresh.local_llm = cfg.local_llm.clone();
         fresh.active_repo_index = cfg.active_repo_index;
         fresh.auto_repo_mode = cfg.auto_repo_mode;
         fresh.onboarding_completed = !redo_onboarding;

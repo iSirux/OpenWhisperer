@@ -539,6 +539,35 @@ export interface LlmConfig {
 // Alias for backwards compatibility
 export type GeminiConfig = LlmConfig;
 
+/** In-app local LLM (llama.cpp server). Mirrors Rust `config/local_llm.rs`.
+ *  Written by the one-click setup (`stores/localLlm.ts`); install state, so it
+ *  survives "Restore defaults". */
+export interface LocalLlmConfig {
+  /** Start the server on app launch (only once set up) */
+  auto_start: boolean;
+  /** Installed llama.cpp runtime directory */
+  runtime_dir: string | null;
+  /** llama.cpp release tag, e.g. "b11222" */
+  runtime_version: string | null;
+  /** Build variant: "cuda-13.4" | "vulkan" | "cpu" | "metal" | … */
+  runtime_variant: string | null;
+  /** Model file the server loads */
+  model_path: string | null;
+  /** Model/profile name */
+  model_name: string | null;
+  /** Curated preset id (null = user-supplied file) */
+  preset_id: string | null;
+  /** Where preset models are downloaded (null = <config dir>/local-llm/models) */
+  models_dir: string | null;
+  /** Preferred port (falls back to the next free one) */
+  port: number;
+  context_size: number;
+  /** Local profile first in the quality chain (background features) */
+  use_for_quality: boolean;
+  /** Local profile first in the fast chain (instant features) */
+  use_for_fast: boolean;
+}
+
 /** Notification channel type for sequences (external integrations only) */
 export type NotificationChannelType = "slack" | "discord" | "webhook";
 
@@ -672,6 +701,8 @@ export interface AppConfig {
   pane_layout?: PaneLayoutConfig;
   tool_display_mode: ToolDisplayMode;
   llm: LlmConfig;
+  /** In-app local LLM (llama.cpp) set up from Settings → LLM */
+  local_llm: LocalLlmConfig;
   /** @deprecated Use llm instead */
   gemini?: LlmConfig;
   /** MCP server configuration */
@@ -922,6 +953,21 @@ const defaultConfig: AppConfig = {
     },
     confirm_repo_selection: false,
     min_auto_select_confidence: "high",
+  },
+  // Keep in sync with LocalLlmConfig::default() in src-tauri/src/config/local_llm.rs
+  local_llm: {
+    auto_start: true,
+    runtime_dir: null,
+    runtime_version: null,
+    runtime_variant: null,
+    model_path: null,
+    model_name: null,
+    preset_id: null,
+    models_dir: null,
+    port: 1234,
+    context_size: 32768,
+    use_for_quality: true,
+    use_for_fast: false,
   },
   mcp: {
     servers: [],

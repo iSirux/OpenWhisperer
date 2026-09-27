@@ -47,7 +47,7 @@ regex = "1"
 tauri-plugin-notification = "2"
 tauri-plugin-log = "2"
 log = "0.4"
-windows-sys = { version = "0.59", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.59", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
 xcap = "0.9.6"
 # Downscales agent tool-result images to display size — see src/image_shrink.rs.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

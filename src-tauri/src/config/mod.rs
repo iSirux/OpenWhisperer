@@ -12,6 +12,7 @@ pub mod accounts;
 pub mod audio;
 pub mod hotkeys;
 pub mod llm;
+pub mod local_llm;
 pub mod mcp;
 pub mod meeting;
 pub mod migration;
@@ -28,6 +29,7 @@ pub use accounts::*;
 pub use audio::*;
 pub use hotkeys::*;
 pub use llm::*;
+pub use local_llm::*;
 pub use mcp::*;
 pub use meeting::*;
 pub use provider::*;
@@ -224,6 +226,9 @@ pub struct AppConfig {
     pub tool_display_mode: ToolDisplayMode,
     #[serde(default, alias = "gemini")]
     pub llm: LlmConfig,
+    /// In-app local LLM (llama.cpp server) managed by the one-click setup
+    #[serde(default)]
+    pub local_llm: LocalLlmConfig,
     /// MCP server configuration
     #[serde(default)]
     pub mcp: McpConfig,
@@ -428,6 +433,7 @@ impl Default for AppConfig {
             pane_layout: None,
             tool_display_mode: ToolDisplayMode::default(),
             llm: LlmConfig::default(),
+            local_llm: LocalLlmConfig::default(),
             mcp: McpConfig::default(),
             sequences: SequenceConfig::default(),
             queue: QueueConfig::default(),

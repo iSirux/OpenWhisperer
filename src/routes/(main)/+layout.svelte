@@ -14,6 +14,7 @@
   import { meetings, isMeetingActive } from '$lib/stores/meetings';
   import { journal } from '$lib/stores/journal';
   import { startCliInbox } from '$lib/stores/cliInbox';
+  import { initLocalLlm } from '$lib/stores/localLlm';
   import { spareTokens, startSpareTokens } from '$lib/stores/spareTokens';
   import { updater } from '$lib/stores/updater';
   import { isRecording } from '$lib/stores/recording';
@@ -460,6 +461,10 @@
     // (enabled gating happens inside each evaluation).
     await spareTokens.load();
     cleanupSpareTokens = startSpareTokens();
+
+    // Local LLM: status/progress listeners + merging backend config changes
+    // (install, routing, port moves) into the settings store.
+    void initLocalLlm();
 
     // If there are existing sessions, show sessions view
     if ($sdkSessions.length > 0 && $navigation.mainView === 'start') {
