@@ -33,7 +33,7 @@
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
   import { dockOrientation } from "$lib/stores/dockOrientation";
   import { sessionPrs } from "$lib/stores/sessionPrs";
-  import { validation, validationRuns } from "$lib/stores/validation";
+  import { validation, validationRuns, defaultRunOptionsForSession } from "$lib/stores/validation";
   import AskUserQuestionWizard from "./sdk/AskUserQuestionWizard.svelte";
   import PlanApprovalDialog from "./sdk/PlanApprovalDialog.svelte";
   import CodexApprovalDialog from "./sdk/CodexApprovalDialog.svelte";
@@ -1843,6 +1843,17 @@
     await sdkSessions.queueTurnAfterSessions(sessionId, prompt, images, "session");
   }
 
+  // Send menu "Validate when this session is idle": queue a validation run with
+  // the repo's last-used settings (the header's Validate popover is the full form).
+  let canQueueValidation = $derived(!!session?.cwd && session.cwd !== ".");
+  function handleQueueValidation() {
+    const current = session;
+    if (!current?.cwd || current.cwd === ".") return;
+    const repoSteps = current.repoId ? findRepoById($repos.list, current.repoId)?.validation_steps : undefined;
+    const options = defaultRunOptionsForSession(current, current.repoId, repoSteps);
+    validation.queueRun(sessionId, current.cwd, current.repoId, options, "session_idle");
+  }
+
   // Model and effort change handlers
   function handleModelChange(newModel: string) {
     sdkSessions.updateSessionModel(sessionId, newModel);
@@ -2442,6 +2453,7 @@
       onScheduleRecurring={handleScheduleRecurring}
       onSendSessionIdle={handleSendSessionIdle}
       onSendAfterIdle={handleSendAfterIdle}
+      onQueueValidation={canQueueValidation ? handleQueueValidation : undefined}
       onStopQuery={handleStopQuery}
       onStartRecording={handleStartRecording}
       onStopRecording={handleStopRecording}

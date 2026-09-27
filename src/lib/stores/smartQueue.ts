@@ -26,7 +26,8 @@
 // =============================================================================
 
 import { derived, get, writable } from 'svelte/store';
-import { sdkSessions, hasBusySessionsInScope, parkedTurnsOf, type AfterSessionsScope, type QueueReason, type SdkSession } from './sdkSessions';
+import { sdkSessions, hasBusySessionsInScope, parkedTurnsOf, type AfterSessionsScope, type QueueReason, type RateLimitedState, type SdkSession } from './sdkSessions';
+import { validationHoldsTurn } from './validation';
 import { rateLimitData, codexRateLimitData, rateLimits, codexRateLimits, accountRateLimits, rateLimitStoreForAccount } from './rateLimits';
 import { isDefaultAccountId } from '$lib/utils/accounts';
 import { usageLimitReady, MAX_USAGE_LIMIT_RETRIES, USAGE_LIMIT_RETRY_DELAY_MS } from '$lib/utils/usageLimitRecovery';
@@ -60,6 +61,8 @@ interface PendingItem {
   cwd?: string;
   /** For after_sessions rateLimited items: wait on just the own session, or the whole cwd scope. */
   scope?: AfterSessionsScope;
+  /** For rateLimited items: what the parked turn does (absent = send the prompt). */
+  action?: RateLimitedState['action'];
 }
 
 // -----------------------------------------------------------------------------
@@ -132,6 +135,7 @@ function toPendingItems(session: SdkSession): PendingItem[] {
     retryAttempts: turn.retryAttempts,
     cwd: session.cwd,
     scope: turn.scope,
+    action: turn.action,
   }));
 }
 
@@ -176,13 +180,19 @@ function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider):
  * Across ALL reasons, a parked turn additionally waits for its own session to go idle:
  * dispatching into a running query would interrupt the agent mid-work, which is never
  * what "send this later" meant (and matches how native message schedules behave).
+ * It likewise waits while a validation run on its session is working (a queued
+ * validation also waits out an active run's gate) — see `validationHoldsTurn`.
  */
 function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolean {
-  const exhausted = providerExhaustion(item.provider, item.accountId).exhausted;
+  // A validation spends the reviewer's usage, not the session provider's, so the
+  // session provider's exhaustion is no reason to hold it.
+  const exhausted =
+    item.action !== 'validate' && providerExhaustion(item.provider, item.accountId).exhausted;
 
   if (item.kind === 'rateLimited') {
     const own = sessions.find((s) => s.id === item.id);
     if (!own || own.status === 'querying' || own.status === 'initializing') return false;
+    if (validationHoldsTurn(item.id, item.action)) return false;
   }
 
   if (item.reason === 'rate_limit') {

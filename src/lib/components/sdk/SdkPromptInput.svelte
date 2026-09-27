@@ -43,6 +43,7 @@
     onScheduleRecurring,
     onSendSessionIdle,
     onSendAfterIdle,
+    onQueueValidation,
     onStopQuery,
     onStartRecording,
     onStopRecording,
@@ -93,6 +94,8 @@
     onSendSessionIdle?: (prompt: string, images?: SdkImageContent[]) => void;
     /** Defer this turn until every session in this repo+worktree is done (Ctrl+Shift+click / Ctrl+Shift+Enter). */
     onSendAfterIdle?: (prompt: string, images?: SdkImageContent[]) => void;
+    /** Queue a validation run (last-used settings) for when this session is idle. Needs no draft. */
+    onQueueValidation?: () => void;
     onStopQuery: () => void;
     onStartRecording: () => void;
     /** Stop a record-and-send recording; `timing` routes the resulting send
@@ -398,12 +401,13 @@
   // disabled when it can't be acted on rather than hidden.
   let showScheduleCaret = $derived(showScheduleSend && !!onScheduleSend);
   // The dropdown can only be acted on for a live session that can take a
-  // follow-up turn, and only with a draft. A running query is deliberately NOT a
-  // blocker — deferring a turn while the agent works ("when this session is idle",
-  // "at 09:00") is exactly when scheduling is most useful, and it matches the Send
-  // button, which stays enabled mid-query.
+  // follow-up turn. A running query is deliberately NOT a blocker — deferring a
+  // turn while the agent works ("when this session is idle", "at 09:00") is
+  // exactly when scheduling is most useful, and it matches the Send button, which
+  // stays enabled mid-query. The send items need a draft; "Validate" doesn't, so
+  // it keeps the menu openable on an empty draft.
   let canScheduleSend = $derived(
-    showScheduleCaret && !isRecording && !isTranscribing && hasDraft,
+    showScheduleCaret && !isRecording && !isTranscribing && (hasDraft || !!onQueueValidation),
   );
 
   $effect(() => {
@@ -795,6 +799,7 @@
             <button
               class="send-menu-item"
               role="menuitem"
+              disabled={!hasDraft}
               onclick={() => {
                 scheduleMenuOpen = false;
                 handleSendPrompt("session_idle");
@@ -808,6 +813,7 @@
             <button
               class="send-menu-item"
               role="menuitem"
+              disabled={!hasDraft}
               onclick={() => {
                 scheduleMenuOpen = false;
                 handleSendPrompt("repo_idle");
@@ -821,12 +827,13 @@
             class="send-menu-item"
             role="menuitem"
             title="Ctrl+Shift+Alt+click Send"
+            disabled={!hasDraft}
             onclick={() => handleScheduleSend("5h")}
           >
             <span class="menu-item-label">Send on next 5h reset</span>
             {#if countdown5h}<span class="menu-item-countdown">in {countdown5h}</span>{/if}
           </button>
-          <button class="send-menu-item" role="menuitem" onclick={() => handleScheduleSend("7d")}>
+          <button class="send-menu-item" role="menuitem" disabled={!hasDraft} onclick={() => handleScheduleSend("7d")}>
             <span class="menu-item-label">Send on next 7d reset</span>
             {#if countdown7d}<span class="menu-item-countdown">in {countdown7d}</span>{/if}
           </button>
@@ -834,6 +841,7 @@
             <button
               class="send-menu-item"
               role="menuitem"
+              disabled={!hasDraft}
               aria-expanded={timePickerOpen}
               onclick={() => (timePickerOpen = !timePickerOpen)}
             >
@@ -859,6 +867,20 @@
               onclick={openRecurringDialog}
             >
               <span class="menu-item-label">Recurring…</span>
+            </button>
+          {/if}
+          {#if onQueueValidation}
+            <div class="send-menu-divider" role="separator"></div>
+            <button
+              class="send-menu-item"
+              role="menuitem"
+              title="Queue a validation run with this repo's last-used settings"
+              onclick={() => {
+                scheduleMenuOpen = false;
+                onQueueValidation();
+              }}
+            >
+              <span class="menu-item-label">Validate when this session is idle</span>
             </button>
           {/if}
         </div>
@@ -1022,6 +1044,17 @@
   }
 
   .send-menu-item:hover:not(:disabled) {
+    background: var(--color-border);
+  }
+
+  .send-menu-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .send-menu-divider {
+    height: 1px;
+    margin: 0.25rem 0;
     background: var(--color-border);
   }
 

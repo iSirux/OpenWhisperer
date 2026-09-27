@@ -18,7 +18,7 @@ import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
 import { defaultAccountIdForRepo } from '$lib/utils/accounts';
 // Type-only import (erased at build; no runtime cycle with the validation store,
 // which value-imports from here).
-import type { PersistedValidationRun } from './validation';
+import type { PersistedValidationRun, RunOptions } from './validation';
 
 // =============================================================================
 // Debounced Save
@@ -462,10 +462,24 @@ export interface RateLimitedState {
    * What the parked turn does when it fires. Absent/'prompt' = send `prompt` as a
    * normal turn. 'compact' = run history compaction instead (provider-correct:
    * Claude sends the `/compact` slash command, Codex calls `compact_sdk_session`).
+   * 'validate' = start a validation run with `validation` (see `validation.ts`);
+   * `prompt` is then only the ghost bubble's label.
    */
-  action?: 'compact';
+  action?: 'compact' | 'validate';
+  /** For action 'validate': the run's settings, snapshotted when it was queued. */
+  validation?: QueuedValidation;
   queuedAt: number;
 }
+
+/** A validation run parked as a turn. The intent is built from the session at fire time. */
+export interface QueuedValidation {
+  cwd: string;
+  repoId?: string;
+  options: RunOptions;
+}
+
+/** When a parked validation turn fires — the send-timing set plus a custom time. */
+export type QueuedValidationTiming = 'session_idle' | 'repo_idle' | 'reset_5h' | { at: number };
 
 /** Mint an id for a newly parked turn. */
 export function newParkedTurnId(): string {
@@ -3976,6 +3990,93 @@ function createSdkSessionsStore() {
     },
 
     /**
+     * Queue a validation run as a parked turn, so it waits in line with queued messages,
+     * shows a ghost bubble, and survives restart. `label` is the ghost's text. For
+     * 'reset_5h' the boundary is the reviewer's provider/account window (it's the
+     * reviewer that spends usage), not the session's. Always parks — even when idle —
+     * so the Smart Queue fires it in FIFO order with anything already queued.
+     */
+    queueValidation(
+      id: string,
+      label: string,
+      validation: QueuedValidation,
+      timing: QueuedValidationTiming,
+      reviewer: { provider: SdkProvider; accountId?: string },
+    ): void {
+      const session = get({ subscribe }).find(s => s.id === id);
+      if (!session) return;
+
+      const provider = session.provider ?? getProviderForModel(session.model);
+      const now = Date.now();
+      const turnId = newParkedTurnId();
+      let turn: RateLimitedState;
+      let queued: NonNullable<SdkMessage['queued']>;
+      if (typeof timing === 'object') {
+        turn = { id: turnId, reason: 'scheduled', provider, targetStartAt: timing.at, prompt: label, queuedAt: now };
+        queued = 'at_time';
+      } else if (timing === 'reset_5h') {
+        const targetStartAt = nextWindowResetAt(reviewer.provider, '5h', reviewer.accountId) ?? now;
+        turn = { id: turnId, reason: 'scheduled', provider, window: '5h', targetStartAt, resetsAt: targetStartAt, prompt: label, queuedAt: now };
+        queued = 'reset_5h';
+      } else {
+        const scope: AfterSessionsScope = timing === 'session_idle' ? 'session' : 'worktree';
+        turn = { id: turnId, reason: 'after_sessions', provider, scope, prompt: label, queuedAt: now };
+        queued = timing;
+      }
+      turn = { ...turn, action: 'validate', validation };
+
+      update(list =>
+        list.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                lastActivityAt: now,
+                messages: [...s.messages, { type: 'user' as const, content: label, queued, queuedTurnId: turnId, timestamp: now }],
+                parkedTurns: [...parkedTurnsOf(s), turn],
+              }
+            : s
+        )
+      );
+      debouncedSave(id);
+    },
+
+    /**
+     * A parked validation turn is firing: drop it from the queue and swap its ghost
+     * bubble for a notification marking where the run started in the transcript.
+     */
+    releaseValidationTurn(id: string, turnId: string, note: string): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id) return s;
+          const turn = parkedTurnsOf(s).find(t => t.id === turnId);
+          if (!turn) return s;
+          const ghost = findParkedGhostMessage(s.messages, turn);
+          return {
+            ...s,
+            parkedTurns: parkedTurnsOf(s).filter(t => t.id !== turnId),
+            messages: [
+              ...s.messages.filter(m => m !== ghost),
+              { type: 'notification' as const, content: note, timestamp: Date.now() },
+            ],
+          };
+        })
+      );
+      debouncedSave(id);
+    },
+
+    /** Append an informational notification to a session's transcript. */
+    addNotification(id: string, content: string): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? { ...s, messages: [...s.messages, { type: 'notification' as const, content, timestamp: Date.now() }] }
+            : s
+        )
+      );
+      debouncedSave(id);
+    },
+
+    /**
      * Smart Queue: send a parked pending turn WITHOUT duplicating the user message
      * (it's already in the transcript). Used by the "Continue now" button and the drain driver.
      * `turnId` picks one of possibly several parked turns; omitted = the oldest.
@@ -3993,6 +4094,14 @@ function createSdkSessionsStore() {
       if (session.status === 'querying' || session.status === 'initializing') return;
       /** Drop just this turn from the session's parked queue, leaving the others. */
       const withoutTurn = (s: SdkSession) => parkedTurnsOf(s).filter(t => t.id !== rl.id);
+
+      // A parked validation starts a run (headless reviewers — the session's own agent
+      // process isn't needed). Dynamic import: validation.ts imports this store.
+      if (rl.action === 'validate') {
+        const { dispatchQueuedValidation } = await import('./validation');
+        await dispatchQueuedValidation(id, rl);
+        return;
+      }
 
       await this.ensureSessionLive(id);
       // Restoration can await process startup. Cancellation, a manual send, or

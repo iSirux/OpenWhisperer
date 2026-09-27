@@ -4,6 +4,7 @@
   import { sendTimingLabel, type SendTiming } from "$lib/utils/sendTiming";
   import { formatScheduleTarget } from "$lib/utils/duration";
   import SendTimingIcon from "./SendTimingIcon.svelte";
+  import { validationRuns } from "$lib/stores/validation";
 
   // `turn` is the parked (not-yet-sent) turn — the source of truth for what will be
   // sent and when; `message` is its flagged ghost bubble, pulled out of the scrolling
@@ -30,12 +31,21 @@
   onDestroy(() => clearInterval(timer));
 
   let targetMs = $derived(turn.targetStartAt);
-  let label = $derived(
+  // A queued validation run rides the same rails; only the wording differs.
+  let isValidation = $derived(turn.action === "validate");
+  let timingLabel = $derived(
     timing === "at_time"
       ? targetMs != null
         ? `Sends ${formatScheduleTarget(targetMs, now)}`
         : "Sends at the scheduled time"
       : sendTimingLabel(timing),
+  );
+  let label = $derived(isValidation ? `Validation · ${timingLabel.replace(/^Sends/, "Runs")}` : timingLabel);
+  // A queued validation also waits for any active run on this session to end.
+  let waitingOnRun = $derived(
+    isValidation && [...$validationRuns.values()].some(
+      (r) => r.sessionId === session.id && (r.status === "running" || r.status === "gate"),
+    ),
   );
   // The clock glyph doubles as the custom-time marker (there is no 'at_time' timing icon).
   let iconTiming: SendTiming = $derived(timing === "at_time" ? "repo_idle" : timing);
@@ -94,10 +104,21 @@
   </div>
 
   <div class="ghost-actions">
-    <button class="ghost-btn primary" onclick={handleSendNow} disabled={busy} title="Send this turn now">
-      Send now
+    <button
+      class="ghost-btn primary"
+      onclick={handleSendNow}
+      disabled={busy || waitingOnRun || (isValidation && (session.status === "querying" || session.status === "initializing"))}
+      title={isValidation
+        ? waitingOnRun
+          ? "Waiting for the current validation run to finish"
+          : session.status === "querying" || session.status === "initializing"
+            ? "Waiting for the agent to finish its turn"
+          : "Start this validation run now"
+        : "Send this turn now"}
+    >
+      {isValidation ? "Run now" : "Send now"}
     </button>
-    <button class="ghost-btn" onclick={handleCancel} disabled={busy} title="Cancel this deferred send">
+    <button class="ghost-btn" onclick={handleCancel} disabled={busy} title={isValidation ? "Cancel this queued validation" : "Cancel this deferred send"}>
       Cancel
     </button>
   </div>

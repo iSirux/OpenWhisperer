@@ -26,9 +26,10 @@ export function buildValidationIntent(session: SdkSession): string {
     .join(' — ');
   if (metaSummary) segments.push(metaSummary);
 
-  // Then the user's own messages, verbatim, in order (most recent last).
+  // Then the user's own messages, verbatim, in order (most recent last). Queued
+  // (not-yet-sent) ghost turns aren't part of the work being validated.
   for (const msg of session.messages) {
-    if (msg.type === 'user' && msg.content && msg.content.trim()) {
+    if (msg.type === 'user' && !msg.queued && msg.content && msg.content.trim()) {
       segments.push(msg.content.trim());
     }
   }

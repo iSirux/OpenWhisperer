@@ -21,22 +21,24 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   sdkSessions,
-  hasBusySessionsInScope,
+  parkedTurnsOf,
   type EffortLevel,
+  type QueuedValidationTiming,
+  type RateLimitedState,
   type SdkSession,
   type SessionValidationSummary,
 } from './sdkSessions';
 import { settings } from './settings';
 import { buildFixPrompt } from '$lib/utils/validationFix';
-import { providerExhaustion, nextWindowResetAt } from './queueDetection';
+import { buildValidationIntent } from '$lib/utils/validationIntent';
 import {
   clampEffortForModel,
+  DEFAULT_MODEL_ID,
   getProviderForModel,
+  isAutoModel,
   modelSupportsEffort,
-  type SdkProvider,
 } from '$lib/utils/models';
 import { isDefaultAccountId } from '$lib/utils/accounts';
-import type { SendTiming } from '$lib/utils/sendTiming';
 
 // ---------------------------------------------------------------------------
 // Data model — mirrors src-tauri/src/validation/types.rs (event payloads are
@@ -745,168 +747,130 @@ async function rehydrateFromSessions(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Deferred validation runs (Smart-Queue-style send timing on the Validate popover)
+// Queued validation runs
 //
-// The Validate popover's Start button honors the same send-timing modifiers as
-// Send / record / compact: plain/Ctrl = now, Shift = when this session is idle,
-// Ctrl+Shift = when the repo/worktree is idle, Ctrl+Shift+Alt = on the next 5h
-// reset. Deferred starts are parked here and fired by a self-contained driver
-// (session-store subscription for idle triggers + a periodic tick for the reset
-// boundary). A run's model/intent are snapshotted at schedule time.
+// A deferred run is a parked turn on the session (`action: 'validate'`), so it
+// shares the message queue's rails: FIFO with queued messages, a ghost bubble
+// with Run now / Cancel, persistence across restart, and the Smart Queue's
+// triggers (session idle / repo idle / 5h reset / custom time). Two holds keep
+// it from colliding with other work:
+//   - a queued validation waits for any active run on the session to end;
+//   - a queued turn of any kind waits while a run on its session is running
+//     (a gate releases the hold — the run is then waiting on the user).
+// Run settings are snapshotted at queue time; the intent is built at fire time
+// so it covers everything the agent was asked up to that point.
 // ---------------------------------------------------------------------------
 
-interface ScheduledValidation {
-  sessionId: string;
-  cwd: string;
-  repoId: string | undefined;
-  intent: string;
-  options: RunOptions;
-  /** 'session_idle' | 'repo_idle' | 'reset_5h' ('now' is started immediately). */
-  timing: Exclude<SendTiming, 'now'>;
-  provider: SdkProvider;
-  accountId?: string;
-  /** For reset_5h: snapshot of the target window-boundary time (epoch ms). */
-  targetStartAt?: number;
-  queuedAt: number;
-}
-
-/** Sessions with a validation run parked on the Smart Queue, keyed by session id. */
-export const scheduledValidations = writable<Map<string, ScheduledValidation>>(new Map());
-
-let schedulerUnsub: (() => void) | null = null;
-let schedulerInterval: ReturnType<typeof setInterval> | null = null;
-let evaluatingScheduled = false;
-
-function removeScheduled(sessionId: string): void {
-  scheduledValidations.update((m) => {
-    if (!m.has(sessionId)) return m;
-    const next = new Map(m);
-    next.delete(sessionId);
-    return next;
-  });
-}
-
-function ensureScheduler(): void {
-  if (schedulerUnsub) return;
-  // Idle triggers (session_idle / repo_idle) fire on session-store changes.
-  schedulerUnsub = sdkSessions.subscribe(() => void evaluateScheduled());
-  // The reset boundary needs a time-based tick (no store change fires it).
-  if (typeof window !== 'undefined') {
-    schedulerInterval = setInterval(() => void evaluateScheduled(), 30_000);
-  }
-}
-
-function teardownSchedulerIfIdle(): void {
-  if (get(scheduledValidations).size > 0) return;
-  if (schedulerUnsub) {
-    schedulerUnsub();
-    schedulerUnsub = null;
-  }
-  if (schedulerInterval != null) {
-    clearInterval(schedulerInterval);
-    schedulerInterval = null;
-  }
-}
-
-function scheduledReady(s: ScheduledValidation, sessions: SdkSession[]): boolean {
-  if (s.timing === 'reset_5h') {
-    if (s.targetStartAt == null) return false;
-    if (Date.now() <= s.targetStartAt) return false;
-    return !providerExhaustion(s.provider, s.accountId).exhausted;
-  }
-  if (s.timing === 'repo_idle') {
-    return !s.cwd || !hasBusySessionsInScope(sessions, s.cwd);
-  }
-  // session_idle: wait until this session's own query is done.
-  const own = sessions.find((x) => x.id === s.sessionId);
-  return !!own && own.status !== 'querying' && own.status !== 'initializing';
-}
-
-async function evaluateScheduled(): Promise<void> {
-  if (evaluatingScheduled) return;
-  const pending = get(scheduledValidations);
-  if (pending.size === 0) return;
-  evaluatingScheduled = true;
-  try {
-    const sessions = get(sdkSessions);
-    for (const [sessionId, sched] of [...pending]) {
-      const own = sessions.find((s) => s.id === sessionId);
-      // The session is gone, or a run already started for it → drop the schedule.
-      if (!own) {
-        removeScheduled(sessionId);
-        continue;
-      }
-      const existing = getRunForSession(sessionId);
-      if (existing && isActiveStatus(existing.status)) {
-        removeScheduled(sessionId);
-        continue;
-      }
-      if (!scheduledReady(sched, sessions)) continue;
-      removeScheduled(sessionId);
-      try {
-        await startRun(sched.sessionId, sched.cwd, sched.repoId, sched.intent, sched.options);
-      } catch (err) {
-        console.error('[validation] scheduled run failed to start:', err);
-      }
-    }
-  } finally {
-    evaluatingScheduled = false;
-    teardownSchedulerIfIdle();
-  }
+/**
+ * Should a parked turn on this session stay put because of validation?
+ * `action` is the parked turn's action (a validation also waits out a gate and a
+ * detached run, since `startRun` refuses while any run is active).
+ */
+export function validationHoldsTurn(sessionId: string, action?: string): boolean {
+  const run = getRunForSession(sessionId);
+  if (!run || !isActiveStatus(run.status)) return false;
+  if (action === 'validate') return true;
+  return run.status === 'running' && !run.detached;
 }
 
 /**
- * Start a validation run with a send-timing. 'now' starts immediately; the
- * deferred timings park the run and fire it when the condition is met. The
- * session's model/intent are snapshotted by the caller (in `options`/`intent`).
+ * Resolve the "session" reviewer-model choice to a concrete model id (the backend
+ * cannot see the live session's model). Unknown / Auto session models fall back
+ * to the global default.
  */
-async function scheduleRun(
+export function resolveReviewerModel(choice: string, sessionModel: string | null | undefined): string {
+  if (choice !== 'session') return choice;
+  if (sessionModel && !isAutoModel(sessionModel)) return sessionModel;
+  const fallback = get(settings).validation.reviewer_model;
+  return fallback && fallback !== 'session' ? fallback : DEFAULT_MODEL_ID;
+}
+
+/** Last-used run options for a repo, resolved against the session (no popover). */
+export function defaultRunOptionsForSession(
+  session: SdkSession,
+  repoId: string | undefined,
+  repoSteps?: string[] | null,
+): RunOptions {
+  const seeded = seedRunOptions({ repoId, repoSteps, defaults: get(settings).validation });
+  const reviewerModel = resolveReviewerModel(seeded.reviewerModel, session.model);
+  return {
+    ...seeded,
+    reviewerModel,
+    reviewerEffort: seeded.reviewerEffort && modelSupportsEffort(reviewerModel) ? seeded.reviewerEffort : null,
+    reviewerAccountId:
+      seeded.reviewerAccountId && !isDefaultAccountId(seeded.reviewerAccountId)
+        ? seeded.reviewerAccountId
+        : null,
+  };
+}
+
+const STEP_LABELS: Record<StepName, string> = {
+  simplify: 'Simplify',
+  review: 'Review',
+  test: 'Test',
+  docs: 'Docs',
+  lint: 'Lint',
+  ship: 'Ship',
+  ci: 'CI',
+};
+
+function describeSteps(steps: StepName[]): string {
+  return steps.map((s) => STEP_LABELS[s] ?? s).join(' · ');
+}
+
+/**
+ * Queue a validation run on a session (see the section comment). The reviewer
+ * provider/account decide which usage window a 'reset_5h' timing waits on.
+ */
+function queueRun(
   sessionId: string,
   cwd: string,
   repoId: string | undefined,
-  intent: string,
   options: RunOptions,
-  timing: SendTiming,
-  provider: SdkProvider,
-  accountId?: string,
-): Promise<void> {
-  if (timing === 'now') {
-    await startRun(sessionId, cwd, repoId, intent, options);
+  timing: QueuedValidationTiming,
+): void {
+  const provider = getProviderForModel(options.reviewerModel);
+  sdkSessions.queueValidation(
+    sessionId,
+    `Validate: ${describeSteps(options.steps)}`,
+    { cwd, repoId, options },
+    timing,
+    { provider, accountId: options.reviewerAccountId ?? undefined },
+  );
+}
+
+/**
+ * Fire a parked validation turn (called from `sdkSessions.continueRateLimited`,
+ * i.e. by the Smart Queue or the ghost's Run now). Stays parked while another run
+ * is active on the session; otherwise releases the turn and starts the run.
+ */
+export async function dispatchQueuedValidation(sessionId: string, turn: RateLimitedState): Promise<void> {
+  const queued = turn.validation;
+  if (!queued) {
+    // Malformed (nothing to run) — drop it rather than wedge the queue.
+    sdkSessions.clearRateLimited(sessionId, turn.id);
     return;
   }
-  const now = Date.now();
-  const targetStartAt =
-    timing === 'reset_5h' ? (nextWindowResetAt(provider, '5h', accountId) ?? now) : undefined;
-  scheduledValidations.update((m) => {
-    const next = new Map(m);
-    next.set(sessionId, {
-      sessionId,
-      cwd,
-      repoId,
-      intent,
-      options,
-      timing,
-      provider,
-      accountId,
-      targetStartAt,
-      queuedAt: now,
-    });
-    return next;
-  });
-  ensureScheduler();
-  // Fire once immediately in case it's already ready (e.g. session_idle now).
-  void evaluateScheduled();
+  if (validationHoldsTurn(sessionId, 'validate')) return;
+  const session = get(sdkSessions).find((s) => s.id === sessionId);
+  if (!session) return;
+
+  sdkSessions.releaseValidationTurn(
+    sessionId,
+    turn.id,
+    `Validation started (${describeSteps(queued.options.steps)})`,
+  );
+  try {
+    await startRun(sessionId, queued.cwd, queued.repoId, buildValidationIntent(session), queued.options);
+  } catch (err) {
+    sdkSessions.addNotification(sessionId, `Queued validation failed to start: ${errMsg(err)}`);
+    throw err;
+  }
 }
 
-/** Cancel a parked (not-yet-started) validation run for a session. */
-function cancelScheduledRun(sessionId: string): void {
-  removeScheduled(sessionId);
-  teardownSchedulerIfIdle();
-}
-
-/** The parked validation for a session, if any (for badges / cancel affordance). */
-export function getScheduledValidation(sessionId: string): ScheduledValidation | undefined {
-  return get(scheduledValidations).get(sessionId);
+/** Parked validation turns on a session, oldest first (for badges). */
+export function queuedValidationsOf(session: SdkSession): RateLimitedState[] {
+  return parkedTurnsOf(session).filter((t) => t.action === 'validate');
 }
 
 /** Resolve a gate. `fix` sends the selected findings (+ any user findings) to the fixer. */
@@ -1394,8 +1358,7 @@ export function seedRunOptions(args: {
 
 export const validation = {
   startRun,
-  scheduleRun,
-  cancelScheduledRun,
+  queueRun,
   rehydrateFromSessions,
   resume,
   respond,

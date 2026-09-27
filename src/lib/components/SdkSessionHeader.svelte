@@ -7,7 +7,8 @@
   import { sdkSessions, type EffortLevel } from '$lib/stores/sdkSessions';
   import type { SdkProvider } from '$lib/utils/models';
   import { panes, paneLayout, MAX_PANES } from '$lib/stores/panes';
-  import { validationRuns, validation, scheduledValidations } from '$lib/stores/validation';
+  import { validationRuns, queuedValidationsOf } from '$lib/stores/validation';
+  import type { RateLimitedState } from '$lib/stores/sdkSessions';
   import ValidationStartPopover from '$lib/components/sdk/ValidationStartPopover.svelte';
   import { sessionPrs } from '$lib/stores/sessionPrs';
   import type { SessionPrSummary } from '$lib/stores/sdkSessions';
@@ -149,15 +150,17 @@
       !validationRun.detached &&
       (validationRun.status === 'running' || validationRun.status === 'gate'),
   );
-  // Enabled with a real cwd, not pending, not querying, and no active run.
-  const validationCanStart = $derived(
-    hasRealCwd && !isPending && !isQuerying && !validationActive && !!validationSession,
-  );
+  // Enabled with a real cwd whenever the session exists — while the agent is
+  // working or a run is active, the popover queues the run instead of starting it.
+  const validationCanStart = $derived(hasRealCwd && !isPending && !!validationSession);
   const showValidate = $derived(!isPending && !!sessionId);
-  // A run parked on the Smart Queue (deferred start) for this session, if any.
-  const validationScheduled = $derived(
-    sessionId ? $scheduledValidations.get(sessionId) : undefined,
-  );
+  // Validation runs queued on this session (cancel them from their ghost bubbles).
+  const validationQueued = $derived(validationSession ? queuedValidationsOf(validationSession) : []);
+  function queuedValidationTiming(turn: RateLimitedState): SendTiming {
+    if (turn.reason === 'after_sessions') return turn.scope === 'session' ? 'session_idle' : 'repo_idle';
+    // A custom time has no timing icon; the clock glyph stands in (as in QueuedTurnGhost).
+    return turn.window ? 'reset_5h' : 'repo_idle';
+  }
   let showValidatePopover = $state(false);
   $effect(() => {
     // Close the popover if the session can no longer start a run.
@@ -417,24 +420,23 @@
         <div class="validate-wrap">
           <button
             class="validate-btn relative px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
-            class:active={validationActive || !!validationScheduled}
-            onclick={() => {
-              if (validationScheduled && sessionId) validation.cancelScheduledRun(sessionId);
-              else showValidatePopover = !showValidatePopover;
-            }}
-            disabled={!validationScheduled && !validationCanStart}
-            title={validationScheduled
-              ? 'Validation scheduled — click to cancel'
-              : "Run the validation pipeline (review, test, docs, lint, ship, CI) on this session's branch."}
+            class:active={validationActive || validationQueued.length > 0}
+            onclick={() => (showValidatePopover = !showValidatePopover)}
+            disabled={!validationCanStart}
+            title={(validationQueued.length > 0
+              ? `${validationQueued.length} validation run${validationQueued.length > 1 ? 's' : ''} queued (cancel from the queued bubble). `
+              : '') +
+              "Run the validation pipeline (review, test, docs, lint, ship, CI) on this session's branch" +
+              (isQuerying || validationActive ? ' — queues until this session is idle.' : '.')}
           >
             <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               <path d="M9 12l2 2 4-4" />
             </svg>
             Validate
-            {#if validationScheduled}
+            {#if validationQueued.length > 0}
               <span class="validate-scheduled-badge" aria-hidden="true">
-                <SendTimingIcon timing={validationScheduled.timing} />
+                <SendTimingIcon timing={queuedValidationTiming(validationQueued[0])} />
               </span>
             {/if}
           </button>

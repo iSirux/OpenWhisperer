@@ -1,8 +1,10 @@
 <script lang="ts">
   import {
     validation,
+    validationRuns,
     seedRunOptions,
     saveRunOptions,
+    resolveReviewerModel,
     VALIDATION_STEP_ORDER,
     type RunOptions,
     type StepName,
@@ -16,7 +18,8 @@
     DEFAULT_MODEL_ID,
     type SdkProvider,
   } from '$lib/utils/models';
-  import type { SdkSession, EffortLevel } from '$lib/stores/sdkSessions';
+  import { parkedTurnsOf, type SdkSession, type EffortLevel } from '$lib/stores/sdkSessions';
+  import ScheduleTimePicker from '$lib/components/schedule/ScheduleTimePicker.svelte';
   import { settings } from '$lib/stores/settings';
   import { repos } from '$lib/stores/repos';
   import {
@@ -152,28 +155,28 @@
   let orderedSelected = $derived(VALIDATION_STEP_ORDER.filter((s) => selectedSteps.has(s)));
   let canStart = $derived(orderedSelected.length > 0 && !starting);
 
-  /**
-   * The backend cannot see the live session's model, so "session" must be
-   * resolved to a concrete model id here before we call startRun. The
-   * user's "session" preference is still persisted (so it tracks the session's
-   * model over time); only the id sent to the run is resolved.
-   */
-  function resolveReviewerModel(choice: string): string {
-    if (choice !== 'session') return choice;
-    const sessionModel = session.model;
-    if (sessionModel && !isAutoModel(sessionModel)) return sessionModel;
-    // Unknown / Auto session model — fall back to the global default.
-    const fallback = $settings.validation.reviewer_model;
-    return fallback && fallback !== 'session' ? fallback : DEFAULT_MODEL_ID;
-  }
+  // Starting now would collide with the agent's turn, an active run, or jump
+  // ahead of turns already queued — so a plain Start queues for "session idle".
+  const mustQueue = $derived(
+    session.status === 'querying' ||
+      session.status === 'initializing' ||
+      parkedTurnsOf(session).length > 0 ||
+      [...$validationRuns.values()].some(
+        (r) => r.sessionId === session.id && (r.status === 'running' || r.status === 'gate'),
+      ),
+  );
+  let timePickerOpen = $state(false);
 
   /**
    * Start the run with the same send-timing modifiers as Send / record / compact:
    * plain/Ctrl = now, Shift = when this session is idle, Ctrl+Shift = when the
-   * repo/worktree is idle, Ctrl+Shift+Alt = on the next 5h reset. Deferred timings
-   * park the run on the Smart Queue with the model/intent snapshotted now.
+   * repo/worktree is idle, Ctrl+Shift+Alt = on the next 5h reset; `{ at }` = a
+   * custom time. Deferred timings queue the run as a parked turn (settings
+   * snapshotted now, intent built when it fires). "session" is resolved to a
+   * concrete model id — the backend cannot see the live session's model — while
+   * the user's "session" preference is still what gets persisted.
    */
-  async function start(timing: SendTiming = 'now') {
+  async function start(timing: SendTiming | { at: number } = 'now') {
     if (!canStart) return;
     starting = true;
     error = null;
@@ -191,26 +194,17 @@
     };
     // Persist the user's raw choice (may be "session"); send the resolved id.
     const persisted: RunOptions = { ...base, reviewerModel };
-    const resolvedModel = resolveReviewerModel(reviewerModel);
     const runOptions: RunOptions = {
       ...base,
-      reviewerModel: resolvedModel,
+      reviewerModel: resolveReviewerModel(reviewerModel, session.model),
     };
     try {
       saveRunOptions(repoId, persisted);
-      const intent = buildValidationIntent(session);
-      const provider = reviewerProvider;
-      const accountId = runOptions.reviewerAccountId ?? undefined;
-      await validation.scheduleRun(
-        session.id,
-        cwd,
-        repoId,
-        intent,
-        runOptions,
-        timing,
-        provider,
-        accountId,
-      );
+      if (timing === 'now' && !mustQueue) {
+        await validation.startRun(session.id, cwd, repoId, buildValidationIntent(session), runOptions);
+      } else {
+        validation.queueRun(session.id, cwd, repoId, runOptions, timing === 'now' ? 'session_idle' : timing);
+      }
       onClose();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -310,15 +304,33 @@
     <div class="vsp-error">{error}</div>
   {/if}
 
+  {#if timePickerOpen}
+    <div class="vsp-section">
+      <ScheduleTimePicker onPick={(at) => start({ at })} confirmLabel="Validate then" />
+    </div>
+  {/if}
+
   <div class="vsp-actions">
+    <button
+      class="vsp-btn vsp-later"
+      onclick={() => (timePickerOpen = !timePickerOpen)}
+      disabled={!canStart}
+      aria-expanded={timePickerOpen}
+      title="Queue this run for a specific time"
+    >
+      At a time…
+    </button>
     <button class="vsp-btn" onclick={onClose} disabled={starting}>Cancel</button>
     <button
       class="vsp-btn vsp-btn-primary vsp-start"
       onclick={(e) => start(sendTimingFromEvent(e))}
       disabled={!canStart}
-      title={'Start now — Shift+click: when this session is idle — Ctrl+Shift+click: when the repo/worktree is idle — Ctrl+Shift+Alt+click: on the next 5h reset'}
+      title={(mustQueue
+        ? 'Queue — runs when this session is idle (after the agent, any active run, and anything queued before it)'
+        : 'Start now') +
+        ' — Shift+click: when this session is idle — Ctrl+Shift+click: when the repo/worktree is idle — Ctrl+Shift+Alt+click: on the next 5h reset'}
     >
-      {starting ? 'Starting…' : `Start (${orderedSelected.length})`}
+      {starting ? 'Starting…' : `${mustQueue ? 'Queue' : 'Start'} (${orderedSelected.length})`}
       {#if $modifierCombo === 'shift'}
         <span class="vsp-hint-badge" aria-hidden="true"><SendTimingIcon timing="session_idle" /></span>
       {:else if $modifierCombo === 'ctrl+shift'}
@@ -523,6 +535,9 @@
   }
   .vsp-start {
     position: relative;
+  }
+  .vsp-later {
+    margin-right: auto;
   }
   /* Modifier-held send-timing hint badge (mirrors Send / record / compact). */
   .vsp-hint-badge {
