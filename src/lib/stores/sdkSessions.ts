@@ -2859,8 +2859,9 @@ function createSdkSessionsStore() {
                 rateLimitRetryAttempts: 0,
                 rateLimitRetryMessageOffset: undefined,
                 parkedTurns: parkedTurnsOf(s).filter(t => !t.interrupted),
-                draftPrompt: undefined,
-                draftImages: undefined,
+                // The draft is deliberately NOT cleared here: sends that don't come from the
+                // prompt input (compact, validation fixes, schedules, parked turns) must not
+                // wipe what the user is typing. UI sends clear their own draft before calling.
                 // Screenshots now live in the message — clear them so later prompts don't re-attach
                 pendingTranscription: s.pendingTranscription?.screenshots
                   ? { ...s.pendingTranscription, screenshots: undefined }
@@ -3895,8 +3896,6 @@ function createSdkSessionsStore() {
                 // 'after_sessions' scope check, firing sibling turns early.
                 lastActivityAt: now,
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: 'reset_5h' as const, queuedTurnId: turnId, timestamp: now }],
-                draftPrompt: undefined,
-                draftImages: undefined,
                 parkedTurns: [
                   ...parkedTurnsOf(s),
                   {
@@ -3945,8 +3944,6 @@ function createSdkSessionsStore() {
                 // Status left untouched — see queueTurnForWindow.
                 lastActivityAt: now,
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: 'at_time' as const, queuedTurnId: turnId, timestamp: now }],
-                draftPrompt: undefined,
-                draftImages: undefined,
                 parkedTurns: [
                   ...parkedTurnsOf(s),
                   {
@@ -4006,8 +4003,6 @@ function createSdkSessionsStore() {
                 ...s,
                 lastActivityAt: now,
                 messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: scope === 'session' ? ('session_idle' as const) : ('repo_idle' as const), queuedTurnId: turnId, timestamp: now }],
-                draftPrompt: undefined,
-                draftImages: undefined,
                 parkedTurns: [
                   ...parkedTurnsOf(s),
                   {
