@@ -350,7 +350,7 @@
           <button
             class="ml-auto inline-flex items-center gap-1 px-3 py-1 rounded text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
             onclick={(e) => confirmAction(e)}
-            title="Launch now. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
+            title="Launch now. Ctrl+Shift = when the worktree is idle · Ctrl+Shift+Alt = next 5h reset"
           >
             Go
             {#if pendingAction !== 'draft' && ($modifierCombo === 'ctrl+shift' || $modifierCombo === 'ctrl+shift+alt')}

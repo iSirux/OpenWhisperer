@@ -488,7 +488,7 @@
           class="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50"
           disabled={!canLaunch}
           onclick={(e) => runLaunch('start', e)}
-          title="Launch now. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
+          title="Launch now. Ctrl+Shift = when the worktree is idle · Ctrl+Shift+Alt = next 5h reset"
         >
           Start session
           {@render launchHint()}
@@ -504,7 +504,7 @@
           class="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs font-medium bg-surface hover:bg-background text-text-secondary transition-colors disabled:opacity-50"
           disabled={!canLaunch}
           onclick={(e) => runLaunch('plan', e)}
-          title="Appends a request to plan before implementing. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
+          title="Appends a request to plan before implementing. Ctrl+Shift = when the worktree is idle · Ctrl+Shift+Alt = next 5h reset"
         >
           Plan first
           {@render launchHint()}
@@ -513,7 +513,7 @@
           class="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs font-medium bg-surface hover:bg-background text-text-secondary transition-colors disabled:opacity-50"
           disabled={!canLaunch}
           onclick={(e) => runLaunch('discuss', e)}
-          title="Scan the codebase, then discuss without implementing. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
+          title="Scan the codebase, then discuss without implementing. Ctrl+Shift = when the worktree is idle · Ctrl+Shift+Alt = next 5h reset"
         >
           Discuss
           {@render launchHint()}

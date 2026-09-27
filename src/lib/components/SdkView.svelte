@@ -1750,7 +1750,7 @@
         ? `Scheduled for ${formatScheduleTarget(queueInfo.targetStartAt, nowTick)}`
         : "Scheduled"
       : queueInfo?.reason === "after_sessions"
-        ? "Waiting for repo to go idle"
+        ? "Waiting for worktree to go idle"
         : "Queued — rate limited",
   );
 
@@ -1830,7 +1830,7 @@
     });
   }
 
-  // Ctrl+Shift Send / "Send when repo is idle": park the turn until every session
+  // Ctrl+Shift Send / "Send when worktree is idle": park the turn until every session
   // in this repo+worktree (including this one) has finished; sends immediately if
   // the scope is already idle.
   async function handleSendAfterIdle(prompt: string, images?: SdkImageContent[]) {
@@ -2100,7 +2100,7 @@
               {:else if queueInfo?.reason === "scheduled"}
                 Will launch at the next{queueWindowLabel ? ` ${queueWindowLabel}` : ""} reset{queueCountdown ? ` — in ${queueCountdown}` : ""}.
               {:else if queueInfo?.reason === "after_sessions"}
-                Will launch once every other session in this repo/worktree has finished.
+                Will launch once every other session in this worktree has finished.
               {:else}
                 Waiting for the{queueWindowLabel ? ` ${queueWindowLabel}` : ""} usage window to reset{queueCountdown ? ` — in ${queueCountdown}` : ""}.
               {/if}

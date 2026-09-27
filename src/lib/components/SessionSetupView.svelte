@@ -449,7 +449,7 @@
   }
 
   /** Modifier quick action: queue the session (draft + action combined) to start
-   *  once the repo/worktree is idle or at the next 5h reset. */
+   *  once the worktree is idle or at the next 5h reset. */
   async function handleQuickActionSchedule(
     actionPrompt: string,
     window: QueueWindow | 'after_sessions',
@@ -1214,7 +1214,7 @@
           else handleStart();
         }}
         title={onSchedule
-          ? 'Start now — Shift+click / Ctrl+Shift+click: start when this repo/worktree is idle — Ctrl+Shift+Alt+click: start on next 5h reset'
+          ? 'Start now — Shift+click / Ctrl+Shift+click: start when this worktree is idle — Ctrl+Shift+Alt+click: start on next 5h reset'
           : undefined}
       >
         {#if isStarting}
@@ -1250,7 +1250,7 @@
           {#if scheduleMenuOpen}
             <div class="schedule-menu" role="menu">
               <button class="schedule-menu-item" role="menuitem" onclick={() => handleSchedule('after_sessions')}>
-                When repo is idle
+                When worktree is idle
               </button>
               <button class="schedule-menu-item" role="menuitem" onclick={() => handleSchedule('5h')}>
                 Next 5h reset

@@ -4,7 +4,7 @@
 //   plain            = the surface's default action (send / append / dictate)
 //   Ctrl             = now
 //   Shift            = when this session is idle
-//   Ctrl+Shift       = when the repo/worktree is idle
+//   Ctrl+Shift       = when the worktree is idle
 //   Ctrl+Shift+Alt   = on the next 5h usage-window reset
 
 /** When a deferred send should fire. */
@@ -61,7 +61,7 @@ export function sendTimingLabel(timing: SendTiming): string {
     case 'session_idle':
       return 'Sends when this session is idle';
     case 'repo_idle':
-      return 'Sends when the repo is idle';
+      return 'Sends when the worktree is idle';
     case 'reset_5h':
       return 'Sends at the next 5-hour reset';
     default:

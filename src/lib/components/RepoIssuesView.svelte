@@ -476,7 +476,7 @@
             <button
               class="h-8 px-5 inline-flex items-center gap-1 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
               onclick={(e) => confirmAction(e)}
-              title="Launch now. Ctrl+Shift = when the repo/worktree is idle · Ctrl+Shift+Alt = next 5h reset"
+              title="Launch now. Ctrl+Shift = when the worktree is idle · Ctrl+Shift+Alt = next 5h reset"
             >
               Go
               {#if $modifierCombo === 'ctrl+shift' || $modifierCombo === 'ctrl+shift+alt'}

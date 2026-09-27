@@ -35,7 +35,7 @@ export const DEFAULT_HOLD_THRESHOLD_MS = 560;
  * pipeline whose stop() consumes the recording itself (e.g. transcribe-and-send)
  * — nothing is inserted at the caret. It engages when the app-wide send-timing
  * modifiers are held with Space (Ctrl = now, Shift = when this session is idle,
- * Ctrl+Shift = when the repo/worktree is idle, Ctrl+Shift+Alt = next 5h reset;
+ * Ctrl+Shift = when the worktree is idle, Ctrl+Shift+Alt = next 5h reset;
  * see `utils/sendTiming.ts`), with the timing locked in on the initial press and
  * passed to start/stop. Without it, modified Space is left untouched as
  * deliberate typing.

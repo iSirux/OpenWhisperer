@@ -26,7 +26,7 @@
 // =============================================================================
 
 import { derived, get, writable } from 'svelte/store';
-import { sdkSessions, hasBusySessionsInScope, parkedTurnsOf, type AfterSessionsScope, type QueueReason, type RateLimitedState, type SdkSession } from './sdkSessions';
+import { sdkSessions, hasBusySessionsInScope, normalizeScopePath, worktreeIdleQueue, parkedTurnsOf, type AfterSessionsScope, type QueueReason, type RateLimitedState, type SdkSession } from './sdkSessions';
 import { validationHoldsTurn } from './validation';
 import { rateLimitData, codexRateLimitData, rateLimits, codexRateLimits, accountRateLimits, rateLimitStoreForAccount } from './rateLimits';
 import { isDefaultAccountId } from '$lib/utils/accounts';
@@ -204,8 +204,16 @@ function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolea
     if (exhausted) return false; // it would only get re-rejected — hold and roll forward
     // Scope 'session' is fully covered by the own-session idle check above.
     if (item.kind === 'rateLimited' && item.scope === 'session') return true;
+    if (!item.cwd) return true;
     const excludeId = item.kind === 'queued' ? item.id : undefined;
-    return !item.cwd || !hasBusySessionsInScope(sessions, item.cwd, excludeId);
+    if (hasBusySessionsInScope(sessions, item.cwd, excludeId)) return false;
+    // A validation run working on this worktree keeps it busy too.
+    const scope = normalizeScopePath(item.cwd);
+    if (sessions.some((s) => s.cwd && normalizeScopePath(s.cwd) === scope && validationHoldsTurn(s.id))) return false;
+    // Strict FIFO per worktree (across sessions and providers): only the oldest waiting
+    // item may go. Once it dispatches, its session is busy, so the next one waits for it.
+    const head = worktreeIdleQueue(sessions, item.cwd)[0];
+    return !head || (head.sessionId === item.id && head.turnId === item.turnId);
   }
 
   // reason === 'scheduled'
@@ -264,7 +272,7 @@ async function drain(provider: SdkProvider): Promise<void> {
       // usage-window boundary and want to be spread out. The user-driven reasons dispatch
       // with no delay — a `scheduled` item fires at the moment the user picked (09:00 means
       // 09:00, not 09:00 plus a random minute), and an `after_sessions` item is an explicit
-      // "start when the repo is idle" action that must go the instant the scope frees up.
+      // "start when the worktree is idle" action that must go the instant the scope frees up.
       if (item.reason === 'rate_limit') {
         if (!appliedAfterResetDelay) {
           // "After reset" fuzzy delay — once, before the first rate-limit dispatch.

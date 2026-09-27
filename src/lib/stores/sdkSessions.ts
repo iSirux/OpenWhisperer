@@ -528,7 +528,7 @@ export function normalizeScopePath(p: string): string {
 /**
  * "After sessions" scope check: is any session in the same repo+worktree (same cwd)
  * still actively working? Used by the Smart Queue's `after_sessions` trigger and the
- * launch-profile "queue until repo is idle" watcher.
+ * launch-profile "queue until worktree is idle" watcher.
  */
 export function hasBusySessionsInScope(sessions: SdkSession[], cwd: string, excludeId?: string): boolean {
   if (!cwd || cwd === '.') return false;
@@ -539,6 +539,44 @@ export function hasBusySessionsInScope(sessions: SdkSession[], cwd: string, excl
       (s.status === 'querying' || s.status === 'initializing') &&
       !!s.cwd &&
       normalizeScopePath(s.cwd) === scope
+  );
+}
+
+/** One waiting "when the worktree is idle" item: a queued first launch or a parked turn. */
+export interface WorktreeIdleEntry {
+  sessionId: string;
+  /** The parked turn; absent for a never-launched `queued` session. */
+  turnId?: string;
+  queuedAt: number;
+}
+
+/**
+ * Every item waiting for this repo+worktree (same cwd) to go idle, oldest first —
+ * across sessions and providers. The Smart Queue only dispatches the head, so
+ * several of these queued back to back fire one after another, in order.
+ */
+export function worktreeIdleQueue(sessions: SdkSession[], cwd: string): WorktreeIdleEntry[] {
+  if (!cwd || cwd === '.') return [];
+  const scope = normalizeScopePath(cwd);
+  const entries: WorktreeIdleEntry[] = [];
+  for (const s of sessions) {
+    if (!s.cwd || normalizeScopePath(s.cwd) !== scope) continue;
+    if (s.status === 'queued') {
+      if (s.queueInfo?.reason === 'after_sessions') {
+        entries.push({ sessionId: s.id, queuedAt: s.queueInfo.queuedAt ?? s.createdAt ?? 0 });
+      }
+      continue;
+    }
+    for (const turn of parkedTurnsOf(s)) {
+      if (turn.reason === 'after_sessions' && turn.scope !== 'session') {
+        entries.push({ sessionId: s.id, turnId: turn.id, queuedAt: turn.queuedAt ?? s.lastActivityAt ?? 0 });
+      }
+    }
+  }
+  return entries.sort((a, b) =>
+    a.queuedAt - b.queuedAt ||
+    a.sessionId.localeCompare(b.sessionId) ||
+    (a.turnId ?? '').localeCompare(b.turnId ?? '')
   );
 }
 
@@ -3330,7 +3368,7 @@ function createSdkSessionsStore() {
 
       // Smart Queue (first-launch gate): park this session as `queued` instead of launching when
       // either the user explicitly scheduled it for later (`config.schedule` — a usage-window
-      // boundary, a custom wall-clock time, or "when the repo is idle"; fire-and-forget from the
+      // boundary, a custom wall-clock time, or "when the worktree is idle"; fire-and-forget from the
       // New Session view) or the provider's usage window is currently exhausted. Its prompt is
       // baked onto the prepared fields; the driver later dispatches it via launchPrepared.
       if (hasPrompt && (config.schedule || shouldQueue(gatedProvider, config.accountId))) {
@@ -3930,7 +3968,7 @@ function createSdkSessionsStore() {
     },
 
     /**
-     * Smart Queue ("Send when repo is idle" / "Send when this session is idle"): from a live
+     * Smart Queue ("Send when worktree is idle" / "Send when this session is idle"): from a live
      * session, park a follow-up turn until the waited-on scope goes idle — for 'worktree' that's
      * every session in the same repo+worktree (same cwd) including this one; for 'session' just
      * this session's own running query. If already idle, this is just a normal send. Unlike
@@ -3944,11 +3982,12 @@ function createSdkSessionsStore() {
       if (!session) return;
 
       // Nothing to wait for (own session included) — run immediately. Turns already
-      // parked on this session count as something to wait for: sending now would
-      // jump the queue and land out of order.
+      // parked on this session count as something to wait for, as do other worktree-idle
+      // items already waiting in this worktree: sending now would jump the queue.
       if (
         parkedTurnsOf(session).length === 0 &&
-        (scope === 'session' || !hasBusySessionsInScope(sessions, session.cwd, id)) &&
+        (scope === 'session' ||
+          (!hasBusySessionsInScope(sessions, session.cwd, id) && worktreeIdleQueue(sessions, session.cwd).length === 0)) &&
         session.status !== 'querying' &&
         session.status !== 'initializing'
       ) {

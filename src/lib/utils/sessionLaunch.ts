@@ -84,7 +84,7 @@ export interface LaunchSessionOptions {
   systemPrompt?: string;
   tag?: SessionTag;
   /** When set, defer the launch (fire-and-forget) instead of starting now: to the next
-   *  usage-window reset ('5h'/'7d'), until the repo/worktree is idle ('after_sessions'),
+   *  usage-window reset ('5h'/'7d'), until the worktree is idle ('after_sessions'),
    *  or to a custom wall-clock time ({ at }).
    *  Parks the session as `queued`; the Smart Queue dispatches it via launchPrepared. */
   schedule?: import('$lib/stores/sdkSessions').QueueWindow | 'after_sessions' | { at: number };

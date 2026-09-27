@@ -195,7 +195,7 @@
   /**
    * Which gesture a page-level Space press maps to: 'dictate' for a plain hold, a
    * SendTiming for a modifier+Space record-and-send hold (Ctrl = now, Shift =
-   * session idle, Ctrl+Shift = repo/worktree idle, Ctrl+Shift+Alt = next 5h reset),
+   * session idle, Ctrl+Shift = worktree idle, Ctrl+Shift+Alt = next 5h reset),
    * or null when the Space should be left alone (feature off, not in a live
    * session, focus is on an interactive element, or Alt-only typing). This is the
    * window-level counterpart to the focused-textarea holdSpaceRecord action, so the

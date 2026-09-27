@@ -90,7 +90,7 @@
   /**
    * Compact history. The send-timing modifiers apply just like Send/record:
    *   plain / Ctrl = now, Shift = when this session is idle, Ctrl+Shift = when
-   *   the repo/worktree is idle, Ctrl+Shift+Alt = on the next 5h reset. The
+   *   the worktree is idle, Ctrl+Shift+Alt = on the next 5h reset. The
    *   deferred variants park a compact turn on the Smart Queue (provider-correct
    *   at fire time — Codex uses its dedicated compaction RPC, not a text prompt).
    */
@@ -397,7 +397,7 @@
           class="action-icon-btn compact-btn relative p-1 rounded transition-colors text-text-muted hover:text-text-primary hover:bg-border"
           onclick={(e) => compactConversation(sendTimingFromEvent(e))}
           disabled={!canCompact || isCompacting}
-          title={'Compact conversation history — Shift+click: when this session is idle — Ctrl+Shift+click: when the repo/worktree is idle — Ctrl+Shift+Alt+click: on the next 5h reset'}
+          title={'Compact conversation history — Shift+click: when this session is idle — Ctrl+Shift+click: when the worktree is idle — Ctrl+Shift+Alt+click: on the next 5h reset'}
           aria-label="Compact conversation history"
         >
           <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -498,7 +498,7 @@
 
 <style>
   /* Modifier-held send-timing hint badge on the compact button (mirrors Send /
-     record): Shift = session idle, Ctrl+Shift = repo idle, Ctrl+Shift+Alt = 5h reset. */
+     record): Shift = session idle, Ctrl+Shift = worktree idle, Ctrl+Shift+Alt = 5h reset. */
   .compact-hint-badge,
   .validate-scheduled-badge {
     position: absolute;

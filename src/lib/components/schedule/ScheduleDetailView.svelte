@@ -478,7 +478,7 @@
             checked={schedule.waitForIdle}
             onchange={(e) => schedules.update(schedule.id, { waitForIdle: e.currentTarget.checked })}
           />
-          Wait until the repository is idle
+          Wait until the worktree is idle
         </label>
       {/if}
       <label class="flex items-center gap-1.5 text-xs text-text-secondary">

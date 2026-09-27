@@ -170,7 +170,7 @@
   /**
    * Start the run with the same send-timing modifiers as Send / record / compact:
    * plain/Ctrl = now, Shift = when this session is idle, Ctrl+Shift = when the
-   * repo/worktree is idle, Ctrl+Shift+Alt = on the next 5h reset; `{ at }` = a
+   * worktree is idle, Ctrl+Shift+Alt = on the next 5h reset; `{ at }` = a
    * custom time. Deferred timings queue the run as a parked turn (settings
    * snapshotted now, intent built when it fires). "session" is resolved to a
    * concrete model id — the backend cannot see the live session's model — while
@@ -328,7 +328,7 @@
       title={(mustQueue
         ? 'Queue — runs when this session is idle (after the agent, any active run, and anything queued before it)'
         : 'Start now') +
-        ' — Shift+click: when this session is idle — Ctrl+Shift+click: when the repo/worktree is idle — Ctrl+Shift+Alt+click: on the next 5h reset'}
+        ' — Shift+click: when this session is idle — Ctrl+Shift+click: when the worktree is idle — Ctrl+Shift+Alt+click: on the next 5h reset'}
     >
       {starting ? 'Starting…' : `${mustQueue ? 'Queue' : 'Start'} (${orderedSelected.length})`}
       {#if $modifierCombo === 'shift'}

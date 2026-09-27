@@ -165,8 +165,8 @@
       case "after_sessions":
         return {
           label: "Queued",
-          detail: "waiting for the repository to be idle",
-          title: "Queued - waiting for the repository/worktree to finish its running sessions",
+          detail: "waiting for the worktree to be idle",
+          title: "Queued - waiting for the worktree to finish its running sessions",
         };
       default:
         return {

@@ -553,7 +553,7 @@
       <SendTimingIcon timing="session_idle" />
     </span>
   {:else if $modifierCombo === "ctrl+shift" && onSendAfterIdle}
-    <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift: record and send when repo is idle">
+    <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift: record and send when worktree is idle">
       <SendTimingIcon timing="repo_idle" />
     </span>
   {:else if $modifierCombo === "ctrl+shift+alt" && onScheduleSend}
@@ -713,7 +713,7 @@
         onclick={(e) => onStopRecording(sendTimingFromEvent(e))}
         title={"Stop recording and send" +
           (onSendSessionIdle ? " — Shift+click: send when this session is idle" : "") +
-          (onSendAfterIdle ? " — Ctrl+Shift+click: send when this repo/worktree is idle" : "") +
+          (onSendAfterIdle ? " — Ctrl+Shift+click: send when this worktree is idle" : "") +
           (onScheduleSend ? " — Ctrl+Shift+Alt+click: send on next 5h reset" : "")}
       >
         <div class="recording-dot"></div>
@@ -753,7 +753,7 @@
           isTranscribing}
         title={(isQuerying ? "Send and interrupt" : "Send") +
           (onSendSessionIdle ? " — Shift+click: send when this session is idle" : "") +
-          (onSendAfterIdle ? " — Ctrl+Shift+click: send when this repo/worktree is idle" : "") +
+          (onSendAfterIdle ? " — Ctrl+Shift+click: send when this worktree is idle" : "") +
           (onScheduleSend ? " — Ctrl+Shift+Alt+click: send on next 5h reset" : "")}
       >
         Send
@@ -762,7 +762,7 @@
             <SendTimingIcon timing="session_idle" />
           </span>
         {:else if hasDraft && $modifierCombo === "ctrl+shift" && onSendAfterIdle}
-          <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift+click: send when repo is idle">
+          <span class="ctrl-hint-badge" aria-hidden="true" title="Ctrl+Shift+click: send when worktree is idle">
             <SendTimingIcon timing="repo_idle" />
           </span>
         {:else if hasDraft && $modifierCombo === "ctrl+shift+alt" && onScheduleSend}
@@ -819,7 +819,7 @@
                 handleSendPrompt("repo_idle");
               }}
             >
-              <span class="menu-item-label">Send when repo is idle</span>
+              <span class="menu-item-label">Send when worktree is idle</span>
               <span class="menu-item-countdown">Ctrl+Shift+click Send</span>
             </button>
           {/if}

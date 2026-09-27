@@ -76,7 +76,7 @@
       `Ctrl: ${verb} now`,
       onSendSessionIdle ? `Shift: ${verb} when this session is idle` : undefined,
       onSendRepoIdle
-        ? `${onSendSessionIdle ? '' : 'Shift / '}Ctrl+Shift: ${verb} when repo is idle`
+        ? `${onSendSessionIdle ? '' : 'Shift / '}Ctrl+Shift: ${verb} when worktree is idle`
         : undefined,
       onSend5hReset ? `Ctrl+Shift+Alt: ${verb} on next 5h reset` : undefined,
     ]
@@ -170,7 +170,7 @@
   }
 
   /* Modifier-held hint badge: Ctrl = send now, Shift = send when this session
-     is idle, Ctrl+Shift = send when the repo/worktree is idle */
+     is idle, Ctrl+Shift = send when the worktree is idle */
   .ctrl-hint-badge {
     position: absolute;
     top: -0.45rem;

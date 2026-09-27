@@ -78,7 +78,7 @@
       : reason === 'after_sessions'
         ? afterSessionsScope === 'session'
           ? 'Waiting for this session to finish'
-          : 'Waiting for repo to go idle'
+          : 'Waiting for worktree to go idle'
         : `Rate limit reached${countdown ? ` — resets in ${countdown}` : ''}`,
   );
 
@@ -126,7 +126,7 @@
           {#if afterSessionsScope === 'session'}
             This turn is parked and will send automatically once this session's current work has finished.
           {:else}
-            This turn is parked and will send automatically once every session in this repo/worktree has finished.
+            This turn is parked and will send automatically once every session in this worktree has finished.
           {/if}
         {:else}
           {windowLabel ? `The ${windowLabel} usage window is exhausted. ` : ''}Your work is saved.

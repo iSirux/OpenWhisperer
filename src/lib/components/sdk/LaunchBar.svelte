@@ -277,7 +277,7 @@
         </svg>
         <span class="queued-label">
           "{queued.profileName}" {queued.mode === "repo_idle"
-            ? "queued until repo is idle"
+            ? "queued until worktree is idle"
             : "queued after agent"}
         </span>
         <button class="start-now-btn" onclick={handleStartNow} title="Launch immediately without waiting">
@@ -299,7 +299,7 @@
             oncontextmenu={(e) => handleContextMenu(e, profile.id)}
             title={runtime?.executionType === 'task' ? `Queue ${profile.name} after the task succeeds` : (isAgentRunning
               ? "Click/Shift+click: queue after agent, Ctrl+click: launch now"
-              : `Launch ${profile.name}`) + " — Ctrl+Shift+click: run when this repo/worktree is idle"}
+              : `Launch ${profile.name}`) + " — Ctrl+Shift+click: run when this worktree is idle"}
           >
             {profile.name}
             <span class="profile-count">{profile.command_ids.length}</span>
@@ -486,7 +486,7 @@
   }
 
   /* Modifier-held hint badge: Ctrl = launch now, Shift = queue after agent,
-     Ctrl+Shift = queue until the repo/worktree is idle */
+     Ctrl+Shift = queue until the worktree is idle */
   .ctrl-hint-badge {
     position: absolute;
     top: -0.45rem;

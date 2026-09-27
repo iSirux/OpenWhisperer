@@ -7,7 +7,7 @@
   // One-row floating bar anchored to the current transcript selection: quote it
   // into the prompt draft, optionally starting a voice follow-up in the same
   // click. Mirrors the app-wide send-timing modifiers on the mic button
-  // (Ctrl = now, Shift = session idle, Ctrl+Shift = repo idle, +Alt = 5h reset).
+  // (Ctrl = now, Shift = session idle, Ctrl+Shift = worktree idle, +Alt = 5h reset).
   let {
     selection,
     showVoice = true,
@@ -56,7 +56,7 @@
     "Click: quote and dictate a follow-up\n" +
     "Ctrl: quote, record and send now\n" +
     "Shift: … send when this session is idle\n" +
-    "Ctrl+Shift: … send when the repo is idle\n" +
+    "Ctrl+Shift: … send when the worktree is idle\n" +
     "Ctrl+Shift+Alt: … send at the next 5h reset";
 </script>
 
