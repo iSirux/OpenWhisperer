@@ -89,7 +89,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
             librsvg2-dev patchelf xdg-utils libxdo-dev \
             libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libgbm-dev \
-            libfuse2t64
+            libasound2-dev libfuse2t64
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
