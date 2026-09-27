@@ -20,7 +20,7 @@
   import { findRepoByPath } from "$lib/utils/repoIcons";
   import { repos, findRepoById } from "$lib/stores/repos";
   import { settings } from "$lib/stores/settings";
-  import { accountById, isDefaultAccountId } from "$lib/utils/accounts";
+  import { sessionAccount } from "$lib/utils/accounts";
   import { visibleSessionIds, focusedPaneSessionId } from "$lib/stores/panes";
   import { ctrlHeld } from "$lib/stores/ctrlHint";
   import { SPARE_TOKENS_LIBRARY } from "$lib/spareTokens/library";
@@ -60,10 +60,10 @@
     oncontextmenu = undefined,
   }: Props = $props();
 
-  // Pinned agent account (configured accounts only; machine default shows nothing).
+  // The agent account the session runs under (no pin = the provider's machine login).
   const accountBadge = $derived(
-    session.type === "sdk" && session.accountId && !isDefaultAccountId(session.accountId)
-      ? accountById($settings.accounts, session.accountId)
+    session.type === "sdk"
+      ? sessionAccount($settings.accounts, session.accountId, session.provider)
       : undefined,
   );
 

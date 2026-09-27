@@ -128,9 +128,9 @@ pub struct AppConfig {
     pub audio: AudioConfig,
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
-    /// Registered agent accounts (multi-account / multi-boxing). The reserved
-    /// virtual ids `default-claude` / `default-openai` are never stored here —
-    /// the frontend synthesizes them.
+    /// Registered agent accounts (multi-account / multi-boxing). Always holds
+    /// the two machine-login accounts `default-claude` / `default-openai`
+    /// (seeded by migration v11→v12, re-ensured on load and save).
     #[serde(default)]
     pub accounts: Vec<AgentAccount>,
     #[serde(default)]
@@ -387,7 +387,10 @@ impl Default for AppConfig {
             overlay: OverlayConfig::default(),
             audio: AudioConfig::default(),
             repos: vec![],
-            accounts: vec![],
+            accounts: vec![
+                default_account_for(SdkProvider::Claude),
+                default_account_for(SdkProvider::OpenAI),
+            ],
             active_repo_index: 0,
             auto_repo_mode: false,
             default_model: default_model(),
@@ -599,6 +602,10 @@ impl AppConfig {
     fn finalize(mut self, mut changed: bool) -> Self {
         if self.ensure_repo_ids() {
             log::error!("[config.load] Assigned IDs to repos without IDs");
+            changed = true;
+        }
+        if ensure_default_accounts(&mut self.accounts) {
+            log::info!("[config.load] Restored the default agent accounts");
             changed = true;
         }
         if self.config_version != CURRENT_CONFIG_VERSION {
@@ -1140,6 +1147,37 @@ mod tests {
             config.enabled_openai_models,
             vec!["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]
         );
+    }
+
+    #[test]
+    fn migration_seeds_default_accounts_before_existing_ones() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(11));
+        obj.insert(
+            "accounts".to_string(),
+            serde_json::json!([{
+                "id": "acct-work",
+                "label": "Work",
+                "color": "#ec4899",
+                "provider": "Claude",
+                "config_dir": "/tmp/work"
+            }]),
+        );
+
+        migration::run_migrations(&mut value, 11);
+        let config: AppConfig = serde_json::from_value(value.clone()).unwrap();
+        let ids: Vec<&str> = config.accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec![DEFAULT_CLAUDE_ACCOUNT_ID, DEFAULT_OPENAI_ACCOUNT_ID, "acct-work"]);
+        assert!(config.accounts[0].config_dir.is_none());
+
+        // Re-running is a no-op (a user-renamed default is left alone).
+        let mut again = value;
+        again["accounts"][0]["label"] = serde_json::json!("Personal");
+        migration::run_migrations(&mut again, 11);
+        let config: AppConfig = serde_json::from_value(again).unwrap();
+        assert_eq!(config.accounts.len(), 3);
+        assert_eq!(config.accounts[0].label, "Personal");
     }
 
     #[test]

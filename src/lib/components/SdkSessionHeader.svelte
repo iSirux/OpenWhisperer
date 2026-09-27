@@ -12,7 +12,7 @@
   import { sessionPrs } from '$lib/stores/sessionPrs';
   import type { SessionPrSummary } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
-  import { accountById, isDefaultAccountId } from '$lib/utils/accounts';
+  import { sessionAccount } from '$lib/utils/accounts';
   import { ctrlHeld, modifierCombo } from '$lib/stores/ctrlHint';
   import { sendTimingFromEvent, type SendTiming } from '$lib/utils/sendTiming';
   import SendTimingIcon from '$lib/components/sdk/SendTimingIcon.svelte';
@@ -133,13 +133,8 @@
     return effortLevel ? labels[effortLevel] ?? null : null;
   });
 
-  // Resolve the pinned agent account. Only configured accounts get a pill;
-  // the machine-default (virtual) account renders nothing.
-  const accountBadge = $derived(
-    accountId && !isDefaultAccountId(accountId)
-      ? accountById($settings.accounts, accountId)
-      : undefined
-  );
+  // The agent account the session runs under (no pin = the provider's machine login).
+  const accountBadge = $derived(sessionAccount($settings.accounts, accountId, provider));
 
   // --- Validation pipeline ---
   const hasRealCwd = $derived(!!repoPath && repoPath !== '.');

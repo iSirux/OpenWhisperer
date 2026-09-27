@@ -3,6 +3,7 @@
   import { rateLimits, rateLimitData, rateLimitError, rateLimitAuthExpired, codexRateLimits, codexRateLimitData, codexRateLimitError, codexRateLimitAuthExpired, accountRateLimits, syncAccountRateLimitStores, calculatePace, formatTimeRemaining, registerVisibilityHandler } from '$lib/stores/rateLimits';
   import { settings, type AgentAccount } from '$lib/stores/settings';
   import { openUrl } from '@tauri-apps/plugin-opener';
+  import { defaultAccountFor, isDefaultAccountId } from '$lib/utils/accounts';
 
   let claude = $derived($rateLimitData);
   let codex = $derived($codexRateLimitData);
@@ -13,10 +14,13 @@
   let claudeAuthExpired = $derived($rateLimitAuthExpired);
   let codexAuthExpired = $derived($codexRateLimitAuthExpired);
 
-  // Configured, non-disabled agent accounts (each polls its own per-account window).
+  // Non-default, non-disabled agent accounts (each polls its own per-account window).
+  // The machine-login accounts are the provider indicators themselves.
   let configuredAccounts = $derived<AgentAccount[]>(
-    ($settings.accounts ?? []).filter((a) => !a.disabled)
+    ($settings.accounts ?? []).filter((a) => !a.disabled && !isDefaultAccountId(a.id))
   );
+  let claudeDefault = $derived(defaultAccountFor('Claude', $settings.accounts));
+  let codexDefault = $derived(defaultAccountFor('OpenAI', $settings.accounts));
 
   // Calculate paces per provider
   let claudePace5h = $derived(claude?.five_hour ? calculatePace(claude.five_hour.utilization, claude.five_hour.resets_at, 5) : null);
@@ -120,15 +124,16 @@
   });
 </script>
 
-{#snippet providerIndicator(data: typeof claude, p5h: typeof claudePace5h, p7d: typeof claudePace7d, name: 'Claude' | 'Codex', error: string | null, authExpired: boolean)}
+{#snippet providerIndicator(data: typeof claude, p5h: typeof claudePace5h, p7d: typeof claudePace7d, name: 'Claude' | 'Codex', error: string | null, authExpired: boolean, account: AgentAccount)}
   {#if (data || error) && !authExpired}
     <button
-      class="indicator"
+      class="indicator indicator-account"
       class:indicator-claude={name === 'Claude'}
       class:indicator-codex={name === 'Codex'}
       class:indicator-stale={!!error}
+      style="--account-color: {account.color};"
       onclick={() => openUrl(usageUrlFor(name))}
-      title={buildTooltip(data, p5h, p7d, name, error)}
+      title={buildTooltip(data, p5h, p7d, `${account.label} — ${name}`, error)}
     >
       <div class="row">
         {#if data?.five_hour}
@@ -208,8 +213,8 @@
 {/snippet}
 
 {#if (claude && !claudeAuthExpired) || (codex && !codexAuthExpired) || (claudeError && !claudeAuthExpired) || (codexError && !codexAuthExpired)}
-  {@render providerIndicator(claude, claudePace5h, claudePace7d, 'Claude', claudeError, claudeAuthExpired)}
-  {@render providerIndicator(codex, codexPace5h, codexPace7d, 'Codex', codexError, codexAuthExpired)}
+  {@render providerIndicator(claude, claudePace5h, claudePace7d, 'Claude', claudeError, claudeAuthExpired, claudeDefault)}
+  {@render providerIndicator(codex, codexPace5h, codexPace7d, 'Codex', codexError, codexAuthExpired, codexDefault)}
 {/if}
 {#each configuredAccounts as account (account.id)}
   {@render accountIndicator(account)}

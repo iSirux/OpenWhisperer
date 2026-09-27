@@ -3,8 +3,9 @@
 //! An agent account is an isolated provider login profile directory under
 //! `<app config dir>/agent-accounts/<id>`. Claude accounts inject that path as
 //! `CLAUDE_CONFIG_DIR`; OpenAI/Codex accounts inject it as `CODEX_HOME`. The
-//! reserved virtual ids `default-claude` / `default-openai` (synthesized by the
-//! frontend, never stored) mean "the machine's default login, no env override".
+//! reserved ids `default-claude` / `default-openai` are stored accounts too, but
+//! mean "the machine's default login, no env override": their label, color and
+//! disabled flag are editable, their directory isn't, and they can't be removed.
 
 use std::fs;
 use std::path::PathBuf;
@@ -14,7 +15,9 @@ use std::process::Command;
 use tauri::State;
 
 use crate::commands::settings_cmds::ConfigState;
-use crate::config::{AgentAccount, AppConfig, SdkProvider};
+use crate::config::{
+    default_codex_home, is_default_account_id, AgentAccount, AppConfig, SdkProvider,
+};
 
 /// Directory holding every account's isolated profile subdirectory.
 fn agent_accounts_dir() -> PathBuf {
@@ -27,28 +30,54 @@ fn generate_account_id() -> String {
     format!("acct-{}", &hex[..12])
 }
 
-/// Register a new agent account: create its isolated profile directory, store
-/// the absolute path as `config_dir`, persist, and return the account. The
-/// directory starts empty — `login_agent_account` drives the interactive login
-/// that populates it.
+/// Validate a user-supplied profile directory: non-empty, absolute, and an
+/// existing directory. Returns the trimmed path.
+fn validate_existing_dir(dir: &str) -> Result<String, String> {
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return Err("Profile folder can't be empty".to_string());
+    }
+    let path = PathBuf::from(dir);
+    if !path.is_absolute() {
+        return Err(format!("Profile folder must be an absolute path: {}", dir));
+    }
+    if !path.is_dir() {
+        return Err(format!("Profile folder does not exist: {}", dir));
+    }
+    Ok(dir.to_string())
+}
+
+/// Register a new agent account and persist it. Without `config_dir`, a fresh
+/// isolated profile directory is created under `<app config dir>/agent-accounts/`
+/// (empty — `login_agent_account` drives the login that populates it). With
+/// `config_dir`, the account adopts an existing profile folder (e.g. a
+/// `~/.claude-work` the user already logged into) as-is.
 #[tauri::command]
 pub fn create_agent_account(
     config: State<ConfigState>,
     label: String,
     provider: SdkProvider,
     color: String,
+    config_dir: Option<String>,
 ) -> Result<AgentAccount, String> {
     let id = generate_account_id();
-    let dir = agent_accounts_dir().join(&id);
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create account directory {}: {}", dir.display(), e))?;
+    let dir = match config_dir.as_deref().filter(|d| !d.trim().is_empty()) {
+        Some(existing) => validate_existing_dir(existing)?,
+        None => {
+            let dir = agent_accounts_dir().join(&id);
+            fs::create_dir_all(&dir).map_err(|e| {
+                format!("Failed to create account directory {}: {}", dir.display(), e)
+            })?;
+            dir.to_string_lossy().to_string()
+        }
+    };
 
     let account = AgentAccount {
         id,
         label,
         color,
         provider,
-        config_dir: Some(dir.to_string_lossy().to_string()),
+        config_dir: Some(dir),
         disabled: false,
     };
 
@@ -61,7 +90,10 @@ pub fn create_agent_account(
     Ok(account)
 }
 
-/// Patch an account's mutable fields (only the `Some` ones) and persist.
+/// Patch an account's mutable fields (only the `Some` ones) and persist. The
+/// provider is fixed for an account's life. `config_dir` must be an existing
+/// directory and is refused for the machine-login accounts (a default with a
+/// directory would just be a regular account).
 #[tauri::command]
 pub fn update_agent_account(
     config: State<ConfigState>,
@@ -69,7 +101,20 @@ pub fn update_agent_account(
     label: Option<String>,
     color: Option<String>,
     disabled: Option<bool>,
+    config_dir: Option<String>,
 ) -> Result<(), String> {
+    if let Some(label) = &label {
+        if label.trim().is_empty() {
+            return Err("Account label can't be empty".to_string());
+        }
+    }
+    let config_dir = match config_dir {
+        Some(_) if is_default_account_id(&id) => {
+            return Err("The default account always uses the machine login".to_string())
+        }
+        Some(dir) => Some(validate_existing_dir(&dir)?),
+        None => None,
+    };
     let snapshot = {
         let mut cfg = config.lock();
         let account = cfg
@@ -78,7 +123,10 @@ pub fn update_agent_account(
             .find(|a| a.id == id)
             .ok_or_else(|| format!("Agent account not found: {}", id))?;
         if let Some(label) = label {
-            account.label = label;
+            account.label = label.trim().to_string();
+        }
+        if let Some(dir) = config_dir {
+            account.config_dir = Some(dir);
         }
         if let Some(color) = color {
             account.color = color;
@@ -102,6 +150,9 @@ pub fn remove_agent_account(
     id: String,
     delete_dir: bool,
 ) -> Result<(), String> {
+    if is_default_account_id(&id) {
+        return Err("The default account can't be removed — disable it instead".to_string());
+    }
     let (snapshot, removed_dir) = {
         let mut cfg = config.lock();
         let removed_dir = cfg
@@ -157,6 +208,30 @@ pub fn login_agent_account(config: State<ConfigState>, id: String) -> Result<(),
     }
     .ok_or_else(|| format!("Agent account not found: {}", id))?;
 
+    let (var, login_cmd) = match account.provider {
+        SdkProvider::Claude => ("CLAUDE_CONFIG_DIR", "claude"),
+        SdkProvider::OpenAI => ("CODEX_HOME", "codex login"),
+    };
+
+    // The machine-login account logs into the provider's normal location: no
+    // profile env var at all.
+    if is_default_account_id(&account.id) {
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("cmd")
+                .args(["/c", "start", "cmd", "/k", login_cmd])
+                .env_remove(var)
+                .spawn()
+                .map_err(|e| format!("Failed to open terminal: {}", e))?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = var;
+            super::settings_cmds::run_in_terminal(login_cmd.to_string())?;
+        }
+        return Ok(());
+    }
+
     let dir = account
         .config_dir
         .clone()
@@ -166,11 +241,6 @@ pub fn login_agent_account(config: State<ConfigState>, id: String) -> Result<(),
     // A fresh login needs the directory to exist.
     fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create account directory {}: {}", dir, e))?;
-
-    let (var, login_cmd) = match account.provider {
-        SdkProvider::Claude => ("CLAUDE_CONFIG_DIR", "claude"),
-        SdkProvider::OpenAI => ("CODEX_HOME", "codex login"),
-    };
 
     #[cfg(target_os = "windows")]
     {
@@ -196,14 +266,27 @@ pub fn login_agent_account(config: State<ConfigState>, id: String) -> Result<(),
 
 /// Whether the account has completed login, detected by the presence of the
 /// provider's credentials file in its profile dir (Claude: `.credentials.json`,
-/// OpenAI: `auth.json`). Unknown id or missing config dir → false. Frontend
-/// polls this after `login_agent_account`.
+/// OpenAI: `auth.json`). The machine-login accounts check the provider's
+/// default location (plus the macOS Keychain for Claude). Unknown id or missing
+/// config dir → false. Frontend polls this after `login_agent_account`.
 #[tauri::command]
 pub fn check_agent_account_auth(config: State<ConfigState>, id: String) -> bool {
     let cfg = config.lock();
     let Some(account) = cfg.accounts.iter().find(|a| a.id == id) else {
         return false;
     };
+    if is_default_account_id(&account.id) {
+        return match account.provider {
+            SdkProvider::Claude => {
+                dirs::home_dir()
+                    .is_some_and(|home| home.join(".claude").join(".credentials.json").exists())
+                    || super::sdk_cmds::claude_keychain_login_exists()
+            }
+            SdkProvider::OpenAI => {
+                default_codex_home().is_some_and(|home| home.join("auth.json").exists())
+            }
+        };
+    }
     let Some(dir) = account.config_dir.as_deref().filter(|d| !d.trim().is_empty()) else {
         return false;
     };

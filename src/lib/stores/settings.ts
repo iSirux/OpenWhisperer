@@ -345,8 +345,8 @@ export interface EnabledProviders {
 /** A registered "agent account": an isolated provider login profile.
  *  Each account is an isolated login profile directory (Claude → CLAUDE_CONFIG_DIR,
  *  Codex → CODEX_HOME); the backend injects the env var at session creation.
- *  The machine's existing default login is synthesized as a virtual account in the
- *  frontend and is NOT stored here. */
+ *  The machine's default login of each provider is stored here too, under the
+ *  reserved ids `default-claude` / `default-openai` with no `config_dir`. */
 export interface AgentAccount {
   /** Stable unique identifier */
   id: string;

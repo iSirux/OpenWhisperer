@@ -33,16 +33,71 @@ pub struct AgentAccount {
     pub disabled: bool,
 }
 
-/// Reserved virtual account id denoting the machine's default Claude login
-/// (no env override). Never stored in `AppConfig.accounts`; synthesized by the
-/// frontend and may appear in `RepoConfig.account_ids` / session creation.
+/// Reserved account id for the machine's default Claude login (no env
+/// override). Stored in `AppConfig.accounts` like any other account so it can
+/// carry a user label/color, but it never has a `config_dir` and can't be
+/// removed. Sessions on it may carry this id or no account id at all.
 pub const DEFAULT_CLAUDE_ACCOUNT_ID: &str = "default-claude";
-/// Reserved virtual account id denoting the machine's default OpenAI login.
+/// Reserved account id for the machine's default OpenAI login.
 pub const DEFAULT_OPENAI_ACCOUNT_ID: &str = "default-openai";
 
-/// Whether an id is one of the reserved default (no-override) virtual accounts.
+/// Neutral gray the default accounts are seeded with.
+const DEFAULT_ACCOUNT_COLOR: &str = "#6b7280";
+
+/// Whether an id is one of the reserved machine-login (no-override) accounts.
 pub fn is_default_account_id(id: &str) -> bool {
     id == DEFAULT_CLAUDE_ACCOUNT_ID || id == DEFAULT_OPENAI_ACCOUNT_ID
+}
+
+/// The seed entry for a provider's machine-login account.
+pub fn default_account_for(provider: SdkProvider) -> AgentAccount {
+    let id = match provider {
+        SdkProvider::Claude => DEFAULT_CLAUDE_ACCOUNT_ID,
+        SdkProvider::OpenAI => DEFAULT_OPENAI_ACCOUNT_ID,
+    };
+    AgentAccount {
+        id: id.to_string(),
+        label: "Default".to_string(),
+        color: DEFAULT_ACCOUNT_COLOR.to_string(),
+        provider,
+        config_dir: None,
+        disabled: false,
+    }
+}
+
+/// Make sure both machine-login accounts exist (inserted at the front, Claude
+/// first) and keep their invariants: correct provider, no `config_dir`, and no
+/// duplicates. Returns true when the list was changed.
+pub fn ensure_default_accounts(accounts: &mut Vec<AgentAccount>) -> bool {
+    let mut changed = false;
+    for (index, provider) in [SdkProvider::Claude, SdkProvider::OpenAI].into_iter().enumerate() {
+        let seed = default_account_for(provider.clone());
+        let mut seen = false;
+        let before = accounts.len();
+        accounts.retain(|a| {
+            if a.id != seed.id {
+                return true;
+            }
+            let keep = !seen;
+            seen = true;
+            keep
+        });
+        changed |= accounts.len() != before;
+        match accounts.iter_mut().find(|a| a.id == seed.id) {
+            Some(account) => {
+                if account.provider != provider || account.config_dir.is_some() {
+                    account.provider = provider;
+                    account.config_dir = None;
+                    changed = true;
+                }
+            }
+            None => {
+                accounts.insert(index.min(accounts.len()), seed);
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 /// Resolve the extra env pairs to inject for a session pinned to `account_id`.
@@ -94,7 +149,8 @@ pub enum CodexThreadOwner {
     Account(String),
 }
 
-fn default_codex_home() -> Option<PathBuf> {
+/// The machine-default Codex home (`$CODEX_HOME`, else `~/.codex`).
+pub fn default_codex_home() -> Option<PathBuf> {
     std::env::var_os("CODEX_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -303,5 +359,30 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ensure_default_accounts_seeds_and_repairs() {
+        let mut accounts = vec![AgentAccount {
+            id: "acct-work".to_string(),
+            label: "Work".to_string(),
+            color: "#000000".to_string(),
+            provider: SdkProvider::Claude,
+            config_dir: Some("/tmp/work".to_string()),
+            disabled: false,
+        }];
+        assert!(ensure_default_accounts(&mut accounts));
+        let ids: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec![DEFAULT_CLAUDE_ACCOUNT_ID, DEFAULT_OPENAI_ACCOUNT_ID, "acct-work"]);
+        assert!(!ensure_default_accounts(&mut accounts), "idempotent");
+
+        // A user-edited default keeps its label/color, but loses a stray dir.
+        accounts[0].label = "Personal".to_string();
+        accounts[0].config_dir = Some("/tmp/x".to_string());
+        accounts.push(accounts[0].clone());
+        assert!(ensure_default_accounts(&mut accounts));
+        assert_eq!(accounts.len(), 3);
+        assert_eq!(accounts[0].label, "Personal");
+        assert!(accounts[0].config_dir.is_none());
     }
 }

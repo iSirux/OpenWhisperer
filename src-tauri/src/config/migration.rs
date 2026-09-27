@@ -8,7 +8,9 @@
 
 use serde_json::Value;
 
+use super::accounts::default_account_for;
 use super::default_openai_model;
+use super::provider::SdkProvider;
 use super::ui::Theme;
 
 /// A migration mutates the raw config JSON in place.
@@ -27,6 +29,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_v8_to_v9,
     migrate_v9_to_v10,
     migrate_v10_to_v11,
+    migrate_v11_to_v12,
 ];
 
 /// The schema version the current build writes. Derived from the table length so
@@ -357,6 +360,38 @@ fn migrate_v10_to_v11(value: &mut Value) {
             Value::String(s) => seen.insert(s.clone()),
             _ => true,
         });
+    }
+}
+
+// ============================================================================
+// v11 -> v12: the machine's default provider logins (`default-claude` /
+// `default-openai`) become real stored accounts so they can be labeled and
+// colored like any other. Ids are unchanged, so repo whitelists and persisted
+// sessions keep resolving. `AppConfig::finalize` re-ensures them on every load;
+// this just stamps them into the file on upgrade.
+// ============================================================================
+
+fn migrate_v11_to_v12(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    let accounts = obj
+        .entry("accounts")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Value::Array(accounts) = accounts else {
+        return;
+    };
+    for (index, provider) in [SdkProvider::Claude, SdkProvider::OpenAI].into_iter().enumerate() {
+        let seed = default_account_for(provider);
+        let present = accounts
+            .iter()
+            .any(|a| a.get("id").and_then(|id| id.as_str()) == Some(seed.id.as_str()));
+        if present {
+            continue;
+        }
+        if let Ok(seed) = serde_json::to_value(seed) {
+            accounts.insert(index.min(accounts.len()), seed);
+        }
     }
 }
 

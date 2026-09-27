@@ -136,8 +136,11 @@ pub fn open_config_file() -> Result<(), String> {
 pub fn save_config(
     config: State<ConfigState>,
     load_status: State<ConfigLoadStatus>,
-    new_config: AppConfig,
+    mut new_config: AppConfig,
 ) -> Result<(), String> {
+    // The machine-login accounts are never removable, whatever the frontend sent.
+    crate::config::ensure_default_accounts(&mut new_config.accounts);
+
     // Block saves if the config was loaded from defaults due to a parse error
     let loaded_ok = load_status.0.lock().loaded_ok;
     if !loaded_ok {
@@ -159,7 +162,7 @@ pub fn save_config(
 }
 
 /// Replaces the config with built-in defaults and persists it. Repositories
-/// (list, active index, auto mode) are preserved — they're user data managed
+/// (list, active index, auto mode) and agent accounts are preserved — they're user data managed
 /// by dedicated commands, not settings. `redo_onboarding` controls whether the
 /// first-run wizard shows again. Writing a known-good default config also
 /// clears a failed-load state, unblocking saves.
@@ -177,6 +180,9 @@ pub fn reset_config(
         let mut cfg = config.lock();
         let mut fresh = AppConfig::default();
         fresh.repos = std::mem::take(&mut cfg.repos);
+        // Accounts are user data too (repo whitelists and sessions point at them).
+        fresh.accounts = std::mem::take(&mut cfg.accounts);
+        crate::config::ensure_default_accounts(&mut fresh.accounts);
         fresh.active_repo_index = cfg.active_repo_index;
         fresh.auto_repo_mode = cfg.auto_repo_mode;
         fresh.onboarding_completed = !redo_onboarding;

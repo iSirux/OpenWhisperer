@@ -541,7 +541,7 @@ fn read_claude_keychain_credentials() -> Option<serde_json::Value> {
 /// Whether a Claude Code login exists in the macOS Keychain. Uses a metadata-only
 /// lookup (no `-w`) so it never triggers the secret-access prompt. Always false
 /// off macOS.
-fn claude_keychain_login_exists() -> bool {
+pub(crate) fn claude_keychain_login_exists() -> bool {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("security")
