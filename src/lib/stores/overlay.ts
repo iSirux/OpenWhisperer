@@ -4,11 +4,25 @@ import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { primaryMonitor } from '@tauri-apps/api/window';
 import { emit } from '@tauri-apps/api/event';
 
-export type OverlayMode = 'session' | 'paste' | 'inline';
+export type OverlayMode = 'session' | 'paste' | 'inline' | 'meeting';
 
 export interface OverlayActivityInfo {
   activeSessions: number;
   activeSequences: number;
+}
+
+/**
+ * Meeting Mode indicator state. While a meeting is active the overlay keeps a
+ * persistent "● Meeting 00:42:10" row visible (consent/trust requirement), and
+ * the dictation flow's `hide()` falls back to meeting mode instead of hiding.
+ */
+export interface OverlayMeetingInfo {
+  meetingId: string;
+  title: string;
+  status: 'recording' | 'paused' | 'finalizing';
+  /** Accumulated recording seconds as of `baseAt` (epoch ms) */
+  durationSecs: number;
+  baseAt: number;
 }
 
 interface OverlayStore {
@@ -27,6 +41,7 @@ interface OverlayStore {
     promptPreview: string | null;
   } | null;
   activityInfo: OverlayActivityInfo;
+  meetingInfo: OverlayMeetingInfo | null;
 }
 
 function getOverlayWindow() {
@@ -45,7 +60,15 @@ function createOverlayStore() {
     },
     inlineSessionInfo: null,
     activityInfo: { activeSessions: 0, activeSequences: 0 },
+    meetingInfo: null,
   });
+
+  function currentMeetingInfo(): OverlayMeetingInfo | null {
+    let info: OverlayMeetingInfo | null = null;
+    const unsubscribe = subscribe((s) => (info = s.meetingInfo));
+    unsubscribe();
+    return info;
+  }
 
   return {
     subscribe,
@@ -64,6 +87,12 @@ function createOverlayStore() {
     },
 
     async hide() {
+      // A live meeting keeps its indicator visible: the dictation flow's stop
+      // paths call hide(), which here restores meeting mode instead.
+      if (currentMeetingInfo()) {
+        this.setMode('meeting');
+        return;
+      }
       try {
         const overlayWindow = await getOverlayWindow();
         if (overlayWindow) {
@@ -188,6 +217,29 @@ function createOverlayStore() {
     // Update activity info without emitting (used when receiving event from another window)
     updateActivityInfoLocal(activeSessions: number, activeSequences: number) {
       update((s) => ({ ...s, activityInfo: { activeSessions, activeSequences } }));
+    },
+
+    /**
+     * Set (or clear with null) the meeting indicator. Starting a meeting shows
+     * the overlay in meeting mode; ending it hides the overlay unless a
+     * dictation recording is using it.
+     */
+    async setMeetingInfo(info: OverlayMeetingInfo | null, opts: { dictationActive?: boolean } = {}) {
+      const had = currentMeetingInfo() !== null;
+      update((s) => ({ ...s, meetingInfo: info }));
+      emit('overlay-meeting-info', info);
+      if (info && !had) {
+        if (!opts.dictationActive) this.setMode('meeting');
+        await this.show();
+      } else if (!info && had && !opts.dictationActive) {
+        this.setMode('session');
+        await this.hide();
+      }
+    },
+
+    // Update meeting info without emitting (used when receiving event from another window)
+    updateMeetingInfoLocal(info: OverlayMeetingInfo | null) {
+      update((s) => ({ ...s, meetingInfo: info }));
     },
   };
 }

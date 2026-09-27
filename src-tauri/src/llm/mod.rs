@@ -2,6 +2,7 @@
 
 mod api_types;
 mod features;
+mod meeting;
 #[cfg(test)]
 mod prompt_tests;
 mod providers;
@@ -121,7 +122,8 @@ pub(crate) fn client_for_profile(
         profile.provider.clone(),
         profile.endpoint.clone(),
         profile.auto_model,
-    ))
+    )
+    .with_disable_thinking(profile.disable_thinking))
 }
 
 /// Canonical LLM router factory: resolves the routing chain for `feature`'s role
@@ -169,7 +171,7 @@ pub(crate) fn router_from_config(
         return Err("No usable LLM profiles configured (missing API keys?)".to_string());
     }
 
-    Ok(LlmRouter { clients })
+    Ok(LlmRouter { clients, feature })
 }
 
 /// Model fallback chain for the Gemini provider (single order, priority-agnostic).
@@ -193,6 +195,8 @@ pub struct LlmClient {
     endpoint: Option<String>,
     /// When true and provider is Gemini, automatically select model with fallbacks
     auto_model: bool,
+    /// Local/Custom: send `chat_template_kwargs: {"enable_thinking": false}`.
+    disable_thinking: bool,
 }
 
 impl LlmClient {
@@ -210,7 +214,15 @@ impl LlmClient {
             provider,
             endpoint,
             auto_model,
+            disable_thinking: false,
         }
+    }
+
+    /// Profile toggle: suppress reasoning on self-hosted servers (see
+    /// `LlmProfile::disable_thinking`).
+    pub fn with_disable_thinking(mut self, disable_thinking: bool) -> Self {
+        self.disable_thinking = disable_thinking;
+        self
     }
 
     /// Get the fallback chain of models based on priority
@@ -235,6 +247,9 @@ impl LlmClient {
             LlmProvider::OpenAI => "https://api.openai.com/v1/chat/completions".to_string(),
             LlmProvider::Groq => "https://api.groq.com/openai/v1/chat/completions".to_string(),
             LlmProvider::Xai => "https://api.x.ai/v1/chat/completions".to_string(),
+            LlmProvider::OpenRouter => {
+                "https://openrouter.ai/api/v1/chat/completions".to_string()
+            }
             LlmProvider::Local | LlmProvider::Custom => self
                 .endpoint
                 .clone()
@@ -257,6 +272,9 @@ impl LlmClient {
 pub struct LlmRouter {
     /// (profile label for logging, client), in fallback order.
     clients: Vec<(String, LlmClient)>,
+    /// The feature this router was built for: drives the per-attempt timeout
+    /// and the structured-output schema name.
+    feature: LlmFeature,
 }
 
 /// The route that completed a latency-sensitive cleanup request.
@@ -274,6 +292,13 @@ const CLEANUP_PROFILE_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 const CLEANUP_MAX_PROFILES: usize = 2;
 
 impl LlmRouter {
+    /// Test-only: a router over explicit clients (no AppHandle / keyring), for
+    /// crate-level integration tests such as `meeting::e2e_tests`.
+    #[cfg(test)]
+    pub(crate) fn for_tests(clients: Vec<(String, LlmClient)>, feature: LlmFeature) -> Self {
+        Self { clients, feature }
+    }
+
     pub(crate) async fn run_cleanup_chain<T: DeserializeOwned>(
         &self,
         prompt: &str,
@@ -313,7 +338,11 @@ impl LlmRouter {
 
             match tokio::time::timeout(
                 profile_timeout,
-                client.generate_structured_with_usage(prompt, schema.clone()),
+                client.generate_structured_with_usage(
+                    prompt,
+                    schema.clone(),
+                    LlmFeature::TranscriptionCleanup.name(),
+                ),
             )
             .await
             {
@@ -379,22 +408,64 @@ impl LlmRouter {
     /// Try each client's structured generation in order. On ANY error, log the
     /// profile and move to the next client (a different provider may succeed
     /// where auth/parse/rate-limit failed). Returns the last error if all fail.
+    ///
+    /// Each attempt is bounded by the feature's timeout
+    /// ([`LlmFeature::timeout`]); a timed-out profile counts as a failure and
+    /// the next profile is tried.
     async fn run_chain<T: DeserializeOwned>(
         &self,
         prompt: &str,
         schema: Option<serde_json::Value>,
     ) -> Result<GenerationResult<T>, String> {
+        self.run_chain_with_timeout(prompt, schema, self.feature.timeout())
+            .await
+    }
+
+    async fn run_chain_with_timeout<T: DeserializeOwned>(
+        &self,
+        prompt: &str,
+        schema: Option<serde_json::Value>,
+        attempt_timeout: std::time::Duration,
+    ) -> Result<GenerationResult<T>, String> {
+        let feature = self.feature.name();
         let mut last_error = String::new();
         let mut failures = 0usize;
         for (label, client) in &self.clients {
-            match client
-                .generate_structured_with_usage(prompt, schema.clone())
-                .await
+            let started = std::time::Instant::now();
+            match tokio::time::timeout(
+                attempt_timeout,
+                client.generate_structured_with_usage(prompt, schema.clone(), feature),
+            )
+            .await
             {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    log::warn!("[llm] profile '{}' failed, trying next: {}", label, e);
+                Ok(Ok(result)) => {
+                    log::info!(
+                        "[llm][{}] completed profile='{}' provider='{}' model='{}' duration_ms={}",
+                        feature,
+                        label,
+                        client.provider_name(),
+                        client.model_name(),
+                        started.elapsed().as_millis(),
+                    );
+                    return Ok(result);
+                }
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "[llm][{}] profile '{}' failed, trying next: {}",
+                        feature,
+                        label,
+                        e
+                    );
                     last_error = e;
+                    failures += 1;
+                }
+                Err(_) => {
+                    last_error = format!(
+                        "profile '{}' timed out after {}s",
+                        label,
+                        attempt_timeout.as_secs_f32()
+                    );
+                    log::warn!("[llm][{}] {}; trying next profile", feature, last_error);
                     failures += 1;
                 }
             }
@@ -478,6 +549,7 @@ mod cleanup_routing_tests {
                     ),
                 ),
             ],
+            feature: LlmFeature::TranscriptionCleanup,
         };
 
         let (result, route) = router
@@ -493,5 +565,147 @@ mod cleanup_routing_tests {
         assert_eq!(result.data.value, "second");
         assert_eq!(route.profile, "fast");
         assert_eq!(route.attempts, 2);
+    }
+
+    /// Serve `responses` to sequential connections (status, body) and return
+    /// the URL plus a handle to the received request bodies.
+    async fn scripted_server(
+        responses: Vec<(u16, String)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_task = seen.clone();
+        tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                // Read headers + Content-Length body.
+                loop {
+                    let n = socket.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(idx) = text.find("\r\n\r\n") {
+                        let len = text[..idx]
+                            .lines()
+                            .find_map(|l| {
+                                let l = l.to_ascii_lowercase();
+                                l.strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= idx + 4 + len {
+                            let body = &buf[idx + 4..idx + 4 + len];
+                            if let Ok(v) = serde_json::from_slice(body) {
+                                seen_task.lock().unwrap().push(v);
+                            }
+                            break;
+                        }
+                    }
+                }
+                let reason = if status == 200 { "OK" } else { "Bad Request" };
+                let response = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    reason,
+                    body.len(),
+                    body,
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        (format!("http://{}/v1/chat/completions", address), seen)
+    }
+
+    fn ok_body(model_json: &str) -> String {
+        serde_json::json!({
+            "choices": [{ "message": { "content": model_json } }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn json_schema_rejection_falls_back_to_json_object_then_plain() {
+        let (url, seen) = scripted_server(vec![
+            (400, r#"{"error":"'response_format.type' must be 'json_schema' or 'text'"}"#.into()),
+            (400, r#"{"error":"json_object unsupported"}"#.into()),
+            (200, ok_body(r#"{"value":"ok"}"#)),
+        ])
+        .await;
+        let router = LlmRouter {
+            clients: vec![(
+                "local".to_string(),
+                LlmClient::new(
+                    String::new(),
+                    "fallback-ladder-model".to_string(),
+                    LlmProvider::Local,
+                    Some(url),
+                    false,
+                )
+                .with_disable_thinking(true),
+            )],
+            feature: LlmFeature::MeetingTriage,
+        };
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "value": { "type": "string" } },
+            "required": ["value"]
+        });
+        let result = router
+            .run_chain::<TestPayload>("test json", Some(schema))
+            .await
+            .unwrap();
+        assert_eq!(result.data.value, "ok");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0]["response_format"]["type"], "json_schema");
+        assert_eq!(seen[0]["response_format"]["json_schema"]["name"], "meeting_triage");
+        assert_eq!(seen[0]["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(seen[1]["response_format"]["type"], "json_object");
+        assert!(seen[2].get("response_format").is_none());
+    }
+
+    #[tokio::test]
+    async fn run_chain_times_out_a_slow_profile_and_uses_the_next() {
+        let slow_url = one_shot_server(std::time::Duration::from_millis(200), "first").await;
+        let fast_url = one_shot_server(std::time::Duration::ZERO, "second").await;
+        let router = LlmRouter {
+            clients: vec![
+                (
+                    "slow".to_string(),
+                    LlmClient::new(String::new(), "m".into(), LlmProvider::Custom, Some(slow_url), false),
+                ),
+                (
+                    "fast".to_string(),
+                    LlmClient::new(String::new(), "m".into(), LlmProvider::Custom, Some(fast_url), false),
+                ),
+            ],
+            feature: LlmFeature::QuickActions,
+        };
+        let result = router
+            .run_chain_with_timeout::<TestPayload>(
+                "test",
+                None,
+                std::time::Duration::from_millis(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.data.value, "second");
+    }
+
+    #[test]
+    fn feature_timeouts_match_the_contract() {
+        assert_eq!(LlmFeature::ModelRecommendation.timeout().as_secs(), 15);
+        assert_eq!(LlmFeature::InteractionAnalysis.timeout().as_secs(), 60);
+        assert_eq!(LlmFeature::MeetingTriage.timeout().as_secs(), 180);
+        assert_eq!(LlmFeature::MeetingConsolidate.timeout().as_secs(), 600);
+        assert!(matches!(LlmFeature::MeetingTriage.role(), LlmRole::Quality));
+        assert!(matches!(LlmFeature::MeetingConsolidate.role(), LlmRole::Quality));
     }
 }

@@ -24,6 +24,7 @@
     SequencesTab,
     QueueTab,
     ValidationTab,
+    MeetingTab,
     RecordingsLogTab,
     AboutTab,
   } from "$lib/components/settings";
@@ -122,6 +123,7 @@
     "audio",
     "voice-commands",
     "transcription",
+    "meeting",
     "recordings-log",
   ];
 
@@ -137,6 +139,7 @@
       { id: "audio", label: "Audio" },
       { id: "voice-commands", label: "Voice Commands" },
       { id: "transcription", label: "Transcription" },
+      { id: "meeting", label: "Meeting" },
       { id: "llm", label: "LLM" },
       { id: "queue", label: "Smart Queue" },
       { id: "validation", label: "Validation" },
@@ -208,6 +211,8 @@
         <VoiceCommandsTab />
       {:else if activeTab === "transcription"}
         <TranscriptionTab />
+      {:else if activeTab === "meeting"}
+        <MeetingTab />
       {:else if activeTab === "llm"}
         <LlmTab />
       {:else if activeTab === "queue"}

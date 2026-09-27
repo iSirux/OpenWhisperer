@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { settings } from '$lib/stores/settings';
+  import { meetings, activeMeeting } from '$lib/stores/meetings';
   interface Session {
     id: string;
     status: string;
@@ -77,6 +78,31 @@
     </div>
   </button>
   <div class="flex items-center gap-1 overflow-hidden">
+    {#if !$settings.system.voice_mode_disabled}
+      <button
+        class="h-8 flex items-center justify-center gap-1.5 rounded transition-colors {$activeMeeting
+          ? 'px-2 bg-red-500/15 text-red-400 hover:bg-red-500/25'
+          : currentView === 'meeting'
+            ? 'w-8 bg-surface-elevated text-accent'
+            : 'w-8 text-text-muted hover:text-text-primary hover:bg-surface-elevated'}"
+        onclick={() => meetings.openHome()}
+        title={$activeMeeting ? `Meeting ${$activeMeeting.status} — open` : 'Meeting Mode'}
+      >
+        {#if $activeMeeting}
+          <span class="relative w-2 h-2">
+            <span class="absolute inset-0 rounded-full {$activeMeeting.status === 'recording' ? 'bg-red-500' : 'bg-amber-400'}"></span>
+            {#if $activeMeeting.status === 'recording'}
+              <span class="absolute inset-0 rounded-full bg-red-500 animate-ping opacity-60"></span>
+            {/if}
+          </span>
+          <span class="text-[11px] font-medium">Meeting</span>
+        {:else}
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        {/if}
+      </button>
+    {/if}
     {#if $settings.system.dev_mode}
       <button
         class={`h-8 px-2.5 flex items-center gap-1.5 rounded text-[11px] font-medium border transition-colors ${

@@ -13,6 +13,10 @@
   import ScheduleList from '$lib/components/schedule/ScheduleList.svelte';
   import ScheduleDetailView from '$lib/components/schedule/ScheduleDetailView.svelte';
   import SpareTokensView from '$lib/components/SpareTokensView.svelte';
+  import MeetingView from '$lib/components/meeting/MeetingView.svelte';
+  import JournalList from '$lib/components/journal/JournalList.svelte';
+  import JournalDetailView from '$lib/components/journal/JournalDetailView.svelte';
+  import { journalOpenCount, selectedJournalItem, selectedJournalItemId } from '$lib/stores/journal';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import { shouldWarnForLaunchOnSessionClose } from '$lib/stores/launchProfiles';
 
@@ -76,7 +80,13 @@
     if ($activeSdkSessionId) {
       selectedPileItemId.set(null);
       selectedScheduleId.set(null);
+      selectedJournalItemId.set(null);
     }
+  });
+
+  // Opening a pile item or schedule closes an open journal item (they share the main pane)
+  $effect(() => {
+    if ($selectedPileItemId || $selectedScheduleId) selectedJournalItemId.set(null);
   });
 
   // When No Voice Mode is on, drop the pile tab (it's a voice-recording inbox) and
@@ -84,8 +94,9 @@
   // is voice-independent and stays available.
   $effect(() => {
     if (noVoice) {
-      if ($sidebarTab === 'pile') sidebarTab.set('sessions');
+      if ($sidebarTab === 'pile' || $sidebarTab === 'journal') sidebarTab.set('sessions');
       selectedPileItemId.set(null);
+      selectedJournalItemId.set(null);
     }
   });
   let currentRepoId = $derived($navigation.selectedRepoId);
@@ -492,12 +503,25 @@
           >
             Scheduled{$scheduleCount > 0 ? ` (${$scheduleCount})` : ''}
           </button>
+          {#if !noVoice}
+            <button
+              class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'journal'
+                ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
+                : 'text-text-muted hover:text-text-secondary'}"
+              onclick={() => sidebarTab.set('journal')}
+              title="Feedback, ideas, decisions and notes collected from meetings"
+            >
+              Journal{$journalOpenCount > 0 ? ` (${$journalOpenCount})` : ''}
+            </button>
+          {/if}
         </div>
         <div class="flex-1 overflow-hidden">
           {#if $sidebarTab === 'pile' && !noVoice}
             <PileList />
           {:else if $sidebarTab === 'scheduled'}
             <ScheduleList />
+          {:else if $sidebarTab === 'journal' && !noVoice}
+            <JournalList />
           {:else}
             <SessionList {currentView} />
           {/if}
@@ -525,10 +549,14 @@
         <RepositoryView repoId={currentRepoId} showAddForm={repositoryAddMode} />
       {:else if currentView === 'issues'}
         <RepoIssuesView repoId={currentRepoId} />
+      {:else if currentView === 'meeting'}
+        <MeetingView />
       {:else if $selectedPileItem}
         <PileDetailView item={$selectedPileItem} />
       {:else if $selectedSchedule}
         <ScheduleDetailView schedule={$selectedSchedule} />
+      {:else if $selectedJournalItem}
+        <JournalDetailView item={$selectedJournalItem} />
       {:else if $activeSdkSession && activeSetupState}
       {@const activeSession = $activeSdkSession}
       {@const sessionId = activeSession.id}

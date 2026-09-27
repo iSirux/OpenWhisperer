@@ -2,9 +2,12 @@
   import {
     normalizeAutoModelEffort,
     settings,
+    type AutoModelTierConfig,
     type LlmProvider,
     type LlmProfile,
   } from "$lib/stores/settings";
+  import { effectiveTiers, resolveTier, tierModelLabel } from "$lib/utils/autoModelTiers";
+  import { getEnabledModels } from "$lib/utils/models";
   import { invoke } from "@tauri-apps/api/core";
   import { get } from "svelte/store";
   import { onMount } from "svelte";
@@ -23,6 +26,7 @@
     Gemini: "Google Gemini",
     OpenAI: "OpenAI",
     Xai: "xAI (Grok)",
+    OpenRouter: "OpenRouter",
     Local: "Local",
     Custom: "Custom",
   };
@@ -32,6 +36,7 @@
     Gemini: { model: "gemini-3.1-flash-lite", endpoint: null },
     OpenAI: { model: "gpt-5.4-mini", endpoint: null },
     Xai: { model: "grok-4-fast", endpoint: null },
+    OpenRouter: { model: "google/gemini-3.1-flash-lite", endpoint: null },
     Local: { model: "local-model", endpoint: "http://localhost:1234/v1/chat/completions" },
     Custom: { model: "", endpoint: "" },
   };
@@ -69,6 +74,7 @@
     Gemini: { label: "Get API key", url: "https://aistudio.google.com/apikey" },
     OpenAI: { label: "Get API key", url: "https://platform.openai.com/api-keys" },
     Xai: { label: "Get API key", url: "https://console.x.ai" },
+    OpenRouter: { label: "Get API key", url: "https://openrouter.ai/settings/keys" },
   };
 
   const CHAINS: { key: ChainKey; title: string; desc: string }[] = [
@@ -80,7 +86,7 @@
     {
       key: "quality_chain",
       title: "Quality tasks",
-      desc: "Correctness-critical calls: transcription cleanup, interaction detection, quick actions, commit/PR drafts, and sequence AI nodes.",
+      desc: "Correctness-critical calls: transcription cleanup, interaction detection, quick actions, commit/PR drafts, sequence AI nodes, and meeting triage/consolidation. Background tasks here tolerate a slower local model.",
     },
   ];
 
@@ -95,6 +101,67 @@
   let normalizedAutoModelEffort = $derived(
     normalizeAutoModelEffort($settings.llm.features.auto_model_effort)
   );
+
+  // ---- Auto-model tier ladder ----
+  const TIER_EFFORT_OPTIONS: { value: string; label: string }[] = [
+    { value: "", label: "No effort" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra high" },
+    { value: "max", label: "Max" },
+  ];
+
+  let configuredTiers = $derived($settings.llm.features.auto_model_tiers ?? []);
+  let usingDerivedTiers = $derived(configuredTiers.length === 0);
+  let ladder = $derived(effectiveTiers($settings));
+  let ladderPreview = $derived(
+    Array.from({ length: 10 }, (_, i) => ({ score: i + 1, ...resolveTier(i + 1, $settings) }))
+  );
+  let tierModelOptions = $derived.by(() => {
+    const opts: { value: string; label: string }[] = [];
+    const enabled = $settings.enabled_models ?? [];
+    const providers = $settings.enabled_providers ?? { claude: true, openai: true };
+    if (providers.claude !== false) {
+      for (const m of getEnabledModels(enabled, "claude")) opts.push({ value: m.id, label: `Claude · ${m.label}` });
+    }
+    if (providers.openai !== false) {
+      for (const m of getEnabledModels(enabled, "openai")) opts.push({ value: m.id, label: `Codex · ${m.label}` });
+    }
+    return opts;
+  });
+
+  function setTiers(tiers: AutoModelTierConfig[]) {
+    settings.update((s) => ({
+      ...s,
+      llm: { ...s.llm, features: { ...s.llm.features, auto_model_tiers: tiers } },
+    }));
+  }
+
+  function customizeTiers() {
+    setTiers(ladder.map((t) => ({ min_score: t.min_score, model: t.model, effort: t.effort })));
+  }
+
+  function updateTier(idx: number, patch: Partial<AutoModelTierConfig>) {
+    setTiers(configuredTiers.map((t, i) => (i === idx ? { ...t, ...patch } : t)));
+  }
+
+  function addTier() {
+    const last = configuredTiers[configuredTiers.length - 1];
+    const nextScore = Math.min(10, (last?.min_score ?? 0) + 2);
+    setTiers([
+      ...configuredTiers,
+      { min_score: nextScore, model: last?.model ?? tierModelOptions[0]?.value ?? "", effort: last?.effort ?? "medium" },
+    ]);
+  }
+
+  function removeTier(idx: number) {
+    setTiers(configuredTiers.filter((_, i) => i !== idx));
+  }
+
+  function sortTiers() {
+    setTiers([...configuredTiers].sort((a, b) => a.min_score - b.min_score));
+  }
 
   onMount(() => {
     for (const p of $settings.llm.profiles) refreshKey(p.id);
@@ -151,6 +218,7 @@
       endpoint: preset.endpoint,
       auto_model: true,
       model_priority: "speed",
+      disable_thinking: true,
     };
     settings.update((s) => ({
       ...s,
@@ -279,7 +347,7 @@
     <p class="text-xs text-text-muted">
       Use a lightweight LLM for auxiliary tasks like session naming, interaction
       detection, transcription cleanup, and note structuring. Define one or more
-      provider profiles (Google Gemini, OpenAI, Groq, xAI, or local models), then
+      provider profiles (Google Gemini, OpenAI, Groq, xAI, OpenRouter, or local models), then
       route Fast and Quality tasks through them with cross-provider fallback.
     </p>
   </div>
@@ -357,6 +425,7 @@
               <option value="Gemini">Google Gemini (free tier — limited)</option>
               <option value="OpenAI">OpenAI</option>
               <option value="Xai">xAI (Grok)</option>
+              <option value="OpenRouter">OpenRouter (many models, one key)</option>
               <option value="Local">Local (LM Studio, Ollama, etc.)</option>
               <option value="Custom">Custom OpenAI-compatible</option>
             </select>
@@ -374,6 +443,27 @@
                 oninput={(e) =>
                   updateProfile(profile.id, { endpoint: (e.target as HTMLInputElement).value })}
                 onblur={persist}
+              />
+            </div>
+            <div class="flex items-center justify-between p-2.5 bg-background rounded border border-border">
+              <div>
+                <span class="text-sm font-medium text-text-primary">Disable thinking</span>
+                <p class="text-xs text-text-muted">
+                  Sends <code>chat_template_kwargs: {"{"}enable_thinking: false{"}"}</code> so
+                  reasoning models (Qwen3.x etc.) answer directly. llama.cpp ignores the JSON
+                  schema while a model thinks — keep this on unless your model needs it.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                class="toggle"
+                checked={profile.disable_thinking !== false}
+                onchange={() => {
+                  updateProfile(profile.id, {
+                    disable_thinking: profile.disable_thinking === false,
+                  });
+                  persist();
+                }}
               />
             </div>
           {/if}
@@ -471,13 +561,20 @@
                 type="text"
                 class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
                 value={profile.model}
-                placeholder="model-name"
+                placeholder={profile.provider === "OpenRouter"
+                  ? "google/gemini-3.1-flash-lite"
+                  : "model-name"}
                 oninput={(e) =>
                   updateProfile(profile.id, { model: (e.target as HTMLInputElement).value })}
                 onblur={persist}
               />
               <p class="text-xs text-text-muted mt-1">
-                Enter the model name as expected by your endpoint
+                {#if profile.provider === "OpenRouter"}
+                  OpenRouter model slug (provider/model), e.g. google/gemini-3.1-flash-lite or
+                  qwen/qwen3.6-27b — see openrouter.ai/models
+                {:else}
+                  Enter the model name as expected by your endpoint
+                {/if}
               </p>
             {/if}
           </div>
@@ -1001,11 +1098,131 @@
               </div>
               <p class="text-xs text-text-muted mt-1">
                 {#if normalizedAutoModelEffort === "dynamic"}
-                  LLM decides effort level based on prompt complexity
+                  Effort comes from the tier the complexity score lands on
                 {:else}
-                  Effort is always set to {normalizedAutoModelEffort} when using auto model
+                  Effort is always set to {normalizedAutoModelEffort} when using auto model (overrides the tier's effort)
                 {/if}
               </p>
+            </div>
+
+            <!-- Tier ladder -->
+            <div class="pt-2">
+              <div class="flex items-center justify-between mb-1">
+                <label class="block text-xs font-medium text-text-secondary">Model tiers</label>
+                {#if usingDerivedTiers}
+                  <button
+                    class="px-2 py-0.5 text-xs bg-surface-secondary hover:bg-border rounded transition-colors"
+                    onclick={customizeTiers}
+                  >
+                    Customize
+                  </button>
+                {:else}
+                  <button
+                    class="px-2 py-0.5 text-xs text-text-muted hover:text-text-primary rounded transition-colors"
+                    onclick={() => setTiers([])}
+                    title="Drop the custom ladder and use defaults derived from your enabled models"
+                  >
+                    Reset to defaults
+                  </button>
+                {/if}
+              </div>
+              <p class="text-xs text-text-muted mb-2">
+                The LLM grades each prompt 1–10 (1–2 trivial · 3–4 small · 5–6 moderate · 7–8 large ·
+                9–10 very hard). The highest tier whose minimum score is reached picks the model and
+                effort. Any enabled provider's models can sit on the ladder; tiers of a disabled
+                provider are skipped.
+              </p>
+
+              {#if usingDerivedTiers}
+                <div class="space-y-1">
+                  {#each ladder as t (t.min_score)}
+                    <div class="flex items-center gap-2 px-2 py-1 bg-background rounded border border-border text-xs">
+                      <span class="w-12 text-text-muted">≥ {t.min_score}</span>
+                      <span class="flex-1 text-text-primary">{tierModelLabel(t.model)}</span>
+                      <span class="text-text-muted">{t.effort ?? "no effort"}</span>
+                    </div>
+                  {/each}
+                  <p class="text-xs text-text-muted">
+                    Derived from your enabled models. Click Customize to edit.
+                  </p>
+                </div>
+              {:else}
+                <div class="space-y-1.5">
+                  {#each configuredTiers as t, idx (idx)}
+                    <div class="flex items-center gap-2 p-1.5 bg-background rounded border border-border">
+                      <span class="text-xs text-text-muted">≥</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="10"
+                        class="w-14 px-2 py-1 bg-surface-elevated border border-border rounded text-xs focus:outline-none focus:border-accent disabled:opacity-60"
+                        value={idx === 0 ? 0 : t.min_score}
+                        disabled={idx === 0}
+                        title={idx === 0 ? "The first tier always starts at 0 so every score resolves" : "Minimum complexity score"}
+                        onchange={(e) => {
+                          const v = Math.max(0, Math.min(10, Math.round(Number((e.target as HTMLInputElement).value) || 0)));
+                          updateTier(idx, { min_score: v });
+                          sortTiers();
+                        }}
+                      />
+                      <select
+                        class="flex-1 min-w-0 px-2 py-1 bg-surface-elevated border border-border rounded text-xs focus:outline-none focus:border-accent"
+                        value={t.model}
+                        onchange={(e) => updateTier(idx, { model: (e.target as HTMLSelectElement).value })}
+                      >
+                        {#if !tierModelOptions.some((o) => o.value === t.model)}
+                          <option value={t.model}>{tierModelLabel(t.model)} (not enabled)</option>
+                        {/if}
+                        {#each tierModelOptions as opt (opt.value)}
+                          <option value={opt.value}>{opt.label}</option>
+                        {/each}
+                      </select>
+                      <select
+                        class="w-28 px-2 py-1 bg-surface-elevated border border-border rounded text-xs focus:outline-none focus:border-accent"
+                        value={t.effort ?? ""}
+                        onchange={(e) => {
+                          const v = (e.target as HTMLSelectElement).value;
+                          updateTier(idx, { effort: (v || null) as AutoModelTierConfig["effort"] });
+                        }}
+                      >
+                        {#each TIER_EFFORT_OPTIONS as opt (opt.value)}
+                          <option value={opt.value}>{opt.label}</option>
+                        {/each}
+                      </select>
+                      <button
+                        class="p-1 text-text-muted hover:text-error disabled:opacity-30 disabled:cursor-not-allowed"
+                        onclick={() => removeTier(idx)}
+                        disabled={configuredTiers.length <= 1}
+                        title="Remove tier"
+                      >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  {/each}
+                  <button
+                    class="w-full px-2 py-1 text-xs bg-surface-secondary hover:bg-border rounded transition-colors"
+                    onclick={addTier}
+                  >
+                    + Add tier
+                  </button>
+                </div>
+              {/if}
+
+              <!-- Preview: score → model -->
+              <div class="mt-2 grid grid-cols-5 gap-1">
+                {#each ladderPreview as p (p.score)}
+                  <div
+                    class="px-1.5 py-1 bg-background rounded border border-border text-[10px] leading-tight"
+                    title={`Score ${p.score} → ${p.model}${p.effort ? ` (${p.effort})` : ""}`}
+                  >
+                    <span class="text-text-muted">{p.score}</span>
+                    <span class="text-text-primary block truncate">{tierModelLabel(p.model)}</span>
+                    <span class="text-text-muted block">{p.effort ?? "—"}</span>
+                  </div>
+                {/each}
+              </div>
             </div>
           </div>
         {/if}

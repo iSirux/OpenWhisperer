@@ -313,7 +313,15 @@
       {#if pendingTranscription.modelRecommendation}
         <div class="recommendation model-recommendation">
           <div class="recommendation-header">
-            <span class="auto-badge">Auto</span>
+            <span
+              class="auto-badge"
+              title={pendingTranscription.modelRecommendation.complexity != null
+                ? `Complexity ${pendingTranscription.modelRecommendation.complexity}/10 — mapped to a model by the auto-model tier ladder (Settings → LLM)`
+                : undefined}
+              >Auto{pendingTranscription.modelRecommendation.complexity != null
+                ? ` · ${pendingTranscription.modelRecommendation.complexity}`
+                : ""}</span
+            >
             <span class="recommendation-label">Model</span>
             <span
               class="model-badge {getModelBadgeBgColor(

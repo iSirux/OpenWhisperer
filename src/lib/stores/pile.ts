@@ -33,6 +33,24 @@ import { debugRecordings } from '$lib/stores/debugRecordings';
 
 export type PileItemStatus = 'transcribing' | 'processing' | 'ready' | 'error';
 
+/**
+ * Where a text item came from (Meeting Mode). Snake_case per the meeting-mode
+ * contract. `t0`/`t1` are seconds from meeting start; `seg_id` names the
+ * segment clip playable via `meeting_read_segment_audio`.
+ */
+export interface PileItemSource {
+  kind: 'meeting';
+  meeting_id: string;
+  item_id: string;
+  quote: string;
+  t0: number;
+  t1: number;
+  seg_id?: string;
+  speaker?: string;
+  /** Set when the item was promoted from a journal item */
+  journal_item_id?: string;
+}
+
 export interface PileItem {
   id: string;
   createdAt: number;
@@ -71,6 +89,21 @@ export interface PileItem {
   /** Debug-recordings log entry for the originating recording, so re-transcription
    *  and the LLM pipeline attach their stages to the log (no-op if evicted). */
   debugRecordingId?: string;
+  /** Origin of a text item (e.g. a meeting triage item). Absent for recordings. */
+  source?: PileItemSource;
+}
+
+/** Input for a text-only pile item (no audio, no dictation cleanup). */
+export interface AddTextItemInput {
+  transcript: string;
+  title?: string;
+  category?: string;
+  repoId?: string;
+  repoReasoning?: string;
+  model?: string;
+  effortLevel?: EffortLevel;
+  modelReasoning?: string;
+  source?: PileItemSource;
 }
 
 export interface AddRecordingInput {
@@ -220,7 +253,11 @@ function createPileStore() {
    * Run the full processing pipeline on an item: cleanup → repo rec → model
    * rec → title. Each step is best-effort; the item always ends 'ready'.
    */
-  async function processItem(id: string, debugRecordingId?: string) {
+  async function processItem(
+    id: string,
+    debugRecordingId?: string,
+    opts: { onlyMissing?: boolean } = {}
+  ) {
     const item = getItem(id);
     if (!item || !item.transcript.trim()) return;
 
@@ -228,11 +265,17 @@ function createPileStore() {
 
     const currentSettings = get(settings);
     const activeReposList = getActiveReposList();
-    const rawTranscript = item.rawTranscript ?? item.transcript;
+    // Text items (e.g. from a meeting) are LLM-written, not dictated: dictation
+    // cleanup is the wrong transform, so they skip it and keep their text.
+    const isTextItem = !!item.source;
+    const rawTranscript = isTextItem ? item.transcript : (item.rawTranscript ?? item.transcript);
     let finalTranscript = rawTranscript;
+    const skipRepo = !!opts.onlyMissing && !!item.repoId;
+    const skipModel = !!opts.onlyMissing && !!item.model;
+    const skipTitle = !!opts.onlyMissing && !!item.title;
 
     // Step 1: transcription cleanup
-    try {
+    if (!isTextItem) try {
       const repoContext = buildAllReposContext(activeReposList);
       const cleanupResult = await cleanupTranscript(rawTranscript, item.realtimeTranscript, repoContext);
       finalTranscript = cleanupResult.text;
@@ -259,8 +302,12 @@ function createPileStore() {
       console.error('[pile] Cleanup failed:', error);
     }
 
-    // Step 2: repo recommendation (auto-repo mode) or current active repo
-    try {
+    // Step 2: repo recommendation (auto-repo mode) or current active repo.
+    // Sourced text items (meeting / journal) never take either: their repo was
+    // decided at the source (a fixed-repo meeting's repo, or triage's auto-repo
+    // pick). When that found none, the repo stays empty for the user to pick —
+    // the currently active repo has nothing to do with the meeting.
+    if (!skipRepo && !isTextItem) try {
       if (get(isAutoRepoSelected) && isRepoAutoSelectEnabled() && activeReposList.length > 1) {
         const recommendation = await getRepoRecommendation(finalTranscript, activeReposList);
         if (recommendation) {
@@ -282,7 +329,7 @@ function createPileStore() {
     }
 
     // Step 3: model recommendation (honors Auto model + effort settings)
-    try {
+    if (!skipModel) try {
       const { model, effortLevel, recommendation } = await getModelRecommendation(
         finalTranscript,
         currentSettings.enabled_models
@@ -297,7 +344,7 @@ function createPileStore() {
     }
 
     // Step 4: auto-title (reuses the session-naming feature)
-    try {
+    if (!skipTitle) try {
       const nameResult = await generateSessionName(finalTranscript);
       if (nameResult) {
         updateItem(id, { title: nameResult.name, category: nameResult.category });
@@ -380,6 +427,39 @@ function createPileStore() {
       }
     }
 
+    return id;
+  }
+
+  /**
+   * Add a text-only item (no audio) — e.g. a meeting triage item. Skips
+   * dictation cleanup; whatever the caller pre-filled (title, repo, model,
+   * effort) is kept and only the missing pieces are computed in the background.
+   * Returns the new item's ID.
+   */
+  function addTextItem(input: AddTextItemInput): string {
+    const id = crypto.randomUUID();
+    const item: PileItem = {
+      id,
+      createdAt: Date.now(),
+      status: 'ready',
+      title: input.title,
+      category: input.category,
+      transcript: input.transcript,
+      repoId: input.repoId,
+      repoReasoning: input.repoReasoning,
+      model: input.model,
+      effortLevel: input.effortLevel,
+      modelReasoning: input.modelReasoning,
+      hasAudio: false,
+      source: input.source,
+    };
+
+    update((items) => [item, ...items]);
+    schedulePersist();
+
+    if (input.transcript.trim() && (!input.title || !input.repoId || !input.model)) {
+      void processItem(id, undefined, { onlyMissing: true });
+    }
     return id;
   }
 
@@ -518,6 +598,7 @@ function createPileStore() {
     persist,
     isLoaded: () => loaded,
     addRecording,
+    addTextItem,
     processItem,
     retranscribe,
     retryAllFailed,
@@ -553,9 +634,9 @@ export const selectedPileItem = derived(
 /**
  * Which tab the session sidebar shows. Lives here for historical reasons (the
  * pile introduced the tab strip); the 'scheduled' tab is owned by
- * `stores/schedules.ts`.
+ * `stores/schedules.ts`, the 'journal' tab by `stores/journal.ts`.
  */
-export const sidebarTab = writable<'sessions' | 'pile' | 'scheduled'>('sessions');
+export const sidebarTab = writable<'sessions' | 'pile' | 'scheduled' | 'journal'>('sessions');
 
 export const pileCount = derived(pile, ($pile) => $pile.length);
 

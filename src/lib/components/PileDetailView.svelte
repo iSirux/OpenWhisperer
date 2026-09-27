@@ -20,6 +20,9 @@
   import { sendTimingFromEvent, launchScheduleFromTiming } from '$lib/utils/sendTiming';
   import { modifierCombo } from '$lib/stores/ctrlHint';
   import SendTimingIcon from './sdk/SendTimingIcon.svelte';
+  import ClipButton from './meeting/ClipButton.svelte';
+  import { meetings, formatMeetingTime, speakerLabel } from '$lib/stores/meetings';
+  import { selectedJournalItemId } from '$lib/stores/journal';
 
   interface Props {
     item: PileItem;
@@ -276,6 +279,48 @@
       </div>
     {/if}
 
+    <!-- Meeting source: the quote this item came from, with its clip -->
+    {#if item.source?.kind === 'meeting'}
+      {@const source = item.source}
+      <div class="p-3 bg-surface-elevated rounded border border-border space-y-1.5">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-medium text-text-secondary">From meeting</span>
+          <button
+            class="text-[11px] text-accent hover:underline truncate"
+            onclick={() => {
+              selectedPileItemId.set(null);
+              meetings.openMeeting(source.meeting_id);
+            }}
+            title="Open the meeting"
+          >
+            {$meetings.list.find((m) => m.id === source.meeting_id)?.title || 'Meeting'}
+          </button>
+          {#if source.journal_item_id}
+            <button
+              class="text-[11px] text-violet-400 hover:underline"
+              onclick={() => {
+                selectedPileItemId.set(null);
+                selectedJournalItemId.set(source.journal_item_id!);
+              }}
+            >
+              journal item →
+            </button>
+          {/if}
+        </div>
+        {#if source.quote}
+          <div class="flex items-start gap-2">
+            <ClipButton meetingId={source.meeting_id} segId={source.seg_id} size="sm" />
+            <p class="text-sm text-text-primary italic flex-1">
+              “{source.quote}”
+              <span class="not-italic text-[11px] text-text-muted">
+                — {speakerLabel(source.speaker) || 'Meeting'} @ {formatMeetingTime(source.t0)}
+              </span>
+            </p>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     <!-- Audio + waveform -->
     {#if item.hasAudio || waveformBars.length > 0}
       <div class="p-3 bg-surface-elevated rounded border border-border space-y-2">
@@ -361,7 +406,9 @@
               pile.processItem(item.id);
             }}
             disabled={isBusy}
-            title="Re-run cleanup, repo/model recommendation, and titling"
+            title={item.source
+              ? 'Re-run repo/model recommendation and titling (text items skip dictation cleanup)'
+              : 'Re-run cleanup, repo/model recommendation, and titling'}
           >
             Re-process
           </button>

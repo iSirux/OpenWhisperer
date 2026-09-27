@@ -282,6 +282,8 @@ export interface PersistedPendingTranscriptionInfo {
     reasoning: string;
     effortLevel?: string;
     thinkingLevel?: string;
+    /** Auto-model complexity grade (1-10) the tier ladder resolved */
+    complexity?: number;
   };
   repoRecommendation?: {
     repoIndex: number;

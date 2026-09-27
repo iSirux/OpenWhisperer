@@ -64,7 +64,9 @@ Most routes live in the `(main)` route group, which shares `(main)/+layout.svelt
 - `cliInbox.ts` - `ow` CLI inbox poller: turns request files written by the `ow` CLI (agents scheduling from inside their sessions) into schedules / launches and writes acks (see `ow` CLI under Native Scheduling)
 - `openMic.ts` - Passive voice listening for wake command detection
 - `sessionPersistence.ts` - Session persistence layer for disk storage and restoration
-- `pile.ts` - Recording pile: inbox of transcribed recordings saved for later (own persistence file, saved audio, background LLM processing for cleanup/repo/model/title)
+- `pile.ts` - Recording pile: inbox of transcribed recordings saved for later (own persistence file, saved audio, background LLM processing for cleanup/repo/model/title); `addTextItem()` + `PileItem.source` for meeting-extracted items
+- `meetings.ts` - Meeting Mode frontend driver: mirrors the Rust meeting backend (events + `meeting_*` commands), runs the periodic triage driver and consolidation, applies triage ops to meeting items / journal / pile (see Meeting Mode)
+- `journal.ts` - Journal items (non-actionable meeting output: feedback/idea/decision/note/question), `journal.json` persistence, promote-to-pile
 - `panes.ts` - Split-pane layout (up to 4 panes, each holding one SDK session); persists to `settings.pane_layout`
 - `navigation.ts` - Main page internal view state (`MainView`, selected repo, repository-add mode)
 - `ctrlHint.ts` - Which hint-modifier combo (Ctrl/Cmd, Shift, Ctrl+Shift, Ctrl+Shift+Alt) is held, with a short show delay; `modifierCombo` drives the send-timing badges (Send button, quick actions, launch profiles) and the legacy `ctrlHeld` (plain Ctrl only) drives Ctrl-hotkey hints (session number badges, Ctrl-hotkey buttons)
@@ -88,6 +90,8 @@ Core UI:
 - `PileList.svelte` - Pile tab in the sidebar: pile item cards with multi-select and batch launch actions
 - `PileDetailView.svelte` - Main-pane editor for a pile item (transcript, repo/model, audio playback, re-transcribe, launch)
 - `schedule/` - Native Scheduling components: `ScheduleList` (Scheduled sidebar tab), `ScheduleDetailView` (main-pane schedule editor), `ScheduleTimePicker` (one-shot presets + custom datetime), `RecurrenceEditor` + `RecurrenceDialog` (recurrence rule editing)
+- `meeting/` - Meeting Mode UI (`MainView 'meeting'`): start panel, live status, delayed transcript, review list, past meetings, summary
+- `journal/` - Journal sidebar tab (fourth tab: Sessions | Pile | Scheduled | Journal) and main-pane item detail
 - `ArchiveView.svelte` / `ArchiveEntryItem.svelte` - Archived sessions browser
 - `NotionKanban.svelte` - Notion-backed kanban board; cards can be launched as sessions (via the shared session queue). Rail button shown only in dev mode (`settings.system.dev_mode`)
 - `SessionCard.svelte` - Card component for sessions-view grid display
@@ -140,10 +144,11 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `MicrophoneTab.svelte` / `AudioTab.svelte` - Microphone selection; recording behavior (stop action, screenshots, sounds, open mic)
 - `VoiceCommandsTab.svelte` - Voice command phrases
 - `TranscriptionTab.svelte` - Unified transcription settings: final transcript source mode (Whisper / Realtime / Both) and embeds `WhisperTab` + `RealtimeTab` as sub-sections (they are no longer standalone tabs)
-- `WhisperTab.svelte` - Whisper provider selection (Local/OpenAI/Groq/Custom) with Docker configuration
+- `WhisperTab.svelte` - Whisper provider selection (Local/OpenAI/Groq/Custom/OpenRouter) with Docker configuration. OpenRouter (`/api/v1/audio/transcriptions`, JSON body with base64 `input_audio`, default model `microsoft/mai-transcribe-2`) — key in `whisper.api_key`, falling back to the first OpenRouter LLM profile's keyring key
 - `RealtimeTab.svelte` - Real-time transcription provider selection (Moonshine recommended, Vosk, VoiceStreamAI, Speaches, SherpaOnnx) with per-provider config and Docker support
 - `LlmTab.svelte` - LLM integration settings with provider selection and feature toggles
 - `QueueTab.svelte` - Smart Queue settings (rate-limit queueing, stagger delays)
+- `MeetingTab.svelte` - Meeting Mode settings (capture sources/target processes, VAD, transcription override, triage interval, auto-pile, retention)
 - `ValidationTab.svelte` - Validation pipeline defaults (steps, reviewer model/effort, auto-fix limits; see Validation Pipeline)
 - `McpTab.svelte` - MCP server configuration (add/edit/remove/test servers, OAuth)
 - `HotkeysTab.svelte` - Global hotkey configuration
@@ -200,10 +205,11 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
   - `audio.rs` - `AudioConfig`, `VoiceCommandConfig`, `OpenMicConfig`, `RecordAndSendAction`
   - `hotkeys.rs` / `repo.rs` / `mcp.rs` - `HotkeyConfig`; `RepoConfig`, `LaunchCommand`, `LaunchProfile`; `McpServerConfig` (+ `McpAuthType`, `McpOAuthConfig`)
   - `sequences.rs` - `QueueConfig` (Smart Queue), `SequenceConfig`, notification channels
+  - `meeting.rs` - `MeetingConfig` (Meeting Mode)
   - `ui.rs` - `Theme`, `OverlayConfig`, `SystemConfig`, `SessionsViewConfig`, `PaneLayoutConfig`, `EffortLevel`, `ToolDisplayMode`, etc.
   - `migration.rs` - Versioned config migration ladder
 - `sidecar.rs` - SidecarManager for Node.js process IPC (message/event protocol types)
-- `whisper.rs` - HTTP client for batch Whisper transcription
+- `whisper.rs` - HTTP client for batch transcription: all providers through one path (`transcribe_text` for dictation, `transcribe_detailed` → text + segments/speakers for meetings), MIME sniffed from the audio bytes, optional prompt, 10 s connect timeout + a per-request total timeout scaled by audio length (a post-connect timeout is never classified as "unreachable", so the Docker-autostart loop doesn't re-send), retries with backoff on 429/5xx/network for API providers (at most one re-upload after a timeout). Dictation uses exactly the configured endpoint; `config_with_override` (meeting overrides) fills in provider preset endpoints and picks the key: meeting key → base key only if same provider → none (OpenRouter then falls back to the LLM profile key)
 - `realtime.rs` - Multi-provider real-time STT WebSocket clients (replaces the old `vosk.rs`): common `RealtimeSession` trait dispatched via `RealtimeSessionType`, `RealtimeSessionManager`, per-provider connection tests, `RealtimeResponse` (Partial/Final)
 - `git.rs` - GitManager for repository operations (branch/worktree creation, changed-file counts)
 - `session_persistence.rs` - Session persistence layer for disk storage
@@ -212,6 +218,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `launch.rs` - Launch-profile/command execution
 - `notion.rs` - Notion API client
 - `validation/` - Native validation pipeline: types, prompts, ship step, executor/`ValidationManager` (see Validation Pipeline; config in `config/validation.rs`)
+- `meeting/` - Meeting Mode backend: `capture/` (mic via cpal; system audio via `wasapi` loopback / per-process loopback on Windows, ScreenCaptureKit on macOS, `parec` monitor on Linux), `resample.rs`/`vad.rs`/`wav.rs` DSP, `session.rs` per-stream processing, `pipeline.rs` transcription worker, `storage.rs` files/crash recovery/retention (see Meeting Mode; config in `config/meeting.rs`)
 - `usage_stats.rs` - Usage telemetry types (moved out of config)
 - `persist.rs` / `proc.rs` / `util.rs` - Shared helpers: atomic JSON writes + rolling backups; process spawning (Windows `CREATE_NO_WINDOW`); small utilities
 - `win_env.rs` - Windows-only environment repair for everything the app spawns. Launching the app from an MSYS shell (Git Bash, or a terminal defaulting to bash — the usual `npm run tauri:dev` path) can hand it a PATH already mangled by MSYS's Windows↔POSIX conversion (`C;F:\Program Files\...`, or a POSIX entry appended with `:`), and every agent process inherits the damage — surfacing much later as `grep: command not found` inside an agent's Bash tool. `repair_process_env()` runs at the top of `run()` (the Windows counterpart to the macOS `fix_path_env::fix()`), detects the signatures no valid Windows PATH has, and rebuilds from the registry (machine + user `Environment\Path`, `%VAR%`-expanded, `%PATH%` deliberately left literal), keeping any intact runtime entry that still exists on disk; a clean PATH is left untouched. The report is logged from `setup` because the log plugin doesn't exist that early. `scrub_child_env()` additionally strips MSYS markers (`MSYSTEM` above all — its presence makes MSYS skip the PATH conversion) and POSIX-form `HOME`/`SHELL`/`TMPDIR` from the **sidecar spawn only**, not app-wide, since a user's launch-profile command may intentionally run bash. PATH health is logged at sidecar spawn and, from the sidecar, per session create (`describeEnvHealth` in `index.ts`, covering both the Claude `options.env` and the Codex app-server spawn env)
@@ -249,6 +256,8 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `sequence_cmds.rs` - Sequence engine commands
 - `notion_cmds.rs` - Notion card integration
 - `validation_cmds.rs` - Native validation pipeline run commands (see Validation Pipeline)
+- `meeting_cmds.rs` - Meeting Mode commands (`meeting_start/stop/pause/resume/active/list/get/update/get_items/save_items/read_segment_audio/retry_segment/finalize/delete/list_input_devices/list_audio_processes`)
+- `journal_cmds.rs` - Journal persistence (`get_journal`/`save_journal`, opaque JSON)
 - `git_cmds.rs` - Git/worktree operations
 - `log_cmds.rs` - In-memory app log
 
@@ -322,6 +331,7 @@ App config stored in system config directory (`open-whisperer/config.json`), ver
 - `llm` - LLM integration settings (named provider profiles, fast/quality routing chains, features, auto-model priority/effort; API keys per profile in the keyring)
 - `mcp` - MCP server configuration (global servers list, OAuth)
 - `queue` - Smart Queue settings (rate-limit queueing, stagger)
+- `meeting` - Meeting Mode (`MeetingConfig`: capture sources, process targets, VAD, transcription override, triage interval, auto-pile, retention)
 - `sequences` - Sequence engine settings (notification channels)
 - `prompt_chips` / `pane_layout` / `sessions_view` - UI state
 - `enabled_providers` / `onboarding_completed` - Provider surfacing + first-run wizard flag (see Onboarding)
@@ -485,6 +495,42 @@ Passive voice listening that activates recording when wake commands are detected
 3. User speaks prompt → normal recording flow continues
 4. Recording stops → transcription and prompt processing as usual
 
+## Meeting Mode
+
+Long-running capture of in-person meetings or Discord/Teams calls that snaps up things to do (design:
+`docs/meeting-mode-brainstorm-2026-09.md`; binding contract: `docs/meeting-mode-spec.md`). Fast iteration, not real
+time — minutes of delay are fine; there is no live transcript marquee.
+
+- **Capture is in Rust**, not the webview (the `recording.ts` path buffers whole recordings in memory and ships audio
+  as JSON arrays). Two separate streams — **mic = "me", system loopback = "them"** (free 2-speaker attribution). On
+  Windows, `system_target: "process"` uses WASAPI process loopback to capture only `system_process_names`
+  (Discord/Teams), falling back to full loopback. macOS/Linux system capture is implemented but **unverified** (can't
+  be compiled on the Windows dev box); per-app capture is Windows-only.
+- **Segmenting:** energy VAD per stream → speech segments (max `max_segment_secs`) written as 16 kHz mono WAV under
+  `<config dir>/meetings[-dev]/<mtg-id>/audio/`. `transcript.jsonl` is append-only (later lines for a seg_id supersede
+  earlier; a pending line is written before its WAV), `meeting.json` holds `MeetingMeta`, `items.json` is opaque
+  frontend JSON. One active meeting at a time.
+- **Transcription** runs in a Rust worker per meeting (2 concurrent, retries) via `whisper::transcribe_detailed`, using
+  the dictation Whisper config unless `meeting.transcription_provider`/`transcription_model` (+ optional
+  `transcription_api_key`/`transcription_endpoint`) override it (build with `whisper::config_with_override` then
+  `audio_cmds::resolve_whisper_api_key`).
+- **Crash safety:** meta saved on every status change; on startup unfinished meetings become `interrupted` and can be
+  finalized (transcribe pending/failed segments). App quit stops an active meeting. Audio of `done` meetings older than
+  `retention_days` is deleted at startup.
+- **Triage** (frontend `meetings.ts`): every `triage_interval_minutes`, new transcript lines + ~30 s overlap go to
+  `meeting_triage` (LLM, quality chain) with the meeting's items and the repo's open journal items; ops are `new` /
+  `update` (journal ids prefixed `j:`). Actionable categories (bug/task/investigate/question) → the meeting **review
+  list**; non-actionable (feedback/idea/decision/note) → **Journal** directly. **Auto-pile is opt-in**
+  (`auto_pile` + `auto_pile_min_confidence`). On `done`, `meeting_consolidate` merges/rewrites items and writes a
+  summary.
+- **Outputs:** pile items get `source: { kind: 'meeting', meeting_id, item_id, quote, t0, t1, seg_id }`, created via
+  `pile.addTextItem()` (no dictation cleanup), model/effort from the item's complexity via `resolveTier`; the pile detail
+  shows the quote and plays the clip (`meeting_read_segment_audio`). Journal items accumulate sightings across meetings
+  and can be promoted to the pile.
+- **Interlocks:** meeting speech never goes through voice commands / wake words (it doesn't use `recording.ts`); open
+  mic stays off during a meeting; the overlay has a persistent `'meeting'` mode that dictation restores after it stops.
+  Starting requires the first-use consent notice to be acknowledged. Hotkey `toggle_meeting` (unbound by default).
+
 ## Recordings Log
 
 `stores/debugRecordings.ts` keeps a bounded rolling log (20 newest) of every recording: the audio plus each transcription stage (realtime, Whisper raw, LLM-cleaned). Always on. Playback and inspection in Settings → Recordings Log. Persistence via `debug_recordings_cmds.rs`; audio for evicted entries is deleted so storage stays bounded.
@@ -500,6 +546,16 @@ Multi-provider: `LlmConfig` holds **named profiles** (`LlmProfile { id, label, p
 - **`fast_chain`** — latency-sensitive/low-stakes calls: model recommendation, repo recommendation, session naming/outcome, branch names
 - **`quality_chain`** — correctness-critical calls: **transcription cleanup** (deliberately Quality — most correctness-critical feature), interaction analysis, quick actions, ship drafts, sequence AI nodes
 
+Meeting triage/consolidation (`MeetingTriage`, `MeetingConsolidate`, `llm/meeting.rs`) are quality-chain features.
+
+**Structured output:** OpenAI-compatible providers send `response_format: json_schema` (strict; each feature's schema
+auto-rewritten to OpenAI strict form), falling back on 400/422 or an empty reply to `json_object`, then no
+`response_format`; the working format is cached per provider/endpoint/model for the session. Replies are always parsed
+with `extract_json`. Gemini keeps its native schema. (LM Studio rejects `json_object`; llama.cpp ignores grammars while
+a model is thinking.) `LlmProfile.disable_thinking` (default true) sends `chat_template_kwargs: {enable_thinking: false}`
+for Local/Custom. `run_chain` applies per-attempt timeouts by feature (fast 15 s, quality 60 s, sequence nodes 120 s,
+meeting triage 180 s, consolidation 600 s; cleanup keeps its own 8 s path).
+
 `router_from_config(app, config, feature)` (`llm/mod.rs`) resolves the chain to an `LlmRouter` (one `LlmClient` per profile; profiles with missing keys skipped, Local exempt; empty/invalid chain falls back to all profiles). `run_chain` tries each profile in order with **unconditional cross-provider fallback on any error**; intra-provider fallbacks (Gemini model chain, Groq sibling models) still run inside each client. Feature methods live on `LlmRouter` (`llm/features.rs`); `test_connection` stays per-`LlmClient`. API keys are per-profile in the system keyring: profile id `default` uses the legacy bare `llm-api-key` account (zero migration), others `llm-api-key:<id>`. The key commands (`save_gemini_api_key`, `delete_gemini_api_key`, `has_llm_api_key`, `test_gemini_connection`) take an optional `profileId` (omitted = `default`). Config migration v6→v7 wraps the legacy flat provider fields into `profiles[0]` (id `default`) and seeds both chains. UI: Settings → LLM has profile cards (per-profile key + test) and the two chain editors; onboarding's `LlmStep` edits only the `default` profile.
 
 ### Supported Providers
@@ -508,7 +564,8 @@ Multi-provider: `LlmConfig` holds **named profiles** (`LlmProfile { id, label, p
 - **OpenAI** - OpenAI API (GPT-4, etc.)
 - **Groq** - Groq's fast inference API (per-model quotas; sibling-model fallback)
 - **xAI** - Grok via the OpenAI-compatible chat-completions API (`Xai` variant)
-- **Local** - Any OpenAI-compatible local server (LM Studio, Ollama, etc.)
+- **OpenRouter** - OpenAI-compatible at `https://openrouter.ai/api/v1/chat/completions` (one key can also serve transcription)
+- **Local** - Any OpenAI-compatible local server (llama.cpp `llama-server`, Ollama, LM Studio, etc.). Benchmarks on an RTX 4080 (see the meeting brainstorm doc): Qwen3.8-9B distill Q5_K_M fits next to local Whisper and handles triage/complexity scoring well; keep thinking disabled
 - **Custom** - Custom OpenAI-compatible endpoint
 
 ### Features (`llm.features` in config)
@@ -521,7 +578,14 @@ Multi-provider: `LlmConfig` holds **named profiles** (`LlmProfile { id, label, p
 
 ### Auto Model Selection
 
-When enabled, the "Auto" option appears in the model selector. The LLM analyzes each prompt and selects a model (simple → cheap, complex → capable) and an effort level based on task complexity.
+When enabled, the "Auto" option appears in the model selector. The LLM does **not** pick a model: `recommend_model`
+returns a **complexity score 1–10** (anchored rubric) + reasoning + confidence, and a user-configured **tier ladder**
+(`llm.features.auto_model_tiers: [{ min_score, model, effort }]`, edited in Settings → LLM) maps it to model + effort —
+highest tier with `min_score <= score`. Mapping lives in `src/lib/utils/autoModelTiers.ts` (`effectiveTiers`,
+`resolveTier`); an empty ladder derives defaults from `enabled_models` + `auto_model_effort`, the first tier is forced to
+0, tiers for disabled providers are dropped, and existing sessions stay on their own provider. A fixed (non-Dynamic)
+`auto_model_effort` overrides the tier's effort. The score is surfaced as "Auto · 7". Meeting triage emits a complexity
+per item, reused for pile launches.
 
 ### Auto Repository Selection
 

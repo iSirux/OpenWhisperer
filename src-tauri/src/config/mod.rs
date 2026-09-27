@@ -13,6 +13,7 @@ pub mod audio;
 pub mod hotkeys;
 pub mod llm;
 pub mod mcp;
+pub mod meeting;
 pub mod migration;
 pub mod provider;
 pub mod realtime;
@@ -28,6 +29,7 @@ pub use audio::*;
 pub use hotkeys::*;
 pub use llm::*;
 pub use mcp::*;
+pub use meeting::*;
 pub use provider::*;
 pub use realtime::*;
 pub use repo::*;
@@ -234,6 +236,9 @@ pub struct AppConfig {
     /// Validation pipeline configuration (review/test/docs/lint/ship/ci)
     #[serde(default)]
     pub validation: ValidationConfig,
+    /// Meeting mode (capture + transcription pipeline) configuration
+    #[serde(default)]
+    pub meeting: MeetingConfig,
     /// Inject a system message notifying agents that other agents may be working in parallel
     #[serde(default = "default_notify_parallel_agents")]
     pub notify_parallel_agents: bool,
@@ -427,6 +432,7 @@ impl Default for AppConfig {
             sequences: SequenceConfig::default(),
             queue: QueueConfig::default(),
             validation: ValidationConfig::default(),
+            meeting: MeetingConfig::default(),
             notify_parallel_agents: default_notify_parallel_agents(),
             auto_open_session_panels: true,
             quick_actions: default_quick_actions(),

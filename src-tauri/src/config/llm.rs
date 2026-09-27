@@ -13,6 +13,9 @@ pub enum LlmProvider {
     OpenAI,
     /// xAI (Grok) — OpenAI-compatible chat-completions API.
     Xai,
+    /// OpenRouter — OpenAI-compatible gateway (`openrouter.ai/api/v1`); the
+    /// model is free text (e.g. `google/gemini-3.1-flash-lite`).
+    OpenRouter,
     Local,
     Custom,
 }
@@ -126,6 +129,26 @@ pub struct LlmFeaturesConfig {
     /// Use LLM to generate descriptive branch names for new worktrees
     #[serde(default = "default_true")]
     pub generate_branch_names: bool,
+    /// Auto-model breakpoint ladder: the recommender grades each prompt with a
+    /// complexity score (1-10) and the highest tier whose `min_score` is <= the
+    /// score picks the model + effort. Empty = derived defaults (computed on
+    /// the frontend in `src/lib/utils/autoModelTiers.ts` from `enabled_models`
+    /// + `auto_model_effort`).
+    #[serde(default)]
+    pub auto_model_tiers: Vec<AutoModelTier>,
+}
+
+/// One rung of the auto-model ladder (see `LlmFeaturesConfig::auto_model_tiers`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AutoModelTier {
+    /// Lowest complexity score (0-10) this tier applies to.
+    #[serde(default)]
+    pub min_score: u8,
+    /// Agent model id from any provider (Claude, Codex, ...).
+    pub model: String,
+    /// `null | low | medium | high | xhigh | max`.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 impl Default for LlmFeaturesConfig {
@@ -140,6 +163,7 @@ impl Default for LlmFeaturesConfig {
             auto_model_effort: AutoModelEffort::default(),
             auto_select_repo: default_true(),
             generate_branch_names: default_true(),
+            auto_model_tiers: Vec::new(),
         }
     }
 }
@@ -166,6 +190,12 @@ pub struct LlmProfile {
     pub auto_model: bool,
     #[serde(default)]
     pub model_priority: LlmModelPriority,
+    /// Local/Custom only: send `chat_template_kwargs: {"enable_thinking": false}`
+    /// so reasoning models (Qwen3.x etc.) answer directly. llama.cpp does not
+    /// apply the JSON schema/grammar while a model is thinking, so this is on
+    /// by default.
+    #[serde(default = "default_true")]
+    pub disable_thinking: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +242,7 @@ fn default_profiles() -> Vec<LlmProfile> {
         endpoint: None,
         auto_model: default_auto_model(),
         model_priority: LlmModelPriority::Speed,
+        disable_thinking: true,
     }]
 }
 

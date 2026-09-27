@@ -18,7 +18,8 @@ import {
   buildAllReposContextForCleanup,
 } from '$lib/utils/llm';
 import { processVoiceCommand, type VoiceCommandType } from '$lib/utils/voiceCommands';
-import { isAutoModel } from '$lib/utils/models';
+import { isAutoModel, normalizeOpenAiModelId } from '$lib/utils/models';
+import { effectiveTiers, type TierOptions } from '$lib/utils/autoModelTiers';
 import { get } from 'svelte/store';
 
 // System prompt for voice-transcribed sessions
@@ -88,6 +89,8 @@ export interface ModelRecommendation {
   effortLevel?: EffortLevel;
   /** @deprecated Use effortLevel */
   thinkingLevel?: EffortLevel;
+  /** Auto-model complexity grade (1-10) that the tier ladder resolved */
+  complexity?: number;
 }
 
 export interface SystemPromptOptions {
@@ -174,11 +177,17 @@ export async function cleanupTranscript(
 }
 
 /**
- * Get model recommendation for a transcript
+ * Resolve the Auto model for a transcript: the LLM grades complexity (1-10)
+ * and the tier ladder (utils/autoModelTiers.ts) picks model + effort.
+ *
+ * @param opts.provider Pass the session's provider when the session already
+ *   exists (it can switch model but not provider); omit for new sessions,
+ *   whose provider follows the resolved model.
  */
 export async function getModelRecommendation(
   transcript: string,
-  enabledModels: string[]
+  enabledModels: string[],
+  opts: TierOptions = {}
 ): Promise<{ model: string; effortLevel: EffortLevel | null; recommendation?: ModelRecommendation }> {
   const currentSettings = get(settings);
   let model = currentSettings.default_model;
@@ -198,36 +207,40 @@ export async function getModelRecommendation(
   }
   // 'dynamic' will let the LLM decide if recommendation is enabled
 
+  // Without a score, fall back to the ladder's bottom rung (cheapest tier).
+  const fallback = () => {
+    const bottom = effectiveTiers(currentSettings, opts)[0];
+    return bottom?.model || enabledModels[0] || 'claude-sonnet-5';
+  };
+
   if (!isModelRecommendationEnabled()) {
-    // Auto selected but recommendation not enabled - fall back to first enabled model
-    model = enabledModels[0] || 'claude-sonnet-5';
+    model = fallback();
     console.log('[llm] Auto model selected but recommendation disabled, falling back to:', model);
     return { model, effortLevel };
   }
 
   try {
-    const recommendation = await recommendModel(transcript);
+    // recommendModel resolves the tier and already applies a fixed
+    // auto_model_effort over the tier's effort.
+    const recommendation = await recommendModel(transcript, opts);
 
-    if (recommendation) {
-      // Only use if the model is enabled
-      if (enabledModels.includes(recommendation.modelId)) {
-        model = recommendation.modelId;
-        console.log('[llm] Auto selected model:', model, '-', recommendation.reasoning);
-      } else {
-        model = enabledModels[0] || 'claude-sonnet-5';
-        console.log('[llm] Recommended model not enabled, falling back to:', model);
-      }
-
-      // Apply effort level based on auto_model_effort setting
-      const recommendedEffort = recommendation.effortLevel || recommendation.thinkingLevel;
-      if (autoModelEffort === 'dynamic' && recommendedEffort) {
-        // Dynamic mode: use LLM recommendation
-        effortLevel = recommendedEffort as EffortLevel;
-        console.log('[llm] Using recommended effort level:', effortLevel);
-      } else {
-        // Fixed mode: effort level already set above
-        console.log('[llm] Using auto_model_effort setting:', autoModelEffort, '-> effort:', effortLevel);
-      }
+    // Same guard as SdkView: only accept a model that is still enabled
+    // (settings may have changed; the ladder already filters, this is defense).
+    if (
+      recommendation &&
+      !currentSettings.enabled_models.map(normalizeOpenAiModelId).includes(recommendation.modelId)
+    ) {
+      console.warn('[llm] Recommended model not in enabled_models, falling back:', recommendation.modelId);
+    } else if (recommendation) {
+      model = recommendation.modelId;
+      // The resolved tier's effort is authoritative (already overridden by a
+      // fixed auto_model_effort in recommendModel): null means "no effort"
+      // (off), never "fall back to default_effort_level".
+      effortLevel = (recommendation.effortLevel ?? null) as EffortLevel;
+      console.log(
+        `[llm] Auto selected model: ${model} (complexity ${recommendation.complexity}, effort ${effortLevel ?? 'none'}) -`,
+        recommendation.reasoning
+      );
 
       return {
         model,
@@ -235,7 +248,8 @@ export async function getModelRecommendation(
         recommendation: {
           modelId: recommendation.modelId,
           reasoning: recommendation.reasoning,
-          effortLevel: (recommendedEffort as EffortLevel | undefined) ?? undefined,
+          effortLevel: effortLevel ?? undefined,
+          complexity: recommendation.complexity,
         },
       };
     }
@@ -243,8 +257,7 @@ export async function getModelRecommendation(
     console.error('[llm] Model recommendation failed, falling back to default:', error);
   }
 
-  // Fallback
-  model = enabledModels[0] || 'claude-sonnet-5';
+  model = fallback();
   console.log('[llm] No recommendation, falling back to:', model);
   return { model, effortLevel };
 }
@@ -364,6 +377,7 @@ export function updatePendingWithModelRecommendation(
       modelId: recommendation.modelId,
       reasoning: recommendation.reasoning,
       effortLevel: recommendation.effortLevel ?? undefined,
+      complexity: recommendation.complexity,
     },
   });
 }

@@ -5,7 +5,8 @@ use crate::llm::{
     GenerationResult, KEYRING_SERVICE,
 };
 use crate::llm::{
-    ConnectionTestResult, InteractionAnalysis, LlmFeature, LlmRouter, ModelRecommendation,
+    ConnectionTestResult, InteractionAnalysis, LlmFeature, LlmRouter, MeetingConsolidateRequest,
+    MeetingConsolidateResult, MeetingTriageRequest, MeetingTriageResult, ModelRecommendation,
     QuickActionsResult, RepoRecommendation, SessionNameResult, SessionOutcomeResult,
     TranscriptionCleanupResult,
 };
@@ -283,12 +284,46 @@ pub async fn recommend_model(
         }
     })?;
 
-    // Use provided enabled_models or fall back to config
-    let models_to_consider = enabled_models.as_ref().unwrap_or(&cfg.enabled_models);
-    let result = router
-        .recommend_model_with_usage(&prompt, models_to_consider)
-        .await?;
+    // The recommender only grades complexity now; the model/effort come from
+    // the frontend tier ladder. `enabled_models` is accepted for backward
+    // compatibility with older callers but no longer influences the prompt.
+    let _ = (cfg, enabled_models);
+    let result = router.recommend_model_with_usage(&prompt).await?;
+    log::info!(
+        "[llm] complexity score {} ({}) — {}",
+        result.data.complexity,
+        result.data.confidence,
+        result.data.reasoning
+    );
     Ok(finish(&stats, "model_recommendation", result))
+}
+
+/// Meeting mode: triage one transcript window into new/update item ops.
+/// Meeting mode itself is the opt-in, so only the LLM master switch gates it.
+#[tauri::command]
+pub async fn meeting_triage(
+    app: AppHandle,
+    config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
+    request: MeetingTriageRequest,
+) -> Result<MeetingTriageResult, String> {
+    let (_cfg, router) = prepare_router(&app, &config, LlmFeature::MeetingTriage, |_| Ok(()))?;
+    let result = router.meeting_triage_with_usage(&request).await?;
+    Ok(finish(&stats, "meeting_triage", result))
+}
+
+/// Meeting mode: whole-meeting consolidation (summary, merges, rewrites).
+#[tauri::command]
+pub async fn meeting_consolidate(
+    app: AppHandle,
+    config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
+    request: MeetingConsolidateRequest,
+) -> Result<MeetingConsolidateResult, String> {
+    let (_cfg, router) =
+        prepare_router(&app, &config, LlmFeature::MeetingConsolidate, |_| Ok(()))?;
+    let result = router.meeting_consolidate_with_usage(&request).await?;
+    Ok(finish(&stats, "meeting_consolidate", result))
 }
 
 /// Recommend the best repository for a given prompt

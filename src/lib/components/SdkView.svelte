@@ -1114,6 +1114,7 @@
             modelId: string;
             reasoning: string;
             effortLevel?: string;
+            complexity?: number;
           }
         | undefined;
 
@@ -1180,7 +1181,10 @@
       // Handle auto model selection (check session's autoModelRequested flag, not current settings)
       if (autoModelRequested && isModelRecommendationEnabled()) {
         try {
-          const recommendation = await recommendModel(prompt);
+          // The session already exists on its provider: keep the ladder there.
+          const recommendation = await recommendModel(prompt, {
+            provider: session?.provider,
+          });
           if (recommendation) {
             // Backend filters by enabled_models, but double-check for safety
             // This also handles edge case where settings changed between recommendation and now
@@ -1200,6 +1204,7 @@
                 modelId: recommendation.modelId,
                 reasoning: recommendation.reasoning,
                 effortLevel: recommendation.effortLevel ?? undefined,
+                complexity: recommendation.complexity,
               };
             } else {
               console.warn(
@@ -1207,17 +1212,15 @@
                 recommendation.modelId,
               );
             }
-            // Apply effort level recommendation if provided (regardless of model)
-            if (recommendation.effortLevel) {
-              await sdkSessions.updateSessionEffort(
-                sessionId,
-                recommendation.effortLevel as EffortLevel,
-              );
-              console.log(
-                "[SdkView] Using recommended effort level:",
-                recommendation.effortLevel,
-              );
-            }
+            // Apply the tier's effort (regardless of model); null = off, matching useTranscriptionProcessor
+            await sdkSessions.updateSessionEffort(
+              sessionId,
+              (recommendation.effortLevel ?? null) as EffortLevel,
+            );
+            console.log(
+              "[SdkView] Using recommended effort level:",
+              recommendation.effortLevel ?? "off",
+            );
           }
         } catch (error) {
           console.error(

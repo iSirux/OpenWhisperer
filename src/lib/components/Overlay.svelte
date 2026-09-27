@@ -23,7 +23,50 @@
     getModelBadgeBgColor,
     getModelTextColor,
   } from "$lib/utils/modelColors";
-  import type { OverlayMode, OverlayActivityInfo } from "$lib/stores/overlay";
+  import type {
+    OverlayMode,
+    OverlayActivityInfo,
+    OverlayMeetingInfo,
+  } from "$lib/stores/overlay";
+
+  // Meeting Mode indicator: live clock while a meeting is active
+  let unlistenMeetingInfo: UnlistenFn | null = null;
+  let meetingNow = Date.now();
+  const meetingClock = setInterval(() => (meetingNow = Date.now()), 1000);
+
+  $: meetingInfo = $overlay.meetingInfo;
+  $: meetingElapsed = meetingInfo
+    ? meetingInfo.durationSecs +
+      (meetingInfo.status === "recording"
+        ? Math.max(0, (meetingNow - meetingInfo.baseAt) / 1000)
+        : 0)
+    : 0;
+  // Meeting-only overlay: just the compact indicator row (no dictation toolbar)
+  $: meetingOnly =
+    !!meetingInfo &&
+    $overlay.mode === "meeting" &&
+    !isRecordingActive &&
+    !isProcessingActive &&
+    !$overlay.sessionInfo.creatingSession;
+
+  function formatClock(totalSecs: number): string {
+    const s = Math.floor(totalSecs);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  }
+
+  function handleMeetingStop(event: MouseEvent) {
+    event.stopPropagation();
+    // Handled by the main window (meetings store)
+    emit("meeting-overlay-stop");
+  }
+
+  function handleMeetingOpen(event: MouseEvent) {
+    event.stopPropagation();
+    emit("meeting-overlay-open");
+  }
 
   // Check if real-time transcription should be shown
   $: showRealtimeTranscript = $settings.realtime?.enabled ?? false;
@@ -134,9 +177,23 @@
         setTimeout(notifyResize, 10);
       }
     );
+
+    // Listen for meeting indicator changes from main window
+    unlistenMeetingInfo = await listen<OverlayMeetingInfo | null>(
+      "overlay-meeting-info",
+      (event) => {
+        overlay.updateMeetingInfoLocal(event.payload);
+        setTimeout(notifyResize, 10);
+        setTimeout(notifyResize, 50);
+      }
+    );
   });
 
   onDestroy(() => {
+    clearInterval(meetingClock);
+    if (unlistenMeetingInfo) {
+      unlistenMeetingInfo();
+    }
     if (unlistenRecordingState) {
       unlistenRecordingState();
     }
@@ -267,7 +324,48 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div class="overlay-window px-3 pt-3 pb-2">
+<div class="overlay-window px-3 pt-3 pb-2" class:meeting-only={meetingOnly}>
+  <!-- Meeting Mode indicator (persistent while a meeting is active) -->
+  {#if meetingInfo}
+    <div class="flex items-center gap-2 {meetingOnly ? '' : 'mb-2 pb-2 border-b border-border/60'}">
+      <span class="relative flex-shrink-0 w-2.5 h-2.5">
+        <span
+          class="absolute inset-0 rounded-full {meetingInfo.status === 'recording'
+            ? 'bg-red-500'
+            : meetingInfo.status === 'paused'
+              ? 'bg-amber-400'
+              : 'bg-text-muted'}"
+        ></span>
+        {#if meetingInfo.status === "recording"}
+          <span class="absolute inset-0 rounded-full bg-red-500 animate-ping opacity-60"></span>
+        {/if}
+      </span>
+      <button
+        class="text-xs font-medium text-text-primary hover:opacity-80 transition-opacity"
+        onclick={handleMeetingOpen}
+        title="Meeting in progress — participants should know you're recording. Click to open."
+      >
+        Meeting
+      </button>
+      <span class="text-xs font-mono text-text-secondary tabular-nums">{formatClock(meetingElapsed)}</span>
+      {#if meetingInfo.status === "paused"}
+        <span class="text-[10px] text-amber-400">paused</span>
+      {:else if meetingInfo.status === "finalizing"}
+        <span class="text-[10px] text-text-muted">finishing…</span>
+      {/if}
+      {#if meetingInfo.status !== "finalizing"}
+        <button
+          class="ml-auto px-1.5 py-0.5 text-[10px] font-medium rounded border border-error/30 bg-error/15 text-error hover:bg-error/25 transition-colors"
+          onclick={handleMeetingStop}
+          title="Stop the meeting recording"
+        >
+          Stop
+        </button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if !meetingOnly}
   <!-- Waveform visualization when recording -->
   {#if isRecordingActive}
     <div class="mb-2">
@@ -541,6 +639,7 @@
       {$recording.error}
     </div>
   {/if}
+  {/if}
 </div>
 
 <style>
@@ -550,6 +649,12 @@
     background: var(--color-surface);
     border-radius: 8px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .overlay-window.meeting-only {
+    width: 240px;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
   }
 
   .line-clamp-3 {

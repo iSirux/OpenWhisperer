@@ -246,6 +246,14 @@
                       repo?
                     </span>
                   {/if}
+                  {#if item.source?.kind === 'meeting'}
+                    <span
+                      class="text-[10px] px-1.5 py-px rounded bg-violet-500/15 text-violet-400 shrink-0"
+                      title="From a meeting: “{item.source.quote}”"
+                    >
+                      Meeting
+                    </span>
+                  {/if}
                   {#if item.hasScreenshot}
                     <svg
                       class="w-3 h-3 text-text-muted shrink-0"

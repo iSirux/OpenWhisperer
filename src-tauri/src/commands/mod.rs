@@ -8,10 +8,12 @@ pub mod git_cmds;
 pub mod github_cmds;
 pub mod image_cmds;
 pub mod input_cmds;
+pub mod journal_cmds;
 pub mod launch_cmds;
 pub mod llm_cmds;
 pub mod log_cmds;
 pub mod mcp_cmds;
+pub mod meeting_cmds;
 pub mod notion_cmds;
 pub mod pile_cmds;
 

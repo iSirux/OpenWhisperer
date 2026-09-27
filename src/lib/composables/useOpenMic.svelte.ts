@@ -6,6 +6,7 @@
 import { openMic, isOpenMicListening, isOpenMicPaused } from '$lib/stores/openMic';
 import { settings } from '$lib/stores/settings';
 import { isRecording } from '$lib/stores/recording';
+import { isMeetingActive } from '$lib/stores/meetings';
 import { get } from 'svelte/store';
 
 export function useOpenMicLifecycle() {
@@ -26,6 +27,11 @@ export function useOpenMicLifecycle() {
     currentlyListening: boolean,
     currentlyPaused: boolean
   ) {
+    // Meeting Mode interlock: open mic stays off while a meeting is capturing —
+    // wake words must never run on meeting speech. Callers should read
+    // `$isMeetingActive` in their effect so it re-runs when a meeting ends.
+    if (get(isMeetingActive)) openMicEnabled = false;
+
     const realtimeConfigChanged =
       prevRealtimeConfigFingerprint !== null &&
       prevRealtimeConfigFingerprint !== realtimeConfigFingerprint;
@@ -112,7 +118,12 @@ export function useOpenMicLifecycle() {
   async function restartAfterError() {
     const currentSettings = get(settings);
     const paused = get(isOpenMicPaused);
-    if (currentSettings.audio.open_mic.enabled && currentSettings.realtime?.enabled && !paused) {
+    if (
+      currentSettings.audio.open_mic.enabled &&
+      currentSettings.realtime?.enabled &&
+      !paused &&
+      !get(isMeetingActive)
+    ) {
       await openMic.start();
     }
   }

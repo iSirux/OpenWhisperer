@@ -7,6 +7,7 @@ mod image_shrink;
 mod launch;
 mod launch_task;
 mod llm;
+mod meeting;
 mod notion;
 mod persist;
 mod proc;
@@ -224,6 +225,11 @@ fn shutdown_app(app: &tauri::AppHandle) {
         log::error!("[shutdown] Failed to flush usage stats: {}", e);
     }
 
+    // Flush an active meeting's open segments to disk (it resumes as
+    // `interrupted` → finalize on next launch).
+    let meetings: tauri::State<Arc<meeting::MeetingManager>> = app.state();
+    meetings.shutdown();
+
     let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
     sidecar.shutdown();
     let launch_mgr: tauri::State<Arc<launch::LaunchManager>> = app.state();
@@ -337,6 +343,7 @@ pub fn run() {
         .manage(realtime_manager)
         .manage(launch_manager)
         .manage(validation_manager)
+        .manage(Arc::new(meeting::MeetingManager::new()))
         .manage(log_cmds::init_frontend_logger())
         .setup(move |app| {
             // The config loads before the log plugin exists, so its outcome was
@@ -392,6 +399,15 @@ pub fn run() {
 
             // Initialize sequence manager, scheduler, and event-trigger listeners
             init_sequences(app);
+
+            // Meeting mode: mark meetings a dead process left live as
+            // `interrupted`, then apply audio retention (file IO only).
+            {
+                let cfg: tauri::State<Mutex<AppConfig>> = app.state();
+                let retention_days = cfg.lock().meeting.retention_days;
+                let manager = app.state::<Arc<meeting::MeetingManager>>().inner().clone();
+                std::thread::spawn(move || meeting::on_startup(manager, retention_days));
+            }
 
             Ok(())
         })
@@ -511,6 +527,26 @@ pub fn run() {
             // --- Schedules ---
             schedule_cmds::get_schedules,
             schedule_cmds::save_schedules,
+            // --- Meetings ---
+            commands::meeting_cmds::meeting_start,
+            commands::meeting_cmds::meeting_stop,
+            commands::meeting_cmds::meeting_pause,
+            commands::meeting_cmds::meeting_resume,
+            commands::meeting_cmds::meeting_active,
+            commands::meeting_cmds::meeting_list,
+            commands::meeting_cmds::meeting_get,
+            commands::meeting_cmds::meeting_update,
+            commands::meeting_cmds::meeting_get_items,
+            commands::meeting_cmds::meeting_save_items,
+            commands::meeting_cmds::meeting_read_segment_audio,
+            commands::meeting_cmds::meeting_retry_segment,
+            commands::meeting_cmds::meeting_finalize,
+            commands::meeting_cmds::meeting_delete,
+            commands::meeting_cmds::meeting_list_input_devices,
+            commands::meeting_cmds::meeting_list_audio_processes,
+            // --- Journal (Meeting Mode) ---
+            commands::journal_cmds::get_journal,
+            commands::journal_cmds::save_journal,
             // --- `ow` CLI inbox ---
             cli_cmds::take_cli_requests,
             cli_cmds::write_cli_ack,
@@ -562,6 +598,8 @@ pub fn run() {
             llm_cmds::delete_gemini_api_key,
             llm_cmds::recommend_repo,
             llm_cmds::generate_quick_actions,
+            llm_cmds::meeting_triage,
+            llm_cmds::meeting_consolidate,
             // --- Realtime transcription ---
             docker_cmds::run_docker_setup,
             docker_cmds::check_docker,

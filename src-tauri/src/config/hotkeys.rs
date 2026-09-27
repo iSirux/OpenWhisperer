@@ -27,6 +27,9 @@ pub struct HotkeyConfig {
     /// Hotkey to stop the current recording and save it to the pile (while recording)
     #[serde(default = "default_pile_recording")]
     pub pile_recording: String,
+    /// Global hotkey to start/stop a meeting recording (unbound by default)
+    #[serde(default)]
+    pub toggle_meeting: String,
 }
 
 fn default_toggle_recording() -> String {
@@ -79,6 +82,7 @@ impl Default for HotkeyConfig {
             send_selection: default_send_selection(),
             prepare_selection: default_prepare_selection(),
             pile_recording: default_pile_recording(),
+            toggle_meeting: String::new(),
         }
     }
 }
@@ -109,6 +113,8 @@ pub struct HotkeyEnabledConfig {
     pub prepare_selection: bool,
     #[serde(default = "default_hotkey_enabled")]
     pub pile_recording: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    pub toggle_meeting: bool,
 }
 
 impl Default for HotkeyEnabledConfig {
@@ -123,6 +129,7 @@ impl Default for HotkeyEnabledConfig {
             send_selection: default_hotkey_enabled(),
             prepare_selection: default_hotkey_enabled(),
             pile_recording: default_hotkey_enabled(),
+            toggle_meeting: default_hotkey_enabled(),
         }
     }
 }

@@ -4,6 +4,15 @@ import { settings } from '$lib/stores/settings';
 import { repos } from '$lib/stores/repos';
 import type { SessionAiMetadata, SdkMessage } from '$lib/stores/sdkSessions';
 import { hasMeaningfulTranscription } from '$lib/utils/transcriptionText';
+import {
+  clampScore,
+  describeAutoPick,
+  resolveTier,
+  type AutoModelTier,
+  type EffortLevel as TierEffortLevel,
+  type TierOptions,
+} from '$lib/utils/autoModelTiers';
+import { clampEffortForModel, modelSupportsEffort } from '$lib/utils/models';
 
 export interface SessionNameResult {
   name: string;
@@ -66,13 +75,85 @@ export interface TranscriptionCleanupResult {
   cleanup_attempts?: number | null;
 }
 
+/** Backend `recommend_model` result: a complexity grade, not a model pick —
+ *  `resolveTier` (utils/autoModelTiers.ts) maps it to model + effort. */
 export interface ModelRecommendation {
-  recommended_model: 'haiku' | 'sonnet' | 'opus';
+  /** 1 (trivial) … 10 (very hard) */
+  complexity: number;
   reasoning: string;
   confidence: 'low' | 'medium' | 'high';
-  suggested_effort: 'null' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
-  /** @deprecated Use suggested_effort */
-  suggested_thinking?: 'null' | 'on' | null;
+}
+
+// ---------------------------------------------------------------------------
+// Meeting mode (docs/meeting-mode-spec.md, Workstream A)
+// ---------------------------------------------------------------------------
+
+export type MeetingItemCategory =
+  | 'bug' | 'task' | 'investigate' | 'question'
+  | 'feedback' | 'idea' | 'decision' | 'note';
+
+export interface MeetingTriageRequest {
+  /** Lines formatted "[HH:MM:SS me|them] text" */
+  transcript: string;
+  /** This meeting's existing items */
+  items: { id: string; category: string; title: string }[];
+  /** Repo's open journal items (ids prefixed "j:") */
+  journal_items: { id: string; category: string; title: string }[];
+  /** Non-null => auto-repo: pick repo_id per new item */
+  repos: { id: string; name: string; description: string }[] | null;
+  /** Meeting title / free-text context */
+  context: string | null;
+}
+
+export interface TriageOp {
+  op: 'new' | 'update';
+  /** update: existing item id (or "j:<id>" for a journal item) */
+  id: string | null;
+  /** Required for new */
+  category: MeetingItemCategory | null;
+  /** Required for new */
+  title: string | null;
+  detail: string | null;
+  /** Verbatim */
+  quote: string;
+  /** "HH:MM:SS" of the mention */
+  t0: string;
+  /** 1-10, new items */
+  complexity: number | null;
+  /** 0-1, new items */
+  confidence: number | null;
+  /** Only when repos != null */
+  repo_id: string | null;
+}
+
+export interface MeetingTriageResult {
+  ops: TriageOp[];
+}
+
+export interface MeetingConsolidateRequest {
+  /** Full meeting, same line format (backend map-reduces if huge) */
+  transcript: string;
+  items: { id: string; category: string; title: string; detail: string; sightings: number }[];
+  context: string | null;
+}
+
+export interface MeetingConsolidateResult {
+  /** Markdown: overview, decisions, open questions, top items */
+  summary: string;
+  merges: { keep_id: string; merge_ids: string[] }[];
+  updates: { id: string; title: string; detail: string; category: string }[];
+}
+
+/** Triage one transcript window. Throws on failure (callers retry next pass). */
+export async function meetingTriage(request: MeetingTriageRequest): Promise<MeetingTriageResult> {
+  return invokeWithRateLimitRetry<MeetingTriageResult>('meeting_triage', { request });
+}
+
+/** Whole-meeting consolidation. Throws on failure. */
+export async function meetingConsolidate(
+  request: MeetingConsolidateRequest
+): Promise<MeetingConsolidateResult> {
+  return invokeWithRateLimitRetry<MeetingConsolidateResult>('meeting_consolidate', { request });
 }
 
 export interface RepoRecommendation {
@@ -478,75 +559,70 @@ export async function cleanTranscription(
 }
 
 /**
- * Model ID mapping from LLM recommendation to actual model IDs
- */
-const MODEL_ID_MAP: Record<string, string> = {
-  haiku: 'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-5',
-  opus: 'claude-opus-5-5',
-};
-
-/**
- * Effort level mapping from LLM recommendation
- * Maps effort level suggestions to standard values
- */
-const EFFORT_LEVEL_MAP: Record<string, string | null> = {
-  null: null,
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  xhigh: 'xhigh',
-  max: 'max',
-  // Legacy mappings from old thinking system
-  on: 'high',
-  think: 'high',
-  megathink: 'xhigh',
-  ultrathink: 'max',
-};
-
-/**
- * Recommend the best model for a prompt using the LLM integration
- * Returns null if recommendation is disabled or fails
+ * Auto-model: grade the prompt's complexity (backend `recommend_model`) and map
+ * the score to a model + effort through the tier ladder (`resolveTier`).
+ * A fixed `auto_model_effort` (anything but `dynamic`) overrides the tier's
+ * effort, so the header's effort toggle keeps working with any ladder.
+ * Returns null if recommendation is disabled or fails.
+ *
+ * @param opts.provider Restrict the ladder to one provider (existing sessions
+ *   can switch model but not provider).
  */
 export async function recommendModel(
-  prompt: string
+  prompt: string,
+  opts: TierOptions = {}
 ): Promise<{
   modelId: string;
-  effortLevel: string | null;
+  effortLevel: TierEffortLevel | null;
   /** @deprecated Use effortLevel */
-  thinkingLevel: string | null;
+  thinkingLevel: TierEffortLevel | null;
   reasoning: string;
   confidence: string;
+  /** The LLM's complexity grade (1-10) */
+  complexity: number;
+  /** The ladder rung the score resolved to */
+  tier: AutoModelTier;
 } | null> {
   if (!isModelRecommendationEnabled()) {
     return null;
   }
 
   try {
-    // Get enabled models from settings
     const currentSettings = get(settings);
-    const enabledModels = currentSettings.enabled_models || [];
-
     const result = await invoke<ModelRecommendation>('recommend_model', {
       prompt,
-      enabledModels: enabledModels.length > 0 ? enabledModels : null
+      enabledModels: null,
     });
-    console.log('[llm] Model recommendation:', result);
 
-    const modelId = MODEL_ID_MAP[result.recommended_model] || MODEL_ID_MAP.sonnet;
+    const complexity = clampScore(Number(result.complexity));
+    const resolved = resolveTier(complexity, currentSettings, opts);
 
-    // Prefer suggested_effort, fall back to suggested_thinking for backward compat
-    const rawEffort = result.suggested_effort ?? result.suggested_thinking;
-    const effortLevel = rawEffort
-      ? EFFORT_LEVEL_MAP[rawEffort] ?? null
-      : null;
+    let effortLevel: TierEffortLevel | null = resolved.effort;
+    const autoEffort =
+      currentSettings.llm.features.auto_model_effort ??
+      currentSettings.llm.features.auto_model_thinking ??
+      'dynamic';
+    if (autoEffort !== 'dynamic') {
+      effortLevel = autoEffort === 'off'
+        ? null
+        : modelSupportsEffort(resolved.model)
+          ? (clampEffortForModel(autoEffort, resolved.model) as TierEffortLevel)
+          : null;
+    }
+
+    console.info(
+      `[llm] ${describeAutoPick(complexity, resolved.model, effortLevel)} ` +
+      `(tier ≥${resolved.tier.min_score}, confidence ${result.confidence}) — ${result.reasoning}`
+    );
 
     return {
-      modelId,
+      modelId: resolved.model,
       effortLevel,
       thinkingLevel: effortLevel, // Backward compat alias
       reasoning: result.reasoning,
       confidence: result.confidence,
+      complexity,
+      tier: resolved.tier,
     };
   } catch (error) {
     console.error('[llm] Failed to recommend model:', error);

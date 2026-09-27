@@ -15,13 +15,13 @@ impl LlmRouter {
     /// Build the shared "respond with only a JSON object" prompt trailer for a
     /// given `example` instance. The example is kept next to its feature's schema
     /// so the two stay in sync.
-    fn json_only(example: &str) -> String {
+    pub(super) fn json_only(example: &str) -> String {
         format!("\n\n{}\n{}", JSON_ONLY_INSTRUCTION, example)
     }
 
     /// One generic entry point for every feature: run a structured generation
     /// with its schema and return the typed result plus usage.
-    async fn run_feature<T: DeserializeOwned>(
+    pub(super) async fn run_feature<T: DeserializeOwned>(
         &self,
         prompt: String,
         schema: serde_json::Value,
@@ -345,104 +345,70 @@ In corrections_made, list only edits you actually applied to produce cleaned_tex
         baseline > 0 && word_count(cleaned_text) > baseline * 13 / 10 + 2
     }
 
-    /// Recommend model with usage tracking
+    /// Grade a prompt's complexity (1-10) for the auto-model ladder.
+    ///
+    /// The recommender deliberately does NOT pick a model: it only needs a
+    /// stable rubric, so the prompt never goes stale when models change. The
+    /// user's `auto_model_tiers` (resolved on the frontend) map the score to a
+    /// concrete model + effort from any provider.
     pub async fn recommend_model_with_usage(
         &self,
         prompt: &str,
-        enabled_models: &[String],
     ) -> Result<GenerationResult<ModelRecommendation>, String> {
-        // Map model IDs to simple names for filtering
-        let model_id_to_name = |id: &str| -> Option<&str> {
-            if id.starts_with("claude-haiku") {
-                Some("haiku")
-            } else if id.starts_with("claude-sonnet") {
-                Some("sonnet")
-            } else if id.starts_with("claude-opus") {
-                Some("opus")
-            } else {
-                None
-            }
-        };
+        let prompt_text = Self::build_complexity_prompt(prompt);
+        self.run_feature(prompt_text, Self::complexity_schema()).await
+    }
 
-        // Determine which models are enabled
-        let mut available_models = Vec::new();
-        for model in ["haiku", "sonnet", "opus"] {
-            if enabled_models
-                .iter()
-                .any(|id| model_id_to_name(id) == Some(model))
-            {
-                available_models.push(model);
-            }
-        }
+    /// The anchored complexity rubric shared by auto-model grading and
+    /// (in spirit) meeting triage's per-item `complexity`.
+    pub(crate) const COMPLEXITY_RUBRIC: &'static str = r#"Complexity rubric (score the WORK the coding agent must do, not the length of the request):
+- 1-2 trivial: typo, rename, change a config value or string, answer a quick factual question about the code.
+- 3-4 small: single-file change, simple well-localized bug fix, add a small test, straightforward lookup across a few files.
+- 5-6 moderate: feature or fix touching a few files, some design choices, needs reading surrounding code first.
+- 7-8 large: cross-cutting feature, tricky debugging with unclear root cause, performance investigation, refactor across modules.
+- 9-10 very hard: architecture or system design, unfamiliar subsystem, concurrency/data-integrity risk, ambiguous requirements needing judgment.
+When unsure between two bands, pick the lower one unless the request signals risk (production data, security, migrations)."#;
 
-        // If no models are enabled, return an error
-        if available_models.is_empty() {
-            return Err("No enabled models available for recommendation".to_string());
-        }
+    pub(crate) fn build_complexity_prompt(prompt: &str) -> String {
+        format!(
+            r#"Estimate how complex this software development task is for an AI coding agent working in the user's repository.
 
-        // Build the prompt with only enabled models
-        let model_list = available_models.join("|");
-        let prompt_text = format!(
-            r#"Analyze this software development prompt and recommend the best model.
-
-Model capabilities:
-- **Haiku**: Fast, cheap. Best for simple questions, quick lookups, straightforward code edits, syntax questions, documentation searches.
-- **Sonnet**: Balanced. Good for typical coding tasks, debugging, feature implementation, code review, refactoring.
-- **Opus**: Most capable, expensive. Best for complex architecture, multi-file refactoring, difficult debugging, system design, novel problem-solving.
-
-Effort level (controls reasoning depth, tool use, and verbosity):
-- **null**: No effort preference (fastest, cheapest)
-- **low**: Minimal reasoning for simple tasks
-- **medium**: Balanced reasoning for typical tasks
-- **high**: Thorough reasoning for complex tasks
-- **xhigh**: Extra-high reasoning for very complex tasks (Sonnet and Opus)
-- **max**: Deepest reasoning for the most complex tasks (Opus only)
-
-Available models (only recommend from these): {}
-
-Prompt to analyze:
 {}
 
-Choose the most cost-effective model that can handle this task well. Prefer cheaper models when the task is simple.{}"#,
-            available_models
-                .iter()
-                .map(|m| format!("**{}**", m))
-                .collect::<Vec<_>>()
-                .join(", "),
-            truncate_text(prompt, 1500),
-            Self::json_only(&format!(
-                r#"{{"recommended_model": "{}", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_effort": "null|low|medium|high|xhigh|max"}}"#,
-                model_list
-            ))
-        );
+Task to grade:
+{}
 
-        let schema = serde_json::json!({
+Return an integer complexity score from 1 to 10, a one-sentence reasoning that names the deciding factor, and your confidence in the score (low, medium, or high).{}"#,
+            Self::COMPLEXITY_RUBRIC,
+            truncate_text(prompt, 3000),
+            Self::json_only(
+                r#"{"complexity": 4, "reasoning": "single-file bug fix with a clear repro", "confidence": "high"}"#
+            )
+        )
+    }
+
+    pub(crate) fn complexity_schema() -> serde_json::Value {
+        serde_json::json!({
             "type": "object",
             "properties": {
-                "recommended_model": {
-                    "type": "string",
-                    "enum": available_models,
-                    "description": "The recommended model"
+                "complexity": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Complexity score from 1 (trivial) to 10 (very hard)"
                 },
                 "reasoning": {
                     "type": "string",
-                    "description": "Brief explanation of why this model was chosen"
+                    "description": "One sentence naming the deciding factor"
                 },
                 "confidence": {
                     "type": "string",
                     "enum": ["low", "medium", "high"],
-                    "description": "Confidence level in this recommendation"
-                },
-                "suggested_effort": {
-                    "type": "string",
-                    "enum": ["null", "low", "medium", "high", "xhigh", "max"],
-                    "description": "Suggested effort level: null (off), low, medium, high, xhigh, or max"
+                    "description": "Confidence in the score"
                 }
             },
-            "required": ["recommended_model", "reasoning", "confidence", "suggested_effort"]
-        });
-
-        self.run_feature(prompt_text, schema).await
+            "required": ["complexity", "reasoning", "confidence"]
+        })
     }
 
     /// Recommend repo with usage tracking

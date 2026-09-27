@@ -98,6 +98,7 @@ fn run_case(name: &str, case: &Case) {
                 client.generate_structured_with_usage::<TranscriptionCleanupResult>(
                     &prompt,
                     Some(schema.clone()),
+                    "transcription_cleanup",
                 ),
             );
             match &result {

@@ -87,6 +87,10 @@ pub struct OpenAIRequest {
     pub response_format: Option<OpenAIResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// llama.cpp / vLLM / LM Studio chat-template switches, e.g.
+    /// `{"enable_thinking": false}` (Local/Custom only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_template_kwargs: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,8 +101,19 @@ pub struct OpenAIMessage {
 
 #[derive(Debug, Serialize)]
 pub struct OpenAIResponseFormat {
+    /// `json_schema` | `json_object`
     #[serde(rename = "type")]
     pub format_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<OpenAIJsonSchema>,
+}
+
+/// `response_format.json_schema` payload (OpenAI structured outputs).
+#[derive(Debug, Serialize)]
+pub struct OpenAIJsonSchema {
+    pub name: String,
+    pub strict: bool,
+    pub schema: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,7 +137,11 @@ pub struct OpenAIChoice {
 
 #[derive(Debug, Deserialize)]
 pub struct OpenAIResponseMessage {
-    pub content: String,
+    /// Null/missing on some servers when a reasoning model spent its budget
+    /// thinking (or on the LM Studio Qwen json_schema bug) — treated as an
+    /// empty answer rather than a transport parse error.
+    #[serde(default)]
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -373,6 +373,8 @@ export interface PendingTranscriptionInfo {
     effortLevel?: string;
     /** @deprecated Use effortLevel */
     thinkingLevel?: string;
+    /** Auto-model complexity grade (1-10) the tier ladder resolved */
+    complexity?: number;
   };
   repoRecommendation?: {
     repoIndex: number;
@@ -3567,7 +3569,7 @@ function createSdkSessionsStore() {
       );
     },
 
-    setRecommendations(id: string, options: { modelRecommendation?: { modelId: string; reasoning: string; effortLevel?: string; thinkingLevel?: string }; repoRecommendation?: { repoIndex: number; repoName: string; reasoning: string; confidence: string }; transcript?: string }): void {
+    setRecommendations(id: string, options: { modelRecommendation?: { modelId: string; reasoning: string; effortLevel?: string; thinkingLevel?: string; complexity?: number }; repoRecommendation?: { repoIndex: number; repoName: string; reasoning: string; confidence: string }; transcript?: string }): void {
       update(sessions =>
         sessions.map(s => {
           if (s.id !== id) return s;

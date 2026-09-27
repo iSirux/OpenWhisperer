@@ -4,7 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { dev } from "$app/environment";
 
 
-export type WhisperProvider = "Local" | "OpenAI" | "Groq" | "Custom";
+export type WhisperProvider = "Local" | "OpenAI" | "Groq" | "Custom" | "OpenRouter";
 
 export type RealtimeProvider = "Vosk" | "VoiceStreamAI" | "SherpaOnnx" | "Speaches" | "Moonshine";
 
@@ -130,6 +130,8 @@ export interface HotkeyConfig {
   prepare_selection: string;
   /** Hotkey to stop the current recording and save it to the pile (while recording) */
   pile_recording: string;
+  /** Global hotkey to start/stop Meeting Mode (empty = unbound) */
+  toggle_meeting: string;
 }
 
 /** Per-hotkey enabled/disabled state. Allows temporarily deactivating a hotkey without clearing its binding. */
@@ -143,6 +145,34 @@ export interface HotkeyEnabledConfig {
   send_selection: boolean;
   prepare_selection: boolean;
   pile_recording: boolean;
+  toggle_meeting: boolean;
+}
+
+/** Meeting Mode configuration (mirrors Rust `config/meeting.rs` `MeetingConfig`). */
+export interface MeetingConfig {
+  capture_mic: boolean;
+  capture_system: boolean;
+  /** "process" = only the listed apps (Windows process loopback), "all" = full system loopback */
+  system_target: "process" | "all";
+  system_process_names: string[];
+  /** cpal input device name; null = default input */
+  mic_device: string | null;
+  vad_threshold: number;
+  silence_hangover_ms: number;
+  max_segment_secs: number;
+  /** null = use the dictation Whisper settings */
+  transcription_provider: WhisperProvider | null;
+  transcription_model: string | null;
+  /** Key for the override provider; null = reuse the dictation key only when the
+   *  override provider equals the dictation provider (OpenRouter: LLM profile key). */
+  transcription_api_key?: string | null;
+  /** Endpoint for the override provider; null = provider preset (Custom: required). */
+  transcription_endpoint?: string | null;
+  triage_interval_minutes: number;
+  auto_pile: boolean;
+  auto_pile_min_confidence: number;
+  default_auto_repo: boolean;
+  retention_days: number;
 }
 
 export interface OverlayConfig {
@@ -406,7 +436,7 @@ export type EffortLevel = "off" | "low" | "medium" | "high" | "xhigh" | "max";
 /** @deprecated Use EffortLevel instead */
 export type ThinkingLevel = EffortLevel;
 
-export type LlmProvider = "Gemini" | "OpenAI" | "Groq" | "Xai" | "Local" | "Custom";
+export type LlmProvider = "Gemini" | "OpenAI" | "Groq" | "Xai" | "OpenRouter" | "Local" | "Custom";
 // Alias for backwards compatibility
 export type GeminiProvider = LlmProvider;
 
@@ -456,6 +486,16 @@ export interface LlmFeaturesConfig {
   auto_select_repo: boolean;
   /** Use LLM to generate descriptive branch names for new worktrees */
   generate_branch_names: boolean;
+  /** Auto-model ladder (complexity score → model + effort). Empty = derived
+   *  defaults; see `src/lib/utils/autoModelTiers.ts`. */
+  auto_model_tiers?: AutoModelTierConfig[];
+}
+
+/** One rung of the auto-model ladder (mirror of Rust `AutoModelTier`). */
+export interface AutoModelTierConfig {
+  min_score: number;
+  model: string;
+  effort: "low" | "medium" | "high" | "xhigh" | "max" | null;
 }
 // Alias for backwards compatibility
 export type GeminiFeaturesConfig = LlmFeaturesConfig;
@@ -476,6 +516,8 @@ export interface LlmProfile {
   auto_model: boolean;
   /** Model priority when auto_model is enabled (Speed or Accuracy) */
   model_priority: LlmModelPriority;
+  /** Local/Custom: send chat_template_kwargs {enable_thinking: false} (default true) */
+  disable_thinking?: boolean;
 }
 
 export interface LlmConfig {
@@ -640,6 +682,8 @@ export interface AppConfig {
   queue: QueueConfig;
   /** Validation pipeline configuration */
   validation: ValidationConfig;
+  /** Meeting Mode configuration */
+  meeting: MeetingConfig;
   /** Inject a system message notifying agents that other agents may be working in parallel */
   notify_parallel_agents: boolean;
   /** Automatically open a session's dock panel when its PR is detected or a
@@ -739,6 +783,7 @@ const defaultConfig: AppConfig = {
     send_selection: "CommandOrControl+Shift+E",
     prepare_selection: "CommandOrControl+Shift+J",
     pile_recording: "CommandOrControl+Shift+P",
+    toggle_meeting: "",
   },
   hotkeys_enabled: {
     toggle_recording: true,
@@ -750,6 +795,7 @@ const defaultConfig: AppConfig = {
     send_selection: true,
     prepare_selection: true,
     pile_recording: true,
+    toggle_meeting: true,
   },
   overlay: {
     show_when_focused: true,
@@ -857,6 +903,7 @@ const defaultConfig: AppConfig = {
         endpoint: null,
         auto_model: true,
         model_priority: "speed",
+        disable_thinking: true,
       },
     ],
     fast_chain: ["default"],
@@ -871,6 +918,7 @@ const defaultConfig: AppConfig = {
       auto_model_effort: "dynamic",
       auto_select_repo: true,
       generate_branch_names: true,
+      auto_model_tiers: [],
     },
     confirm_repo_selection: false,
     min_auto_select_confidence: "high",
@@ -904,6 +952,26 @@ const defaultConfig: AppConfig = {
     auto_fix_limits: { review: 0, test: 2, docs: 0, lint: 2, ci: 2 },
     ci_timeout_minutes: 45,
     agent_timeout_minutes: 60,
+  },
+  // Keep in sync with MeetingConfig::default() in src-tauri/src/config/meeting.rs
+  meeting: {
+    capture_mic: true,
+    capture_system: true,
+    system_target: "process",
+    system_process_names: ["Discord.exe", "Teams.exe", "ms-teams.exe"],
+    mic_device: null,
+    vad_threshold: 0.015,
+    silence_hangover_ms: 1200,
+    max_segment_secs: 90,
+    transcription_provider: null,
+    transcription_model: null,
+    transcription_api_key: null,
+    transcription_endpoint: null,
+    triage_interval_minutes: 3,
+    auto_pile: false,
+    auto_pile_min_confidence: 0.85,
+    default_auto_repo: false,
+    retention_days: 30,
   },
   notify_parallel_agents: true,
   auto_open_session_panels: true,

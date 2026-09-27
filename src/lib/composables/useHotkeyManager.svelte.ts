@@ -9,6 +9,7 @@ import { repos } from '$lib/stores/repos';
 import { isRecording } from '$lib/stores/recording';
 import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
 import { cycleModel, cycleRepo } from '$lib/utils/recordingCycles';
+import { meetings } from '$lib/stores/meetings';
 import { get } from 'svelte/store';
 
 export interface HotkeyCallbacks {
@@ -40,6 +41,10 @@ export function useHotkeyManager() {
   let prepareSelectionHotkeyRegistered = false;
   let registeredSendSelectionHotkey: string | null = null;
   let registeredPrepareSelectionHotkey: string | null = null;
+  let registeredToggleMeetingHotkey: string | null = null;
+  // Last-seen toggle_meeting binding (change detection; '' = unbound)
+  let lastToggleMeetingBinding: string | null = null;
+  let isTogglingMeeting = false;
 
   // Debounce flags
   let isTogglingRecording = false;
@@ -160,6 +165,52 @@ export function useHotkeyManager() {
       } else if (!enabled.prepare_selection) {
         console.log('[Hotkey] prepare_selection is disabled, skipping registration');
       }
+
+      // Register toggle_meeting hotkey (unbound by default; voice mode only)
+      const toggleMeetingHotkey = currentSettings.hotkeys.toggle_meeting ?? '';
+      lastToggleMeetingBinding = toggleMeetingHotkey;
+      registeredToggleMeetingHotkey = null;
+      // The "while recording" hotkeys register/unregister dynamically; a shared
+      // binding would be unregistered out from under toggle_meeting when a
+      // recording stops, so a collision with any of them skips toggle_meeting.
+      const recordingTimeHotkeys = new Set(
+        [
+          enabled.transcribe_to_input ? currentSettings.hotkeys.transcribe_to_input : '',
+          enabled.pile_recording ? currentSettings.hotkeys.pile_recording : '',
+          enabled.cycle_repo ? currentSettings.hotkeys.cycle_repo : '',
+          enabled.cycle_model ? currentSettings.hotkeys.cycle_model : '',
+        ].filter(Boolean)
+      );
+      if (toggleMeetingHotkey && recordingTimeHotkeys.has(toggleMeetingHotkey)) {
+        console.warn(
+          '[Hotkey] toggle_meeting binding collides with a recording hotkey, skipping:',
+          toggleMeetingHotkey
+        );
+      }
+      if (
+        (enabled.toggle_meeting ?? true) &&
+        toggleMeetingHotkey &&
+        !voiceDisabled &&
+        !registeredHotkeys.has(toggleMeetingHotkey) &&
+        !recordingTimeHotkeys.has(toggleMeetingHotkey)
+      ) {
+        console.log('[Hotkey] Registering toggle_meeting:', toggleMeetingHotkey);
+        await register(toggleMeetingHotkey, async (event) => {
+          // Global shortcuts fire on press and release; act on press only.
+          if ((event as { state?: string } | undefined)?.state === 'Released') return;
+          if (isTogglingMeeting) return;
+          isTogglingMeeting = true;
+          try {
+            await meetings.toggleFromHotkey();
+          } finally {
+            setTimeout(() => {
+              isTogglingMeeting = false;
+            }, 500);
+          }
+        });
+        registeredToggleMeetingHotkey = toggleMeetingHotkey;
+        registeredHotkeys.add(toggleMeetingHotkey);
+      }
     } catch (error) {
       console.error('Failed to register hotkeys:', error);
     }
@@ -198,6 +249,14 @@ export function useHotkeyManager() {
       lastEnabledState = enabledStr;
     }
 
+    // Check if the toggle_meeting binding changed (registered in setup())
+    const meetingBinding = get(settings).hotkeys.toggle_meeting ?? '';
+    if (lastToggleMeetingBinding !== null && meetingBinding !== lastToggleMeetingBinding && callbacks) {
+      console.log('[Hotkey] Detected toggle_meeting change, re-registering...');
+      lastToggleMeetingBinding = meetingBinding;
+      return true;
+    }
+
     // Check if hotkey binding changed
     if (!currentHotkey || currentHotkey === registeredToggleRecordingHotkey) {
       return false;
@@ -215,6 +274,16 @@ export function useHotkeyManager() {
   }
 
   /**
+   * Defense in depth for the dynamic "while recording" hotkeys: never take over
+   * (and later unregister) the binding toggle_meeting is registered on.
+   */
+  function collidesWithMeetingHotkey(hotkey: string | undefined, name: string): boolean {
+    if (!hotkey || hotkey !== registeredToggleMeetingHotkey) return false;
+    console.warn(`[Hotkey] ${name} collides with toggle_meeting, skipping:`, hotkey);
+    return true;
+  }
+
+  /**
    * Register the transcribe-to-input hotkey (only while recording)
    */
   async function registerTranscribeHotkey() {
@@ -226,6 +295,7 @@ export function useHotkeyManager() {
       console.log('[Hotkey] transcribe_to_input is disabled, skipping registration');
       return;
     }
+    if (collidesWithMeetingHotkey(currentSettings.hotkeys.transcribe_to_input, 'transcribe_to_input')) return;
     try {
       await register(currentSettings.hotkeys.transcribe_to_input, async () => {
         if (!get(isRecording)) return;
@@ -261,6 +331,7 @@ export function useHotkeyManager() {
     }
     const hotkeyString = currentSettings.hotkeys.pile_recording;
     if (!hotkeyString) return;
+    if (collidesWithMeetingHotkey(hotkeyString, 'pile_recording')) return;
     try {
       await register(hotkeyString, async () => {
         if (!get(isRecording)) return;
@@ -345,6 +416,7 @@ export function useHotkeyManager() {
     }
 
     const hotkeyString = currentSettings.hotkeys.cycle_repo;
+    if (collidesWithMeetingHotkey(hotkeyString, 'cycle_repo')) return;
     console.log('[Hotkey] Registering cycle repo hotkey:', hotkeyString);
 
     try {
@@ -406,6 +478,7 @@ export function useHotkeyManager() {
       return;
     }
     const hotkeyString = currentSettings.hotkeys.cycle_model;
+    if (collidesWithMeetingHotkey(hotkeyString, 'cycle_model')) return;
     try {
       await register(hotkeyString, async () => {
         if (isCyclingModel) return;
@@ -485,6 +558,8 @@ export function useHotkeyManager() {
       prepareSelectionHotkeyRegistered = false;
       registeredSendSelectionHotkey = null;
       registeredPrepareSelectionHotkey = null;
+      registeredToggleMeetingHotkey = null;
+      lastToggleMeetingBinding = null;
       callbacks = null;
       console.log('[Hotkey] Cleanup complete');
     } catch (error) {

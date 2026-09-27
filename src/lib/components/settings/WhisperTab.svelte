@@ -51,13 +51,15 @@
       bind:value={$settings.whisper.provider}
       onchange={(e) => {
         const provider = (e.target as HTMLSelectElement).value;
+        // A saved key belongs to the previous provider — never send it to the
+        // new one (e.g. an OpenAI key to OpenRouter).
+        $settings.whisper.api_key = null;
         // Apply provider presets
         if (provider === "Local") {
           $settings.whisper.endpoint =
             "http://localhost:8000/v1/audio/transcriptions";
           $settings.whisper.model =
             "dropbox-dash/faster-whisper-large-v3-turbo";
-          $settings.whisper.api_key = null;
         } else if (provider === "OpenAI") {
           $settings.whisper.endpoint =
             "https://api.openai.com/v1/audio/transcriptions";
@@ -66,12 +68,17 @@
           $settings.whisper.endpoint =
             "https://api.groq.com/openai/v1/audio/transcriptions";
           $settings.whisper.model = "whisper-large-v3-turbo";
+        } else if (provider === "OpenRouter") {
+          $settings.whisper.endpoint =
+            "https://openrouter.ai/api/v1/audio/transcriptions";
+          $settings.whisper.model = "microsoft/mai-transcribe-2";
         }
       }}
     >
       <option value="Local">Local (faster-whisper-server)</option>
       <option value="OpenAI">OpenAI</option>
       <option value="Groq">Groq (free tier available)</option>
+      <option value="OpenRouter">OpenRouter (MAI-Transcribe, Whisper, …)</option>
       <option value="Custom">Custom OpenAI-compatible</option>
     </select>
     <p class="text-xs text-text-muted mt-1">
@@ -91,6 +98,13 @@
           target="_blank"
           rel="noopener noreferrer">Get API key</a
         >
+      {:else if $settings.whisper.provider === "OpenRouter"}
+        One key for many speech-to-text models - <a
+          href="https://openrouter.ai/settings/keys"
+          class="text-accent hover:underline"
+          target="_blank"
+          rel="noopener noreferrer">Get API key</a
+        >. Leave the key empty to reuse an OpenRouter key from Settings → LLM.
       {:else}
         Any OpenAI-compatible transcription endpoint
       {/if}
@@ -107,7 +121,9 @@
         type="password"
         class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
         bind:value={$settings.whisper.api_key}
-        placeholder="sk-..."
+        placeholder={$settings.whisper.provider === "OpenRouter"
+          ? "sk-or-... (optional if an OpenRouter LLM profile has a key)"
+          : "sk-..."}
       />
     </div>
   {/if}
@@ -214,6 +230,33 @@
           >distil-whisper-large-v3-en (English only)</option
         >
       </select>
+    {:else if $settings.whisper.provider === "OpenRouter"}
+      <input
+        type="text"
+        list="openrouter-stt-models"
+        class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent font-mono"
+        bind:value={$settings.whisper.model}
+        placeholder="microsoft/mai-transcribe-2"
+      />
+      <datalist id="openrouter-stt-models">
+        <option value="microsoft/mai-transcribe-2"
+          >MAI-Transcribe-2 (speaker labels, 60 languages)</option
+        >
+        <option value="openai/whisper-1">Whisper (OpenAI)</option>
+        <option value="openai/whisper-large-v3">Whisper large-v3</option>
+        <option value="openai/gpt-4o-mini-transcribe">gpt-4o-mini-transcribe</option>
+        <option value="openai/gpt-4o-transcribe">gpt-4o-transcribe</option>
+      </datalist>
+      <p class="text-xs text-text-muted mt-1">
+        Any OpenRouter speech-to-text model slug — see <a
+          href="https://openrouter.ai/collections/speech-to-text-models"
+          class="text-accent hover:underline"
+          target="_blank"
+          rel="noopener noreferrer">available models</a
+        >. Segment timestamps and speaker labels depend on the routed provider;
+        MAI-Transcribe diarization is requested for meetings (not yet
+        verified live).
+      </p>
     {:else}
       <input
         type="text"

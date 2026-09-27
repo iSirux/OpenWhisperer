@@ -113,6 +113,27 @@
     />
   </div>
 
+  <!-- Start / Stop Meeting -->
+  <div>
+    <div class="flex items-center justify-between mb-1">
+      <label class="text-sm font-medium text-text-secondary">Start / Stop Meeting</label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.hotkeys_enabled.toggle_meeting}
+      />
+    </div>
+    <p class="text-xs text-text-muted mb-2">
+      Global hotkey that starts Meeting Mode (with your default repo settings) or stops the
+      running meeting. Unbound by default. The first start always goes through the Meeting
+      view so you see the recording-consent notice.
+    </p>
+    <HotkeyInput
+      bind:value={$settings.hotkeys.toggle_meeting}
+      enabled={$settings.hotkeys_enabled.toggle_meeting}
+    />
+  </div>
+
   <!-- Cycle Repository -->
   <div class="border-t border-border pt-4">
     <div class="flex items-center justify-between mb-1">

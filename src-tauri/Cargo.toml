@@ -47,14 +47,23 @@ regex = "1"
 tauri-plugin-notification = "2"
 tauri-plugin-log = "2"
 log = "0.4"
-windows-sys = { version = "0.59", features = ["Win32_UI_Shell"] }
+windows-sys = { version = "0.59", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
 xcap = "0.9.6"
 # Downscales agent tool-result images to display size — see src/image_shrink.rs.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+# Meeting mode microphone capture (all platforms) — see src/meeting/capture/mic.rs.
+cpal = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 # Reads the persisted (machine + user) PATH when the inherited one arrives
 # MSYS-mangled — see src/win_env.rs.
 winreg = "0.55"
+# Meeting mode system audio: default-render loopback + per-process loopback
+# (Win10 2004+) — see src/meeting/capture/windows.rs.
+wasapi = "0.24"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Meeting mode system audio on macOS 13+ — see src/meeting/capture/macos.rs.
+screencapturekit = "11"

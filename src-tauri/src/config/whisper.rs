@@ -10,6 +10,44 @@ pub enum WhisperProvider {
     OpenAI,
     Groq,
     Custom,
+    /// OpenRouter's `/api/v1/audio/transcriptions` (JSON + base64 audio), which
+    /// routes to Whisper, gpt-4o-transcribe, Groq, Microsoft MAI-Transcribe, …
+    OpenRouter,
+}
+
+impl WhisperProvider {
+    /// Canonical transcription endpoint for the hosted API providers
+    /// (`None` for Local/Custom, whose endpoint is user-defined).
+    pub fn preset_endpoint(&self) -> Option<&'static str> {
+        match self {
+            WhisperProvider::OpenAI => Some("https://api.openai.com/v1/audio/transcriptions"),
+            WhisperProvider::Groq => Some("https://api.groq.com/openai/v1/audio/transcriptions"),
+            WhisperProvider::OpenRouter => Some("https://openrouter.ai/api/v1/audio/transcriptions"),
+            WhisperProvider::Local | WhisperProvider::Custom => None,
+        }
+    }
+
+    /// Default model for the provider preset (mirrors `WhisperTab.svelte`).
+    pub fn default_model(&self) -> Option<&'static str> {
+        match self {
+            WhisperProvider::Local => Some("dropbox-dash/faster-whisper-large-v3-turbo"),
+            WhisperProvider::OpenAI => Some("gpt-4o-mini-transcribe"),
+            WhisperProvider::Groq => Some("whisper-large-v3-turbo"),
+            WhisperProvider::OpenRouter => Some("microsoft/mai-transcribe-2"),
+            WhisperProvider::Custom => None,
+        }
+    }
+
+    /// Hosted API providers get retry-with-backoff on 429/5xx/network errors.
+    /// Local is excluded (the command layer has its own Docker autostart +
+    /// retry path); Custom counts as an API unless it points at localhost.
+    pub fn is_remote_api(&self, endpoint: &str) -> bool {
+        match self {
+            WhisperProvider::Local => false,
+            WhisperProvider::Custom => !crate::docker::is_local_endpoint(endpoint),
+            _ => true,
+        }
+    }
 }
 
 /// Docker compute type for local Whisper server
@@ -65,8 +103,12 @@ pub struct WhisperConfig {
     pub docker: DockerConfig,
 }
 
+/// The local faster-whisper-server endpoint (the app default and the Local
+/// preset in `WhisperTab.svelte`).
+pub const DEFAULT_LOCAL_WHISPER_ENDPOINT: &str = "http://localhost:8000/v1/audio/transcriptions";
+
 fn default_whisper_endpoint() -> String {
-    "http://localhost:8000/v1/audio/transcriptions".to_string()
+    DEFAULT_LOCAL_WHISPER_ENDPOINT.to_string()
 }
 
 fn default_whisper_model() -> String {

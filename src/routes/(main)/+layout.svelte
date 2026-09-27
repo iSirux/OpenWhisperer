@@ -11,6 +11,8 @@
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { startSmartQueue } from '$lib/stores/smartQueue';
   import { schedules, startSchedules } from '$lib/stores/schedules';
+  import { meetings, isMeetingActive } from '$lib/stores/meetings';
+  import { journal } from '$lib/stores/journal';
   import { startCliInbox } from '$lib/stores/cliInbox';
   import { spareTokens, startSpareTokens } from '$lib/stores/spareTokens';
   import { updater } from '$lib/stores/updater';
@@ -94,6 +96,7 @@
   let cleanupCliInbox: (() => void) | null = null;
   let cleanupSpareTokens: (() => void) | null = null;
   let cleanupUpdateChecks: (() => void) | null = null;
+  let cleanupMeetings: (() => void) | null = null;
 
   // Wire the recording flow store to the hotkey manager
   recordingFlow.setHotkeyCallbacks({
@@ -138,6 +141,9 @@
     const currentlyRecording = $isRecording;
     const currentlyListening = $isOpenMicListening;
     const currentlyPaused = $isOpenMicPaused;
+    // Meeting Mode interlock (gate lives in useOpenMic); read here so the
+    // effect re-runs when a meeting starts/ends.
+    void $isMeetingActive;
 
     openMicLifecycle.update(openMicEnabled, realtimeEnabled, realtimeConfigFingerprint, currentlyRecording, currentlyListening, currentlyPaused);
   });
@@ -425,6 +431,10 @@
     // Load the recording pile
     await pile.load();
 
+    // Meeting Mode: journal items, then meeting listeners + triage driver
+    await journal.load();
+    cleanupMeetings = meetings.startMeetings();
+
     // Load sequences
     await initSequenceExecutionListeners();
     await loadSequences();
@@ -539,6 +549,7 @@
     if (cleanupCliInbox) cleanupCliInbox();
     if (cleanupSpareTokens) cleanupSpareTokens();
     if (cleanupUpdateChecks) cleanupUpdateChecks();
+    if (cleanupMeetings) cleanupMeetings();
     cleanupSequenceExecutionListeners();
 
     saveSessionsToDisk();

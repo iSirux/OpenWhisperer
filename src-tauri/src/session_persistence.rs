@@ -2,7 +2,6 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::config::AppConfig;
@@ -16,27 +15,12 @@ use crate::config::AppConfig;
 /// callers now use `crate::persist::save_json_atomic`. Once those non-owned
 /// modules migrate to `crate::persist::atomic_write` (text) or a bytes variant,
 /// this function can be removed.
+///
+/// Delegates to `crate::persist::atomic_write_bytes` (unique temp name per call,
+/// so concurrent writers of the same file can't collide on one `.tmp`).
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
-    let tmp_path = path.with_extension("json.tmp");
-
-    let result = (|| -> Result<(), String> {
-        let mut file = fs::File::create(&tmp_path)
-            .map_err(|e| format!("Failed to create temp file: {}", e))?;
-        file.write_all(content)
-            .map_err(|e| format!("Failed to write temp file: {}", e))?;
-        file.sync_all()
-            .map_err(|e| format!("Failed to sync temp file: {}", e))?;
-        drop(file);
-        fs::rename(&tmp_path, path)
-            .map_err(|e| format!("Failed to rename temp file: {}", e))?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp_path);
-    }
-
-    result
+    crate::persist::atomic_write_bytes(path, content)
+        .map_err(|e| format!("Failed to write {:?}: {}", path, e))
 }
 
 /// Represents a persisted image content block

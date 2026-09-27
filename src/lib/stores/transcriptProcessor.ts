@@ -47,6 +47,14 @@ import {
   isRepoAutoSelectEnabled,
 } from '$lib/utils/llm';
 import { isAutoModel } from '$lib/utils/models';
+import type { TierOptions } from '$lib/utils/autoModelTiers';
+
+/** Existing sessions can switch model but not provider: keep the auto-model
+ *  ladder on the session's provider. */
+function sessionTierOpts(sessionId: string): TierOptions {
+  const provider = get(sdkSessions).find((s) => s.id === sessionId)?.provider;
+  return provider ? { provider } : {};
+}
 import { processVoiceCommand, type VoiceCommandType } from '$lib/utils/voiceCommands';
 import { playRepoSelectedSound } from '$lib/utils/sound';
 
@@ -213,7 +221,8 @@ async function completePendingSession(
 
   const { model, effortLevel, recommendation } = await getModelRecommendation(
     transcript,
-    currentSettings.enabled_models
+    currentSettings.enabled_models,
+    sessionTierOpts(sessionId)
   );
 
   if (recommendation) {
@@ -410,7 +419,8 @@ export async function handlePrepareTranscriptReady(
   // Step 3: Get model recommendation
   const { model, effortLevel, recommendation } = await getModelRecommendation(
     finalTranscript,
-    currentSettings.enabled_models
+    currentSettings.enabled_models,
+    sessionTierOpts(sessionId)
   );
 
   if (recommendation) {
@@ -635,7 +645,8 @@ export async function handlePrepareSelection() {
 
     const { model, effortLevel, recommendation } = await getModelRecommendation(
       selectedText,
-      currentSettings.enabled_models
+      currentSettings.enabled_models,
+      sessionTierOpts(sessionId)
     );
 
     if (recommendation) {
@@ -1059,9 +1070,12 @@ export async function handleSetupSessionStart(
   let finalEffort = config.effortLevel;
 
   if (isAutoModel(config.model) && isModelRecommendationEnabled()) {
+    // An explicitly pinned account belongs to one provider — keep the ladder
+    // on it; otherwise the provider follows the resolved model.
     const { model, effortLevel } = await getModelRecommendation(
       config.prompt,
-      currentSettings.enabled_models
+      currentSettings.enabled_models,
+      config.accountId && config.provider ? { provider: config.provider } : {}
     );
     finalModel = model;
     if (effortLevel) finalEffort = effortLevel;
