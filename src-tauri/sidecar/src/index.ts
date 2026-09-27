@@ -816,6 +816,67 @@ function resolveBundledCodexForSdk(): string | undefined {
   return fs.existsSync(bin) ? bin : undefined;
 }
 
+// Windows Codex can accept workspace-write yet reject every command when its
+// native sandbox cannot start (for example, CreateRestrictedToken error 87).
+// Probe the same sandbox without spending a model turn before choosing the
+// validation agent's execution mode. Simplify already requires full access for
+// its commit and push phase.
+async function validationCodexSandboxMode(
+  cwd: string,
+  env: NodeJS.ProcessEnv
+): Promise<{ mode: ThreadOptions["sandboxMode"]; reason?: string }> {
+  if (process.platform !== "win32") return { mode: "workspace-write" };
+
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const target = process.arch === "arm64" ? "aarch64" : "x86_64";
+  const binary = path.join(
+    sidecarRuntimeRoot,
+    "node_modules",
+    "@openai",
+    `codex-win32-${arch}`,
+    "vendor",
+    `${target}-pc-windows-msvc`,
+    "bin",
+    "codex.exe"
+  );
+  if (!fs.existsSync(binary)) {
+    return { mode: "workspace-write", reason: "bundled Codex sandbox probe is unavailable" };
+  }
+
+  return new Promise((resolve) => {
+    let finished = false;
+    let stderr = "";
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (code: number | null, reason?: string) => {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      // A Git or environment error is not evidence that broader permissions
+      // will help. Only bypass a known native Windows sandbox failure.
+      const sandboxFailure = /CreateRestrictedToken|windows sandbox failed|blocked by policy|logon type/i.test(reason ?? "");
+      resolve(code === 0 || !sandboxFailure
+        ? { mode: "workspace-write", ...(code === 0 ? {} : { reason: reason || "sandbox probe failed" }) }
+        : { mode: "danger-full-access", reason });
+    };
+    const child = spawn(
+      binary,
+      ["sandbox", "-P", ":workspace", "-C", cwd, "git", "status", "--short"],
+      { cwd, env, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] }
+    );
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString()).slice(0, 500);
+    });
+    timer = setTimeout(() => {
+      child.kill();
+      finish(null, "sandbox probe timed out");
+    }, 10_000);
+    child.once("error", (error) => finish(null, error.message));
+    child.once("close", (code) =>
+      finish(code, stderr.replace(/\s+/g, " ").trim() || `sandbox probe exited ${code}`)
+    );
+  });
+}
+
 function setSessionSdkSessionId(session: Session, id: string, eventId: string): void {
   if (!id) return;
   if (session.sdkSessionId !== id) {
@@ -3567,18 +3628,23 @@ async function runValidationCodexThread(msg: ValidationAgentMessage): Promise<vo
       : getCodexInstance();
     const effort = mapEffortForProvider(msg.effort, "openai", msg.model);
     const role = buildValidationRole(msg.role);
+    const sandbox = msg.role === "simplify"
+      ? { mode: "danger-full-access" as const }
+      : await validationCodexSandboxMode(msg.cwd, codexEnv ?? process.env);
+    if (sandbox.reason) {
+      send({
+        type: "debug",
+        id: requestId,
+        message: `Codex validation sandbox probe: ${sandbox.reason}; using ${sandbox.mode} for ${msg.role}`,
+      });
+    }
     const threadOptions: ThreadOptions = {
       workingDirectory: msg.cwd,
       skipGitRepoCheck: true,
       model: msg.model,
-      // Codex read-only denies command execution without approval, including
-      // git diff/log. Validation is unattended (approvalPolicy "never"), so
-      // inspection roles need workspace-write to run local commands. Their
-      // prompt still forbids edits. Simplify also commits and pushes, which
-      // requires access to protected .git paths and network access.
-      sandboxMode: msg.role === "simplify"
-        ? "danger-full-access"
-        : "workspace-write",
+      // Keep the workspace sandbox where its Git probe works. On Windows,
+      // fall back only when Codex cannot execute commands in that sandbox.
+      sandboxMode: sandbox.mode,
       approvalPolicy: "never",
       ...(effort
         ? { modelReasoningEffort: effort as ThreadOptions["modelReasoningEffort"] }
@@ -3638,6 +3704,9 @@ using the provided JSON schema. Do not merely describe the JSON and do not wrap 
             inspectedGitDiff = true;
           }
         } else if (item.type === "file_change" && event.type === "item.completed") {
+          if (role.readOnly && item.status === "completed") {
+            throw new Error(`Codex ${msg.role} edited files during an inspection-only validation step`);
+          }
           const paths = (item.changes ?? [])
             .map((c) => c.path)
             .filter(Boolean)
