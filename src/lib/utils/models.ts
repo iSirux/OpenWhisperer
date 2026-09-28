@@ -1,31 +1,10 @@
 // SDK provider type
 export type SdkProvider = "claude" | "openai";
 
-// All available models with metadata
-export interface ModelInfo {
-  id: string;
-  label: string;
-  title: string;
-  isAuto?: boolean; // Special flag for auto model selection
-  maxContextTokens?: number;
-  /** Whether this model supports the effort parameter */
-  supportsEffort?: boolean;
-  /**
-   * Maximum effort level supported by the model.
-   * - 'high': Older OpenAI/Codex models (pre-5.6) cap out here
-   * - 'xhigh': GPT-5.6 family (Codex's ModelReasoningEffort capped at 'xhigh'
-   *   until GPT-6) and an intermediate Anthropic tier between 'high' and 'max'
-   * - 'max': Full "max" reasoning (native Anthropic SDK value; the GPT-6
-   *   family also accepts it — Codex's ModelReasoningEffort gained 'max' in 0.153)
-   */
-  maxEffort?: 'high' | 'xhigh' | 'max';
-  /**
-   * Whether the model supports the 'xhigh' effort tier.
-   * Defaults to true when maxEffort is 'xhigh' or 'max'. Set to false for models
-   * that jump from 'high' directly to 'max' (e.g., Opus 4.6).
-   */
-  supportsXhigh?: boolean;
-}
+import { ALL_MODELS, OPENAI_MODELS, type ModelInfo } from "./modelLists.svelte";
+
+export { ALL_MODELS, OPENAI_MODELS };
+export type { ModelInfo };
 
 // Special "Auto" model that uses LLM integration to recommend the best model
 export const AUTO_MODEL: ModelInfo = {
@@ -35,156 +14,6 @@ export const AUTO_MODEL: ModelInfo = {
   isAuto: true,
   maxContextTokens: 1000000,
 };
-
-export const ALL_MODELS: ModelInfo[] = [
-  {
-    id: "claude-fable-5-1",
-    label: "Fable 5.1",
-    title: "Fable 5.1 - Most capable widely released model (1M context, adaptive thinking)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "claude-fable-5",
-    label: "Fable 5",
-    title: "Fable 5 - Previous Fable generation (1M context, adaptive thinking)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "claude-opus-5-5",
-    label: "Opus 5.5",
-    title: "Opus 5.5 - Flagship for long-running agentic coding (1M context, adaptive thinking)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "claude-opus-5",
-    label: "Opus 5",
-    title: "Opus 5 - Previous flagship (1M context, adaptive thinking)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "claude-opus-4-8",
-    label: "Opus 4.8",
-    title: "Opus 4.8 - Previous flagship (1M context)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "claude-opus-4-7",
-    label: "Opus 4.7",
-    title: "Opus 4.7 - Previous flagship (1M context)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "claude-opus-4-6",
-    label: "Opus 4.6",
-    title: "Opus 4.6 - Previous flagship (1M context)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "max",
-    supportsXhigh: false,
-  },
-  {
-    id: "claude-sonnet-5",
-    label: "Sonnet 5",
-    title: "Sonnet 5 - Balanced performance (1M context, adaptive thinking)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "claude-haiku-4-5-20251001",
-    label: "Haiku",
-    title: "Haiku 4.5 - Fastest model",
-    maxContextTokens: 200000,
-    supportsEffort: false,
-  },
-];
-
-export const OPENAI_MODELS: ModelInfo[] = [
-  {
-    id: "gpt-6-astra",
-    label: "6 Astra",
-    title: "GPT-6 Astra - Most capable OpenAI model (1.05M context, effort up to max)",
-    maxContextTokens: 1050000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "gpt-6-sol",
-    label: "6 Sol",
-    title: "GPT-6 Sol - Complex coding and agentic workflows (1.05M context, effort up to max)",
-    maxContextTokens: 1050000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "gpt-6-luna",
-    label: "6 Luna",
-    title: "GPT-6 Luna - Fast, efficient model for focused tasks (1.05M context, effort up to max)",
-    maxContextTokens: 1050000,
-    supportsEffort: true,
-    maxEffort: "max",
-  },
-  {
-    id: "gpt-5.6-sol",
-    label: "5.6 Sol",
-    title: "GPT-5.6 Sol - Flagship model for the most complex tasks (1M context)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "xhigh",
-  },
-  {
-    id: "gpt-5.6-terra",
-    label: "5.6 Terra",
-    title: "GPT-5.6 Terra - Balanced everyday workhorse (1M context)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "xhigh",
-  },
-  {
-    id: "gpt-5.6-luna",
-    label: "5.6 Luna",
-    title: "GPT-5.6 Luna - Fast and affordable (1M context)",
-    maxContextTokens: 1000000,
-    supportsEffort: true,
-    maxEffort: "xhigh",
-  },
-  {
-    id: "gpt-5.4",
-    label: "5.4",
-    title: "GPT-5.4 - Previous-generation agentic coding model",
-    maxContextTokens: 400000,
-    supportsEffort: true,
-    maxEffort: "high",
-  },
-  {
-    id: "gpt-5.3-codex-spark",
-    label: "5.3 Spark",
-    title: "GPT-5.3 Codex Spark - Near-instant real-time coding (Pro only)",
-    maxContextTokens: 400000,
-    supportsEffort: true,
-    maxEffort: "high",
-  },
-  {
-    id: "gpt-5.4-mini",
-    label: "5.4 Mini",
-    title: "GPT-5.4 Mini - Strong mini model for coding, computer use, and subagents",
-    maxContextTokens: 400000,
-    supportsEffort: true,
-    maxEffort: "high",
-  },
-];
 
 export const DEFAULT_OPENAI_MODEL_ID = "gpt-5.6-terra";
 
@@ -255,6 +84,9 @@ export function resolveModelAlias(modelId: string): string {
     (m) => m.id.toLowerCase() === `claude-${alias.replace(/\./g, "-")}`,
   );
   if (exact) return exact.id;
+  // Provider-reported aliases ("opus" → whatever Opus the SDK currently points at).
+  const aliased = all.find((m) => m.aliases?.includes(alias));
+  if (aliased) return aliased.id;
   const match = all.find((m) => m.id.toLowerCase().includes(alias));
   return match?.id ?? modelId;
 }
@@ -305,9 +137,8 @@ export function modelSupportsEffort(modelId: string): boolean {
 
 /**
  * Get the maximum effort level supported by a model.
- * - 'high' for older OpenAI/Codex models and older Claude tiers
- * - 'xhigh' for the GPT-5.6 family (Codex caps those at xhigh)
- * - 'max' for Opus, Sonnet 5, Fable 5, and the GPT-6 family
+ * Comes from the provider's live effort list once the catalog is fetched;
+ * defaults to 'high' for unknown models.
  */
 export function getMaxEffort(modelId: string): 'high' | 'xhigh' | 'max' {
   const model = getModelById(modelId);
@@ -331,10 +162,9 @@ const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 /**
  * Clamp an effort level down to a value the given model/provider actually supports.
  *
- * - OpenAI/Codex models are clamped to the model's `maxEffort`: GPT-6 models accept
- *   the full range through 'max'; the GPT-5.6 family accepts up to 'xhigh' (so
- *   'max' -> 'xhigh'); older models cap at 'high'. Unknown OpenAI model IDs
- *   conservatively clamp 'xhigh'/'max' -> 'high'.
+ * - OpenAI/Codex models are clamped to the model's `maxEffort` (from Codex's
+ *   `model/list`). Unknown OpenAI model IDs conservatively clamp
+ *   'xhigh'/'max' -> 'high'.
  * - For Claude models, the value is returned unchanged (the SDK accepts the full
  *   effort range natively, including 'xhigh', and falls back internally when needed).
  * - `null` / `undefined` (effort off) passes through unchanged.

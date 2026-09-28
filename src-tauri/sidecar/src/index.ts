@@ -24,6 +24,7 @@ import * as path from "path";
 import { z } from "zod";
 import { isUsageLimitError, appServerErrorMessage } from "./usageLimit";
 import { CodexSubagents } from "./codexSubagents";
+import { listClaudeModels, listCodexModels } from "./modelCatalog";
 
 const OPENAI_MODEL_FALLBACK = "gpt-5.6-terra";
 
@@ -289,9 +290,9 @@ interface UpdateEffortMessage {
  * - Claude Agent SDK natively supports: 'low' | 'medium' | 'high' | 'xhigh' |
  *   'max' (EffortLevel), and it handles its own fallback for models that don't
  *   support a given level ('xhigh' -> 'high'). So every level passes through.
- * - Codex / OpenAI: GPT-6 models accept the full range through 'max' (Codex's
- *   ModelReasoningEffort gained 'max' in 0.153). The GPT-5.6 family accepts up
- *   to 'xhigh' ('max' is clamped to 'xhigh'); older models only accept
+ * - Codex / OpenAI: clamped to the model's effort list from `model/list` when
+ *   the app has fetched it this run. Otherwise by name: GPT-6 and GPT-5.6 accept
+ *   the full range through 'max'; older models only accept
  *   'low' | 'medium' | 'high' ('xhigh'/'max' clamped to 'high').
  * - `null` / `undefined` are passed through unchanged (effort off).
  */
@@ -302,8 +303,19 @@ function mapEffortForProvider(
 ): string | undefined {
   if (!effort) return undefined;
   if (provider === "openai") {
+    // Prefer the effort list Codex itself reported via `model/list`.
+    const listed = model ? listedOpenAiEfforts.get(model) : undefined;
+    if (listed && listed.length > 0) {
+      if (listed.includes(effort)) return effort;
+      const ladder = ["low", "medium", "high", "xhigh", "max"];
+      for (let i = ladder.indexOf(effort) - 1; i >= 0; i--) {
+        if (listed.includes(ladder[i])) return ladder[i];
+      }
+      return listed[0];
+    }
     const normalized = (model ?? "").toLowerCase();
-    const supportsMax = normalized.includes("gpt-6");
+    // Codex 0.158's catalog lists 'max' for the GPT-5.6 family as well.
+    const supportsMax = normalized.includes("gpt-6") || normalized.includes("gpt-5.6");
     const supportsXhigh = supportsMax || normalized.includes("gpt-5.6");
     if (effort === "max") return supportsMax ? "max" : supportsXhigh ? "xhigh" : "high";
     if (effort === "xhigh" && !supportsXhigh) return "high";
@@ -387,7 +399,14 @@ type InboundMessage =
   | AnswerAskUserQuestionMessage
   | AnswerPlanApprovalMessage
   | AnswerCodexApprovalMessage
-  | ValidationAgentMessage;
+  | ValidationAgentMessage
+  | ListModelsMessage;
+
+interface ListModelsMessage {
+  type: "list_models";
+  id: string;
+  provider: "claude" | "openai";
+}
 
 type OpenAiExecutionMode = "sdk" | "app_server";
 
@@ -816,17 +835,9 @@ function resolveBundledCodexForSdk(): string | undefined {
   return fs.existsSync(bin) ? bin : undefined;
 }
 
-// Windows Codex can accept workspace-write yet reject every command when its
-// native sandbox cannot start (for example, CreateRestrictedToken error 87).
-// Probe the same sandbox without spending a model turn before choosing the
-// validation agent's execution mode. Simplify already requires full access for
-// its commit and push phase.
-async function validationCodexSandboxMode(
-  cwd: string,
-  env: NodeJS.ProcessEnv
-): Promise<{ mode: ThreadOptions["sandboxMode"]; reason?: string }> {
-  if (process.platform !== "win32") return { mode: "workspace-write" };
-
+/// The vendored Windows `codex.exe` shipped inside `@openai/codex-win32-*`
+/// (spawnable directly, no cmd.exe shim), or undefined when absent.
+function bundledWindowsCodexExe(): string | undefined {
   const arch = process.arch === "arm64" ? "arm64" : "x64";
   const target = process.arch === "arm64" ? "aarch64" : "x86_64";
   const binary = path.join(
@@ -839,7 +850,22 @@ async function validationCodexSandboxMode(
     "bin",
     "codex.exe"
   );
-  if (!fs.existsSync(binary)) {
+  return fs.existsSync(binary) ? binary : undefined;
+}
+
+// Windows Codex can accept workspace-write yet reject every command when its
+// native sandbox cannot start (for example, CreateRestrictedToken error 87).
+// Probe the same sandbox without spending a model turn before choosing the
+// validation agent's execution mode. Simplify already requires full access for
+// its commit and push phase.
+async function validationCodexSandboxMode(
+  cwd: string,
+  env: NodeJS.ProcessEnv
+): Promise<{ mode: ThreadOptions["sandboxMode"]; reason?: string }> {
+  if (process.platform !== "win32") return { mode: "workspace-write" };
+
+  const binary = bundledWindowsCodexExe();
+  if (!binary) {
     return { mode: "workspace-write", reason: "bundled Codex sandbox probe is unavailable" };
   }
 
@@ -5772,6 +5798,45 @@ async function handleClose(msg: CloseMessage): Promise<void> {
   send({ type: "closed", id: msg.id });
 }
 
+// Effort levels per OpenAI model as last reported by Codex `model/list`
+// (consulted by mapEffortForProvider).
+const listedOpenAiEfforts = new Map<string, string[]>();
+
+async function handleListModels(msg: ListModelsMessage): Promise<void> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  try {
+    let models;
+    if (msg.provider === "openai") {
+      let command: string;
+      let args: string[];
+      const exe = process.platform === "win32" ? bundledWindowsCodexExe() : undefined;
+      if (exe) {
+        command = exe;
+        args = ["app-server"];
+      } else if (process.platform === "win32") {
+        const shim = resolveCodexExecutable();
+        command = "cmd.exe";
+        args = ["/d", "/s", "/c", shim === "codex" ? "codex app-server" : `"${shim}" app-server`];
+      } else {
+        command = resolveCodexExecutable();
+        args = ["app-server"];
+      }
+      models = await listCodexModels(command, args, env, os.homedir(), killProcessTree);
+      for (const m of models) listedOpenAiEfforts.set(m.id, m.efforts);
+    } else {
+      models = await listClaudeModels(env);
+    }
+    send({ type: "debug", id: msg.id, message: `Listed ${models.length} ${msg.provider} models` });
+    send({ type: "models_listed", id: msg.id, models });
+  } catch (err) {
+    send({
+      type: "models_list_error",
+      id: msg.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function handleMessage(msg: InboundMessage): Promise<void> {
   switch (msg.type) {
     case "create":
@@ -5803,6 +5868,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "validation_agent":
       await handleValidationAgent(msg);
+      break;
+    case "list_models":
+      await handleListModels(msg);
       break;
     case "answer_ask_user_question": {
       const session = sessions.get(msg.id);

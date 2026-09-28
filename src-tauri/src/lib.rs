@@ -25,7 +25,7 @@ mod win_env;
 
 use commands::{
     account_cmds, archive_cmds, audio_cmds, cli_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
-    launch_cmds, llm_cmds, local_llm_cmds, log_cmds,
+    launch_cmds, llm_cmds, local_llm_cmds, log_cmds, model_catalog_cmds,
     mcp_cmds, notion_cmds, pile_cmds, realtime_cmds, schedule_cmds, screenshot_cmds, sdk_cmds,
     sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds, validation_cmds,
 };
@@ -534,6 +534,9 @@ pub fn run() {
             pile_cmds::read_capture,
             pile_cmds::delete_capture,
             pile_cmds::list_captures,
+            model_catalog_cmds::load_model_catalog,
+            model_catalog_cmds::save_model_catalog,
+            model_catalog_cmds::list_agent_models,
             spare_tokens_cmds::load_spare_tokens,
             spare_tokens_cmds::save_spare_tokens,
             // --- Schedules ---

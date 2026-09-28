@@ -1,6 +1,8 @@
 // Model color utilities for consistent color coding across the app
 // Each model has a distinct color that follows the current theme
 
+import { getModelById } from './models';
+
 export type ModelType =
   | 'fable'
   | 'opus'
@@ -17,12 +19,11 @@ export function getModelType(modelId: string): ModelType {
   if (modelId.includes('haiku')) return 'haiku';
   // OpenAI/Codex models share colors with the equivalent Claude capability
   // class rather than receiving a separate color for every model name.
-  if (modelId.startsWith('gpt-6-astra')) return 'fable';
-  if (modelId.startsWith('gpt-6-sol')) return 'opus';
-  if (modelId.startsWith('gpt-6-luna')) return 'haiku';
-  if (modelId.startsWith('gpt-5.6-sol')) return 'opus';
-  if (modelId.startsWith('gpt-5.6-terra')) return 'sonnet';
-  if (modelId.startsWith('gpt-5.6-luna')) return 'haiku';
+  // By tier name, so future versions (gpt-7-sol, …) color correctly unlisted.
+  if (/^gpt-[\d.]+-astra/.test(modelId)) return 'fable';
+  if (/^gpt-[\d.]+-sol/.test(modelId)) return 'opus';
+  if (/^gpt-[\d.]+-terra/.test(modelId)) return 'sonnet';
+  if (/^gpt-[\d.]+-luna/.test(modelId)) return 'haiku';
   if (modelId.includes('spark') || modelId.includes('mini')) return 'haiku';
   if (modelId === 'gpt-5.4' || modelId === 'gpt-5.4-codex') return 'opus';
   if (modelId.startsWith('codex') || modelId.startsWith('gpt-')) return 'sonnet';
@@ -31,6 +32,9 @@ export function getModelType(modelId: string): ModelType {
 
 export function getShortModelName(model: string): string {
   if (model === 'auto') return 'Auto';
+  // Live catalog label first; the table below covers ids no longer listed.
+  const known = getModelById(model);
+  if (known) return known.label;
   if (model.includes('fable')) {
     if (model.includes('fable-5-1')) return 'Fable 5.1';
     return 'Fable 5';

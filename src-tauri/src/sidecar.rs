@@ -300,6 +300,13 @@ pub enum OutboundMessage {
         #[serde(rename = "resumeSessionId", skip_serializing_if = "Option::is_none")]
         resume_session_id: Option<String>,
     },
+    /// List the provider's available models (Claude `supportedModels()` /
+    /// Codex `model/list`). Replies via `models-listed-{id}` / `models-list-error-{id}`.
+    ListModels {
+        id: String,
+        /// "claude" | "openai"
+        provider: String,
+    },
     /// User's answers to AskUserQuestion tool
     AnswerAskUserQuestion {
         id: String,
@@ -549,6 +556,16 @@ pub enum InboundMessage {
     },
     /// Error from a one-shot validation agent.
     ValidationAgentError {
+        id: String,
+        error: String,
+    },
+    /// Model listing result (normalized entries; frontend owns the schema).
+    ModelsListed {
+        id: String,
+        models: serde_json::Value,
+    },
+    /// Model listing failed.
+    ModelsListError {
         id: String,
         error: String,
     },
@@ -866,6 +883,8 @@ impl InboundMessage {
             InboundMessage::RepoDescriptionError { .. } => "repo-description-error",
             InboundMessage::ValidationAgentResult { .. } => "validation-agent-result",
             InboundMessage::ValidationAgentError { .. } => "validation-agent-error",
+            InboundMessage::ModelsListed { .. } => "models-listed",
+            InboundMessage::ModelsListError { .. } => "models-list-error",
             InboundMessage::ValidationAgentProgress { .. } => "validation-agent-progress",
             InboundMessage::SdkSessionId { .. } => "sdk-session-id",
             InboundMessage::ParallelSessionNotification { .. } => "sdk-parallel-notification",
@@ -1534,6 +1553,13 @@ impl SidecarManager {
             InboundMessage::ValidationAgentError { id, error } => {
                 log::error!("[sidecar] Validation agent error for {}: {}", id, error);
                 Self::emit(app, suffix, &id, ValidationAgentErrorPayload { error });
+            }
+            InboundMessage::ModelsListed { id, models } => {
+                Self::emit(app, suffix, &id, models);
+            }
+            InboundMessage::ModelsListError { id, error } => {
+                log::warn!("[sidecar] Model listing failed for {}: {}", id, error);
+                Self::emit(app, suffix, &id, error);
             }
             InboundMessage::ValidationAgentProgress {
                 id,

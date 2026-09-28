@@ -76,6 +76,7 @@ Most routes live in the `(main)` route group, which shares `(main)/+layout.svelt
 - `debugRecordings.ts` - Bounded rolling log (20 newest) of recordings with audio + all transcription stages; always on
 - `validation.ts` - Native validation pipeline run store (see Validation Pipeline)
 - `updater.ts` - App update check/download/install state via the Tauri updater plugin (see App Updates)
+- `modelCatalog.ts` - Live model catalog (see Live Model Catalog): cached `model-catalog.json` applied at startup, background refresh from both SDKs when stale, auto-enable of newly released models
 - `localLlm.ts` - In-app local LLM (llama.cpp) setup/status/progress; `initLocalLlm()` (main layout + `LocalLlmSetup`) also merges backend `local-llm-config` changes into the settings store (see Local LLM setup)
 
 **Components (`src/lib/components/`):**
@@ -179,7 +180,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `image.ts` - Image compression and processing for the Claude API (5MB limit, auto-resize, format conversion)
 - `screenshot.ts` - Screenshot prompt notice and helpers (see Recording Screenshots)
 - `sound.ts` - Completion/notification sound playback
-- `modelColors.ts` / `models.ts` - Model colors; model definitions, effort levels, providers, Auto model support
+- `modelColors.ts` / `models.ts` / `modelLists.svelte.ts` - Model colors; model helpers (effort levels, providers, aliases, Auto model); the reactive `ALL_MODELS` / `OPENAI_MODELS` lists + bootstrap snapshot (see Live Model Catalog)
 - `llm.ts` - LLM integration utilities (session analysis, transcription cleanup, model/repo recommendations, feature gates)
 - `voiceCommands.ts` - Voice command detection and processing
 - `sessionLaunch.ts` - Shared session launch machinery: `launchSession` (setup session + optional worktree + tagging) and `createSessionQueue` (simple sequential batch-launch queue with optional stagger; used by NotionKanban and the pile — distinct from the Smart Queue)
@@ -264,6 +265,7 @@ Tabs rendered by the settings page: General, Claude, Codex, Themes, System, Micr
 - `journal_cmds.rs` - Journal persistence (`get_journal`/`save_journal`, opaque JSON)
 - `git_cmds.rs` - Git/worktree operations
 - `log_cmds.rs` - In-memory app log
+- `model_catalog_cmds.rs` - Live model catalog: `list_agent_models` (awaits the sidecar's `list_models`), `load_model_catalog` / `save_model_catalog` (opaque `model-catalog[.dev].json`)
 
 ### Sidecar (Node.js/TypeScript)
 
@@ -274,7 +276,7 @@ Located in `src-tauri/sidecar/`:
 - **Codex execution:** always via `codex app-server` — a full JSON-RPC client implementation (turn tracking, item events, usage emission). The former `codex_mode: "Sdk" | "AppServer"` choice is gone; the sidecar hardcodes app-server for OpenAI sessions (the SDK-based session-query path `handleCodexQuery` and the `codex_mode` config field remain as unreachable vestiges). `@openai/codex-sdk` itself is still in active use — the generation helper `generate_repo_description_with_codex` runs one-off Codex threads through it
 - Handles session creation, query execution, tool calls, and streaming responses
 - Supports multimodal prompts (text + images via base64 content blocks)
-- **Effort levels** via `update_effort` (`low|medium|high|xhigh|max` or off); Claude passes through natively, OpenAI clamps per model (the GPT-6 family accepts `max`, the GPT-5.6 family caps at `xhigh`, older Codex models at `high`); effort is plumbed to Codex via `effort` on `turn/start`
+- **Effort levels** via `update_effort` (`low|medium|high|xhigh|max` or off); Claude passes through natively, OpenAI clamps per model (Codex's `model/list` effort levels once fetched, else GPT-6 / GPT-5.6 accept `max`, older Codex models cap at `high`); effort is plumbed to Codex via `effort` on `turn/start`
 - Live model switching via `update_model`
 - Permission mode defaults to `acceptEdits`; the SDK's native `ExitPlanMode` is intercepted via `canUseTool` and surfaced to the user as a plan-approval dialog (approve / deny / approve-with-note)
 - Session restoration with conversation history context injection
@@ -286,7 +288,11 @@ Located in `src-tauri/sidecar/`:
 
 ## Effort Levels
 
-SDK sessions carry a per-session effort level (off, `low`, `medium`, `high`, `xhigh`, `max`) selected via `EffortToggle` or recommended by the LLM integration. Claude maps effort natively; OpenAI clamps to the model's supported ceiling (`max` for the GPT-6 family, `xhigh` for the GPT-5.6 family, `high` for older Codex models).
+SDK sessions carry a per-session effort level (off, `low`, `medium`, `high`, `xhigh`, `max`) selected via `EffortToggle` or recommended by the LLM integration. Claude maps effort natively; OpenAI clamps to the model's supported ceiling as reported by Codex `model/list` (name heuristic before the first fetch: `max` for GPT-6 / GPT-5.6, `high` for older Codex models).
+
+## Live Model Catalog
+
+Models are not hand-maintained: the sidecar's `list_models` asks each provider what it offers — Claude via `query().supportedModels()` on a throwaway query whose prompt stream never yields (no model turn, ~1 s; aliases like `opus` → `resolvedModel`, `default` marks the recommended one), Codex via a short-lived `codex app-server` → `model/list` (hidden models skipped, `upgrade` ⇒ legacy; spawns the vendored `codex.exe` directly on Windows) — see `sidecar/src/modelCatalog.ts`. Rust `list_agent_models` awaits the reply; `stores/modelCatalog.ts` caches the result in `model-catalog.json`, applies it at startup (before sessions restore), and refreshes each enabled provider 8 s after launch when older than 6 h or the app version changed (Refresh button in Settings → Claude / Codex). `applyListedModels` (`utils/modelLists.svelte.ts`) replaces the `$state` lists in place — labels, titles, effort ceilings (`supportedEffortLevels` / `supportedReasoningEfforts`) come from the provider; context window from `[1m]` or a name heuristic; bootstrap models missing from the listing stay as `legacy` so saved selections resolve. **Auto-enable:** a never-seen, non-legacy model is prepended to `enabled_models` / `enabled_openai_models` when it is at least as new as every known model of its family (`pickNewModelsToEnable`: `claude-sonnet-5-5` yes, `claude-sonnet-4-6` no). The sidecar's `mapEffortForProvider` also uses Codex's listed effort levels once fetched. The bootstrap snapshot (`BOOTSTRAP_*_MODELS`) is only the offline/first-run fallback — adding a new model needs no code change.
 
 ## Key Data Flow
 

@@ -7,6 +7,7 @@
   } from "$lib/utils/modelColors";
   import { invoke } from "@tauri-apps/api/core";
   import "./toggle.css";
+  import ModelCatalogRefresh from "./ModelCatalogRefresh.svelte";
 
   // Claude auth state
   let claudeAuthStatus = $state<{ hasEnvKey: boolean; hasOAuth: boolean; hasKeyringKey: boolean; authenticated: boolean } | null>(null);
@@ -235,6 +236,7 @@
       Select which models are available in the model selector and for
       hotkey cycling. At least one model must remain enabled.
     </p>
+    <ModelCatalogRefresh provider="claude" />
     <div class="space-y-2">
       {#each ALL_MODELS as model}
         {@const enabled = isModelEnabled(model.id)}
@@ -280,6 +282,7 @@
                     model.id
                   )} {getModelTextColor(model.id)}">{model.label}</span
                 >
+                {#if model.legacy}<span class="text-[10px] uppercase tracking-wide text-text-muted">Legacy</span>{/if}
               </div>
               <p class="text-xs text-text-muted mt-0.5">
                 {model.title}

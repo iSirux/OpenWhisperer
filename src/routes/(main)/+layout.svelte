@@ -15,6 +15,7 @@
   import { journal } from '$lib/stores/journal';
   import { startCliInbox } from '$lib/stores/cliInbox';
   import { initLocalLlm } from '$lib/stores/localLlm';
+  import { loadModelCatalog, startModelCatalog } from '$lib/stores/modelCatalog';
   import { spareTokens, startSpareTokens } from '$lib/stores/spareTokens';
   import { updater } from '$lib/stores/updater';
   import { isRecording } from '$lib/stores/recording';
@@ -96,6 +97,7 @@
   let cleanupSchedules: (() => void) | null = null;
   let cleanupCliInbox: (() => void) | null = null;
   let cleanupSpareTokens: (() => void) | null = null;
+  let cleanupModelCatalog: (() => void) | null = null;
   let cleanupUpdateChecks: (() => void) | null = null;
   let cleanupMeetings: (() => void) | null = null;
 
@@ -401,6 +403,9 @@
     // Load settings and repos before child routes render with defaults
     await settings.load();
     await repos.load();
+    // Cached live model catalog (before sessions restore, so labels/effort
+    // ceilings match what the SDKs reported last time).
+    await loadModelCatalog();
 
     // Apply saved theme
     document.documentElement.setAttribute('data-theme', $settings.theme);
@@ -465,6 +470,9 @@
     // Local LLM: status/progress listeners + merging backend config changes
     // (install, routing, port moves) into the settings store.
     void initLocalLlm();
+
+    // Refresh the live model catalog from both SDKs once it goes stale.
+    cleanupModelCatalog = startModelCatalog();
 
     // If there are existing sessions, show sessions view
     if ($sdkSessions.length > 0 && $navigation.mainView === 'start') {
@@ -553,6 +561,7 @@
     if (cleanupSchedules) cleanupSchedules();
     if (cleanupCliInbox) cleanupCliInbox();
     if (cleanupSpareTokens) cleanupSpareTokens();
+    if (cleanupModelCatalog) cleanupModelCatalog();
     if (cleanupUpdateChecks) cleanupUpdateChecks();
     if (cleanupMeetings) cleanupMeetings();
     cleanupSequenceExecutionListeners();

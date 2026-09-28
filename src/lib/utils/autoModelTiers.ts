@@ -147,9 +147,16 @@ function derivedTiersForProvider(
     }
   } else {
     const ids = OPENAI_MODELS.map((m) => m.id);
-    cheap = pick(enabled, ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-5.4-mini']);
-    mid = pick(enabled, ['gpt-5.6-terra', 'gpt-6-sol', 'gpt-5.4']);
-    top = pick(enabled, ['gpt-6-astra', 'gpt-6-sol', 'gpt-5.6-sol']);
+    // Newest version of each tier name first, so new releases slot in unlisted.
+    const tier = (name: string) =>
+      ids
+        .map((id) => ({ id, v: new RegExp(`^gpt-([\d.]+)-${name}$`).exec(id)?.[1] }))
+        .filter((x): x is { id: string; v: string } => !!x.v)
+        .sort((a, b) => parseFloat(b.v) - parseFloat(a.v))
+        .map((x) => x.id);
+    cheap = pick(enabled, [...tier('luna'), ...tier('mini')]);
+    mid = pick(enabled, [...tier('terra'), ...tier('sol')]);
+    top = pick(enabled, [...tier('astra'), ...tier('sol')]);
     if (!cheap && !mid && !top) {
       top = pick(enabled, ids);
     }
