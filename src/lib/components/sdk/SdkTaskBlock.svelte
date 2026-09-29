@@ -48,9 +48,15 @@
   // Follow live output while the user is at the bottom. Scrolling up pauses
   // follow-tail behavior until they return to the bottom themselves.
   let taskBodyEl = $state<HTMLDivElement | null>(null);
-  let prevChildCount = $state(0);
-  let wasExpanded = $state(false);
-  let prevTaskCompleted = $state<SdkMessage | undefined>(undefined);
+  // Plain (non-reactive) bookkeeping for the effect below. As $state the effect
+  // read and wrote its own dependencies, and $state proxied the (raw, since
+  // SdkView holds sessions in $state.raw) taskCompleted message, so
+  // `taskCompleted !== prevTaskCompleted` was always true and every write was a
+  // "change": each completed task block re-ran the effect thousands of times on
+  // mount, locking the UI on any session with a finished subagent.
+  let prevChildCount = 0;
+  let wasExpanded = false;
+  let prevTaskCompleted: SdkMessage | undefined = undefined;
   let shouldFollowTail = $state(true);
 
   function handleTaskBodyScroll() {
