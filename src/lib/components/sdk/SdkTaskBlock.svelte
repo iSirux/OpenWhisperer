@@ -1,7 +1,14 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type { SdkMessage, EffortLevel } from "$lib/stores/sdkSessions";
-  import type { NestedTaskSummary } from "./sdkViewMessageProcessing";
+  import {
+    mergeTaskChildren,
+    messageRenderKey,
+    uniqueKeys,
+    renderItemsEquivalent,
+    type NestedTaskSummary,
+    type RenderItem,
+  } from "./sdkViewMessageProcessing";
   import { settings } from "$lib/stores/settings";
   import SdkMessageComponent from "./SdkMessage.svelte";
   import SdkToolGrid from "./SdkToolGrid.svelte";
@@ -91,65 +98,11 @@
     taskCompleted?.taskStatus || 'Done'
   );
 
-  // Process children to merge tool_start/tool_result pairs.
-  // Children arrive from SdkView's renderItems which already runs processedMessages(),
-  // so completed tools are already merged (tool_start replaced by tool_result with input).
-  // We only need to re-merge if there are still unmerged tool_start messages (running tools).
-  let processedChildren = $derived(() => {
-    const msgs = children;
-
-    // If no tool_starts remain, children are fully processed - return as-is.
-    // This avoids double-processing which would wipe the already-merged input data.
-    const hasToolStarts = msgs.some(m => m.type === 'tool_start');
-    if (!hasToolStarts) return msgs;
-
-    // There are still-running tools (tool_start without tool_result) - merge completed pairs
-    const result: SdkMessage[] = [];
-    const hasToolUseIds = msgs.some(m => m.toolUseId);
-
-    if (hasToolUseIds) {
-      const toolResults = new Map<string, SdkMessage>();
-      for (const msg of msgs) {
-        if (msg.type === 'tool_result' && msg.toolUseId) {
-          toolResults.set(msg.toolUseId, msg);
-        }
-      }
-
-      const toolInputs = new Map<string, Record<string, unknown>>();
-      for (const msg of msgs) {
-        if (msg.type === 'tool_start' && msg.toolUseId && msg.input) {
-          toolInputs.set(msg.toolUseId, msg.input);
-        }
-      }
-
-      const outputToolIds = new Set<string>();
-
-      for (const msg of msgs) {
-        if (msg.type === 'tool_start') {
-          if (msg.toolUseId && toolResults.has(msg.toolUseId)) {
-            const resultMsg = toolResults.get(msg.toolUseId)!;
-            const input = toolInputs.get(msg.toolUseId);
-            result.push({ ...resultMsg, input });
-            outputToolIds.add(msg.toolUseId);
-          } else {
-            result.push(msg);
-          }
-        } else if (msg.type === 'tool_result') {
-          if (!msg.toolUseId || !outputToolIds.has(msg.toolUseId)) {
-            // Preserve existing input from pre-merged results (fallback to msg.input)
-            const input = msg.toolUseId ? (toolInputs.get(msg.toolUseId) ?? msg.input) : msg.input;
-            result.push({ ...msg, input });
-          }
-        } else {
-          result.push(msg);
-        }
-      }
-    } else {
-      return msgs;
-    }
-
-    return result;
-  });
+  // Process children to merge tool_start/tool_result pairs (identity-stable —
+  // see mergeTaskChildren). $derived.by, not $derived(() => …): the latter
+  // stores the function itself, so nothing was memoized and every template read
+  // re-ran the whole pipeline.
+  let processedChildren = $derived.by(() => mergeTaskChildren(children));
 
   // Derive the display label: use taskType if available (e.g. "Explore"), else "Task"
   let taskLabel = $derived(taskStarted.taskType || 'Task');
@@ -180,8 +133,8 @@
     | { type: 'tool_group'; tools: SdkMessage[] }
     | { type: 'nested_task'; summary: NestedTaskSummary };
 
-  let childRenderItems = $derived(() => {
-    const msgs = processedChildren();
+  let childRenderItems = $derived.by((): ChildRenderItem[] => {
+    const msgs = processedChildren;
     if (msgs.length === 0) return [];
 
     const seenNested = new Set<string>();
@@ -239,6 +192,57 @@
     return items;
   });
 
+  // Tail window: a long subagent run carries thousands of children, and SdkView's
+  // render window doesn't reach inside a task block, so an open block mounted
+  // every one of them. Show the newest (the body follows the tail anyway) and
+  // reveal older ones on demand.
+  const CHILD_WINDOW_INITIAL = 200;
+  const CHILD_WINDOW_STEP = 300;
+  let childWindow = $state(CHILD_WINDOW_INITIAL);
+  let hiddenChildCount = $derived(Math.max(0, childRenderItems.length - childWindow));
+
+  // Keyed like SdkView's keyedVisibleItems: collision-safe keys (toolUseId for
+  // tool calls, so a finishing tool doesn't remount its card or grid), and the
+  // previous wrapper is reused when the row is unchanged so untouched rows keep
+  // their props instead of re-rendering on every child event.
+  const childItemKey = (item: ChildRenderItem): string =>
+    item.type === 'tool_group'
+      ? `tool-group-${item.tools[0] ? messageRenderKey(item.tools[0]) : 0}`
+      : item.type === 'nested_task'
+        ? `nested-${item.summary.toolUseId}`
+        : messageRenderKey(item.message);
+  const sameChildItem = (a: ChildRenderItem, b: ChildRenderItem): boolean => {
+    if (a.type === 'nested_task' || b.type === 'nested_task') {
+      if (a.type !== 'nested_task' || b.type !== 'nested_task') return false;
+      const x = a.summary;
+      const y = b.summary;
+      return (
+        x === y ||
+        (x.toolUseId === y.toolUseId &&
+          x.label === y.label &&
+          x.description === y.description &&
+          x.status === y.status &&
+          x.toolCallCount === y.toolCallCount)
+      );
+    }
+    return renderItemsEquivalent(a as RenderItem, b as RenderItem);
+  };
+  let prevKeyedChildren = new Map<string, { item: ChildRenderItem; key: string }>();
+  let keyedChildItems = $derived.by(() => {
+    const items = hiddenChildCount > 0 ? childRenderItems.slice(hiddenChildCount) : childRenderItems;
+    const keys = uniqueKeys(items, childItemKey);
+    const next = new Map<string, { item: ChildRenderItem; key: string }>();
+    const result = items.map((item, i) => {
+      const key = keys[i];
+      const prev = prevKeyedChildren.get(key);
+      const entry = prev && sameChildItem(prev.item, item) ? prev : { item, key };
+      next.set(key, entry);
+      return entry;
+    });
+    prevKeyedChildren = next;
+    return result;
+  });
+
   // Format duration nicely
   function formatDuration(ms: number): string {
     if (ms < 1000) return `${ms}ms`;
@@ -289,9 +293,19 @@
     </summary>
 
     <div class="task-body" bind:this={taskBodyEl} onscroll={handleTaskBodyScroll}>
-      {#if expanded && childRenderItems().length > 0}
+      {#if expanded && childRenderItems.length > 0}
         <div class="task-children">
-          {#each childRenderItems() as item, index (item.type === 'tool_group' ? `tool-group-${index}` : item.type === 'nested_task' ? `nested-${item.summary.toolUseId}` : item.message.timestamp)}
+          {#if hiddenChildCount > 0}
+            <button
+              class="load-earlier-btn"
+              onclick={() => (childWindow += CHILD_WINDOW_STEP)}
+              title="Older subagent activity is hidden to keep this block fast"
+            >
+              Show earlier ({hiddenChildCount} hidden)
+            </button>
+          {/if}
+          {#each keyedChildItems as keyed (keyed.key)}
+            {@const item = keyed.item}
             {#if item.type === 'tool_group'}
               <div class="task-tool-grid-wrapper">
                 <SdkToolGrid tools={item.tools} />
@@ -519,6 +533,24 @@
     margin-left: 0.75rem;
     min-width: 0;
     background: color-mix(in srgb, var(--color-model-opus) 2%, transparent);
+  }
+
+  .load-earlier-btn {
+    align-self: center;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 9999px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .load-earlier-btn:hover {
+    background: var(--color-surface-hover, var(--color-surface));
+    color: var(--color-text);
   }
 
   .task-footer {

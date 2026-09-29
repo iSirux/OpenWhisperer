@@ -241,15 +241,43 @@ function toSummary(pr: GitHubPrStatus): SessionPrSummary {
   return { number: pr.number, url: pr.url, state: pr.state, title: pr.title, isDraft: pr.is_draft };
 }
 
+/** Deep equality of two PR statuses. Small plain objects with a backend-fixed key order,
+ *  so a JSON comparison is exact and cheap. */
+function samePrStatus(a: GitHubPrStatus | null, b: GitHubPrStatus | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function createSessionPrsStore() {
-  const { subscribe, update } = writable<Map<string, SessionPrEntry>>(new Map());
+  const { subscribe, set } = writable<Map<string, SessionPrEntry>>(new Map());
+
+  /**
+   * Apply `changes` to every listed session's entry in ONE store write, skipping entries
+   * the changes wouldn't alter — the 15s poll mostly re-delivers the same PR, and every write
+   * wakes each PR badge/panel. An unchanged `pr` keeps its old object identity.
+   */
+  function patchMany(sessionIds: string[], changes: Partial<SessionPrEntry>) {
+    const map = get({ subscribe });
+    let next: Map<string, SessionPrEntry> | null = null;
+    const keys = Object.keys(changes) as (keyof SessionPrEntry)[];
+    for (const sessionId of sessionIds) {
+      const prev = map.get(sessionId);
+      const base = prev ?? EMPTY_ENTRY;
+      const changedKeys = keys.filter((key) =>
+        key === 'pr' ? !samePrStatus(base.pr, changes.pr ?? null) : base[key] !== changes[key]
+      );
+      if (prev && changedKeys.length === 0) continue;
+      const entry: SessionPrEntry = { ...base };
+      for (const key of changedKeys) Object.assign(entry, { [key]: changes[key] });
+      next ??= new Map(map);
+      next.set(sessionId, entry);
+    }
+    if (next) set(next);
+  }
 
   function patch(sessionId: string, changes: Partial<SessionPrEntry>) {
-    update((map) => {
-      const next = new Map(map);
-      next.set(sessionId, { ...(next.get(sessionId) ?? EMPTY_ENTRY), ...changes });
-      return next;
-    });
+    patchMany([sessionId], changes);
   }
 
   function entryFor(sessionId: string): SessionPrEntry {
@@ -280,7 +308,8 @@ function createSessionPrsStore() {
     // Mark every session in the scope as loading so a sibling's detection tick
     // doesn't kick off a second concurrent fetch of the same PR.
     const siblings = scopeSiblings(session);
-    for (const s of siblings) patch(s.id, { loading: true, error: null });
+    const siblingIds = siblings.map((s) => s.id);
+    patchMany(siblingIds, { loading: true, error: null });
     try {
       const pr = await invoke<GitHubPrStatus | null>('fetch_branch_pr', {
         repoPath: session.cwd,
@@ -292,14 +321,13 @@ function createSessionPrsStore() {
       // all of them so their badges/panels never diverge.
       const wasKnown = siblings.some((s) => entryFor(s.id).pr != null);
       const summary = pr ? toSummary(pr) : null;
-      for (const s of siblings) {
-        patch(s.id, { pr, loading: false, lastFetched: now });
-        sdkSessions.setSessionPr(s.id, summary);
-      }
+      patchMany(siblingIds, { pr, loading: false, lastFetched: now });
+      // No-op for an unchanged summary (setSessionPr compares before writing).
+      for (const s of siblings) sdkSessions.setSessionPr(s.id, summary);
       maybeAutoOpen(session, pr, wasKnown);
     } catch (e) {
       // Keep siblings' last good PR; only the initiating session records the error.
-      for (const s of siblings) patch(s.id, { loading: false });
+      patchMany(siblingIds, { loading: false });
       patch(session.id, { error: String(e), lastFetched: Date.now() });
     }
   }

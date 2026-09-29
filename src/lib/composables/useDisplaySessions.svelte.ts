@@ -7,6 +7,7 @@ import type { DisplaySession } from '$lib/types/session';
 import type { SequenceExecution, ExecutionStatus } from '$lib/types/sequence';
 import { getStatusSortOrder, isFinishedStatus } from '$lib/utils/sessionStatus';
 import { getStatusString } from '$lib/stores/sequenceExecutions';
+import { scanTranscript, scanTranscriptFull, pruneTranscriptScans } from './transcriptScan';
 
 // Cache for git branches to avoid repeated calls
 const branchCache = new Map<string, string>();
@@ -36,20 +37,10 @@ async function getGitBranch(repoPath: string): Promise<string | undefined> {
  * subagent_start markers, matched to stops by agentId (subagents run in
  * parallel, so the most recent start is not necessarily the one that stopped).
  * Reset at each turn boundary (done/stopped) so stale markers from a crashed
- * or restored turn don't linger.
+ * or restored turn don't linger. Incremental per session (see transcriptScan).
  */
-function getLiveSubagentTypes(messages: SdkSession['messages']): string[] {
-  const live = new Map<string, string>(); // agentId -> agentType
-  for (const msg of messages) {
-    if (msg.type === 'done' || msg.type === 'stopped') {
-      live.clear();
-    } else if (msg.type === 'subagent_start') {
-      live.set(msg.agentId || `#${live.size}`, msg.agentType || 'Agent');
-    } else if (msg.type === 'subagent_stop') {
-      if (msg.agentId) live.delete(msg.agentId);
-    }
-  }
-  return [...live.values()];
+function getLiveSubagentTypes(session: SdkSession): string[] {
+  return scanTranscript(session.id, session.messages).liveSubagentTypes;
 }
 
 /**
@@ -145,7 +136,7 @@ export function getSdkSmartStatus(session: SdkSession): {
     // background tasks (task_started events — these arrive in-stream, so they
     // can see background agents before/without the hook events). Use whichever
     // sees more; max avoids double counting agents visible on both.
-    const liveTypes = getLiveSubagentTypes(messages);
+    const liveTypes = getLiveSubagentTypes(session);
     const liveAgentTasks = (session.liveBackgroundTasks ?? []).filter(t => t.kind === 'agent').length;
     const liveCount = Math.max(liveTypes.length, liveAgentTasks);
     if (liveCount > 0) {
@@ -205,7 +196,7 @@ export function getSdkSmartStatus(session: SdkSession): {
   }
 
   // Check if there are unfinished subagents
-  const unfinished = getLiveSubagentTypes(messages);
+  const unfinished = getLiveSubagentTypes(session);
   if (unfinished.length > 0) {
     return { status: 'subagent', detail: formatSubagentDetail(unfinished) };
   }
@@ -221,55 +212,12 @@ export function getSdkSmartStatus(session: SdkSession): {
  * task). We therefore accumulate across the whole session: every TaskCreate adds a
  * task (starting pending) and every TaskUpdate changes a task's status by id.
  * Falls back to the legacy TodoWrite snapshot for older/restored sessions.
+ * Full scan; the session list uses the incremental per-session fold in
+ * transcriptScan.ts, which implements the same rules.
  */
 export function getTodoProgress(messages: SdkSession['messages']):
   { completed: number; total: number } | undefined {
-  let hasTaskTools = false;
-  let created = 0;
-  // Latest status per task id (from TaskUpdate). Ids that never receive an
-  // update simply stay pending and only contribute to the total via `created`.
-  const statusById = new Map<string, string>();
-
-  for (const msg of messages) {
-    if (msg.type !== 'tool_start' || !msg.input) continue;
-    if (msg.tool === 'TaskCreate') {
-      hasTaskTools = true;
-      created++;
-    } else if (msg.tool === 'TaskUpdate') {
-      hasTaskTools = true;
-      const taskId = msg.input.taskId;
-      const status = msg.input.status;
-      if (typeof taskId === 'string' && typeof status === 'string') {
-        statusById.set(taskId, status);
-      }
-    }
-  }
-
-  if (hasTaskTools) {
-    let completed = 0;
-    let deleted = 0;
-    for (const status of statusById.values()) {
-      if (status === 'deleted') deleted++;
-      else if (status === 'completed') completed++;
-    }
-    const total = Math.max(0, created - deleted);
-    if (total === 0) return undefined;
-    return { completed: Math.min(completed, total), total };
-  }
-
-  // Legacy TodoWrite: a single message carries the full list snapshot. Scan
-  // backwards and stop at the first match (the most recent todo state).
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.type === 'tool_start' && msg.tool === 'TodoWrite' && msg.input) {
-      const todos = msg.input.todos as Array<{ status: string }> | undefined;
-      if (todos && Array.isArray(todos) && todos.length > 0) {
-        const completed = todos.filter(t => t.status === 'completed').length;
-        return { completed, total: todos.length };
-      }
-    }
-  }
-  return undefined;
+  return scanTranscriptFull(messages).todoProgress;
 }
 
 /**
@@ -283,6 +231,18 @@ export function getLatestTextMessage(messages: SdkSession['messages']): string |
     }
   }
   return undefined;
+}
+
+// Prompt / latest-message / label previews are line-clamped in the list, but the
+// full string would still be laid out (and put in a title attribute) on every
+// render — agent replies can run to many KB. Cap them in the transform.
+const MAX_PREVIEW_CHARS = 300;
+
+function capPreview(text: string): string;
+function capPreview(text: string | undefined): string | undefined;
+function capPreview(text: string | undefined): string | undefined {
+  if (!text || text.length <= MAX_PREVIEW_CHARS) return text;
+  return text.slice(0, MAX_PREVIEW_CHARS).trimEnd() + '…';
 }
 
 /**
@@ -313,7 +273,7 @@ function getSessionLabel(session: SdkSession): string | undefined {
   const aiName = session.aiMetadata?.name?.trim();
   if (aiName) return aiName;
 
-  const firstUserPrompt = session.messages.find((message) => message.type === 'user')?.content?.trim();
+  const firstUserPrompt = scanTranscript(session.id, session.messages).firstUserContent?.trim();
   if (firstUserPrompt) return firstUserPrompt;
 
   const draftPrompt = session.draftPrompt?.trim();
@@ -333,104 +293,37 @@ export function transformToDisplaySessions(
   sortOrder: SessionSortOrder,
   sequenceExecutions: SequenceExecution[] = []
 ): DisplaySession[] {
-  const sdkLabelById = new Map(
-    sdkSessionsList.map((session) => [session.id, getSessionLabel(session)])
-  );
+  // Fork parents' labels, resolved lazily (only forked sessions need one).
+  let sessionById: Map<string, SdkSession> | undefined;
+  const parentLabelOf = (s: SdkSession): string | undefined => {
+    if (!s.forkedFromSessionId) return undefined;
+    if (s.forkedFromSessionLabel) return capPreview(s.forkedFromSessionLabel);
+    sessionById ??= new Map(sdkSessionsList.map((session) => [session.id, session]));
+    const parent = sessionById.get(s.forkedFromSessionId);
+    return parent ? capPreview(getSessionLabel(parent)) : undefined;
+  };
 
-  // Build base sessions
+  // Build base sessions (memoized per session object — see buildSdkDisplaySession)
   const baseSessions: DisplaySession[] = [
     ...sdkSessionsList.map((s) => {
-      const smartStatus = getSdkSmartStatus(s);
-      const finished = isFinishedStatus(smartStatus.status);
-      const todoProgress = getTodoProgress(s.messages);
-      const showBranch = smartStatus.status !== 'setup';
-      return {
-        id: s.id,
-        type: 'sdk' as const,
-        status: smartStatus.status,
-        statusDetail: smartStatus.detail,
-        prompt:
-          s.messages.find((m) => m.type === 'user')?.content ||
-          s.preparedPrompt ||
-          s.pendingPrompt ||
-          s.pendingRepoSelection?.transcript ||
-          s.pendingTranscription?.transcript ||
-          '',
-        // Always use the active session cwd for branch lookup/display.
-        // repoId is still carried separately for stable repo metadata (icon/name).
-        repoPath: s.cwd,
-        repoId: s.repoId,
-        // Seed branch from session metadata (e.g. worktree branch set during setup)
-        // so it displays immediately before the async git fetch fills it in.
-        branch: showBranch ? (s.currentBranch || undefined) : undefined,
-        // A setup session's cwd stays on the main checkout until launch; carry the
-        // picked worktree so the grouped sidebar can file the draft under it.
-        setupWorktreePath:
-          !showBranch && s.setupWorktreeMode === 'existing' ? s.setupWorktreePath : undefined,
-        model: s.model,
-        createdAt: Math.floor(s.createdAt / 1000),
-        lastActivityAt: Math.floor(s.lastActivityAt / 1000),
-        startedAt: s.startedAt ? Math.floor(s.startedAt / 1000) : undefined,
-        accumulatedDurationMs: s.accumulatedDurationMs || 0,
-        currentWorkStartedAt: s.currentWorkStartedAt,
-        isFinished: finished,
-        unread: s.unread,
-        pinned: s.pinned,
-        pinnedAt: s.pinnedAt,
-        latestMessage: getLatestTextMessage(s.messages),
-        aiMetadata: s.aiMetadata,
-        pendingRepoSelection: s.pendingRepoSelection,
-        pendingPlanApproval: !!s.pendingPlanApproval,
-        askUserQuestion: !!(s.askUserQuestion?.questions?.length),
-        provider: s.provider,
-        accountId: s.accountId,
-        todoProgress,
-        forkInfo: s.forkedFromSessionId
-          ? {
-              parentSessionId: s.forkedFromSessionId,
-              parentLabel: s.forkedFromSessionLabel || sdkLabelById.get(s.forkedFromSessionId),
-              inheritedMessageCount: s.forkedMessageCount ?? 0,
-            }
-          : undefined,
-        notionCard: s.notionCard,
-        githubIssue: s.githubIssue,
-        pr: s.pr ?? undefined,
-        validation: s.validation ?? undefined,
-        pileItem: s.pileItem,
-        sequenceNode: s.sequenceNode,
-        spareTokens: s.spareTokens,
-        scheduleTag: s.scheduleTag,
-        queueInfo: s.queueInfo,
-        parkedTurns: s.parkedTurns,
-      };
+      const parentLabel = parentLabelOf(s);
+      const cached = sdkDisplayCache.get(s);
+      if (cached && cached.parentLabel === parentLabel) return cached.display;
+      const display = buildSdkDisplaySession(s, parentLabel);
+      sdkDisplayCache.set(s, { display, parentLabel });
+      return display;
     }),
     ...sequenceExecutions.map((exec) => {
-      const displayStatus = mapExecutionStatus(exec.status);
-      return {
-        id: exec.id,
-        type: 'sequence' as const,
-        status: displayStatus,
-        statusDetail: exec.total_nodes > 0
-          ? `${exec.completed_node_ids.length}/${exec.total_nodes}`
-          : undefined,
-        prompt: exec.sequence_name,
-        repoPath: '',
-        createdAt: Math.floor(new Date(exec.started_at).getTime() / 1000),
-        lastActivityAt: Math.floor(new Date(exec.started_at).getTime() / 1000),
-        accumulatedDurationMs: exec.completed_at
-          ? new Date(exec.completed_at).getTime() - new Date(exec.started_at).getTime()
-          : 0,
-        currentWorkStartedAt: !exec.completed_at
-          ? new Date(exec.started_at).getTime()
-          : undefined,
-        isFinished: isFinishedStatus(displayStatus),
-        sequenceStatus: exec.status,
-        sequenceProgress: exec.total_nodes > 0
-          ? { completed: exec.completed_node_ids.length, total: exec.total_nodes }
-          : undefined,
-      };
+      let display = sequenceDisplayCache.get(exec);
+      if (!display) {
+        display = buildSequenceDisplaySession(exec);
+        sequenceDisplayCache.set(exec, display);
+      }
+      return display;
     })
   ];
+
+  pruneTranscriptScans(new Set(sdkSessionsList.map((s) => s.id)));
 
   // Sort sessions based on user preference
   return baseSessions.sort((a, b) => {
@@ -450,6 +343,111 @@ export function transformToDisplaySessions(
     // Chronological: most recently active first
     return b.lastActivityAt - a.lastActivityAt;
   });
+}
+
+// The store never mutates sessions in place (updates rebuild the changed session
+// object), so a session object seen before maps to the same DisplaySession — the
+// list re-renders only the rows whose session actually changed. The cached
+// objects are shared: callers must not mutate them (copy instead).
+const sdkDisplayCache = new WeakMap<
+  SdkSession,
+  { display: DisplaySession; parentLabel: string | undefined }
+>();
+const sequenceDisplayCache = new WeakMap<SequenceExecution, DisplaySession>();
+
+function buildSdkDisplaySession(s: SdkSession, parentLabel: string | undefined): DisplaySession {
+  const smartStatus = getSdkSmartStatus(s);
+  const finished = isFinishedStatus(smartStatus.status);
+  const scan = scanTranscript(s.id, s.messages);
+  const todoProgress = scan.todoProgress;
+  const showBranch = smartStatus.status !== 'setup';
+  return {
+    id: s.id,
+    type: 'sdk' as const,
+    status: smartStatus.status,
+    statusDetail: smartStatus.detail,
+    prompt: capPreview(
+      scan.firstUserContent ||
+      s.preparedPrompt ||
+      s.pendingPrompt ||
+      s.pendingRepoSelection?.transcript ||
+      s.pendingTranscription?.transcript ||
+      ''
+    ),
+    // Always use the active session cwd for branch lookup/display.
+    // repoId is still carried separately for stable repo metadata (icon/name).
+    repoPath: s.cwd,
+    repoId: s.repoId,
+    // Seed branch from session metadata (e.g. worktree branch set during setup)
+    // so it displays immediately before the async git fetch fills it in.
+    branch: showBranch ? (s.currentBranch || undefined) : undefined,
+    // A setup session's cwd stays on the main checkout until launch; carry the
+    // picked worktree so the grouped sidebar can file the draft under it.
+    setupWorktreePath:
+      !showBranch && s.setupWorktreeMode === 'existing' ? s.setupWorktreePath : undefined,
+    model: s.model,
+    createdAt: Math.floor(s.createdAt / 1000),
+    lastActivityAt: Math.floor(s.lastActivityAt / 1000),
+    startedAt: s.startedAt ? Math.floor(s.startedAt / 1000) : undefined,
+    accumulatedDurationMs: s.accumulatedDurationMs || 0,
+    currentWorkStartedAt: s.currentWorkStartedAt,
+    isFinished: finished,
+    unread: s.unread,
+    pinned: s.pinned,
+    pinnedAt: s.pinnedAt,
+    latestMessage: capPreview(scan.latestText),
+    aiMetadata: s.aiMetadata,
+    pendingRepoSelection: s.pendingRepoSelection,
+    pendingPlanApproval: !!s.pendingPlanApproval,
+    askUserQuestion: !!(s.askUserQuestion?.questions?.length),
+    provider: s.provider,
+    accountId: s.accountId,
+    todoProgress,
+    forkInfo: s.forkedFromSessionId
+      ? {
+          parentSessionId: s.forkedFromSessionId,
+          parentLabel,
+          inheritedMessageCount: s.forkedMessageCount ?? 0,
+        }
+      : undefined,
+    notionCard: s.notionCard,
+    githubIssue: s.githubIssue,
+    pr: s.pr ?? undefined,
+    validation: s.validation ?? undefined,
+    pileItem: s.pileItem,
+    sequenceNode: s.sequenceNode,
+    spareTokens: s.spareTokens,
+    scheduleTag: s.scheduleTag,
+    queueInfo: s.queueInfo,
+    parkedTurns: s.parkedTurns,
+  };
+}
+
+function buildSequenceDisplaySession(exec: SequenceExecution): DisplaySession {
+  const displayStatus = mapExecutionStatus(exec.status);
+  return {
+    id: exec.id,
+    type: 'sequence' as const,
+    status: displayStatus,
+    statusDetail: exec.total_nodes > 0
+      ? `${exec.completed_node_ids.length}/${exec.total_nodes}`
+      : undefined,
+    prompt: exec.sequence_name,
+    repoPath: '',
+    createdAt: Math.floor(new Date(exec.started_at).getTime() / 1000),
+    lastActivityAt: Math.floor(new Date(exec.started_at).getTime() / 1000),
+    accumulatedDurationMs: exec.completed_at
+      ? new Date(exec.completed_at).getTime() - new Date(exec.started_at).getTime()
+      : 0,
+    currentWorkStartedAt: !exec.completed_at
+      ? new Date(exec.started_at).getTime()
+      : undefined,
+    isFinished: isFinishedStatus(displayStatus),
+    sequenceStatus: exec.status,
+    sequenceProgress: exec.total_nodes > 0
+      ? { completed: exec.completed_node_ids.length, total: exec.total_nodes }
+      : undefined,
+  };
 }
 
 /**

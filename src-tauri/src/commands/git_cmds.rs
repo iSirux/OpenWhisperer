@@ -17,9 +17,10 @@ pub fn list_git_worktrees(repo_path: String) -> Result<Vec<WorktreeInfo>, String
 
 /// Count uncommitted changed files in a repo/worktree (working-tree changes,
 /// like VS Code). Returns 0 when the path is not a git repo or has no changes.
+/// Badge poll: a count taken in the last few seconds is reused.
 #[tauri::command]
 pub async fn get_git_changed_count(repo_path: String) -> Result<usize, String> {
-    tokio::task::spawn_blocking(move || GitManager::count_changed_files(&repo_path))
+    tokio::task::spawn_blocking(move || GitManager::count_changed_files_cached(&repo_path))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }

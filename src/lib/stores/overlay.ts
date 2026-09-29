@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { primaryMonitor } from '@tauri-apps/api/window';
@@ -209,6 +209,10 @@ function createOverlayStore() {
     },
 
     setActivityInfo(activeSessions: number, activeSequences: number) {
+      // Called on every sessions-store write (streaming events); the counts rarely move, and
+      // each call would otherwise be a store fan-out plus a cross-window IPC emit.
+      const current = get({ subscribe }).activityInfo;
+      if (current.activeSessions === activeSessions && current.activeSequences === activeSequences) return;
       update((s) => ({ ...s, activityInfo: { activeSessions, activeSequences } }));
       // Emit event to sync with overlay window
       emit('overlay-activity-info', { activeSessions, activeSequences });

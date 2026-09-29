@@ -360,14 +360,6 @@ const persistedCache = new WeakMap<SdkSession, PersistedSdkSession>();
  * Uses auto-serialization - all fields are preserved except those in NON_PERSISTABLE_FIELDS.
  */
 export function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
-  // Calculate final accumulated duration including current work period.
-  // Recomputed on every call (never cached) — it's clock-dependent, so a live
-  // session's duration must not be frozen at whenever we first serialized it.
-  let accumulatedDurationMs = session.accumulatedDurationMs || 0;
-  if (session.currentWorkStartedAt) {
-    accumulatedDurationMs += Date.now() - session.currentWorkStartedAt;
-  }
-
   // Use auto-serialization
   let persisted = persistedCache.get(session);
   if (!persisted) {
@@ -378,7 +370,79 @@ export function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession 
   // Override accumulated duration with calculated value
   return {
     ...persisted,
-    accumulatedDurationMs,
+    accumulatedDurationMs: currentAccumulatedDurationMs(session),
+  };
+}
+
+/**
+ * Final accumulated duration including the current work period. Recomputed on
+ * every call (never cached) — it's clock-dependent, so a live session's duration
+ * must not be frozen at whenever we first serialized it.
+ */
+function currentAccumulatedDurationMs(session: SdkSession): number {
+  let accumulatedDurationMs = session.accumulatedDurationMs || 0;
+  if (session.currentWorkStartedAt) {
+    accumulatedDurationMs += Date.now() - session.currentWorkStartedAt;
+  }
+  return accumulatedDurationMs;
+}
+
+/**
+ * Serialize a slice of a session's messages starting at `startIndex`, producing
+ * exactly the elements `serializeForPersistence(session, 'SdkSession')` would for
+ * those positions (same type name, same transformer paths) — so a delta carries
+ * messages in the same shape a full save would.
+ */
+function serializeMessagesForPersistence(messages: SdkMessage[], startIndex: number): PersistedSdkMessage[] {
+  if (!hasFieldTransformers && PASSTHROUGH_TYPES.has('SdkMessage')) {
+    return messages as unknown as PersistedSdkMessage[];
+  }
+  return messages.map((msg, i) =>
+    serializeForPersistence(msg, 'SdkMessage', hasFieldTransformers ? `messages[${startIndex + i}]` : '')
+  ) as unknown as PersistedSdkMessage[];
+}
+
+/**
+ * Length of the leading run of entries two message arrays share *by reference*.
+ * The store is immutable, so an unchanged message keeps its object identity, and
+ * any edit — a message replaced in place (thinking-end), trailing ones sliced off
+ * ('done' markers), a truncated/forked history — shows up as the first index
+ * where the references differ. Scanning is a pointer compare per message
+ * (microseconds even for ~10k), and it has to be a full scan: an earlier entry
+ * can be replaced while every later one stays identical.
+ */
+export function commonPrefixLength<T>(prev: readonly T[], next: readonly T[]): number {
+  if (prev === next) return prev.length;
+  const max = Math.min(prev.length, next.length);
+  let i = 0;
+  while (i < max && prev[i] === next[i]) i++;
+  return i;
+}
+
+/**
+ * Wire shape of a message delta (Rust `SdkSessionDelta`): the session's current
+ * non-message fields plus only the messages that changed since `base` — the
+ * snapshot last persisted — was written. The backend rebuilds the session from
+ * its copy of the base and refuses the delta (→ full resend) if that copy doesn't
+ * hold `baseLength` messages.
+ */
+interface PersistedSdkSessionDelta {
+  session: PersistedSdkSession;
+  baseLength: number;
+  keepPrefix: number;
+  appendMessages: PersistedSdkMessage[];
+}
+
+function sdkSessionToDelta(session: SdkSession, base: SdkSession): PersistedSdkSessionDelta {
+  const keepPrefix = commonPrefixLength(base.messages, session.messages);
+  // Everything but the messages is small; serialize it without walking them.
+  const { messages: _messages, ...rest } = session;
+  const shell = serializeForPersistence(rest as SdkSession, 'SdkSession');
+  return {
+    session: { ...shell, messages: [], accumulatedDurationMs: currentAccumulatedDurationMs(session) },
+    baseLength: base.messages.length,
+    keepPrefix,
+    appendMessages: serializeMessagesForPersistence(session.messages.slice(keepPrefix), keepPrefix),
   };
 }
 
@@ -588,6 +652,45 @@ function markPersisted(sessions: SdkSession[]): void {
 }
 
 /**
+ * Upsert `sessions` via `upsert_persisted_sdk_sessions` without shipping whole
+ * histories: a session we've persisted before goes as a message delta against
+ * that snapshot (`lastPersisted`), so a streaming 8k-message / ~18MB session costs
+ * a few new messages of JSON per save instead of all of it. Sessions never
+ * persisted go in full, as do any delta the backend refuses (it has no base for
+ * it, or its base has a different message count) — the same "tell us what you
+ * lack, we resend it" contract as the full save's missing ids. Throws if a save
+ * fails; whatever did land is marked persisted first.
+ */
+async function upsertSessions(sessions: SdkSession[], activeSdkSessionId: string | null): Promise<void> {
+  const full: PersistedSdkSession[] = [];
+  const deltas: PersistedSdkSessionDelta[] = [];
+  for (const s of sessions) {
+    const base = lastPersisted.get(s.id);
+    if (base) deltas.push(sdkSessionToDelta(s, base));
+    else full.push(sdkSessionToPersisted(s));
+  }
+
+  const result = await invoke<{ needsFullSdkSessionIds?: string[] }>('upsert_persisted_sdk_sessions', {
+    sessions: full,
+    deltas,
+    activeSdkSessionId,
+  });
+
+  const needsFull = new Set(result?.needsFullSdkSessionIds ?? []);
+  markPersisted(sessions.filter(s => !needsFull.has(s.id)));
+  if (needsFull.size === 0) return;
+
+  console.warn(`[sessionPersistence] Backend had no matching base for ${needsFull.size} session delta(s); resending in full`);
+  const resend = sessions.filter(s => needsFull.has(s.id));
+  for (const s of resend) lastPersisted.delete(s.id);
+  await invoke('upsert_persisted_sdk_sessions', {
+    sessions: resend.map(sdkSessionToPersisted),
+    activeSdkSessionId,
+  });
+  markPersisted(resend);
+}
+
+/**
  * Save current sessions to disk.
  * All session fields are automatically persisted except those in NON_PERSISTABLE_FIELDS.
  */
@@ -606,14 +709,31 @@ async function fullSave(allowResend: boolean): Promise<void> {
   const currentActiveSdkId = get(activeSdkSessionId);
 
   const persistableSdkSessions = currentSdkSessions.filter(isSdkSessionPersistable);
-  const changedSessions = persistableSdkSessions.filter(s => lastPersisted.get(s.id) !== s);
+  let changedSessions = persistableSdkSessions.filter(s => lastPersisted.get(s.id) !== s);
   const unchangedIds = persistableSdkSessions.filter(s => lastPersisted.get(s.id) === s).map(s => s.id);
+  const activeId = currentActiveSdkId && persistableSdkSessions.some(s => s.id === currentActiveSdkId)
+    ? currentActiveSdkId
+    : null;
+
+  // Changed sessions persisted before (typically the streaming ones) go through the
+  // cheap delta upsert first, then ride the bulk save as unchanged — otherwise every
+  // visibility-hidden / periodic save would re-serialize their whole history. If the
+  // upsert fails they simply stay in the full payload.
+  const deltaSessions = changedSessions.filter(s => lastPersisted.has(s.id));
+  if (deltaSessions.length > 0) {
+    try {
+      await upsertSessions(deltaSessions, activeId);
+      const upserted = new Set(deltaSessions.map(s => s.id));
+      changedSessions = changedSessions.filter(s => !upserted.has(s.id));
+      unchangedIds.push(...upserted);
+    } catch (error) {
+      console.error('[sessionPersistence] Delta upsert failed; sending those sessions in full:', error);
+    }
+  }
 
   const persistedData: PersistedSessions = {
     sdk_sessions: changedSessions.map(sdkSessionToPersisted),
-    active_sdk_session_id: currentActiveSdkId && persistableSdkSessions.some(s => s.id === currentActiveSdkId)
-      ? currentActiveSdkId
-      : null,
+    active_sdk_session_id: activeId,
     saved_at: Date.now(),
   };
 
@@ -709,7 +829,8 @@ async function fullSave(allowResend: boolean): Promise<void> {
  * Partial autosave used by the debounced saver during a live query: persists
  * only the given (dirty) SDK sessions via `upsert_persisted_sdk_sessions`, so a
  * streaming session doesn't re-serialize and rewrite every other session on
- * each tick. Stale-file cleanup and overflow are left to the full
+ * each tick — and, via message deltas (`upsertSessions`), doesn't re-serialize
+ * its own history either. Stale-file cleanup and overflow are left to the full
  * `saveSessionsToDisk` path (which still runs on structural changes,
  * the periodic timer, and visibility/unload).
  */
@@ -742,11 +863,7 @@ async function partialSave(dirtyIds: Set<string>): Promise<void> {
   }
 
   try {
-    await invoke('upsert_persisted_sdk_sessions', {
-      sessions: sessions.map(sdkSessionToPersisted),
-      activeSdkSessionId: activeId && allSdkSessions.some(s => s.id === activeId) ? activeId : null,
-    });
-    markPersisted(sessions);
+    await upsertSessions(sessions, activeId && allSdkSessions.some(s => s.id === activeId) ? activeId : null);
   } catch (error) {
     console.error('[sessionPersistence] Failed to partial-save sessions:', error);
   }

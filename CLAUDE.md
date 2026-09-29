@@ -397,6 +397,9 @@ The session persistence layer (`src/lib/stores/sessionPersistence.ts`) uses an *
 - **To add new persistable fields:** Just add them to the type definition - they'll be auto-persisted
 - **To exclude non-persistable fields:** Add them to `NON_PERSISTABLE_FIELDS`
 - **For fields needing transformation:** Add them to `FIELD_TRANSFORMERS`
+- **Delta autosave:** while a session streams, `upsert_persisted_sdk_sessions` receives only the messages after the common prefix (by reference) with the last-saved array; Rust rebases it on a small parsed-session cache (`SessionCache`) or the data file, and returns `needsFullSdkSessionIds` when the base doesn't match. On-disk format is unchanged.
+
+**Invariant: never mutate `SdkSession.messages` (or a message) in place** — always build a new array/object. The delta autosave, the sidebar's incremental transcript scan (`composables/transcriptScan.ts`), and SdkView's incremental render pipeline (`sdk/incrementalRenderPipeline.ts`) all detect changes by reference. Relatedly, sidecar event handlers write through `sdkSessions.queue()` (`stores/batchedWritable.ts`: one store write per frame; `get`/`subscribe`/`update`/`set` flush first), and components holding sessions use `$state.raw` so proxies don't break identity caches. Tool-result text is capped for display in the sidecar (`toolOutputCap.ts`); the agent still sees the full output.
 
 ## Smart Queue
 

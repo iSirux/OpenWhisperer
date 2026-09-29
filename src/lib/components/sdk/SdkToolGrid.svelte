@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SdkMessage } from "$lib/stores/sdkSessions";
   import { formatToolCallInput, getToolCallSummary } from "$lib/utils/toolCallFormatting";
+  import { messageRenderKey, uniqueKeys } from "./sdkViewMessageProcessing";
 
   let {
     tools,
@@ -8,8 +9,29 @@
     tools: SdkMessage[];
   } = $props();
 
-  // Track expanded tool for modal
-  let expandedTool = $state<SdkMessage | null>(null);
+  // Cards are keyed by toolUseId (collision-safe), not timestamp: a finishing
+  // tool becomes its merged tool_result with a different timestamp, and a
+  // timestamp key remounted the card (replaying its fade-in).
+  let keyedTools = $derived.by(() => {
+    const keys = uniqueKeys(tools, messageRenderKey);
+    return tools.map((msg, i) => ({ msg, key: keys[i] }));
+  });
+
+  // Track the expanded tool by key so the modal follows it from running to done.
+  let expandedKey = $state<string | null>(null);
+  let expandedTool = $derived(
+    expandedKey === null ? null : (keyedTools.find((t) => t.key === expandedKey)?.msg ?? null),
+  );
+  let modalOpen = $derived(expandedTool !== null);
+
+  // Escape-to-close. Registered only while this grid's modal is open: a
+  // transcript mounts 100+ grids, and an always-on <svelte:window onkeydown>
+  // per grid ran all of them on every keystroke.
+  $effect(() => {
+    if (!modalOpen) return;
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  });
 
   // SVG icons for tools (16x16 viewBox)
   function getToolSvgIcon(tool: string): string {
@@ -76,12 +98,12 @@
     return "";
   }
 
-  function openModal(tool: SdkMessage) {
-    expandedTool = tool;
+  function openModal(key: string) {
+    expandedKey = key;
   }
 
   function closeModal() {
-    expandedTool = null;
+    expandedKey = null;
   }
 
   function handleBackdropClick(e: MouseEvent) {
@@ -115,10 +137,8 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
 <div class="tool-grid">
-  {#each tools as msg (msg.timestamp)}
+  {#each keyedTools as { msg, key } (key)}
     {@const running = isRunning(msg)}
     {@const thinking = isThinking(msg)}
     {@const summary = getToolSummary(msg)}
@@ -129,7 +149,7 @@
       class:running
       class:completed={!running}
       class:thinking
-      onclick={() => openModal(msg)}
+      onclick={() => openModal(key)}
     >
       <div class="card-header">
         <div class="card-icon" class:icon-running={running} class:icon-completed={!running} class:icon-thinking={thinking}>

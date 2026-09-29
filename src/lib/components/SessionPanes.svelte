@@ -11,6 +11,7 @@
     MAX_PANES,
   } from "$lib/stores/panes";
   import { sdkSessions } from "$lib/stores/sdkSessions";
+  import { scanTranscript } from "$lib/composables/transcriptScan";
   import {
     getShortModelName,
     getModelBadgeBgColor,
@@ -55,9 +56,10 @@
     return $sdkSessions.find((s) => s.id === id) ?? null;
   }
 
-  function firstPromptOf(session: { messages: { type: string; content?: string }[] }) {
-    const m = session.messages.find((msg) => msg.type === "user");
-    return m?.content?.trim() || null;
+  // Shares the session list's incremental per-session scan (cache hit for the
+  // same messages array), so this isn't a transcript walk per store update.
+  function firstPromptOf(session: NonNullable<ReturnType<typeof sessionById>>) {
+    return scanTranscript(session.id, session.messages).firstUserContent?.trim() || null;
   }
 
   function paneTitle(session: ReturnType<typeof sessionById>): string {
@@ -146,6 +148,7 @@
       <Pane minSize={15} order={i} class="pane">
         {@const isFocused = pane.id === $paneLayout.focusedPaneId}
         {@const session = pane.sessionId ? sessionById(pane.sessionId) : null}
+        {@const title = multi ? paneTitle(session) : ""}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="pane-inner"
@@ -170,7 +173,7 @@
                     {/if}
                   </div>
                 {/if}
-                <span class="pane-title" title={paneTitle(session)}>{paneTitle(session)}</span>
+                <span class="pane-title" title={title}>{title}</span>
                 {#if session?.model}
                   <span
                     class="px-1.5 py-0.5 text-[10px] font-medium {getModelBadgeBgColor(session.model)} {getModelTextColor(session.model)} rounded flex-shrink-0"

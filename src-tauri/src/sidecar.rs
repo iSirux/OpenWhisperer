@@ -1,8 +1,10 @@
 use crate::config::McpServerConfig;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Manager};
@@ -890,6 +892,170 @@ impl InboundMessage {
             InboundMessage::ParallelSessionNotification { .. } => "sdk-parallel-notification",
         }
     }
+
+    /// The session / request id the message belongs to (`None` only for Ready).
+    fn session_id(&self) -> Option<&str> {
+        use InboundMessage as M;
+        match self {
+            M::Ready => None,
+            M::Created { id }
+            | M::Text { id, .. }
+            | M::ToolStart { id, .. }
+            | M::ToolResult { id, .. }
+            | M::ThinkingStart { id, .. }
+            | M::ThinkingEnd { id, .. }
+            | M::Done { id }
+            | M::Usage { id, .. }
+            | M::ProgressiveUsage { id, .. }
+            | M::ModelUpdated { id, .. }
+            | M::EffortUpdated { id, .. }
+            | M::Closed { id }
+            | M::Error { id, .. }
+            | M::RateLimit { id, .. }
+            | M::Debug { id, .. }
+            | M::SubagentStart { id, .. }
+            | M::SubagentStop { id, .. }
+            | M::SubagentModel { id, .. }
+            | M::TaskStarted { id, .. }
+            | M::TaskCompleted { id, .. }
+            | M::AskUserQuestions { id, .. }
+            | M::PlanApprovalRequest { id, .. }
+            | M::CodexApprovalRequest { id, .. }
+            | M::RepoDescriptionResult { id, .. }
+            | M::RepoDescriptionError { id, .. }
+            | M::ValidationAgentResult { id, .. }
+            | M::ValidationAgentError { id, .. }
+            | M::ModelsListed { id, .. }
+            | M::ModelsListError { id, .. }
+            | M::ValidationAgentProgress { id, .. }
+            | M::SdkSessionId { id, .. }
+            | M::ParallelSessionNotification { id, .. } => Some(id),
+        }
+    }
+
+    /// A tool result carrying images that `image_shrink` would re-encode.
+    fn wants_image_shrink(&self) -> bool {
+        match self {
+            InboundMessage::ToolResult {
+                images: Some(images),
+                parent_tool_use_id,
+                ..
+            } => crate::image_shrink::json_images_want_shrink(
+                images,
+                is_subagent_result(parent_tool_use_id),
+            ),
+            _ => false,
+        }
+    }
+
+    /// Display-size the agent's image results before they reach the store —
+    /// they're persisted with the session, and full-res reads bloat it.
+    fn shrink_images(&mut self) {
+        if let InboundMessage::ToolResult {
+            images: Some(images),
+            parent_tool_use_id,
+            ..
+        } = self
+        {
+            let is_subagent = is_subagent_result(parent_tool_use_id);
+            crate::image_shrink::shrink_json_images(images, is_subagent);
+        }
+    }
+}
+
+fn is_subagent_result(parent_tool_use_id: &Option<String>) -> bool {
+    parent_tool_use_id.as_deref().is_some_and(|p| !p.is_empty())
+}
+
+type EventHandler = Arc<dyn Fn(InboundMessage) + Send + Sync>;
+
+/// Routes sidecar messages from the single stdout reader thread — which carries
+/// every session's events — to the handler, moving image shrinking (a decode +
+/// re-encode, easily 100+ ms per screenshot) onto a worker so one session's
+/// image never stalls the others. Order within a session is preserved: while a
+/// session has a shrink in flight, its later events are held and replayed by
+/// the same worker after the tool result. Messages without images for sessions
+/// with nothing in flight take the inline fast path.
+#[derive(Clone)]
+struct EventDispatcher {
+    handler: EventHandler,
+    /// Sessions with a shrink in flight → their later events, in arrival order.
+    held: Arc<Mutex<HashMap<String, VecDeque<InboundMessage>>>>,
+    /// `held.len()`, readable without the lock so the common case skips it.
+    /// Only the reader thread inserts, so a zero seen there is authoritative.
+    busy: Arc<AtomicUsize>,
+}
+
+impl EventDispatcher {
+    fn new(handler: impl Fn(InboundMessage) + Send + Sync + 'static) -> Self {
+        Self {
+            handler: Arc::new(handler),
+            held: Arc::new(Mutex::new(HashMap::new())),
+            busy: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn dispatch(&self, msg: InboundMessage) {
+        let shrink = msg.wants_image_shrink();
+        if !shrink && self.busy.load(Ordering::Acquire) == 0 {
+            return (self.handler)(msg);
+        }
+        let Some(id) = msg.session_id().map(str::to_owned) else {
+            return (self.handler)(msg);
+        };
+        {
+            let mut held = self.held.lock();
+            if let Some(queue) = held.get_mut(&id) {
+                queue.push_back(msg);
+                return;
+            }
+            if !shrink {
+                drop(held);
+                return (self.handler)(msg);
+            }
+            held.insert(id.clone(), VecDeque::new());
+            self.busy.fetch_add(1, Ordering::AcqRel);
+        }
+        let this = self.clone();
+        let worker_id = id.clone();
+        let spawned = thread::Builder::new()
+            .name("sidecar-image-shrink".into())
+            .spawn(move || this.drain(worker_id, msg));
+        if let Err(e) = spawned {
+            // Out of threads: the tool result went down with the closure, but the
+            // session must not stay held — release it and deliver what queued up.
+            log::error!("[sidecar] Failed to spawn image-shrink worker for {}: {}", id, e);
+            let queued = self.held.lock().remove(&id).unwrap_or_default();
+            self.busy.fetch_sub(1, Ordering::AcqRel);
+            queued.into_iter().for_each(|m| (self.handler)(m));
+        }
+    }
+
+    /// Shrink + deliver `msg`, then replay whatever queued up behind it for the
+    /// session until the queue is empty, and release the session.
+    fn drain(&self, id: String, mut msg: InboundMessage) {
+        loop {
+            // A panic must not leave the session held forever (and the old
+            // reader-thread shrink would have taken every session down with it).
+            let handler = &self.handler;
+            let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                msg.shrink_images();
+                handler(msg);
+            }));
+            if delivered.is_err() {
+                log::error!("[sidecar] Dropped an event for {} after a panic while delivering it", id);
+            }
+            let mut held = self.held.lock();
+            match held.get_mut(&id).and_then(VecDeque::pop_front) {
+                Some(next) => msg = next,
+                None => {
+                    held.remove(&id);
+                    self.busy.fetch_sub(1, Ordering::AcqRel);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 pub struct SidecarManager {
@@ -1019,6 +1185,15 @@ impl SidecarManager {
             }
         }
 
+        // Dev mode turns on the sidecar's per-message stream tracing (off by
+        // default — it's most of the backend log volume).
+        let dev_mode = app
+            .try_state::<Mutex<crate::config::AppConfig>>()
+            .is_some_and(|c| c.lock().system.dev_mode);
+        if dev_mode {
+            cmd.env("OPENWHISPERER_SIDECAR_VERBOSE", "1");
+        }
+
         // On Windows, prevent the CMD window from appearing
         #[cfg(windows)]
         {
@@ -1078,12 +1253,15 @@ impl SidecarManager {
         let stdin_ref = Arc::clone(&self.stdin);
         let process_ref = Arc::clone(&self.process);
         thread::spawn(move || {
+            let app_for_events = app_clone.clone();
+            let dispatcher =
+                EventDispatcher::new(move |msg| Self::handle_message(&app_for_events, msg));
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 if let Ok(line) = line {
                     match serde_json::from_str::<InboundMessage>(&line) {
                         Ok(msg) => {
-                            Self::handle_message(&app_clone, msg);
+                            dispatcher.dispatch(msg);
                         }
                         Err(e) => {
                             log::error!("[sidecar] Failed to parse message: {} - {}", e, line);
@@ -1164,14 +1342,9 @@ impl SidecarManager {
                 tool_use_id,
                 parent_tool_use_id,
                 turn_uuid,
-                mut images,
+                images,
             } => {
-                // Display-size the agent's image results before they reach the store —
-                // they're persisted with the session, and full-res reads bloat it.
-                if let Some(images) = images.as_mut() {
-                    let is_subagent = parent_tool_use_id.as_deref().is_some_and(|p| !p.is_empty());
-                    crate::image_shrink::shrink_json_images(images, is_subagent);
-                }
+                // Images were already display-sized by `EventDispatcher` (off this thread).
                 Self::emit(
                     app,
                     suffix,
@@ -1658,5 +1831,87 @@ impl SidecarManager {
 impl Drop for SidecarManager {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn text(id: &str, content: &str) -> InboundMessage {
+        InboundMessage::Text {
+            id: id.into(),
+            content: content.into(),
+            parent_tool_use_id: None,
+            turn_uuid: None,
+        }
+    }
+
+    fn big_image_result(id: &str) -> InboundMessage {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(2000, 1000, |x, y| {
+            let v = (x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503)) as u8;
+            image::Rgb([v, v.wrapping_mul(3), v.wrapping_add(y as u8)])
+        }));
+        let mut buf = Vec::new();
+        img.write_with_encoder(image::codecs::png::PngEncoder::new(&mut buf))
+            .unwrap();
+        InboundMessage::ToolResult {
+            id: id.into(),
+            tool: "Read".into(),
+            output: String::new(),
+            tool_use_id: "toolu_1".into(),
+            parent_tool_use_id: None,
+            turn_uuid: None,
+            images: Some(vec![serde_json::json!({
+                "mediaType": "image/png",
+                "base64Data": STANDARD.encode(&buf),
+            })]),
+        }
+    }
+
+    /// Label for an event: "<id>:<text>" or "<id>:tool_result:<width>".
+    fn label(msg: &InboundMessage) -> String {
+        match msg {
+            InboundMessage::Text { id, content, .. } => format!("{}:{}", id, content),
+            InboundMessage::ToolResult { id, images, .. } => {
+                let width = &images.as_ref().unwrap()[0]["width"];
+                format!("{}:tool_result:{}", id, width)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn image_shrink_runs_off_thread_and_keeps_session_order() {
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let dispatcher = EventDispatcher::new(move |msg| {
+            let _ = tx.lock().send(label(&msg));
+        });
+
+        dispatcher.dispatch(text("a", "before"));
+        dispatcher.dispatch(big_image_result("a"));
+        dispatcher.dispatch(text("a", "after"));
+        dispatcher.dispatch(text("b", "other"));
+
+        let got: Vec<String> = (0..4)
+            .map(|_| rx.recv_timeout(Duration::from_secs(20)).unwrap())
+            .collect();
+        let a: Vec<&str> = got.iter().filter(|l| l.starts_with("a:")).map(String::as_str).collect();
+        assert_eq!(a, ["a:before", "a:tool_result:800", "a:after"]);
+        // The other session isn't held behind a's shrink.
+        assert!(got.iter().position(|l| l == "b:other") < got.iter().position(|l| l == "a:after"));
+        // Once drained, the session is released back to the fast path.
+        for _ in 0..200 {
+            if dispatcher.busy.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(dispatcher.busy.load(Ordering::Acquire), 0);
+        assert!(dispatcher.held.lock().is_empty());
     }
 }

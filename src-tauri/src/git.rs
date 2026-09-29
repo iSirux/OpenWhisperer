@@ -1,7 +1,74 @@
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use crate::proc::{run_command_async, run_git, run_shell};
+
+/// How long a changed-file count is reused (see `count_changed_files_cached`).
+const CHANGED_COUNT_TTL: Duration = Duration::from_secs(5);
+/// Concurrent `git status` runs when summing a repo's worktrees.
+const MAX_PARALLEL_STATUS: usize = 4;
+
+static CHANGED_COUNTS: LazyLock<CountCache> = LazyLock::new(|| CountCache::new(CHANGED_COUNT_TTL));
+
+/// Short-lived per-path cache with single-flight: concurrent callers for the
+/// same path wait for one computation instead of each spawning git.
+struct CountCache {
+    ttl: Duration,
+    slots: Mutex<HashMap<String, Arc<Mutex<Option<(Instant, usize)>>>>>,
+}
+
+impl CountCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            slots: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Worktree paths arrive both as git prints them (`F:/Repos/x`) and as the
+    /// frontend stores them (`F:\Repos\x`); key them the same.
+    fn key(path: &str) -> String {
+        let key = path.replace('\\', "/").trim_end_matches('/').to_string();
+        if cfg!(windows) {
+            key.to_lowercase()
+        } else {
+            key
+        }
+    }
+
+    fn get_or_compute(
+        &self,
+        path: &str,
+        compute: impl FnOnce() -> Result<usize, String>,
+    ) -> Result<usize, String> {
+        let slot = {
+            let mut slots = self.slots.lock();
+            if slots.len() > 512 {
+                // Drop long-idle paths (removed worktrees) so the map stays bounded.
+                slots.retain(|_, s| {
+                    s.try_lock()
+                        .is_none_or(|v| v.is_some_and(|(at, _)| at.elapsed() < self.ttl * 12))
+                });
+            }
+            slots.entry(Self::key(path)).or_default().clone()
+        };
+        let mut cached = slot.lock();
+        if let Some((at, count)) = *cached {
+            if at.elapsed() < self.ttl {
+                return Ok(count);
+            }
+        }
+        // Errors aren't cached: the next poll retries.
+        let count = compute()?;
+        *cached = Some((Instant::now(), count));
+        Ok(count)
+    }
+}
 
 /// Errors from git operations. Kept internal; converted to `String` at the
 /// command boundary (all public `GitManager` methods return `Result<_, String>`
@@ -89,8 +156,18 @@ impl GitManager {
         Ok(status.lines().filter(|l| !l.trim().is_empty()).count())
     }
 
-    /// Sum [`count_changed_files`] across the main worktree and every linked
-    /// worktree of `repo_path`. Each worktree has its own working tree, so their
+    /// [`count_changed_files`] for the badge polls, reusing a count taken in the
+    /// last [`CHANGED_COUNT_TTL`]. The repository rail (per repo, all worktrees)
+    /// and the session list (per worktree) both poll every 15 s and overlap on the
+    /// same paths; with a dozen sessions that was a `git status` per path per
+    /// poller. Pre-merge checks use the uncached count.
+    pub fn count_changed_files_cached(repo_path: &str) -> Result<usize, String> {
+        CHANGED_COUNTS.get_or_compute(repo_path, || Self::count_changed_files(repo_path))
+    }
+
+    /// Sum [`count_changed_files_cached`] across the main worktree and every
+    /// linked worktree of `repo_path`, counting up to [`MAX_PARALLEL_STATUS`]
+    /// worktrees at once. Each worktree has its own working tree, so their
     /// changes are disjoint and simply added. A worktree whose count can't be
     /// read (e.g. removed on disk) contributes 0 rather than failing the whole
     /// total.
@@ -101,11 +178,19 @@ impl GitManager {
             _ => vec![repo_path.to_string()],
         };
 
-        let mut total = 0usize;
-        for path in worktrees {
-            total += Self::count_changed_files(&path).unwrap_or(0);
-        }
-        Ok(total)
+        let next = AtomicUsize::new(0);
+        let total = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..worktrees.len().min(MAX_PARALLEL_STATUS) {
+                scope.spawn(|| {
+                    while let Some(path) = worktrees.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        let n = Self::count_changed_files_cached(path).unwrap_or(0);
+                        total.fetch_add(n, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        Ok(total.into_inner())
     }
 
     /// Count commits on `branch` that are not on the remote. Falls back to
@@ -750,5 +835,53 @@ fn force_remove_dir_all(path: &Path) -> std::io::Result<()> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(last_err.unwrap_or(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn count_cache_reuses_fresh_values_and_retries_errors() {
+        let cache = CountCache::new(Duration::from_secs(60));
+        let calls = AtomicUsize::new(0);
+        let count = |n: usize| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(n)
+        };
+        assert_eq!(cache.get_or_compute(r"C:\Repo\wt", || count(3)), Ok(3));
+        // Same path in git's spelling hits the cache.
+        assert_eq!(cache.get_or_compute("C:/Repo/wt/", || count(9)), Ok(3));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        assert!(cache.get_or_compute("/other", || Err("boom".into())).is_err());
+        assert_eq!(cache.get_or_compute("/other", || count(5)), Ok(5));
+    }
+
+    #[test]
+    fn count_cache_expires() {
+        let cache = CountCache::new(Duration::ZERO);
+        assert_eq!(cache.get_or_compute("/r", || Ok(1)), Ok(1));
+        assert_eq!(cache.get_or_compute("/r", || Ok(2)), Ok(2));
+    }
+
+    #[test]
+    fn count_cache_is_single_flight() {
+        let cache = CountCache::new(Duration::from_secs(60));
+        let calls = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    let n = cache.get_or_compute("/r", || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(50));
+                        Ok(7)
+                    });
+                    assert_eq!(n, Ok(7));
+                });
+            }
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

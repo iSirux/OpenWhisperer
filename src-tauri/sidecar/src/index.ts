@@ -25,6 +25,7 @@ import { z } from "zod";
 import { isUsageLimitError, appServerErrorMessage } from "./usageLimit";
 import { CodexSubagents } from "./codexSubagents";
 import { listClaudeModels, listCodexModels } from "./modelCatalog";
+import { capToolOutput } from "./toolOutputCap";
 
 const OPENAI_MODEL_FALLBACK = "gpt-5.6-terra";
 
@@ -554,6 +555,16 @@ function send(msg: object): void {
   process.stdout.write(line);
 }
 
+// Per-message stream tracing ("Received message #N", per-block types, app-server
+// delta events) is thousands of lines per session-hour — 10-20 MB/day of backend
+// log with a dozen sessions. Off unless dev mode (the backend sets the env var)
+// or the user sets OPENWHISPERER_SIDECAR_VERBOSE=1.
+const VERBOSE_TRACE = process.env.OPENWHISPERER_SIDECAR_VERBOSE === "1";
+
+function sendTrace(id: string, message: string): void {
+  if (VERBOSE_TRACE) send({ type: "debug", id, message });
+}
+
 function sendText(id: string, content: string, parentToolUseId?: string | null, turnUuid?: string | null): void {
   send({ type: "text", id, content, ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}) });
 }
@@ -578,6 +589,9 @@ function sendToolResult(
   turnUuid?: string | null,
   images?: { mediaType: string; base64Data: string }[]
 ): void {
+  // Every tool-result path (Claude, Codex app-server, subagents) funnels through
+  // here, so this is the one place the display copy is capped — see toolOutputCap.
+  output = capToolOutput(output);
   send({ type: "tool_result", id, tool, output, toolUseId, ...(parentToolUseId ? { parentToolUseId } : {}), ...(turnUuid ? { turnUuid } : {}), ...(images && images.length > 0 ? { images } : {}) });
 }
 
@@ -1617,16 +1631,16 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
   const itemId = typeof item?.id === "string" ? item.id : undefined;
   const pendingTurnCount = session.appServer?.pendingTurns.size ?? 0;
   const completedTurnCount = session.appServer?.completedTurns.size ?? 0;
-  send({
-    type: "debug",
-    id,
-    message:
-      `[app-server event] method=${notification.method}` +
-      (turnId ? ` turnId=${turnId}` : "") +
-      (itemType ? ` itemType=${itemType}` : "") +
-      (itemId ? ` itemId=${itemId}` : "") +
-      ` pendingTurns=${pendingTurnCount} completedTurns=${completedTurnCount}`,
-  });
+  const eventLine =
+    `[app-server event] method=${notification.method}` +
+    (turnId ? ` turnId=${turnId}` : "") +
+    (itemType ? ` itemType=${itemType}` : "") +
+    (itemId ? ` itemId=${itemId}` : "") +
+    ` pendingTurns=${pendingTurnCount} completedTurns=${completedTurnCount}`;
+  // Streaming deltas and periodic usage/diff refreshes fire many times per item;
+  // lifecycle events (turn/item started/completed, errors) stay in the log.
+  if (/delta|\/updated$/i.test(notification.method)) sendTrace(id, eventLine);
+  else send({ type: "debug", id, message: eventLine });
 
   switch (notification.method) {
     case "thread/started":
@@ -4848,11 +4862,7 @@ async function runClaudeQueryItem(
       // a prior result (injected-prompt ambiguity) would be premature. The
       // result case in handleSdkMessage re-arms it when needed.
       cancelPendingDone(session);
-      send({
-        type: "debug",
-        id: msg.id,
-        message: `Received message #${messageCount}: type=${message.type}`,
-      });
+      sendTrace(msg.id, `Received message #${messageCount}: type=${message.type}`);
       try {
         // Capture SDK session ID from system init message for resume
         if (message.type === "system" && message.subtype === "init") {
@@ -5124,17 +5134,12 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         }
       }
       const thinkingKey = `${id}-${parentToolUseId || "main"}`;
-      send({
-        type: "debug",
+      sendTrace(
         id,
-        message: `Assistant message has ${message.message.content.length} content blocks (parent: ${parentToolUseId || "main"}, uuid: ${turnUuid || "none"})`,
-      });
+        `Assistant message has ${message.message.content.length} content blocks (parent: ${parentToolUseId || "main"}, uuid: ${turnUuid || "none"})`
+      );
       for (const block of message.message.content) {
-        send({
-          type: "debug",
-          id,
-          message: `Content block type: ${block.type}`,
-        });
+        sendTrace(id, `Content block type: ${block.type}`);
 
         // Handle thinking blocks (extended thinking feature)
         if (block.type === "thinking") {
@@ -5148,23 +5153,12 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
               content: thinkingContent,
             });
             sendThinkingStart(id, thinkingContent, parentToolUseId, turnUuid);
-            send({
-              type: "debug",
-              id,
-              message: `Thinking started: ${thinkingContent.slice(0, 100)}...`,
-            });
+            sendTrace(id, `Thinking started: ${thinkingContent.slice(0, 100)}...`);
           } else {
             // Additional thinking block - accumulate content
             const state = thinkingState.get(thinkingKey)!;
             state.content += "\n\n" + thinkingContent;
-            send({
-              type: "debug",
-              id,
-              message: `Thinking continued: ${thinkingContent.slice(
-                0,
-                100
-              )}...`,
-            });
+            sendTrace(id, `Thinking continued: ${thinkingContent.slice(0, 100)}...`);
           }
           continue;
         }
@@ -5175,19 +5169,11 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           const durationMs = Date.now() - state.startTime;
           thinkingState.delete(thinkingKey);
           sendThinkingEnd(id, durationMs, state.content, parentToolUseId, turnUuid);
-          send({
-            type: "debug",
-            id,
-            message: `Thinking ended after ${durationMs}ms`,
-          });
+          sendTrace(id, `Thinking ended after ${durationMs}ms`);
         }
 
         if (block.type === "text") {
-          send({
-            type: "debug",
-            id,
-            message: `Text content: ${block.text.slice(0, 100)}`,
-          });
+          sendTrace(id, `Text content: ${block.text.slice(0, 100)}`);
           sendText(id, block.text, parentToolUseId, turnUuid);
         } else if (block.type === "tool_use") {
           // Track tool_use_id to name mapping for matching with tool_result
@@ -5406,14 +5392,7 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
               if (imgs.length > 0) historyImages = imgs;
             }
 
-            send({
-              type: "debug",
-              id,
-              message: `Tool result for ${toolName} (${toolUseId}): ${output.slice(
-                0,
-                100
-              )}...`,
-            });
+            sendTrace(id, `Tool result for ${toolName} (${toolUseId}): ${output.slice(0, 100)}...`);
             sendToolResult(id, toolName, output, toolUseId, userParentToolUseId, userTurnUuid, historyImages);
 
             // Clean up the mapping after use

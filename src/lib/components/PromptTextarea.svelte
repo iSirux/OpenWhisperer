@@ -59,6 +59,10 @@
       textareaEl.scrollHeight > maxHeight ? "auto" : "hidden";
   }
 
+  // The single resize path: typing updates `value` through bind:value, so this
+  // covers keystrokes as well as programmatic changes. (oninput used to call
+  // autoResize too — two forced layouts per keystroke.) Effects flush before
+  // paint, so the height never lags a frame behind the text.
   $effect(() => {
     value;
     autoResize();
@@ -99,10 +103,7 @@
   class={variant}
   {rows}
   {placeholder}
-  oninput={() => {
-    autoResize();
-    oninput?.();
-  }}
+  oninput={() => oninput?.()}
   {onkeydown}
   onpaste={handlePaste}
   use:holdSpaceRecord={holdSpace ?? {

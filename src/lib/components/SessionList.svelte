@@ -71,8 +71,10 @@
     if (branchFetchTimeout) clearTimeout(branchFetchTimeout);
   });
 
-  // Unified session list
-  let allSessions = $state<DisplaySession[]>([]);
+  // Unified session list. Raw (not deeply proxied): the DisplaySession objects are
+  // memoized by transformToDisplaySessions, and keeping their identity is what lets
+  // unchanged rows skip re-rendering. Only ever replaced, never mutated.
+  let allSessions = $state.raw<DisplaySession[]>([]);
 
   // Repo filter applied to the rendered list. The Ctrl+1..9 hotkey in the main
   // layout applies the same filter so the number badges stay accurate.
@@ -157,8 +159,58 @@
   });
 
   // Track session IDs and repo paths to detect when sessions are added/removed or cwd changes
-  let lastSessionKey = '';
+  let lastRepoPathById = new Map<string, string>();
+  let branchFetchGeneration = 0;
   let branchFetchTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function sessionPathsChanged(list: DisplaySession[]): boolean {
+    if (list.length !== lastRepoPathById.size) return true;
+    for (const s of list) {
+      if (lastRepoPathById.get(s.id) !== (s.repoPath || '')) return true;
+    }
+    return false;
+  }
+
+  // Branches carried across renders (fetched async, only on session list changes).
+  // Kept outside the display objects: transformToDisplaySessions memoizes and shares
+  // those, so a known branch is merged into a copy — memoized per source object so
+  // an unchanged session still yields the identical row object.
+  let knownBranchById = new Map<string, string>();
+  const withBranchCache = new WeakMap<DisplaySession, DisplaySession>();
+
+  function withKnownBranch(s: DisplaySession): DisplaySession {
+    if (s.branch) return s;
+    const branch = knownBranchById.get(s.id);
+    if (!branch) return s;
+    const cached = withBranchCache.get(s);
+    if (cached?.branch === branch) return cached;
+    const merged = { ...s, branch };
+    withBranchCache.set(s, merged);
+    return merged;
+  }
+
+  function sameItems(a: DisplaySession[], b: DisplaySession[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  // Latest transform output (before branch merging), republished when branches arrive.
+  let lastSorted: DisplaySession[] = [];
+
+  // Publish a list, skipping the write (and every derived below it) when no row changed.
+  function publishSessions(list: DisplaySession[]) {
+    lastSorted = list;
+    const merged = list.map(withKnownBranch);
+    knownBranchById = new Map();
+    for (const s of merged) {
+      if (s.branch) knownBranchById.set(s.id, s.branch);
+    }
+    // untrack: writing allSessions must not make the effect below depend on it.
+    if (!sameItems(merged, untrack(() => allSessions))) allSessions = merged;
+  }
 
   // Reactively update sessions when stores change
   $effect(() => {
@@ -167,27 +219,12 @@
     const seqExecutions = $executions;
 
     const sorted = transformToDisplaySessions(sdkSessionsList, sortOrder, seqExecutions);
-
-    // Preserve branch data from previous render (branches are fetched async and only on session list changes)
-    // Use untrack to read allSessions without creating a reactive dependency on it,
-    // otherwise writing allSessions below would re-trigger this effect infinitely.
-    const previousSessions = untrack(() => allSessions);
-    if (previousSessions.length > 0) {
-      const branchMap = new Map(previousSessions.filter(s => s.branch).map(s => [s.id, s.branch]));
-      if (branchMap.size > 0) {
-        for (const s of sorted) {
-          if (!s.branch && branchMap.has(s.id)) {
-            s.branch = branchMap.get(s.id);
-          }
-        }
-      }
-    }
-    allSessions = sorted;
+    publishSessions(sorted);
 
     // Fetch branches when session list changes (add/remove) or when a session's cwd changes
-    const currentSessionKey = sorted.map(s => `${s.id}:${s.repoPath || ''}`).sort().join(',');
-    if (currentSessionKey !== lastSessionKey) {
-      lastSessionKey = currentSessionKey;
+    if (sessionPathsChanged(sorted)) {
+      lastRepoPathById = new Map(sorted.map((s) => [s.id, s.repoPath || '']));
+      const generation = ++branchFetchGeneration;
 
       // Debounce branch fetching to avoid rapid IPC calls
       if (branchFetchTimeout) {
@@ -196,10 +233,12 @@
       branchFetchTimeout = setTimeout(() => {
         fetchBranchesForSessions(sorted, (updated) => {
           // Verify session list hasn't changed since we started
-          const stillCurrentKey = updated.map(s => `${s.id}:${s.repoPath || ''}`).sort().join(',');
-          if (stillCurrentKey === lastSessionKey) {
-            allSessions = updated;
+          if (generation !== branchFetchGeneration) return;
+          for (const s of updated) {
+            if (s.branch) knownBranchById.set(s.id, s.branch);
           }
+          // A branch seeded from session metadata still wins (as on every re-render).
+          publishSessions(lastSorted);
         });
       }, 100);
     }

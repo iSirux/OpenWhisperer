@@ -118,8 +118,25 @@ fn build_log_plugin(
     log_dir: std::path::PathBuf,
     file_name: String,
 ) -> tauri::plugin::TauriPlugin<tauri::Wry> {
-    tauri_plugin_log::Builder::new()
+    let builder = tauri_plugin_log::Builder::new()
+        // The default targets (stdout + a second copy of every line in the app's
+        // own LogDir, `%LOCALAPPDATA%\<identifier>\logs`) doubled the write cost;
+        // keep only our dated file, plus stdout in dev.
+        .clear_targets()
         .level(log::LevelFilter::Info)
+        // Local time, matching the file's date and the frontend log (the default
+        // is UTC). The explicit format keeps the historical line layout, which
+        // `timezone_strategy` alone would reorder.
+        .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "{}[{}][{}] {}",
+                chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S]"),
+                record.target(),
+                record.level(),
+                message
+            ))
+        })
         .target(tauri_plugin_log::Target::new(
             tauri_plugin_log::TargetKind::Folder {
                 path: log_dir,
@@ -128,8 +145,17 @@ fn build_log_plugin(
         ))
         // Size cap per-file just in case the app runs for many days without a restart
         .max_file_size(50_000_000)
-        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-        .build()
+        // Rotate by renaming (`<name>_<time>.log`, pruned by `cleanup_old_logs`)
+        // — `KeepOne` deleted the full file, losing everything logged so far.
+        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3));
+    let builder = if cfg!(debug_assertions) {
+        builder.target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Stdout,
+        ))
+    } else {
+        builder
+    };
+    builder.build()
 }
 
 /// Build the system tray icon + menu and wire up its event handlers.
@@ -243,6 +269,8 @@ fn shutdown_app(app: &tauri::AppHandle) {
     if let Some(tray) = app.tray_by_id("main-tray") {
         let _ = tray.set_visible(false);
     }
+    // The frontend log writer buffers up to ~1 s of lines.
+    app.state::<log_cmds::FrontendLogger>().flush();
     app.exit(0);
 }
 

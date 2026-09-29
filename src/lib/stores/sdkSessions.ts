@@ -1,4 +1,4 @@
-import { writable, derived, get } from 'svelte/store';
+import { derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
@@ -19,6 +19,8 @@ import { defaultAccountIdForRepo } from '$lib/utils/accounts';
 // Type-only import (erased at build; no runtime cycle with the validation store,
 // which value-imports from here).
 import type { PersistedValidationRun, RunOptions } from './validation';
+import { batchedWritable } from './batchedWritable';
+import { distinctStore, shallowEqual } from './distinctStore';
 
 // =============================================================================
 // Debounced Save
@@ -30,6 +32,18 @@ const SAVE_DEBOUNCE_MS = 3000;
 // Max-wait cap: continuous mutations keep resetting the debounce, so bound how
 // long a pending save can be starved before it's forced to flush.
 const SAVE_MAX_WAIT_MS = 12000;
+// Stretched cap while every dirty session is mid-query. A streaming session
+// mutates continuously, so this cap — not the debounce — is what flushes it.
+// Each flush ships only a message delta (see `upsertSessions` in
+// sessionPersistence), but the backend still rewrites the session's data file,
+// which for a long run is tens of MB; 30s cuts that write rate by more than half
+// while bounding what a crash can lose to half a minute of transcript (the
+// agent's own transcript survives either way). Anything else dirty — a finished
+// session, a draft edit, a structural change — keeps the short cap.
+const SAVE_MAX_WAIT_STREAMING_MS = 30000;
+// When the pending save first became dirty, and when its max-wait timer fires.
+let saveDirtySince = 0;
+let saveMaxWaitDeadline = 0;
 
 // Dirty tracking for partial saves. `dirtySdkIds` collects the sessions whose
 // content changed via `debouncedSave(id)`; `needsFullSave` is set by structural
@@ -92,6 +106,8 @@ function flushSave(): void {
  * go through the full save path.
  */
 function debouncedSave(sessionId?: string): void {
+  // Whether this call widens what's pending (the only time the cap can shrink).
+  const widened = sessionId ? !dirtySdkIds.has(sessionId) : !needsFullSave;
   if (sessionId) {
     dirtySdkIds.add(sessionId);
   } else {
@@ -103,11 +119,39 @@ function debouncedSave(sessionId?: string): void {
   }
   saveDebounceTimer = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
 
-  // Start (but never reset) the max-wait cap so a steady stream of mutations
+  // Start (but never postpone) the max-wait cap so a steady stream of mutations
   // can't indefinitely postpone the flush.
   if (!saveMaxWaitTimer) {
-    saveMaxWaitTimer = setTimeout(flushSave, SAVE_MAX_WAIT_MS);
+    saveDirtySince = Date.now();
+    armSaveMaxWait();
+  } else if (widened) {
+    armSaveMaxWait();
   }
+}
+
+/**
+ * (Re)arm the max-wait timer for the current dirty set: the stretched cap when
+ * only querying sessions are dirty, else the short one — measured from when the
+ * save first became dirty. Only ever pulls an armed flush earlier.
+ */
+function armSaveMaxWait(): void {
+  const cap = !needsFullSave && onlyStreamingSessionsDirty() ? SAVE_MAX_WAIT_STREAMING_MS : SAVE_MAX_WAIT_MS;
+  const deadline = saveDirtySince + cap;
+  if (saveMaxWaitTimer) {
+    if (deadline >= saveMaxWaitDeadline) return;
+    clearTimeout(saveMaxWaitTimer);
+  }
+  saveMaxWaitDeadline = deadline;
+  saveMaxWaitTimer = setTimeout(flushSave, Math.max(0, deadline - Date.now()));
+}
+
+function onlyStreamingSessionsDirty(): boolean {
+  if (dirtySdkIds.size === 0) return false;
+  const list = get(sdkSessions);
+  for (const id of dirtySdkIds) {
+    if (list.find(s => s.id === id)?.status !== 'querying') return false;
+  }
+  return true;
 }
 
 /** Resolve a repo ID from a cwd path by looking up the repos list. */
@@ -609,6 +653,19 @@ export interface SessionPrSummary {
   isDraft?: boolean;
 }
 
+/** Field-wise equality of two PR summaries (null = no PR). */
+export function sessionPrSummaryEqual(a: SessionPrSummary | null, b: SessionPrSummary | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.number === b.number &&
+    a.url === b.url &&
+    a.state === b.state &&
+    a.title === b.title &&
+    !!a.isDraft === !!b.isDraft
+  );
+}
+
 /** Compact summary of the latest Validation run for a session (badge in header/list).
  *  Full run state lives in the validation store (in-memory); this mirror survives
  *  restart so a "last run: <status>" badge can render. */
@@ -1058,6 +1115,35 @@ function clearProgressiveUsage(prevUsage: SdkSessionUsage | undefined): SdkSessi
   };
 }
 
+/**
+ * The `tool_start` message for `toolUseId`, scanning from the newest message. Tool-use ids are
+ * unique, and the lookups (bash task_started / task_notification correlation) almost always
+ * target a call made moments ago — so this exits within a few messages instead of walking a
+ * multi-thousand-message transcript front to back.
+ */
+function findToolStartFromTail(messages: SdkMessage[], toolUseId: string): SdkMessage | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.type === 'tool_start' && m.toolUseId === toolUseId) return m;
+  }
+  return undefined;
+}
+
+/**
+ * Apply `fn` to the session `id`, returning the SAME array when the session is missing or `fn`
+ * returned it unchanged — so a no-op event (e.g. an untracked foreground-bash task_started)
+ * doesn't produce a new store value (batched flushes skip notifying on an identical value).
+ */
+function patchSession(sessions: SdkSession[], id: string, fn: (s: SdkSession) => SdkSession): SdkSession[] {
+  const index = sessions.findIndex(s => s.id === id);
+  if (index < 0) return sessions;
+  const next = fn(sessions[index]);
+  if (next === sessions[index]) return sessions;
+  const copy = sessions.slice();
+  copy[index] = next;
+  return copy;
+}
+
 function findOpenThinkingMessageIndex(
   messages: SdkMessage[],
   parentToolUseId: string | undefined,
@@ -1129,7 +1215,12 @@ function closeOpenThinkingMessages(messages: SdkMessage[], closedAt: number): Sd
 // =============================================================================
 
 function createSdkSessionsStore() {
-  const { subscribe, set, update } = writable<SdkSession[]>([]);
+  // Streaming sidecar events go through `queueUpdate` so a burst (parallel tool_starts,
+  // subagent traffic, text chunks across many sessions) wakes subscribers once per frame.
+  // `subscribe` / `update` / `set` flush the queue first, so every read — including `get()`
+  // and the snapshot peeks below — sees all queued changes (see batchedWritable).
+  const sessionsStore = batchedWritable<SdkSession[]>([]);
+  const { subscribe, set, update, queue: queueUpdate } = sessionsStore;
   const listeners = new Map<string, UnlistenFn[]>();
   const liveSessions = new Set<string>();
   let sidecarStarted = false;
@@ -1405,10 +1496,10 @@ function createSdkSessionsStore() {
         // Fresh agent activity: the main agent resumed after the background work settled —
         // a pending grace finalize would be a false stop, so cancel it.
         noteAgentActivity(id);
-        update(sessions =>
+        const now = Date.now();
+        queueUpdate(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
-            const now = Date.now();
             const base = reactivateOnActivity(s, now);
             return {
               ...base,
@@ -1460,10 +1551,13 @@ function createSdkSessionsStore() {
           noteAgentActivity(id);
           // Track whether this event newly raises a question, so we alert once.
           let raisedQuestion = false;
-          update(sessions =>
+          const now = Date.now();
+          // Ordinary tool calls are batched. Plan-approval / question tools apply immediately:
+          // they need the user's attention now, and `raisedQuestion` is read right after.
+          const applyUpdate = isPlanApprovalTool || isAskUserQuestion ? update : queueUpdate;
+          applyUpdate(sessions =>
             sessions.map(s => {
               if (s.id !== id) return s;
-              const now = Date.now();
               const base = reactivateOnActivity(s, now);
               if (isAskUserQuestion && askQuestions && askQuestions.length > 0 && !s.askUserQuestion) {
                 raisedQuestion = true;
@@ -1524,10 +1618,10 @@ function createSdkSessionsStore() {
         }));
         // Fresh agent activity cancels a pending deferred-completion grace finalize.
         noteAgentActivity(id);
-        update(sessions =>
+        const now = Date.now();
+        queueUpdate(sessions =>
           sessions.map(s =>
             s.id !== id ? s : (() => {
-              const now = Date.now();
               const base = reactivateOnActivity(s, now);
               return {
                 ...base,
@@ -1557,10 +1651,11 @@ function createSdkSessionsStore() {
       await listen<{ content: string; timestamp: number; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-thinking-start-${id}`, (e) => {
         // Fresh agent activity cancels a pending deferred-completion grace finalize.
         noteAgentActivity(id);
-        update(sessions =>
+        const now = Date.now();
+        queueUpdate(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
-            const base = reactivateOnActivity(s, Date.now());
+            const base = reactivateOnActivity(s, now);
             return {
               ...base,
               messages: [
@@ -1578,19 +1673,18 @@ function createSdkSessionsStore() {
       await listen<{ durationMs: number; content: string; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-thinking-end-${id}`, (e) => {
         const payloadParent = e.payload.parentToolUseId || undefined;
         const payloadTurnUuid = e.payload.turnUuid || undefined;
-        update(sessions =>
-          sessions.map(s => {
-            if (s.id !== id) return s;
+        queueUpdate(sessions =>
+          patchSession(sessions, id, s => {
+            const matchIndex = findOpenThinkingMessageIndex(s.messages, payloadParent, payloadTurnUuid);
+            // Nothing to close: keep the session object so subscribers see no change.
+            if (matchIndex < 0) return s;
             const messages = [...s.messages];
-            const matchIndex = findOpenThinkingMessageIndex(messages, payloadParent, payloadTurnUuid);
-            if (matchIndex >= 0) {
-              messages[matchIndex] = {
-                ...messages[matchIndex],
-                thinkingDurationMs: e.payload.durationMs,
-                content: e.payload.content,
-                turnUuid: payloadTurnUuid || messages[matchIndex].turnUuid,
-              };
-            }
+            messages[matchIndex] = {
+              ...messages[matchIndex],
+              thinkingDurationMs: e.payload.durationMs,
+              content: e.payload.content,
+              turnUuid: payloadTurnUuid || messages[matchIndex].turnUuid,
+            };
             return { ...s, messages };
           })
         );
@@ -1897,7 +1991,7 @@ function createSdkSessionsStore() {
           queryUsage.totalCostUsd
         );
 
-        update(sessions =>
+        queueUpdate(sessions =>
           sessions.map(s => s.id === id ? { ...s, usage: processQueryUsage(s.usage, queryUsage, s.model) } : s)
         );
       })
@@ -1906,7 +2000,7 @@ function createSdkSessionsStore() {
     // Progressive usage events
     unlisteners.push(
       await listen<SdkProgressiveUsage>(`sdk-progressive-usage-${id}`, (e) => {
-        update(sessions =>
+        queueUpdate(sessions =>
           sessions.map(s => s.id === id ? { ...s, usage: processProgressiveUsage(s.usage, e.payload, s.model) } : s)
         );
       })
@@ -1917,7 +2011,7 @@ function createSdkSessionsStore() {
       await listen<{ agentId: string; agentType: string }>(`sdk-subagent-start-${id}`, (e) => {
         // New live work supersedes a pending deferred-completion grace finalize.
         noteAgentActivity(id);
-        update(sessions =>
+        queueUpdate(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
             const base = reactivateOnActivity(s, Date.now());
@@ -1980,7 +2074,7 @@ function createSdkSessionsStore() {
     // from the subagent's first assistant message. Drives the model badge on task blocks.
     unlisteners.push(
       await listen<{ toolUseId: string; model: string }>(`sdk-subagent-model-${id}`, (e) => {
-        update(sessions =>
+        queueUpdate(sessions =>
           sessions.map(s => s.id === id
             ? { ...s, subagentModels: { ...(s.subagentModels ?? {}), [e.payload.toolUseId]: e.payload.model } }
             : s)
@@ -1994,9 +2088,8 @@ function createSdkSessionsStore() {
       await listen<{ taskId: string; toolUseId?: string; description: string; taskType?: string }>(`sdk-task-started-${id}`, (e) => {
         // New live work supersedes a pending deferred-completion grace finalize.
         noteAgentActivity(id);
-        update(sessions =>
-          sessions.map(s => {
-            if (s.id !== id) return s;
+        queueUpdate(sessions => {
+          const next = patchSession(sessions, id, s => {
             const base = reactivateOnActivity(s, Date.now());
             const live = base.liveBackgroundTasks ?? [];
             if (live.some(t => t.taskId === e.payload.taskId)) return base;
@@ -2010,7 +2103,7 @@ function createSdkSessionsStore() {
             let label = e.payload.description;
             if (isBash) {
               const toolMsg = e.payload.toolUseId
-                ? base.messages.find(m => m.type === 'tool_start' && m.toolUseId === e.payload.toolUseId)
+                ? findToolStartFromTail(base.messages, e.payload.toolUseId)
                 : undefined;
               if (toolMsg?.input?.run_in_background !== true) return base;
               const cmd = toolMsg.input?.command;
@@ -2042,9 +2135,13 @@ function createSdkSessionsStore() {
                     },
                   ],
             };
-          })
-        );
-        debouncedSave(id);
+          });
+          // Most task_starteds are untracked foreground bash (no change) — only a real change
+          // is worth re-serializing the session for. debouncedSave only marks dirty + arms a
+          // timer, so calling it from inside the (deferred) updater is safe.
+          if (next !== sessions) debouncedSave(id);
+          return next;
+        });
       })
     );
 
@@ -2057,49 +2154,52 @@ function createSdkSessionsStore() {
         // Partial progress through the live set is still progress — push the stale-state
         // watchdog out (the grace timer is re-armed below only on a full drain).
         noteAgentActivity(id);
-        let shouldScheduleFinalize = false;
-        update(sessions =>
-          sessions.map(s => {
-            if (s.id !== id) return s;
-            const settled = (s.liveBackgroundTasks ?? []).find(t => t.taskId === e.payload.taskId);
-            const live = (s.liveBackgroundTasks ?? []).filter(t => t.taskId !== e.payload.taskId);
-            if (
-              s.completionDeferred &&
-              !s.stopRequestedAt &&
-              (s.liveSubagentIds ?? []).length === 0 &&
-              !live.some(t => t.kind !== 'server')
-            ) {
-              shouldScheduleFinalize = true;
-            }
-            // Real task_notifications arrive with taskType undefined — determine bash-ness from
-            // the tracked task, else by correlating the tool_use (untracked foreground bash also
-            // emits notifications; those must not become transcript messages).
-            const isBash = settled
-              ? settled.kind !== 'agent'
-              : e.payload.taskType === 'local_bash' ||
-                (!!e.payload.toolUseId &&
-                  s.messages.some(m => m.type === 'tool_start' && m.toolUseId === e.payload.toolUseId && m.tool === 'Bash'));
-            return {
-              ...s,
-              liveBackgroundTasks: live,
-              messages: isBash
-                ? s.messages
-                : [
-                    ...s.messages,
-                    {
-                      type: 'task_completed' as const,
-                      taskId: e.payload.taskId,
-                      toolUseId: e.payload.toolUseId,
-                      taskStatus: e.payload.status,
-                      summary: e.payload.summary,
-                      taskUsage: e.payload.usage,
-                      timestamp: Date.now(),
-                    },
-                  ],
-            };
-          })
-        );
-        debouncedSave(id);
+        // Decide from a (flushed) snapshot first: most notifications are untracked foreground
+        // bash, which changes nothing — skip the store write + save entirely for those.
+        let snapshot: SdkSession | undefined;
+        subscribe(ss => { snapshot = ss.find(s => s.id === id); })();
+        if (!snapshot) return;
+        const settled = (snapshot.liveBackgroundTasks ?? []).find(t => t.taskId === e.payload.taskId);
+        const remaining = (snapshot.liveBackgroundTasks ?? []).filter(t => t.taskId !== e.payload.taskId);
+        const shouldScheduleFinalize =
+          !!snapshot.completionDeferred &&
+          !snapshot.stopRequestedAt &&
+          (snapshot.liveSubagentIds ?? []).length === 0 &&
+          !remaining.some(t => t.kind !== 'server');
+        // Real task_notifications arrive with taskType undefined — determine bash-ness from
+        // the tracked task, else by correlating the tool_use (untracked foreground bash also
+        // emits notifications; those must not become transcript messages).
+        const isBash = settled
+          ? settled.kind !== 'agent'
+          : e.payload.taskType === 'local_bash' ||
+            (!!e.payload.toolUseId &&
+              findToolStartFromTail(snapshot.messages, e.payload.toolUseId)?.tool === 'Bash');
+        if (settled || !isBash) {
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+              return {
+                ...s,
+                liveBackgroundTasks: (s.liveBackgroundTasks ?? []).filter(t => t.taskId !== e.payload.taskId),
+                messages: isBash
+                  ? s.messages
+                  : [
+                      ...s.messages,
+                      {
+                        type: 'task_completed' as const,
+                        taskId: e.payload.taskId,
+                        toolUseId: e.payload.toolUseId,
+                        taskStatus: e.payload.status,
+                        summary: e.payload.summary,
+                        taskUsage: e.payload.usage,
+                        timestamp: Date.now(),
+                      },
+                    ],
+              };
+            })
+          );
+          debouncedSave(id);
+        }
         if (shouldScheduleFinalize) {
           console.log(`[sdkSessions] last blocking background task settled — arming deferred-completion grace timer (session: ${id})`);
           scheduleDeferredFinalize(id);
@@ -3300,12 +3400,20 @@ function createSdkSessionsStore() {
 
     /** Set the PR summary detected for a session's branch (drives header/list badges). */
     setSessionPr(id: string, pr: SessionPrSummary | null): void {
+      // The 15s PR poll re-sends an unchanged summary almost every time — skip the store
+      // write (a fan-out to every subscriber) and the re-save for those.
+      let current: SdkSession | undefined;
+      subscribe(sessions => { current = sessions.find(s => s.id === id); })();
+      if (!current || sessionPrSummaryEqual(current.pr ?? null, pr)) return;
       update(sessions => sessions.map(s => s.id === id ? { ...s, pr } : s));
       debouncedSave(id);
     },
 
     /** Persist whether the PR dock panel is open for a session (survives restart). */
     setSessionPrPanelOpen(id: string, open: boolean): void {
+      let current: SdkSession | undefined;
+      subscribe(sessions => { current = sessions.find(s => s.id === id); })();
+      if (!current || !!current.prPanelOpen === open) return;
       update(sessions => sessions.map(s => s.id === id ? { ...s, prPanelOpen: open } : s));
       debouncedSave(id);
     },
@@ -4489,11 +4597,16 @@ export const activeSdkSessionId = {
 
 export const sdkSessions = createSdkSessionsStore();
 
-export const activeSdkSession = derived(
-  [sdkSessions, activeSdkSessionId],
-  ([$sdkSessions, $activeSdkSessionId]) => {
-    return $sdkSessions.find(s => s.id === $activeSdkSessionId) || null;
-  }
+// Only notifies when the active session OBJECT changes (a new id, or an update to that
+// session) — not on every event from any of the other sessions.
+export const activeSdkSession = distinctStore<SdkSession | null>(
+  derived(
+    [sdkSessions, activeSdkSessionId],
+    ([$sdkSessions, $activeSdkSessionId]) => {
+      return $sdkSessions.find(s => s.id === $activeSdkSessionId) || null;
+    }
+  ),
+  null
 );
 
 // Most-recently-active-first stack of session ids the user has viewed. Lets a
@@ -4521,9 +4634,21 @@ export function previousActiveSessionId(closedId: string): string | null {
   return null;
 }
 
-export const appSessionUsage = derived(
+interface AppSessionUsage {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
+  totalCostUsd: number;
+  progressiveInputTokens: number;
+  progressiveOutputTokens: number;
+}
+
+// Re-summed on every sessions write, but only notifies when a total actually moved — most
+// events (text, tool calls) don't touch usage at all.
+export const appSessionUsage = distinctStore<AppSessionUsage>(derived(
   sdkSessions,
-  ($sdkSessions) => {
+  ($sdkSessions): AppSessionUsage => {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let totalCacheReadTokens = 0;
@@ -4554,4 +4679,12 @@ export const appSessionUsage = derived(
       progressiveOutputTokens,
     };
   }
-);
+), {
+  totalInputTokens: 0,
+  totalOutputTokens: 0,
+  totalCacheReadTokens: 0,
+  totalCacheCreationTokens: 0,
+  totalCostUsd: 0,
+  progressiveInputTokens: 0,
+  progressiveOutputTokens: 0,
+}, shallowEqual);

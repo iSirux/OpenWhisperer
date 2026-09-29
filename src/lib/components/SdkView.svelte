@@ -58,11 +58,15 @@
   import ModelSelector from "./ModelSelector.svelte";
   import EffortToggle from "./EffortToggle.svelte";
   import {
-    processSdkMessages,
-    buildRenderItems,
     renderItemsEquivalent,
+    messageRenderKey,
     type RenderItem,
   } from "./sdk/sdkViewMessageProcessing";
+  import {
+    createSdkMessageProcessor,
+    createRenderItemsBuilder,
+    createMessageIndexer,
+  } from "./sdk/incrementalRenderPipeline";
   import {
     recommendModel,
     recommendRepo,
@@ -85,7 +89,12 @@
 
   let copiedMessageId = $state<number | null>(null);
   let messagesEl: HTMLDivElement;
-  let session = $state<SdkSession | null>(null);
+  // $state.raw, not $state: the store hands us immutable snapshots and replaces
+  // the whole session on every change. A deep $state proxy wrapped each new
+  // snapshot in a fresh proxy tree, so every message read through it was a NEW
+  // object on every tick — defeating every identity-based cache below (and
+  // proxying thousands of messages per event).
+  let session = $state.raw<SdkSession | null>(null);
   let unsubscribe: (() => void) | undefined;
 
   // Persist across SdkView component remounts (session switches can recreate component instances).
@@ -125,9 +134,16 @@
   let visibleMessages = $derived(
     ghostMessages.size > 0 ? messages.filter((m) => !ghostMessages.has(m)) : messages,
   );
-  let processedMessages = $derived(processSdkMessages(visibleMessages));
+  // Incremental pipeline: each builder diffs against its previous input and only
+  // processes what changed (appends, in-place replacements), falling back to a
+  // full rebuild otherwise. Output is identical to processSdkMessages /
+  // buildRenderItems (see incrementalRenderPipeline.test.ts).
+  const messageProcessor = createSdkMessageProcessor();
+  const renderItemsBuilder = createRenderItemsBuilder();
+  const messageIndexer = createMessageIndexer();
+  let processedMessages = $derived(messageProcessor.update(visibleMessages));
   let renderItems = $derived(
-    buildRenderItems(processedMessages, $settings.tool_display_mode === "grid"),
+    renderItemsBuilder.update(processedMessages, $settings.tool_display_mode === "grid"),
   );
 
   // --- Render windowing -----------------------------------------------------
@@ -159,7 +175,8 @@
   // as the original Agent launch. Duplicate keys hang Svelte's keyed-each
   // reconciliation — observed as a whole-app freeze on any session containing a
   // continued agent. The occurrence counter is deterministic because item order
-  // is stable across recomputes.
+  // is stable across recomputes. Tool calls are keyed by toolUseId (see
+  // messageRenderKey) so a finishing tool updates in place instead of remounting.
   //
   // The wrappers are also memoized across recomputes: `buildRenderItems` runs
   // from scratch on every store tick and hands back brand-new objects even for
@@ -176,11 +193,11 @@
     const result = visibleRenderItems.map((item) => {
       let base: string;
       if (item.type === "message") {
-        base = `msg-${item.message.timestamp}`;
+        base = messageRenderKey(item.message);
       } else if (item.type === "task") {
         base = `task-${item.taskStarted.toolUseId || item.taskStarted.taskId || item.taskStarted.timestamp}`;
       } else {
-        base = `tool-group-${item.tools[0]?.timestamp ?? 0}`;
+        base = `tool-group-${item.tools[0] ? messageRenderKey(item.tools[0]) : 0}`;
       }
       const n = seen.get(base) ?? 0;
       seen.set(base, n + 1);
@@ -196,29 +213,14 @@
     return result;
   });
 
-  // Original-index lookup for the raw messages array, built once per messages
-  // change instead of scanning per rendered row. The template asks for this for
-  // every visible message (fork support), so the naive findIndex made each
-  // store tick cost O(window x total messages) — ~500k comparisons on a
-  // 6000-message session, every single streaming delta.
+  // Original-index lookup for the raw messages array, maintained incrementally
+  // instead of scanning per rendered row. The template asks for this for every
+  // visible message (fork support), so the naive findIndex made each store tick
+  // cost O(window x total messages) — ~500k comparisons on a 6000-message
+  // session, every single streaming delta.
   //
   // First-match-wins, matching the findIndex semantics it replaces.
-  const messageIndexKey = (type: string, discriminator: string | number) =>
-    `${type}|${discriminator}`;
-  let messageIndexLookup = $derived.by(() => {
-    const byToolUse = new Map<string, number>();
-    const byTimestamp = new Map<string, number>();
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i];
-      if (m.toolUseId) {
-        const key = messageIndexKey(m.type, m.toolUseId);
-        if (!byToolUse.has(key)) byToolUse.set(key, i);
-      }
-      const tsKey = messageIndexKey(m.type, m.timestamp);
-      if (!byTimestamp.has(tsKey)) byTimestamp.set(tsKey, i);
-    }
-    return { byToolUse, byTimestamp };
-  });
+  let messageIndexLookup = $derived(messageIndexer.update(messages));
 
   let status = $derived(session?.status ?? "idle");
   let isQuerying = $derived(status === "querying");
@@ -528,6 +530,13 @@
   // this listener spoken commands would only apply on manual stop.
   let unlistenVoiceCommand: UnlistenFn | null = null;
 
+  function sameElements<T>(a: readonly T[] | undefined, b: readonly T[] | undefined): boolean {
+    if (a === b) return true;
+    const aa = a ?? [];
+    const bb = b ?? [];
+    return aa.length === bb.length && aa.every((x, i) => x === bb[i]);
+  }
+
   onMount(() => {
     console.log(`[SdkView] Mount (session: ${sessionId})`);
 
@@ -556,9 +565,13 @@
       // Only update if session changed meaningfully (avoid reactive updates from audio visualization)
       if (found !== session) {
         // Check if key fields actually changed
+        // Reference comparisons throughout: the store is immutable, so a changed
+        // field is always a new object/array. (Comparing `messages` by length
+        // missed thinking-end's same-length in-place replacement, leaving the
+        // thinking card stuck on "Thinking"; JSON.stringify of draft images
+        // serialized base64 on every tick.)
         const statusChanged = found?.status !== session?.status;
-        const messagesChanged =
-          found?.messages.length !== session?.messages.length;
+        const messagesChanged = found?.messages !== session?.messages;
         const cwdChanged = found?.cwd !== session?.cwd;
         const modelChanged = found?.model !== session?.model;
         const usageChanged =
@@ -592,21 +605,14 @@
           found?.aiMetadata?.quickActions?.length !==
             session?.aiMetadata?.quickActions?.length;
         const askUserQuestionChanged =
-          found?.askUserQuestion?.questions.length !==
-            session?.askUserQuestion?.questions.length ||
-          found?.askUserQuestion?.answers.length !==
-            session?.askUserQuestion?.answers.length ||
-          found?.askUserQuestion?.currentQuestionIndex !==
-            session?.askUserQuestion?.currentQuestionIndex ||
-          JSON.stringify(found?.askUserQuestion?.answers) !==
-            JSON.stringify(session?.askUserQuestion?.answers);
+          found?.askUserQuestion !== session?.askUserQuestion;
+        // updateDraft re-filters the image list on every call, so compare its
+        // elements rather than the array itself.
         const draftChanged =
           found?.draftPrompt !== session?.draftPrompt ||
-          JSON.stringify(found?.draftImages ?? []) !==
-            JSON.stringify(session?.draftImages ?? []);
+          !sameElements(found?.draftImages, session?.draftImages);
         const planApprovalChanged =
-          JSON.stringify(found?.pendingPlanApproval) !==
-            JSON.stringify(session?.pendingPlanApproval);
+          found?.pendingPlanApproval !== session?.pendingPlanApproval;
         const codexApprovalChanged =
           found?.pendingCodexApproval?.requestId !==
             session?.pendingCodexApproval?.requestId;
@@ -777,16 +783,9 @@
         return { status: "background_commands", detail: String(liveCommandTasks.length) };
       }
 
-      // Check if we have any response content yet
-      const hasAnyResponse = msgs.some(
-        (m) => m.type === "text" || m.type === "tool_start",
-      );
-
-      if (!hasAnyResponse) {
-        // No response yet - waiting for LLM
-        return { status: "waiting_llm" };
-      }
-
+      // Scan back from the newest message. This runs on every store tick, so it
+      // skips the old forward `some()` over the whole transcript: the first
+      // text/tool_start found from the end already proves there is a response.
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i];
         if (msg.type === "tool_start") {
@@ -808,13 +807,20 @@
           return { status: "tool", detail };
         }
         if (msg.type === "tool_result") {
-          return { status: "thinking" };
+          // Only a response if a text/tool_start exists somewhere before it.
+          for (let j = i - 1; j >= 0; j--) {
+            if (msgs[j].type === "text" || msgs[j].type === "tool_start") {
+              return { status: "thinking" };
+            }
+          }
+          return { status: "waiting_llm" };
         }
         if (msg.type === "text") {
           return { status: "responding" };
         }
       }
-      return { status: "thinking" };
+      // No text or tool_start anywhere yet - waiting for LLM
+      return { status: "waiting_llm" };
     }
 
     return { status: "idle" };
@@ -882,16 +888,10 @@
 
   /** Find the original index of a processed message in the raw messages array (for fork support) */
   function getOriginalMessageIndex(msg: SdkMessage): number {
-    // Use timestamp + type as a key to find the original message
-    // The processedMessages step merges tool_start into tool_result, so for merged messages
-    // we search by toolUseId first, then fall back to timestamp matching
-    const { byToolUse, byTimestamp } = messageIndexLookup;
-    if (msg.toolUseId) {
-      const idx = byToolUse.get(messageIndexKey(msg.type, msg.toolUseId));
-      if (idx !== undefined) return idx;
-    }
-    // Fall back to timestamp matching (works for user, text, thinking, etc.)
-    return byTimestamp.get(messageIndexKey(msg.type, msg.timestamp)) ?? -1;
+    // The processedMessages step merges tool_start into tool_result, so merged
+    // messages match by (type, toolUseId) first, then fall back to
+    // (type, timestamp) (works for user, text, thinking, etc.)
+    return messageIndexLookup.indexOf(msg);
   }
 
   function getMessageText(msg: SdkMessage): string {

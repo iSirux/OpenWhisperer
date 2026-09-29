@@ -118,6 +118,22 @@ fn is_transparent(img: &DynamicImage) -> bool {
     img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255)
 }
 
+fn json_dims(obj: &serde_json::Map<String, serde_json::Value>) -> (Option<u32>, Option<u32>) {
+    let dim = |key: &str| obj.get(key).and_then(|v| v.as_u64()).map(|v| v as u32);
+    (dim("width"), dim("height"))
+}
+
+/// Whether [`shrink_json_images`] would try to re-encode any of `images` — a
+/// length/dimension check only, no decoding. Lets the sidecar reader keep small
+/// or already display-sized images on its fast path.
+pub fn json_images_want_shrink(images: &[serde_json::Value], is_subagent: bool) -> bool {
+    let budget = budget_for(is_subagent);
+    images.iter().filter_map(|img| img.as_object()).any(|obj| {
+        let len = obj.get("base64Data").and_then(|v| v.as_str()).map_or(0, str::len);
+        budget.wants(len, json_dims(obj))
+    })
+}
+
 /// Shrink the images of a sidecar tool-result payload in place
 /// (`[{ mediaType, base64Data, width?, height? }]`).
 pub fn shrink_json_images(images: &mut [serde_json::Value], is_subagent: bool) -> usize {
@@ -127,8 +143,7 @@ pub fn shrink_json_images(images: &mut [serde_json::Value], is_subagent: bool) -
         let Some(obj) = img.as_object_mut() else {
             continue;
         };
-        let dim = |key: &str| obj.get(key).and_then(|v| v.as_u64()).map(|v| v as u32);
-        let dims = (dim("width"), dim("height"));
+        let dims = json_dims(obj);
         let Some(result) = obj
             .get("base64Data")
             .and_then(|v| v.as_str())
@@ -260,6 +275,18 @@ mod tests {
         let msgs = session["messages"].as_array().unwrap();
         assert_eq!(msgs[0]["images"][0]["base64Data"].as_str().unwrap().len(), big.len());
         assert_eq!(msgs[1]["images"][0]["width"], 384);
+    }
+
+    #[test]
+    fn want_shrink_matches_the_budget() {
+        let big = png_b64(noisy_rgb(2000, 1000));
+        let small = png_b64(noisy_rgb(8, 8));
+        let img = |b64: &str| serde_json::json!({ "mediaType": "image/png", "base64Data": b64 });
+        assert!(json_images_want_shrink(&[img(&small), img(&big)], false));
+        assert!(!json_images_want_shrink(&[img(&small)], false));
+        assert!(!json_images_want_shrink(&[], true));
+        let sized = serde_json::json!({ "base64Data": big, "width": 800, "height": 400 });
+        assert!(!json_images_want_shrink(&[sized], false));
     }
 
     #[test]
