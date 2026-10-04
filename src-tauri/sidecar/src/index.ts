@@ -3515,11 +3515,53 @@ async function runValidationQuery(
   // the real review with a degenerate one.
   const submissions = new Map<string, { input: unknown; acked: boolean }>();
 
-  const iterator = query({ prompt: msg.prompt, options });
+  // Streaming input, not a string prompt: a string prompt closes stdin and the
+  // query ends at the first `result`. When the agent backgrounds a command or
+  // subagent ("waiting for the tests to finish") that turn ends early, and
+  // only a live input stream lets the CLI resume it once the task_notification
+  // arrives. The stream is closed when a turn ends with no background work
+  // left. The executor's idle timeout covers a notification that never comes.
+  const input = new MessageQueue();
+  const userMessage = (text: string): SDKUserMessageForInput => ({
+    type: "user",
+    message: { role: "user", content: text },
+    parent_tool_use_id: null,
+    session_id: msg.id,
+  });
+  input.enqueue(userMessage(msg.prompt));
+  // Top-level tool_use ids launched with run_in_background, and task ids
+  // mapped back to them (task_notification may omit tool_use_id).
+  const pendingBackground = new Set<string>();
+  const taskToolUse = new Map<string, string>();
+  let nudged = false;
+
+  const iterator = query({
+    prompt: input as unknown as string, // SDK accepts AsyncIterable here
+    options,
+  });
   for await (const message of iterator) {
     if (message.type === "system" && message.subtype === "init") {
       sdkSessionId = message.session_id;
+    } else if (message.type === "system") {
+      const sys = message as { subtype?: string; task_id?: string; tool_use_id?: string };
+      if (sys.subtype === "task_started" && sys.task_id && sys.tool_use_id) {
+        taskToolUse.set(sys.task_id, sys.tool_use_id);
+      } else if (sys.subtype === "task_notification") {
+        const toolUseId =
+          sys.tool_use_id ?? (sys.task_id ? taskToolUse.get(sys.task_id) : undefined);
+        if (toolUseId) pendingBackground.delete(toolUseId);
+      }
     } else if (message.type === "assistant") {
+      const topLevel = !(message as { parent_tool_use_id?: string | null }).parent_tool_use_id;
+      for (const block of message.message.content) {
+        if (
+          topLevel &&
+          block.type === "tool_use" &&
+          (block as { input?: { run_in_background?: unknown } }).input?.run_in_background === true
+        ) {
+          pendingBackground.add((block as { id: string }).id);
+        }
+      }
       for (const block of message.message.content) {
         if (block.type === "text") {
           const text = (block as { text?: string }).text;
@@ -3592,8 +3634,25 @@ async function runValidationQuery(
           durationMs: r.duration_ms || 0,
         };
       }
+      // Turn ended. Background work still running → keep the stream open so
+      // its task_notification resumes the agent. Otherwise, if nothing was
+      // submitted, ask once for the submit call before closing.
+      if (pendingBackground.size > 0) {
+        continue;
+      }
+      if (submissions.size === 0 && !nudged) {
+        nudged = true;
+        input.enqueue(
+          userMessage(
+            `You ended your turn without calling ${role.toolName}. Finish any remaining work (wait for running commands in the foreground), then call ${role.toolName} — the result is lost otherwise.`
+          )
+        );
+        continue;
+      }
+      input.done();
     }
   }
+  input.done();
 
   // Pick the authoritative submission: the newest acked one. If the MCP
   // server never acked anything (stream closed on every attempt), fall back
