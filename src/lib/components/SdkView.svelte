@@ -98,7 +98,15 @@
   let unsubscribe: (() => void) | undefined;
 
   // Persist across SdkView component remounts (session switches can recreate component instances).
-  type SessionScrollState = { scrollTop: number; stickToBottom: boolean };
+  // renderWindow/itemCount let a restore reveal the same older items as when
+  // the position was saved, so the absolute scrollTop still lands on the same
+  // content (new items only ever append at the bottom).
+  type SessionScrollState = {
+    scrollTop: number;
+    stickToBottom: boolean;
+    renderWindow?: number;
+    itemCount?: number;
+  };
   const SCROLL_STATE_KEY = "__openWhispererSdkViewScrollStates__";
   type GlobalWithSdkScrollStates = typeof globalThis & {
     __openWhispererSdkViewScrollStates__?: Map<string, SessionScrollState>;
@@ -406,8 +414,22 @@
   let prevSessionId = $state(sessionId);
   let restoredSessionId = $state<string | null>(null);
 
+  // True while a restore is settling: the clamped scroll events it causes must
+  // not overwrite the saved position.
+  let restoringScroll = false;
+  let restoreStartedFor: string | null = null;
+
   function persistCurrentScrollState(targetSessionId = sessionId) {
-    if (!messagesEl) return;
+    // A detached or hidden scroller reads scrollHeight 0, which would look like
+    // "at the bottom" — e.g. in onDestroy, where the {#key} remount has already
+    // removed the DOM. The scroll handler keeps the state current anyway.
+    if (
+      !messagesEl ||
+      restoringScroll ||
+      !messagesEl.isConnected ||
+      messagesEl.clientHeight === 0
+    )
+      return;
     const threshold = 100;
     const distanceFromBottom =
       messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
@@ -415,35 +437,60 @@
     scrollStates.set(targetSessionId, {
       scrollTop: messagesEl.scrollTop,
       stickToBottom,
+      renderWindow,
+      itemCount: renderItems.length,
     });
   }
 
   async function restoreScrollState(targetSessionId = sessionId) {
     if (!messagesEl) return;
-    await tick();
     const savedState = scrollStates.get(targetSessionId);
-    if (savedState) {
-      messagesEl.scrollTop = savedState.stickToBottom
-        ? messagesEl.scrollHeight
-        : savedState.scrollTop;
-    } else {
-      // No saved position - scroll to bottom for new sessions
+    if (!savedState || savedState.stickToBottom) {
+      await tick();
+      if (!messagesEl) return;
       messagesEl.scrollTop = messagesEl.scrollHeight;
       persistCurrentScrollState(targetSessionId);
+      checkIfNearBottom();
+      return;
+    }
+
+    // Keep the same number of older items hidden as when the position was
+    // saved, so items above the viewport are unchanged.
+    if (savedState.renderWindow !== undefined) {
+      const grown = Math.max(
+        0,
+        renderItems.length - (savedState.itemCount ?? renderItems.length),
+      );
+      renderWindow = Math.max(
+        RENDER_WINDOW_INITIAL,
+        savedState.renderWindow + grown,
+      );
+    }
+
+    restoringScroll = true;
+    try {
+      await tick();
+      // Markdown, highlighting and images can still change heights for a few
+      // frames after mount; re-apply so the offset isn't left clamped short.
+      for (let frame = 0; frame < 6; frame++) {
+        if (!messagesEl || sessionId !== targetSessionId) return;
+        messagesEl.scrollTop = savedState.scrollTop;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    } finally {
+      restoringScroll = false;
     }
     checkIfNearBottom();
   }
 
-  // Save draft and scroll position to old session before switching to new session
+  // Restore scroll position when the session changes without a remount
+  // (the old session's position is already saved by the scroll handler; the
+  // DOM here already shows the new session, so don't save from it).
   $effect(() => {
     if (sessionId !== prevSessionId) {
-      // Save scroll position for the OLD session
-      if (messagesEl) {
-        persistCurrentScrollState(prevSessionId);
-      }
-
       prevSessionId = sessionId;
       restoredSessionId = null;
+      restoreStartedFor = sessionId;
 
       // Restore scroll position for the NEW session after DOM updates
       restoreScrollState(sessionId).then(() => {
@@ -454,7 +501,15 @@
 
   // Initial mount/restoration path for the currently active session.
   $effect(() => {
-    if (!messagesEl || restoredSessionId === sessionId) return;
+    // Wait for the session so the transcript is rendered before restoring.
+    if (
+      !messagesEl ||
+      !session ||
+      restoredSessionId === sessionId ||
+      restoreStartedFor === sessionId
+    )
+      return;
+    restoreStartedFor = sessionId;
     restoreScrollState(sessionId).then(() => {
       restoredSessionId = sessionId;
     });
