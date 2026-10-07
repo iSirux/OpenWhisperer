@@ -21,8 +21,8 @@
   );
   let claudeDefault = $derived(defaultAccountFor('Claude', $settings.accounts));
   let codexDefault = $derived(defaultAccountFor('OpenAI', $settings.accounts));
-  // A disabled default account hides its indicator; its store keeps polling
-  // because Smart Queue exhaustion detection reads it.
+  // A disabled default account's store stops fetching and drops its data; hide
+  // the indicator outright too so it can't flash stale numbers.
   let claudeHidden = $derived(claudeAuthExpired || !!claudeDefault.disabled);
   let codexHidden = $derived(codexAuthExpired || !!codexDefault.disabled);
 
@@ -113,11 +113,10 @@
   let unsubSettings: (() => void) | null = null;
 
   onMount(() => {
-    rateLimits.startAutoRefresh();
-    codexRateLimits.startAutoRefresh();
     registerVisibilityHandler();
-    // Reconcile per-account rate-limit stores against the configured accounts on
-    // every settings change (creates/retires + auto-refreshes account stores).
+    // Reconcile rate-limit stores against the configured accounts on every
+    // settings change (starts/stops the default-login stores, creates/retires
+    // + auto-refreshes per-account stores). Fires immediately on subscribe.
     unsubSettings = settings.subscribe((s) => syncAccountRateLimitStores(s.accounts ?? []));
   });
 

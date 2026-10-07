@@ -1,7 +1,7 @@
 import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import type { AgentAccount } from './settings';
-import { isDefaultAccountId } from '$lib/utils/accounts';
+import { DEFAULT_ACCOUNT_ID, isDefaultAccountId } from '$lib/utils/accounts';
 
 export interface RateLimitWindow {
 	utilization: number; // 0-100
@@ -122,6 +122,7 @@ function createProviderRateLimitStore(
 	let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let fetchInFlight = false; // guard against concurrent fetches
 	let autoRefreshEnabled = false;
+	let accountDisabled = false; // the account behind this store is disabled: never fetch
 	let currentRefreshIntervalMs = baseRefreshIntervalMs;
 
 	function shouldShowStale(state: Pick<RateLimitState, 'lastFetched' | 'consecutiveFailures'>): boolean {
@@ -142,6 +143,7 @@ function createProviderRateLimitStore(
 		subscribe,
 
 		async fetch() {
+			if (accountDisabled) return;
 			// Skip if a fetch is already in-flight (prevents stacking after sleep/wake)
 			if (fetchInFlight) {
 				console.log(`[RateLimits] Skipping ${commandName} — fetch already in-flight`);
@@ -218,7 +220,7 @@ function createProviderRateLimitStore(
 
 		/** Start periodic auto-refresh */
 		startAutoRefresh() {
-			if (autoRefreshEnabled) return;
+			if (autoRefreshEnabled || accountDisabled) return;
 			autoRefreshEnabled = true;
 			void store.fetch();
 		},
@@ -236,6 +238,17 @@ function createProviderRateLimitStore(
 		restartAutoRefresh() {
 			store.stopAutoRefresh();
 			store.startAutoRefresh();
+		},
+
+		/**
+		 * Disabling stops polling, drops held data (a disabled account's window
+		 * must not hold back the Smart Queue) and blocks every fetch path until
+		 * re-enabled. Re-enabling doesn't start polling; call startAutoRefresh.
+		 */
+		setAccountDisabled(disabled: boolean) {
+			if (disabled === accountDisabled) return;
+			if (disabled) store.reset();
+			accountDisabled = disabled;
 		},
 
 		/** Reset state */
@@ -363,10 +376,19 @@ export function rateLimitStoreForAccount(
 /**
  * Reconcile the per-account store registry against the configured accounts:
  * create + auto-refresh a store for every configured, non-disabled account, and
- * retire stores for accounts that disappeared or became disabled. Cheap to call
- * repeatedly (`startAutoRefresh` is idempotent).
+ * retire stores for accounts that disappeared or became disabled. The provider
+ * singletons (default logins) are started or switched off per their account's
+ * `disabled` flag. Cheap to call repeatedly (`startAutoRefresh` is idempotent).
  */
 export function syncAccountRateLimitStores(accounts: AgentAccount[]): void {
+	for (const [id, store] of [
+		[DEFAULT_ACCOUNT_ID.Claude, rateLimits],
+		[DEFAULT_ACCOUNT_ID.OpenAI, codexRateLimits]
+	] as const) {
+		const disabled = accounts.some((a) => a.id === id && a.disabled);
+		store.setAccountDisabled(disabled);
+		if (!disabled) store.startAutoRefresh();
+	}
 	const active = new Set<string>();
 	for (const account of accounts) {
 		if (account.disabled || isDefaultAccountId(account.id)) continue;
