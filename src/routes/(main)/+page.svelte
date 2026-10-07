@@ -574,9 +574,9 @@
           providerLocked={!!activeSession.forkedFromSessionId}
           forkedFromLabel={activeSession.forkedFromSessionLabel || ''}
           isRecordingForSetup={$isRecordingForSetup}
-          onStart={(config) => handleSetupSessionStart(sessionId, config)}
-          onSchedule={(config, window) =>
-            handleSetupSessionStart(sessionId, { ...config, schedule: window })}
+          onStart={(config, ownerId) => handleSetupSessionStart(ownerId, config)}
+          onSchedule={(config, window, ownerId) =>
+            handleSetupSessionStart(ownerId, { ...config, schedule: window })}
           onToPile={(config) => handleSetupToPile(sessionId, config)}
           onDraftChange={(targetSessionId, prompt, images) =>
             sdkSessions.updateDraft(

@@ -1,3 +1,12 @@
+<script lang="ts" module>
+  import { SvelteSet } from 'svelte/reactivity';
+
+  // Setup sessions with a launch in flight (worktree creation can take seconds). Module
+  // level so the state outlives a remount when the user leaves and comes back mid-launch.
+  const startingFor = new SvelteSet<string>();
+  const creatingWorktreeFor = new SvelteSet<string>();
+</script>
+
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { get } from 'svelte/store';
@@ -90,13 +99,16 @@
     providerLocked?: boolean;
     forkedFromLabel?: string;
     isRecordingForSetup?: boolean;
-    onStart: (config: SetupLaunchConfig) => void;
+    /** `sessionId` is the setup session that owned the form when Start was pressed — use it
+     *  rather than the current prop, which may have moved on during worktree creation. */
+    onStart: (config: SetupLaunchConfig, sessionId: string) => void;
     /** Schedule the launch for a later usage window (fire-and-forget) instead of starting now. */
     /** 'after_sessions' = start once every other session in the target repo/worktree is done. */
     /** `{ at }` = start at a custom wall-clock time picked from the schedule menu. */
     onSchedule?: (
       config: SetupLaunchConfig,
       window: QueueWindow | 'after_sessions' | { at: number },
+      sessionId: string,
     ) => void;
     /** Save this draft to the pile to handle later instead of starting a session. */
     onToPile?: (config: SetupLaunchConfig) => void;
@@ -150,7 +162,7 @@
   const showProviderChoice = $derived(
     openaiAvailable && ($settings.enabled_providers?.claude ?? true)
   );
-  let isStarting = $state(false);
+  const isStarting = $derived(startingFor.has(sessionId));
   let isAwaitingTranscript = $state(false);
   let promptTextareaRef: PromptTextarea | undefined;
   let prevSessionId = $state(sessionId);
@@ -169,7 +181,7 @@
   let existingWorktrees = $state<WorktreeInfo[]>([]);
   let selectedWorktreePath = $state<string>(initialWorktreePath);
   let isLoadingWorktrees = $state(false);
-  let isCreatingWorktree = $state(false);
+  const isCreatingWorktree = $derived(creatingWorktreeFor.has(sessionId));
   let showWorktreeDropdown = $state(false);
 
   // Derived state
@@ -350,78 +362,104 @@
    * (defer via the Smart Queue). Returns null if worktree creation failed.
    */
   async function resolveStartConfig(promptOverride?: string): Promise<SetupLaunchConfig | null> {
+    // Snapshot the whole form BEFORE any await: worktree creation takes seconds, and the
+    // user may switch to another setup session meanwhile (this component is reused, so
+    // the form state is reset to that session's values) or leave the view entirely.
     const effectivePrompt = (promptOverride ?? prompt).trim();
     const imageContent: SdkImageContent[] | undefined = pendingImages.length > 0
       ? toSdkImageContent(pendingImages)
       : undefined;
+    const ownerId = sessionId;
+    const repoPath = cwd;
+    const repo = currentRepo;
+    const mode = worktreeMode;
+    const chips = [...selectedChips];
+    const snapshot = {
+      model,
+      effortLevel,
+      provider,
+      accountId: selectedAccountId && !isDefaultAccountId(selectedAccountId) ? selectedAccountId : undefined,
+    };
 
-    let effectiveCwd = cwd;
+    let effectiveCwd = repoPath;
     let worktreeBranch: string | undefined;
     let worktreeRepoPath: string | undefined;
     let worktreePostSetup: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] } | undefined;
 
-    if (worktreeMode === 'new' && cwd && cwd !== '.') {
-      isCreatingWorktree = true;
+    if (mode === 'new' && repoPath && repoPath !== '.') {
+      creatingWorktreeFor.add(ownerId);
       try {
         const branchName = await invoke<string>('generate_worktree_branch_name', {
           prompt: effectivePrompt,
-          repoPath: cwd,
+          repoPath,
         });
 
-        const repo = currentRepo;
         const result = await invoke<WorktreeCreationResult>('create_git_worktree_only', {
-          repoPath: cwd,
+          repoPath,
           branchName,
           worktreePath: null,
           baseBranch: repo?.worktree_base_branch || null,
         });
 
-        worktreeRepoPath = cwd;
+        worktreeRepoPath = repoPath;
         effectiveCwd = result.worktree_path;
         worktreeBranch = result.branch;
 
         const copyFiles = repo?.worktree_copy_files || [];
         const postCreateCommands = repo?.worktree_post_create_commands || [];
         if (copyFiles.length > 0 || postCreateCommands.length > 0) {
-          worktreePostSetup = { repoPath: cwd, copyFiles, postCreateCommands };
+          worktreePostSetup = { repoPath, copyFiles, postCreateCommands };
         }
       } catch (err) {
         console.error('[SessionSetupView] Failed to create worktree:', err);
         return null;
       } finally {
-        isCreatingWorktree = false;
+        creatingWorktreeFor.delete(ownerId);
       }
-    } else if (worktreeMode === 'existing' && selectedWorktreePath) {
-      worktreeRepoPath = cwd;
+    } else if (mode === 'existing' && selectedWorktreePath) {
+      worktreeRepoPath = repoPath;
       effectiveCwd = selectedWorktreePath;
       const selectedWt = existingWorktrees.find(w => samePath(w.path, selectedWorktreePath));
       worktreeBranch = selectedWt?.branch || undefined;
     }
 
     return {
-      prompt: appendChips(effectivePrompt, selectedChips),
+      prompt: appendChips(effectivePrompt, chips),
       images: imageContent,
-      model,
-      effortLevel,
+      ...snapshot,
       cwd: effectiveCwd,
-      provider,
-      accountId: selectedAccountId && !isDefaultAccountId(selectedAccountId) ? selectedAccountId : undefined,
-      worktreeMode: worktreeMode !== 'main' ? worktreeMode : undefined,
+      worktreeMode: mode !== 'main' ? mode : undefined,
       worktreeBranch,
       worktreeRepoPath,
       worktreePostSetup,
     };
   }
 
+  /**
+   * Resolve the config and hand it to `dispatch` together with the session that owned the
+   * form when the user pressed Start. The id and callback are captured up front so the
+   * launch still lands on the right session if the view is left or switched while the
+   * worktree is being created.
+   */
+  async function runLaunch(
+    promptOverride: string | undefined,
+    dispatch: (config: SetupLaunchConfig, ownerId: string) => unknown,
+  ) {
+    const ownerId = sessionId;
+    if (startingFor.has(ownerId)) return;
+    startingFor.add(ownerId);
+    try {
+      const config = await resolveStartConfig(promptOverride);
+      if (config) await dispatch(config, ownerId);
+    } finally {
+      startingFor.delete(ownerId);
+    }
+  }
+
   async function handleStart() {
     if (!canStart || isStarting) return;
-    isStarting = true;
-    try {
-      const config = await resolveStartConfig();
-      if (config) await onStart(config);
-    } finally {
-      isStarting = false;
-    }
+    const start = onStart;
+    await runLaunch(undefined, (config, ownerId) => start(config, ownerId));
   }
 
   /** Quick action combined with the typed draft (draft first, action appended). */
@@ -439,13 +477,8 @@
   /** Ctrl+click quick action: start now with the draft + action combined. */
   async function handleQuickAction(actionPrompt: string) {
     if (isStarting) return;
-    isStarting = true;
-    try {
-      const config = await resolveStartConfig(combineActionWithPrompt(actionPrompt));
-      if (config) await onStart(config);
-    } finally {
-      isStarting = false;
-    }
+    const start = onStart;
+    await runLaunch(combineActionWithPrompt(actionPrompt), (config, ownerId) => start(config, ownerId));
   }
 
   /** Modifier quick action: queue the session (draft + action combined) to start
@@ -455,26 +488,17 @@
     window: QueueWindow | 'after_sessions',
   ) {
     if (isStarting || !onSchedule) return;
-    isStarting = true;
-    try {
-      const config = await resolveStartConfig(combineActionWithPrompt(actionPrompt));
-      if (config) await onSchedule(config, window);
-    } finally {
-      isStarting = false;
-    }
+    const schedule = onSchedule;
+    await runLaunch(combineActionWithPrompt(actionPrompt), (config, ownerId) =>
+      schedule(config, window, ownerId));
   }
 
   async function handleSchedule(window: QueueWindow | 'after_sessions' | { at: number }) {
     scheduleMenuOpen = false;
     timePickerOpen = false;
     if (!canStart || isStarting || !onSchedule) return;
-    isStarting = true;
-    try {
-      const config = await resolveStartConfig();
-      if (config) await onSchedule(config, window);
-    } finally {
-      isStarting = false;
-    }
+    const schedule = onSchedule;
+    await runLaunch(undefined, (config, ownerId) => schedule(config, window, ownerId));
   }
 
   // --- Custom time / recurring schedule ---
