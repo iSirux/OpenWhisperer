@@ -27,6 +27,7 @@
   import { isRecordingForSetup as isRecordingForSetupStore } from '$lib/stores/recordingFlow';
   import { DEFAULT_HOLD_THRESHOLD_MS, DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
   import PromptTextarea from '$lib/components/PromptTextarea.svelte';
+  import { openImage } from '$lib/stores/imageViewer';
   import {
     sendTimingFromEvent,
     spaceSendTimingFromEvent,
@@ -1135,7 +1136,9 @@
         <div class="pending-images">
           {#each pendingImages as img, i}
             <div class="pending-image">
-              <img src={createPreviewUrl(img)} alt="Pending" />
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+              <img src={createPreviewUrl(img)} alt="Pending" onclick={() => openImage(createPreviewUrl(img), 'Pending')} />
               <button
                 class="remove-image"
                 onclick={() => removeImage(i)}
@@ -1681,6 +1684,7 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+    cursor: zoom-in;
   }
 
   .pending-image .remove-image {

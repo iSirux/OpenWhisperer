@@ -5,6 +5,7 @@
   import { get } from 'svelte/store';
   import AppHeader from '$lib/components/AppHeader.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import ImageLightbox from '$lib/components/ImageLightbox.svelte';
   import { settings, configLoadedOk, configLoadReport } from '$lib/stores/settings';
   import { pile } from '$lib/stores/pile';
   import { repos } from '$lib/stores/repos';
@@ -638,6 +639,8 @@
   onconfirm={confirmActiveClose}
   oncancel={cancelActiveClose}
 />
+
+<ImageLightbox />
 
 <style>
   .app-container {

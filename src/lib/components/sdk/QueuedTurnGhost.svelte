@@ -5,6 +5,7 @@
   import { formatScheduleTarget } from "$lib/utils/duration";
   import SendTimingIcon from "./SendTimingIcon.svelte";
   import { validationRuns } from "$lib/stores/validation";
+  import { openImage } from "$lib/stores/imageViewer";
 
   // `turn` is the parked (not-yet-sent) turn — the source of truth for what will be
   // sent and when; `message` is its flagged ghost bubble, pulled out of the scrolling
@@ -94,7 +95,14 @@
     {#if message.images && message.images.length > 0}
       <div class="ghost-images">
         {#each message.images as img}
-          <img src={createImagePreviewUrl(img)} alt="Attached" class="ghost-image" />
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <img
+            src={createImagePreviewUrl(img)}
+            alt="Attached"
+            class="ghost-image"
+            onclick={() => openImage(createImagePreviewUrl(img), "Attached")}
+          />
         {/each}
       </div>
     {/if}
@@ -190,6 +198,7 @@
     max-width: 220px;
     max-height: 160px;
     border-radius: 4px;
+    cursor: zoom-in;
   }
 
   .ghost-actions {

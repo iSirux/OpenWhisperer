@@ -23,6 +23,7 @@
   import type { SdkProvider } from "$lib/utils/models";
   import { settings } from "$lib/stores/settings";
   import { modifierCombo } from "$lib/stores/ctrlHint";
+  import { openImage } from "$lib/stores/imageViewer";
 
   let {
     sessionId,
@@ -571,7 +572,9 @@
     <div class="pending-images">
       {#each pendingImages as img, i}
         <div class="pending-image">
-          <img src={createPreviewUrl(img)} alt="Pending" />
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <img src={createPreviewUrl(img)} alt="Pending" onclick={() => openImage(createPreviewUrl(img), "Pending")} />
           <button
             class="remove-image"
             onclick={() => removeImage(i)}
@@ -1191,6 +1194,7 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+    cursor: zoom-in;
   }
 
   .pending-image .remove-image {

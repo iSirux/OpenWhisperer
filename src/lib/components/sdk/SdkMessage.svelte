@@ -6,6 +6,7 @@
   import { getModelType } from "$lib/utils/modelColors";
   import RerunDropdown from "./RerunDropdown.svelte";
   import ForkButton from "./ForkButton.svelte";
+  import { openImage } from "$lib/stores/imageViewer";
 
   let {
     message,
@@ -104,18 +105,24 @@
             {#each message.images as img}
               {#if img.source === "screenshot"}
                 <span class="message-image-wrap" title="Auto-captured when the recording started">
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                   <img
                     src={createImagePreviewUrl(img)}
                     alt="Screen at recording start"
                     class="message-image"
+                    onclick={() => openImage(createImagePreviewUrl(img), "Screen at recording start")}
                   />
                   <span class="screenshot-badge">Screenshot</span>
                 </span>
               {:else}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                 <img
                   src={createImagePreviewUrl(img)}
                   alt="Attached"
                   class="message-image"
+                  onclick={() => openImage(createImagePreviewUrl(img), "Attached")}
                 />
               {/if}
             {/each}
@@ -274,10 +281,13 @@
     {#if message.images && message.images.length > 0}
       <div class="tool-result-images">
         {#each message.images as img}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <img
             src={createImagePreviewUrl(img)}
             alt="Tool result"
             class="tool-result-image"
+            onclick={() => openImage(createImagePreviewUrl(img), "Tool result")}
           />
         {/each}
       </div>
@@ -1014,7 +1024,7 @@
     max-width: 300px;
     max-height: 200px;
     border-radius: 4px;
-    cursor: pointer;
+    cursor: zoom-in;
     transition: transform 0.2s;
   }
 
@@ -1053,5 +1063,6 @@
     max-height: 400px;
     border-radius: 4px;
     border: 1px solid var(--color-border);
+    cursor: zoom-in;
   }
 </style>
