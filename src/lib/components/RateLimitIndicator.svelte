@@ -21,6 +21,10 @@
   );
   let claudeDefault = $derived(defaultAccountFor('Claude', $settings.accounts));
   let codexDefault = $derived(defaultAccountFor('OpenAI', $settings.accounts));
+  // A disabled default account hides its indicator; its store keeps polling
+  // because Smart Queue exhaustion detection reads it.
+  let claudeHidden = $derived(claudeAuthExpired || !!claudeDefault.disabled);
+  let codexHidden = $derived(codexAuthExpired || !!codexDefault.disabled);
 
   // Calculate paces per provider
   let claudePace5h = $derived(claude?.five_hour ? calculatePace(claude.five_hour.utilization, claude.five_hour.resets_at, 5) : null);
@@ -124,8 +128,8 @@
   });
 </script>
 
-{#snippet providerIndicator(data: typeof claude, p5h: typeof claudePace5h, p7d: typeof claudePace7d, name: 'Claude' | 'Codex', error: string | null, authExpired: boolean, account: AgentAccount)}
-  {#if (data || error) && !authExpired}
+{#snippet providerIndicator(data: typeof claude, p5h: typeof claudePace5h, p7d: typeof claudePace7d, name: 'Claude' | 'Codex', error: string | null, hidden: boolean, account: AgentAccount)}
+  {#if (data || error) && !hidden}
     <button
       class="indicator indicator-account"
       class:indicator-claude={name === 'Claude'}
@@ -212,10 +216,8 @@
   {/if}
 {/snippet}
 
-{#if (claude && !claudeAuthExpired) || (codex && !codexAuthExpired) || (claudeError && !claudeAuthExpired) || (codexError && !codexAuthExpired)}
-  {@render providerIndicator(claude, claudePace5h, claudePace7d, 'Claude', claudeError, claudeAuthExpired, claudeDefault)}
-  {@render providerIndicator(codex, codexPace5h, codexPace7d, 'Codex', codexError, codexAuthExpired, codexDefault)}
-{/if}
+{@render providerIndicator(claude, claudePace5h, claudePace7d, 'Claude', claudeError, claudeHidden, claudeDefault)}
+{@render providerIndicator(codex, codexPace5h, codexPace7d, 'Codex', codexError, codexHidden, codexDefault)}
 {#each configuredAccounts as account (account.id)}
   {@render accountIndicator(account)}
 {/each}
