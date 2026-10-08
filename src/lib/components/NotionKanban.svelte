@@ -129,6 +129,7 @@
   const ACTION_DEFAULTS: Record<string, { worktree: boolean }> = {
     implement: { worktree: true },
     talk: { worktree: false },
+    investigate: { worktree: false },
     groom: { worktree: false },
     classify: { worktree: false },
     split: { worktree: false },
@@ -304,6 +305,10 @@
       case "talk":
         return {
           prompt: `read card: ${card.title}.\nlets talk about this card - scan the codebase to get an understanding, then discuss`,
+        };
+      case "investigate":
+        return {
+          prompt: `read card: ${card.title}.\ninvestigate`,
         };
       case "groom":
         return {
@@ -916,6 +921,7 @@
         { id: "implement", label: "Implement", color: "emerald" },
         { id: "groom", label: "Groom", color: "amber" },
         { id: "talk", label: "Talk About", color: "blue" },
+        { id: "investigate", label: "Investigate", color: "orange" },
         { id: "classify", label: "Classify", color: "purple" },
         { id: "split", label: "Split", color: "pink" },
         { id: "flesh_out", label: "Flesh Out", color: "cyan" },
