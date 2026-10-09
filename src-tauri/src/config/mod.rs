@@ -137,6 +137,10 @@ pub struct AppConfig {
     /// (seeded by migration v11→v12, re-ensured on load and save).
     #[serde(default)]
     pub accounts: Vec<AgentAccount>,
+    /// Auto-pick a new session's account by usage pace. Missing on legacy
+    /// configs deserializes to `Off`, so no migration is needed.
+    #[serde(default)]
+    pub account_auto_select: AccountAutoSelect,
     #[serde(default)]
     pub active_repo_index: usize,
     /// When true, repo is auto-selected based on prompt content (if Gemini auto_select_repo is enabled)
@@ -401,6 +405,7 @@ impl Default for AppConfig {
                 default_account_for(SdkProvider::Claude),
                 default_account_for(SdkProvider::OpenAI),
             ],
+            account_auto_select: AccountAutoSelect::default(),
             active_repo_index: 0,
             auto_repo_mode: false,
             default_model: default_model(),

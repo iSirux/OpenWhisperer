@@ -33,6 +33,19 @@ pub struct AgentAccount {
     pub disabled: bool,
 }
 
+/// How a new session's account is chosen when none is picked explicitly.
+/// The ranking itself lives in the frontend (`utils/accountAutoSelect.ts`),
+/// which owns the rate-limit data; the backend only stores the choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountAutoSelect {
+    /// The repo whitelist's first account (pre-feature behavior).
+    #[default]
+    Off,
+    /// The allowed account furthest under its usage pace (5h/7d headroom).
+    Pace,
+}
+
 /// Reserved account id for the machine's default Claude login (no env
 /// override). Stored in `AppConfig.accounts` like any other account so it can
 /// carry a user label/color, but it never has a `config_dir` and can't be

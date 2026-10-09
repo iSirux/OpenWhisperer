@@ -27,9 +27,9 @@
   } from "$lib/utils/models";
   import {
     allowedAccountsForRepo,
-    defaultAccountIdForRepo,
     isDefaultAccountId,
   } from "$lib/utils/accounts";
+  import { autoAccountIdForRepo } from "$lib/utils/accountAutoSelect";
 
   interface NotionCard {
     id: string;
@@ -103,7 +103,7 @@
     const ids = launchAccounts.map((account) => account.id);
     if (launchAccountId && ids.includes(launchAccountId)) return;
     launchAccountId =
-      defaultAccountIdForRepo($settings.accounts, $activeRepo, accountProvider) ??
+      autoAccountIdForRepo($settings.accounts, $activeRepo, accountProvider) ??
       launchAccounts[0]?.id;
   });
 

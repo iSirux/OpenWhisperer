@@ -24,9 +24,9 @@
   import { repos } from '$lib/stores/repos';
   import {
     allowedAccountsForRepo,
-    defaultAccountIdForRepo,
     isDefaultAccountId,
   } from '$lib/utils/accounts';
+  import { autoAccountIdForRepo } from '$lib/utils/accountAutoSelect';
   import EffortToggle from '$lib/components/EffortToggle.svelte';
   import SendTimingIcon from '$lib/components/sdk/SendTimingIcon.svelte';
   import { modifierCombo } from '$lib/stores/ctrlHint';
@@ -122,7 +122,7 @@
     const ids = accounts.map((account) => account.id);
     if (reviewerAccountId && ids.includes(reviewerAccountId)) return;
     reviewerAccountId =
-      defaultAccountIdForRepo($settings.accounts, repo, accountProvider) ?? accounts[0]?.id;
+      autoAccountIdForRepo($settings.accounts, repo, accountProvider) ?? accounts[0]?.id;
   });
 
   // The model the effort toggle caps itself against (resolved like the run will be).

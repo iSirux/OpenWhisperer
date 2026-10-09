@@ -16,10 +16,8 @@
     getProviderForModel,
     type SdkProvider,
   } from '$lib/utils/models';
-  import {
-    allowedAccountsForRepo,
-    defaultAccountIdForRepo,
-  } from '$lib/utils/accounts';
+  import { allowedAccountsForRepo } from '$lib/utils/accounts';
+  import { autoAccountIdForRepo } from '$lib/utils/accountAutoSelect';
   import { dockOrientation } from '$lib/stores/dockOrientation';
   import EffortToggle from '$lib/components/EffortToggle.svelte';
 
@@ -174,7 +172,7 @@
     if (run.fixAccountId && ids.includes(run.fixAccountId)) return;
     validation.setFixAccount(
       run.id,
-      defaultAccountIdForRepo($settings.accounts, fixRepo, fixAccountProvider) ??
+      autoAccountIdForRepo($settings.accounts, fixRepo, fixAccountProvider) ??
         fixAccounts[0]?.id,
     );
   });

@@ -392,6 +392,9 @@ export interface AgentAccount {
   disabled?: boolean;
 }
 
+/** How a new session's account is chosen when none is picked explicitly. */
+export type AccountAutoSelect = "off" | "pace";
+
 export type CodexMode = "Sdk" | "AppServer";
 /** Codex-only interactive permission mode for new sessions.
  *  "AutoApprove" = approvalPolicy "never" + explicit danger-full-access.
@@ -668,6 +671,9 @@ export interface AppConfig {
   enabled_providers: EnabledProviders;
   /** Registered agent accounts (isolated provider login profiles). Empty = feature invisible. */
   accounts: AgentAccount[];
+  /** How a new session's account is chosen when none is picked: "off" = the repo's
+   *  first allowed account, "pace" = the account furthest under its usage pace. */
+  account_auto_select: AccountAutoSelect;
   /** Whether the first-run onboarding wizard has been completed (or skipped) */
   onboarding_completed: boolean;
   /** Default OpenAI model for Codex SDK sessions */
@@ -879,6 +885,7 @@ const defaultConfig: AppConfig = {
   sdk_provider: "Claude",
   enabled_providers: { claude: true, openai: true },
   accounts: [],
+  account_auto_select: "off",
   onboarding_completed: false,
   openai_model: "gpt-5.6-terra",
   enabled_openai_models: [

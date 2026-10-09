@@ -241,7 +241,9 @@ function resolveLaunch(target: CliTarget, repo: RepoConfig, invoking?: SdkSessio
       ? invoking.accountId
       : provider === base.provider
         ? base.accountId
-        : defaultAccountIdForRepo(s.accounts, repo, provider === 'openai' ? 'OpenAI' : 'Claude');
+        : s.account_auto_select === 'pace'
+          ? undefined // picked by usage pace at launch
+          : defaultAccountIdForRepo(s.accounts, repo, provider === 'openai' ? 'OpenAI' : 'Claude');
 
   return { model, effortLevel, provider, accountId };
 }

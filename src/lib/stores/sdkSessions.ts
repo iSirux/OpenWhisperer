@@ -15,7 +15,13 @@ import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
 import { USAGE_LIMIT_CONTINUATION, MAX_USAGE_LIMIT_RETRIES } from '$lib/utils/usageLimitRecovery';
 import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
-import { defaultAccountIdForRepo } from '$lib/utils/accounts';
+import { defaultAccountIdForRepo, isDefaultAccountId } from '$lib/utils/accounts';
+import {
+  autoAccountIdForRepo,
+  isPaceAutoSelectEnabled,
+  noteAccountLaunch,
+  pickAccountIdForRepo,
+} from '$lib/utils/accountAutoSelect';
 // Type-only import (erased at build; no runtime cycle with the validation store,
 // which value-imports from here).
 import type { PersistedValidationRun, RunOptions } from './validation';
@@ -2432,18 +2438,24 @@ function createSdkSessionsStore() {
     // Pin the session to an agent account (the backend injects the profile env var).
     // Prefer an id already set on the session (explicit setup/fork choice); otherwise
     // derive from the repo whitelist/preference. Store it before invoking so restores,
-    // rate-limit re-sends and forks stay pinned to the same account.
+    // rate-limit re-sends and forks stay pinned to the same account. Only a brand-new
+    // conversation may be auto-routed by usage pace — a resumed one must stay on the
+    // login that owns it (undefined there = the machine default). A reserved `default-*`
+    // id on the session is an explicit machine-default pick: honored, then stored as
+    // undefined like every other machine-default session.
     const existingAccountId = get({ subscribe }).find((s) => s.id === id)?.accountId;
-    const resolvedAccountId =
+    const isNewConversation = !sdkSessionId && !historyMessages?.length && !forkFromSdkSessionId;
+    const accountProvider = resolvedProvider === 'openai' ? 'OpenAI' : 'Claude';
+    const candidateAccountId =
       existingAccountId ??
-      defaultAccountIdForRepo(
-        currentSettings.accounts,
-        repoForSession,
-        resolvedProvider === 'openai' ? 'OpenAI' : 'Claude',
-      );
-    if (resolvedAccountId && resolvedAccountId !== existingAccountId) {
+      (isNewConversation
+        ? autoAccountIdForRepo(currentSettings.accounts, repoForSession, accountProvider)
+        : defaultAccountIdForRepo(currentSettings.accounts, repoForSession, accountProvider));
+    const resolvedAccountId = isDefaultAccountId(candidateAccountId) ? undefined : candidateAccountId;
+    if (resolvedAccountId !== existingAccountId) {
       update((all) => all.map((s) => (s.id === id ? { ...s, accountId: resolvedAccountId } : s)));
     }
+    if (isNewConversation) noteAccountLaunch(resolvedAccountId, resolvedProvider);
 
     // Prefer SDK session ID for proper resume, fall back to history messages
     // The SDK session ID allows proper conversation continuation without re-sending all history
@@ -3479,6 +3491,19 @@ function createSdkSessionsStore() {
       const gatedProvider = normalizeSdkProvider(config.provider, gatedModel);
       const hasPrompt = config.prompt.trim().length > 0;
 
+      // Pace auto-select: resolve the account BEFORE the queue gate, so an exhausted preferred
+      // account routes the launch to one with room instead of queueing it.
+      if (!config.accountId && isPaceAutoSelectEnabled()) {
+        config = {
+          ...config,
+          accountId: pickAccountIdForRepo(
+            get(settings).accounts,
+            findRepoById(get(repos).list, config.repoId ?? resolveRepoId(config.cwd)),
+            gatedProvider === 'openai' ? 'OpenAI' : 'Claude',
+          ),
+        };
+      }
+
       // Smart Queue (first-launch gate): park this session as `queued` instead of launching when
       // either the user explicitly scheduled it for later (`config.schedule` — a usage-window
       // boundary, a custom wall-clock time, or "when the worktree is idle"; fire-and-forget from the
@@ -3926,7 +3951,17 @@ function createSdkSessionsStore() {
     async initializeSession(id: string, cwd: string, model: string, effortLevel: EffortLevel, systemPrompt?: string, pendingPrompt?: string, provider?: SdkProvider): Promise<void> {
       const sessionForInit = get({ subscribe }).find(s => s.id === id);
       const sessionProvider = provider ?? sessionForInit?.provider ?? getProviderForModel(model);
-      const sessionAccountId = sessionForInit?.accountId;
+      let sessionAccountId = sessionForInit?.accountId;
+      // Pace auto-select: pin the account before the queue gate (see startSetupSession).
+      if (!sessionAccountId && isPaceAutoSelectEnabled()) {
+        sessionAccountId = pickAccountIdForRepo(
+          get(settings).accounts,
+          findRepoById(get(repos).list, resolveRepoId(cwd)),
+          sessionProvider === 'openai' ? 'OpenAI' : 'Claude',
+        );
+        const pinned = sessionAccountId;
+        update(sessions => sessions.map(s => (s.id === id ? { ...s, accountId: pinned } : s)));
+      }
 
       // Smart Queue (first-launch gate): only a prompt-bearing launch consumes the rate limit, so
       // only defer when there is a pending prompt. Park as `queued` (prompt on prepared fields) so

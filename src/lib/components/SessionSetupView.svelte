@@ -62,12 +62,20 @@
     type WorktreeCreationResult,
   } from '$lib/components/session-setup/sessionSetupHelpers';
   import {
+    DEFAULT_ACCOUNT_ID,
     accountsForProvider,
     allowedAccountsForRepo,
     defaultAccountIdForRepo,
     isDefaultAccountId,
   } from '$lib/utils/accounts';
-  import { rateLimitData, codexRateLimitData, accountRateLimits } from '$lib/stores/rateLimits';
+  import {
+    rateLimits,
+    rateLimitData,
+    codexRateLimits,
+    codexRateLimitData,
+    accountRateLimits,
+  } from '$lib/stores/rateLimits';
+  import { pickAccountByPace } from '$lib/utils/accountAutoSelect';
   import type { AgentAccount } from '$lib/stores/settings';
 
   interface SetupLaunchConfig {
@@ -218,7 +226,8 @@
     allowedAccountsForRepo($settings.accounts, currentRepo ?? null, accountProvider)
   );
 
-  /** Subtle 5h capacity hint for an account option, e.g. "· 43% 5h" (empty when no data). */
+  /** Subtle capacity hint for an account option, e.g. "· 43% 5h" (empty when no data).
+   *  With pace auto-select on it also shows the 7d window, which usually decides the pick. */
   function accountCapacityHint(acct: AgentAccount): string {
     const data = isDefaultAccountId(acct.id)
       ? acct.provider === 'OpenAI'
@@ -226,13 +235,54 @@
         : $rateLimitData
       : $accountRateLimits[acct.id]?.data ?? null;
     if (!data?.five_hour) return '';
-    return `· ${Math.round(data.five_hour.utilization)}% 5h`;
+    const fiveHour = `· ${Math.round(data.five_hour.utilization)}% 5h`;
+    return paceRanking && data.seven_day
+      ? `${fiveHour} · ${Math.round(data.seven_day.utilization)}% 7d`
+      : fiveHour;
   }
+
+  // Pace auto-select ranking of the allowed accounts (null when off or only one is allowed).
+  // Reads the stores reactively so the Auto pick follows rate-limit refreshes.
+  // Forks are excluded: a forked conversation can only be read under its source's account.
+  const paceRanking = $derived.by(() => {
+    if ($settings.account_auto_select !== 'pace' || providerLocked || allowedAccounts.length < 2) {
+      return null;
+    }
+    const perAccount = $accountRateLimits;
+    const claude = $rateLimits;
+    const codex = $codexRateLimits;
+    return pickAccountByPace(allowedAccounts, (a) =>
+      isDefaultAccountId(a.id) ? (a.provider === 'OpenAI' ? codex : claude) : perAccount[a.id] ?? null
+    );
+  });
+
+  function formatHeadroom(h: number | null): string {
+    return h == null ? 'n/a' : `${h.toFixed(1)}×`;
+  }
+
+  /** Tooltip for an account option: its headroom vs pace when pace auto-select is on. */
+  function accountPaceTitle(acct: AgentAccount): string {
+    const score = paceRanking?.scores.get(acct.id);
+    if (!score) return acct.label;
+    if (score.authExpired) return `${acct.label} — logged out`;
+    if (score.unknown) return `${acct.label} — no fresh usage data (treated as on pace)`;
+    return `${acct.label} — headroom vs pace: 5h ${formatHeadroom(score.fiveHour)}, 7d ${formatHeadroom(score.sevenDay)} (1.0× = on pace)`;
+  }
+
   // Concrete select value for the machine default: the virtual default's id (not undefined).
+  // A fork defaults to its source's account (undefined there = the machine default).
   const derivedDefaultAccountId = $derived(
-    defaultAccountIdForRepo($settings.accounts, currentRepo ?? null, accountProvider)
+    (providerLocked ? initialAccountId ?? DEFAULT_ACCOUNT_ID[accountProvider] : undefined)
+      ?? paceRanking?.account?.id
+      ?? defaultAccountIdForRepo($settings.accounts, currentRepo ?? null, accountProvider)
       ?? allowedAccounts[0]?.id
   );
+  /** Account for an immediate launch: exactly what the picker shows, the machine
+   *  default as its reserved id so a deliberate Default pick isn't re-routed. */
+  const launchAccountId = $derived(selectedAccountId);
+  /** Account for deferred launches (drafts, schedules, pile): only an explicit pick —
+   *  otherwise left open and resolved when the launch actually happens. */
+  const deferredAccountId = $derived(userPickedAccount ? selectedAccountId : undefined);
 
   // Focus textarea on mount
   $effect(() => {
@@ -352,8 +402,8 @@
       setupWorktreePath: selectedWorktreePath,
       currentBranch: null,
       provider,
-      // Persist a concrete account choice; the machine default stays undefined.
-      accountId: selectedAccountId && !isDefaultAccountId(selectedAccountId) ? selectedAccountId : undefined,
+      // Persist only an explicit account pick; a derived/Auto one is re-derived on restore.
+      accountId: deferredAccountId,
     });
   });
 
@@ -379,7 +429,7 @@
       model,
       effortLevel,
       provider,
-      accountId: selectedAccountId && !isDefaultAccountId(selectedAccountId) ? selectedAccountId : undefined,
+      accountId: launchAccountId,
     };
 
     let effectiveCwd = repoPath;
@@ -549,10 +599,7 @@
         model,
         effortLevel,
         provider,
-        accountId:
-          selectedAccountId && !isDefaultAccountId(selectedAccountId)
-            ? selectedAccountId
-            : undefined,
+        accountId: deferredAccountId,
         useWorktree: worktreeMode !== 'main',
       },
     });
@@ -583,7 +630,7 @@
       effortLevel,
       cwd,
       provider,
-      accountId: selectedAccountId && !isDefaultAccountId(selectedAccountId) ? selectedAccountId : undefined,
+      accountId: deferredAccountId,
     });
   }
 
@@ -997,12 +1044,23 @@
           <div class="option-cell option-cell--grow">
             <label class="option-label">Account</label>
             <div class="account-selector">
+              {#if paceRanking}
+                <button
+                  class="account-btn"
+                  class:active={!userPickedAccount}
+                  onclick={() => { userPickedAccount = false; }}
+                  title="Use the account furthest under its usage pace"
+                >
+                  Auto
+                </button>
+              {/if}
               {#each allowedAccounts as acct (acct.id)}
                 <button
                   class="account-btn"
-                  class:active={selectedAccountId === acct.id}
+                  class:active={(userPickedAccount || !paceRanking) && selectedAccountId === acct.id}
+                  class:auto-picked={!userPickedAccount && paceRanking && selectedAccountId === acct.id}
                   onclick={() => { selectedAccountId = acct.id; userPickedAccount = true; }}
-                  title={acct.label}
+                  title={accountPaceTitle(acct)}
                 >
                   <span class="account-dot" style="background: {acct.color}"></span>
                   {acct.label}
@@ -1600,6 +1658,12 @@
   .account-btn.active {
     background: var(--color-accent);
     color: white;
+  }
+
+  /* The account Auto resolved to (pace auto-select) — outlined, not filled. */
+  .account-btn.auto-picked {
+    box-shadow: inset 0 0 0 1px var(--color-accent);
+    color: var(--color-text-primary);
   }
 
   .account-dot {

@@ -21,7 +21,8 @@ export interface LaunchConfig {
   model: string;
   effortLevel: EffortLevel;
   provider: 'claude' | 'openai';
-  /** Agent account to pin the launched session to (undefined = machine default). */
+  /** Agent account to pin the launched session to (undefined = machine default, or
+   *  picked at launch when pace auto-select is on). */
   accountId?: string;
 }
 
@@ -50,7 +51,12 @@ export function snapshotLaunchConfigForRepo(repo: RepoConfig): LaunchConfig {
   const provider = s.sdk_provider === 'OpenAI' ? 'openai' : ('claude' as const);
   const model = provider === 'openai' ? s.openai_model : s.default_model;
   const effortLevel = settingsToStoreEffort(s.default_effort_level);
-  const accountId = defaultAccountIdForRepo(s.accounts, repo, provider === 'openai' ? 'OpenAI' : 'Claude');
+  // With pace auto-select the account is left open and resolved per launch (in
+  // startSetupSession), so a batch spreads across accounts instead of sharing one pick.
+  const accountId =
+    s.account_auto_select === 'pace'
+      ? undefined
+      : defaultAccountIdForRepo(s.accounts, repo, provider === 'openai' ? 'OpenAI' : 'Claude');
   return { repo, model, effortLevel, provider, accountId };
 }
 

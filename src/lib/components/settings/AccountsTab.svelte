@@ -297,6 +297,23 @@
     </p>
   </div>
 
+  <div class="flex items-center justify-between">
+    <div>
+      <label class="text-sm font-medium text-text-secondary">Auto-pick account by usage pace</label>
+      <p class="text-xs text-text-muted">
+        New sessions without an explicit account choice start on the allowed account furthest under its
+        usage pace — remaining 5h / 7d capacity compared to the time left in each window. The repo's first
+        account is kept unless another is clearly ahead, and an exhausted account is skipped instead of queueing.
+      </p>
+    </div>
+    <input
+      type="checkbox"
+      class="toggle"
+      checked={$settings.account_auto_select === "pace"}
+      onchange={(e) => ($settings.account_auto_select = e.currentTarget.checked ? "pace" : "off")}
+    />
+  </div>
+
   {#if errorMsg}
     <div class="flex items-start gap-2 p-2 rounded border border-red-500/40 bg-red-500/10 text-xs text-red-400">
       <span class="flex-1 break-words">{errorMsg}</span>
