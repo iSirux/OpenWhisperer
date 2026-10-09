@@ -447,6 +447,16 @@ function sdkSessionToDelta(session: SdkSession, base: SdkSession): PersistedSdkS
 }
 
 /**
+ * The sidecar once forwarded the SDK's `tool_progress` events as "[Bash: 30.0s]" text
+ * messages parented to the running tool's own toolUseId, which made the renderer treat
+ * that tool call as a never-finishing subagent block. Drop them from saved sessions;
+ * a loaded session's first save is a full one, so its file is rewritten without them.
+ */
+function isLegacyToolProgressText(msg: PersistedSdkMessage): boolean {
+  return msg.type === 'text' && !!msg.content && /^\[[\w.-]+: \d+(\.\d+)?s\]$/.test(msg.content);
+}
+
+/**
  * Convert persisted SDK session to frontend format.
  * Applies defaults for fields that need runtime initialization.
  */
@@ -471,7 +481,7 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
 
   // Ensure message types are properly typed
   if (persisted.messages) {
-    session.messages = persisted.messages.map(msg => ({
+    session.messages = persisted.messages.filter(msg => !isLegacyToolProgressText(msg)).map(msg => ({
       ...msg,
       type: msg.type as SdkMessage['type'],
       queued: (msg.queued ?? undefined) as SdkMessage['queued'],

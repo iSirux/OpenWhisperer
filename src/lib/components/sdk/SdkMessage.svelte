@@ -4,7 +4,9 @@
   import { renderMarkdown } from "$lib/utils/markdown";
   import { formatToolCallInput, getToolCallSummary } from "$lib/utils/toolCallFormatting";
   import { getModelType } from "$lib/utils/modelColors";
+  import { formatToolRunDuration } from "$lib/utils/duration";
   import RerunDropdown from "./RerunDropdown.svelte";
+  import ToolElapsed from "./ToolElapsed.svelte";
   import ForkButton from "./ForkButton.svelte";
   import { openImage } from "$lib/stores/imageViewer";
 
@@ -90,6 +92,9 @@
     if (event.currentTarget.open) hasExpanded = true;
   }
 
+  let toolRunTime = $derived(
+    message.type === "tool_result" ? formatToolRunDuration(message.toolStartedAt, message.timestamp) : ""
+  );
   let thinkingDuration = $derived(formatDuration(message.thinkingDurationMs));
   let isThinkingComplete = $derived(message.type === "thinking" && message.thinkingDurationMs !== undefined);
   let isPlanApprovalTool = $derived(message.tool === "ExitPlanMode");
@@ -232,7 +237,7 @@
           {/if}
           <span class="tool-badge running">
             <span class="spinner"></span>
-            Running
+            Running · <ToolElapsed since={message.timestamp} />
           </span>
         {/if}
       </summary>
@@ -268,7 +273,7 @@
           <svg viewBox="0 0 16 16" fill="currentColor">
             <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
           </svg>
-          Done
+          {toolRunTime ? `Done · ${toolRunTime}` : "Done"}
         </span>
       </summary>
       {#if hasExpanded && !isPlanApprovalTool && message.output}

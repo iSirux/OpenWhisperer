@@ -43,19 +43,30 @@ export type RenderItem =
 // Keyed by the raw tool_result object (identity-stable: the store never mutates
 // a message in place, it appends), and only reused when the paired `input`
 // reference also matches — a running tool's input can land after its result.
+// One entry per start time: a result that arrived before its tool_start is
+// merged both standalone (no start time) and at the start's slot, every pass.
 const mergedToolCache = new WeakMap<
   SdkMessage,
-  { input: Record<string, unknown> | undefined; merged: SdkMessage }
+  { input: Record<string, unknown> | undefined; startedAt: number | undefined; merged: SdkMessage }[]
 >();
 
 export function mergeToolResult(
   resultMsg: SdkMessage,
-  input: Record<string, unknown> | undefined
+  input: Record<string, unknown> | undefined,
+  startedAt?: number
 ): SdkMessage {
-  const cached = mergedToolCache.get(resultMsg);
-  if (cached && cached.input === input) return cached.merged;
-  const merged = { ...resultMsg, input };
-  mergedToolCache.set(resultMsg, { input, merged });
+  let entries = mergedToolCache.get(resultMsg);
+  const entry = entries?.find((e) => e.startedAt === startedAt);
+  if (entry && entry.input === input) return entry.merged;
+  const merged: SdkMessage = { ...resultMsg, input };
+  if (startedAt !== undefined) merged.toolStartedAt = startedAt;
+  if (entry) {
+    entry.input = input;
+    entry.merged = merged;
+  } else {
+    if (!entries) mergedToolCache.set(resultMsg, (entries = []));
+    entries.push({ input, startedAt, merged });
+  }
   return merged;
 }
 
@@ -99,7 +110,7 @@ export function processSdkMessages(messages: SdkMessage[]): SdkMessage[] {
           // Tool completed - output the result at the START position (preserving start order)
           const resultMsg = toolResults.get(msg.toolUseId)!;
           const input = toolInputs.get(msg.toolUseId);
-          result.push(mergeToolResult(resultMsg, input));
+          result.push(mergeToolResult(resultMsg, input, msg.timestamp));
           outputToolIds.add(msg.toolUseId);
         } else {
           // Tool still running - show tool_start
@@ -144,13 +155,15 @@ export function processSdkMessages(messages: SdkMessage[]): SdkMessage[] {
       } else if (msg.type === 'tool_result') {
         // Find the matching tool_start to get its input
         let toolInput: Record<string, unknown> | undefined;
+        let startedAt: number | undefined;
         for (let j = i - 1; j >= 0; j--) {
           if (msgs[j].type === 'tool_start' && msgs[j].tool === msg.tool) {
             toolInput = msgs[j].input;
+            startedAt = msgs[j].timestamp;
             break;
           }
         }
-        result.push(mergeToolResult(msg, toolInput));
+        result.push(mergeToolResult(msg, toolInput, startedAt));
       } else {
         result.push(msg);
       }
@@ -186,7 +199,7 @@ export function mergeTaskChildren(msgs: SdkMessage[]): SdkMessage[] {
   for (const msg of msgs) {
     if (msg.type === 'tool_start') {
       if (msg.toolUseId && toolResults.has(msg.toolUseId)) {
-        result.push(mergeToolResult(toolResults.get(msg.toolUseId)!, toolInputs.get(msg.toolUseId)));
+        result.push(mergeToolResult(toolResults.get(msg.toolUseId)!, toolInputs.get(msg.toolUseId), msg.timestamp));
         outputToolIds.add(msg.toolUseId);
       } else {
         result.push(msg);
@@ -195,7 +208,7 @@ export function mergeTaskChildren(msgs: SdkMessage[]): SdkMessage[] {
       if (!msg.toolUseId || !outputToolIds.has(msg.toolUseId)) {
         // Preserve existing input from pre-merged results (fallback to msg.input)
         const input = msg.toolUseId ? (toolInputs.get(msg.toolUseId) ?? msg.input) : msg.input;
-        result.push(input === msg.input ? msg : mergeToolResult(msg, input));
+        result.push(input === msg.input ? msg : mergeToolResult(msg, input, msg.toolStartedAt));
       }
     } else {
       result.push(msg);

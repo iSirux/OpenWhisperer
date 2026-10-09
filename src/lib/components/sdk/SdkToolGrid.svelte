@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { SdkMessage } from "$lib/stores/sdkSessions";
   import { formatToolCallInput, getToolCallSummary } from "$lib/utils/toolCallFormatting";
+  import { formatToolRunDuration } from "$lib/utils/duration";
   import { messageRenderKey, uniqueKeys } from "./sdkViewMessageProcessing";
+  import ToolElapsed from "./ToolElapsed.svelte";
 
   let {
     tools,
@@ -98,6 +100,11 @@
     return "";
   }
 
+  // Finished tool calls: how long the run took (thinking shows its own duration).
+  function getRunTime(msg: SdkMessage): string {
+    return msg.type === "tool_result" ? formatToolRunDuration(msg.toolStartedAt, msg.timestamp) : "";
+  }
+
   function openModal(key: string) {
     expandedKey = key;
   }
@@ -143,6 +150,7 @@
     {@const thinking = isThinking(msg)}
     {@const summary = getToolSummary(msg)}
     {@const duration = getDuration(msg)}
+    {@const runTime = getRunTime(msg)}
     {@const displayName = getDisplayName(msg)}
     <button
       class="tool-card"
@@ -156,6 +164,11 @@
           {@html getToolSvgIcon(thinking ? 'Thinking' : (msg.tool || ""))}
         </div>
         <span class="card-name">{displayName}</span>
+        {#if running && !thinking}
+          <span class="card-time"><ToolElapsed since={msg.timestamp} /></span>
+        {:else if runTime}
+          <span class="card-time">{runTime}</span>
+        {/if}
         {#if running}
           <span class="status-indicator status-running">
             <span class="spinner"></span>
@@ -187,7 +200,7 @@
   {@const running = isRunning(expandedTool)}
   {@const thinking = isThinking(expandedTool)}
   {@const displayName = getDisplayName(expandedTool)}
-  {@const duration = getDuration(expandedTool)}
+  {@const duration = getDuration(expandedTool) || getRunTime(expandedTool)}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="modal-backdrop" onclick={handleBackdropClick}>
@@ -200,7 +213,7 @@
         {#if running}
           <span class="modal-badge modal-badge-running">
             <span class="spinner"></span>
-            Running
+            Running{#if !thinking}&nbsp;· <ToolElapsed since={expandedTool.timestamp} />{/if}
           </span>
         {:else}
           <span class="modal-badge modal-badge-done">
@@ -322,6 +335,19 @@
     color: var(--color-text-secondary);
     flex: 1;
     min-width: 0;
+  }
+
+  .card-time {
+    font-size: 0.625rem;
+    color: var(--color-text-muted);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .tool-card.running .card-time {
+    color: var(--color-accent);
   }
 
   .status-indicator {

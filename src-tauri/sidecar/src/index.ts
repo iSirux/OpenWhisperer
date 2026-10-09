@@ -5501,16 +5501,12 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       }
       break;
 
-    case "tool_progress": {
-      // Tool is running
-      const progressParentToolUseId = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
-      sendText(
-        id,
-        `[${message.tool_name}: ${message.elapsed_time_seconds.toFixed(1)}s]`,
-        progressParentToolUseId
-      );
+    case "tool_progress":
+      // Deliberately dropped. These used to be forwarded as "[Bash: 30.0s]" text, but the
+      // SDK sets parent_tool_use_id to the running tool's OWN id, so the frontend took the
+      // tool call for a subagent container: a bare "Task" block with no command that never
+      // completed. Tool cards tick their elapsed time from the tool_start timestamp instead.
       break;
-    }
 
     case "rate_limit_event": {
       // SDKRateLimitEvent: rate_limit_info.{ status, resetsAt?, utilization? }

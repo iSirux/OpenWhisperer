@@ -201,6 +201,8 @@ export interface SdkMessage {
   agentType?: string;
   transcriptPath?: string;
   thinkingDurationMs?: number;
+  /** Render-only: on a merged tool_result, its tool_start's timestamp (for the run duration). */
+  toolStartedAt?: number;
   // Task lifecycle fields
   taskId?: string;
   description?: string;

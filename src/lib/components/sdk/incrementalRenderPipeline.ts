@@ -146,7 +146,7 @@ export function createSdkMessageProcessor(): SdkMessageProcessor {
     switch (slotKind[s]) {
       case SLOT_START: {
         const result = toolResults.get(msg.toolUseId!);
-        return result ? mergeToolResult(result, toolInputs.get(msg.toolUseId!)) : msg;
+        return result ? mergeToolResult(result, toolInputs.get(msg.toolUseId!), msg.timestamp) : msg;
       }
       case SLOT_RESULT:
         return mergeToolResult(msg, toolInputs.get(msg.toolUseId!));

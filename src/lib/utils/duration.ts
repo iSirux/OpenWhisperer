@@ -21,6 +21,16 @@ export function formatDuration(elapsedSeconds: number): string {
 }
 
 /**
+ * Run time of a finished tool call (tool_start → tool_result), or '' when unknown or
+ * under a second — a duration on every quick Read/Grep card would just be noise.
+ */
+export function formatToolRunDuration(startedAt: number | undefined, endedAt: number): string {
+  if (startedAt === undefined) return '';
+  const seconds = Math.floor((endedAt - startedAt) / 1000);
+  return seconds >= 1 ? formatDuration(seconds) : '';
+}
+
+/**
  * Get elapsed time for SDK sessions using timer-based tracking
  * @param accumulatedDurationMs - Total accumulated work time in milliseconds
  * @param currentWorkStartedAt - Timestamp when current work period started (if working)
