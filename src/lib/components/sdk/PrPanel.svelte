@@ -364,7 +364,10 @@
           <span class="check-pass">{checkCounts.pass}/{checkCounts.total} passing</span>
         </div>
         <div class="pr-checks-list">
-          {#each pr.checks as check (check.name)}
+          <!-- Unkeyed: check names aren't unique (a workflow on both push and
+               pull_request reports every job twice), and a duplicate key throws
+               and wedges the whole view. -->
+          {#each pr.checks as check}
             <button
               class="pr-check"
               onclick={() => openCheckUrl(check.url)}
@@ -405,7 +408,7 @@
       </div>
       {#if entry.cleanupResult?.warnings.length}
         <div class="pr-cleanup-warnings">
-          {#each entry.cleanupResult.warnings as warning (warning)}
+          {#each entry.cleanupResult.warnings as warning}
             <div>{warning}</div>
           {/each}
         </div>
