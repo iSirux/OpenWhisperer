@@ -48,7 +48,9 @@
     type QuoteSelection,
   } from "$lib/actions/selectionQuote";
   import SelectionReplyPopover from "./sdk/SelectionReplyPopover.svelte";
-  import { formatQuote } from "$lib/utils/quote";
+  import { blockReply, blockQuoteText, type HoveredBlock } from "$lib/actions/blockReply";
+  import BlockReplyButton from "./sdk/BlockReplyButton.svelte";
+  import { formatQuote, QUOTE_MESSAGE_MAX_CHARS } from "$lib/utils/quote";
   import { formatScheduleTarget } from "$lib/utils/duration";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import LaunchBar from "./sdk/LaunchBar.svelte";
@@ -1063,10 +1065,15 @@
 
   /** Insert the quote as ONE new row in the draft, caret on the row below. */
   function insertQuoteIntoDraft(sel: QuoteSelection) {
-    const line = formatQuote(sel.text, {
-      isCode: sel.isCode,
-      sourceLabel: sel.sourceLabel,
-    });
+    insertQuoteLine(
+      formatQuote(sel.text, {
+        isCode: sel.isCode,
+        sourceLabel: sel.sourceLabel,
+      }),
+    );
+  }
+
+  function insertQuoteLine(line: string) {
     if (!line) return;
     if (promptInputRef) {
       promptInputRef.insertQuote(line);
@@ -1106,6 +1113,28 @@
     } else {
       await handleStartRecording(timing);
     }
+  }
+
+  // --- Reply without selecting ------------------------------------------------
+  // Hovering a block (paragraph, list item, heading, code block, table row) of
+  // assistant text shows a gutter button that quotes just that block; the
+  // message's own action row quotes the whole message (capped — the agent
+  // already has it in context, the quote only points at it).
+  let hoveredBlock = $state.raw<HoveredBlock | null>(null);
+
+  function handleBlockReply() {
+    const el = hoveredBlock?.el;
+    hoveredBlock = null;
+    // A streaming re-render may have replaced the block since it was hovered.
+    if (!el?.isConnected) return;
+    const { text, isCode } = blockQuoteText(el);
+    insertQuoteLine(formatQuote(text, { isCode }));
+  }
+
+  function handleMessageReply(msg: SdkMessage) {
+    insertQuoteLine(
+      formatQuote(msg.content ?? "", { maxChars: QUOTE_MESSAGE_MAX_CHARS }),
+    );
   }
 
   async function handleQuoteCopy() {
@@ -2057,6 +2086,11 @@
     else handleQuoteReply();
     return;
   }
+  if (!quoteSelection && hoveredBlock && focused && e.code === 'KeyR' && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+    e.preventDefault();
+    handleBlockReply();
+    return;
+  }
 
   if (e.key === 'Escape' && focused) {
     // Escape dismisses the reply bar, but never at the cost of the stop-query
@@ -2084,6 +2118,9 @@
       if (!sel) quoteCopied = false;
     },
   }}
+  use:blockReply={{
+    onChange: (block) => (hoveredBlock = block),
+  }}
 >
   {#if quoteSelection}
     <SelectionReplyPopover
@@ -2095,6 +2132,9 @@
       onReplyVoice={handleQuoteReplyVoice}
       onCopy={handleQuoteCopy}
     />
+  {:else if hoveredBlock && messagesEl}
+    <!-- A live selection owns the reply affordance; the hover button yields to it. -->
+    <BlockReplyButton block={hoveredBlock} bounds={messagesEl} onReply={handleBlockReply} />
   {/if}
   {#if session?.contextOverflow}
     <ContextOverflowBanner session={session} />
@@ -2243,6 +2283,7 @@
               message={item.message}
               {copiedMessageId}
               onCopy={copyMessage}
+              onReply={handleMessageReply}
               sessionCwd={cwd}
               {sessionModel}
               {sessionEffortLevel}

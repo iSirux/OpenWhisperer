@@ -14,6 +14,7 @@
     message,
     copiedMessageId = null,
     onCopy,
+    onReply = undefined,
     sessionCwd = "",
     sessionModel = "",
     sessionEffortLevel = null,
@@ -25,6 +26,9 @@
     message: SdkMessage;
     copiedMessageId?: number | null;
     onCopy: (msg: SdkMessage) => void;
+    /** Quote an assistant text message into the prompt. Also opts its markdown
+     *  into per-block hover replies (`[data-block-reply]`). Main transcript only. */
+    onReply?: (msg: SdkMessage) => void;
     sessionCwd?: string;
     sessionModel?: string;
     sessionEffortLevel?: EffortLevel;
@@ -179,12 +183,28 @@
     </div>
   {:else if message.type === "text"}
     <div class="text-message-container">
-      <div class="text-content markdown-body">
+      <div class="text-content markdown-body" data-block-reply={onReply ? "" : undefined}>
         {@html renderMarkdown(message.content ?? "")}
       </div>
       <div class="text-message-actions">
         {#if sessionId && messageIndex >= 0}
           <ForkButton {sessionId} {messageIndex} {message} {sdkSessionId} {provider} />
+        {/if}
+        {#if onReply}
+          <button
+            class="copy-message-button"
+            onclick={() => onReply(message)}
+            title="Reply to this message"
+            aria-label="Quote this message in the prompt"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fill-rule="evenodd"
+                d="M7.707 3.293a1 1 0 010 1.414L5.414 7H11a5 5 0 015 5v3a1 1 0 11-2 0v-3a3 3 0 00-3-3H5.414l2.293 2.293a1 1 0 11-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </button>
         {/if}
         <button
           class="copy-message-button"

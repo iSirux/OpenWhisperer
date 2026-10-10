@@ -11,6 +11,12 @@
 /** Characters kept from a selection before the quote is truncated. */
 export const QUOTE_MAX_CHARS = 1200;
 
+/**
+ * Cap for a whole-message reply. The agent already has the message in context,
+ * so the quote only needs to say which one — the full text would bury the draft.
+ */
+export const QUOTE_MESSAGE_MAX_CHARS = 300;
+
 /** Minimum selection length that produces a reply affordance (suppresses stray drags). */
 export const QUOTE_MIN_CHARS = 3;
 
