@@ -25,7 +25,12 @@
   import { navigation } from '$lib/stores/navigation';
   import { formatScheduleTarget } from '$lib/utils/duration';
   import { getProviderForModel, isAutoModel } from '$lib/utils/models';
-  import { accountsForProvider, isDefaultAccountId } from '$lib/utils/accounts';
+  import { accountsForProvider, allowedAccountsForRepo } from '$lib/utils/accounts';
+  import {
+    autoAccountOptionLabel,
+    paceStateLookup,
+    pickAccountIdForRepo,
+  } from '$lib/utils/accountAutoSelect';
   import RepoSelector from '../RepoSelector.svelte';
   import ModelSelector from '../ModelSelector.svelte';
   import EffortToggle from '../EffortToggle.svelte';
@@ -81,6 +86,15 @@
   // schedule target stores the lowercase session provider.
   const accountProvider = $derived(sessionTarget?.provider === 'openai' ? 'OpenAI' : 'Claude');
   const availableAccounts = $derived(accountsForProvider($settings.accounts, accountProvider));
+  const allowedAccounts = $derived(
+    allowedAccountsForRepo($settings.accounts, targetRepo, accountProvider)
+  );
+  // Pace auto-select on: an unset account = Auto, picked when the schedule fires.
+  const paceAuto = $derived($settings.account_auto_select === 'pace' && allowedAccounts.length > 1);
+  const accountSelectValue = $derived(
+    sessionTarget?.accountId ??
+      (paceAuto ? '' : pickAccountIdForRepo($settings.accounts, targetRepo, accountProvider))
+  );
 
   const isRecurring = $derived(schedule.when.kind === 'recurring');
   const currentRule = $derived<RecurrenceRule>(
@@ -142,7 +156,8 @@
   }
 
   function handleAccountChange(id: string) {
-    patchSessionTarget({ accountId: !id || isDefaultAccountId(id) ? undefined : id });
+    // A machine-default pick stays its reserved id so pace auto-select doesn't re-route it.
+    patchSessionTarget({ accountId: id || undefined });
   }
 
   /** Switch between the one-shot and recurring specs, keeping the other side's shape sane. */
@@ -370,9 +385,12 @@
               Account
               <select
                 class="px-2 py-1 text-xs bg-surface border border-border rounded text-text-primary"
-                value={sessionTarget.accountId ?? availableAccounts[0]?.id ?? ''}
+                value={accountSelectValue}
                 onchange={(e) => handleAccountChange(e.currentTarget.value)}
               >
+                {#if paceAuto}
+                  <option value="">{autoAccountOptionLabel(allowedAccounts, $paceStateLookup)}</option>
+                {/if}
                 {#each availableAccounts as account (account.id)}
                   <option value={account.id}>{account.label}</option>
                 {/each}

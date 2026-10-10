@@ -29,6 +29,7 @@ import {
   type SessionValidationSummary,
 } from './sdkSessions';
 import { settings } from './settings';
+import { repos, findRepoById } from './repos';
 import { buildFixPrompt } from '$lib/utils/validationFix';
 import { buildValidationIntent } from '$lib/utils/validationIntent';
 import {
@@ -38,7 +39,7 @@ import {
   isAutoModel,
   modelSupportsEffort,
 } from '$lib/utils/models';
-import { isDefaultAccountId } from '$lib/utils/accounts';
+import { noteAccountLaunch, pickAccountIdForRepo } from '$lib/utils/accountAutoSelect';
 
 // ---------------------------------------------------------------------------
 // Data model — mirrors src-tauri/src/validation/types.rs (event payloads are
@@ -560,6 +561,13 @@ async function startRun(
   }
   if (existing) dismiss(existing.id);
 
+  const pickedReviewerAccountId = options.reviewerAccountId;
+  if (!options.reviewerAccountId) {
+    const reviewerAccountId = resolveReviewerAccountId(options, repoId, cwd);
+    noteAccountLaunch(reviewerAccountId, getProviderForModel(options.reviewerModel));
+    options = { ...options, reviewerAccountId };
+  }
+
   const runId = await invoke<string>('validation_start_run', {
     sessionId,
     cwd,
@@ -592,7 +600,8 @@ async function startRun(
       fixModel,
       origin?.effortLevel ?? options.reviewerEffort ?? undefined,
     ),
-    fixAccountId: origin?.accountId ?? options.reviewerAccountId ?? undefined,
+    // An Auto reviewer leaves the fix account on Auto too.
+    fixAccountId: origin?.accountId ?? pickedReviewerAccountId ?? undefined,
     panelOpen: true,
     selectedFindingIds: [],
     userFindings: [],
@@ -797,11 +806,24 @@ export function defaultRunOptionsForSession(
     ...seeded,
     reviewerModel,
     reviewerEffort: seeded.reviewerEffort && modelSupportsEffort(reviewerModel) ? seeded.reviewerEffort : null,
-    reviewerAccountId:
-      seeded.reviewerAccountId && !isDefaultAccountId(seeded.reviewerAccountId)
-        ? seeded.reviewerAccountId
-        : null,
   };
+}
+
+/**
+ * The reviewer account a run uses: the explicit pick (a reserved `default-*` id =
+ * the machine login), or for null (Auto) the repo's pace / default pick for the
+ * reviewer's provider — resolved when the run starts, not when it's queued.
+ */
+function resolveReviewerAccountId(options: RunOptions, repoId: string | undefined, cwd: string): string {
+  if (options.reviewerAccountId) return options.reviewerAccountId;
+  const list = get(repos).list;
+  const scope = cwd.replaceAll('\\', '/');
+  const repo =
+    findRepoById(list, repoId) ??
+    list.find((r) => scope.startsWith(r.path.replaceAll('\\', '/'))) ??
+    null;
+  const provider = getProviderForModel(options.reviewerModel) === 'openai' ? 'OpenAI' : 'Claude';
+  return pickAccountIdForRepo(get(settings).accounts, repo, provider);
 }
 
 const STEP_LABELS: Record<StepName, string> = {
@@ -835,7 +857,7 @@ function queueRun(
     `Validate: ${describeSteps(options.steps)}`,
     { cwd, repoId, options },
     timing,
-    { provider, accountId: options.reviewerAccountId ?? undefined },
+    { provider, accountId: resolveReviewerAccountId(options, repoId, cwd) },
   );
 }
 
@@ -1143,10 +1165,9 @@ async function startFixInNewSession(
       model,
       view.fixEffort ?? origin.effortLevel ?? undefined,
     );
-    const accountId =
-      view.fixAccountId && !isDefaultAccountId(view.fixAccountId)
-        ? view.fixAccountId
-        : undefined;
+    // Unset = Auto (resolved at launch); a reserved `default-*` id is an explicit
+    // machine-login pick and is normalized to undefined at session create.
+    const accountId = view.fixAccountId || undefined;
     const newId = sdkSessions.createSetupSession(
       model,
       effort,

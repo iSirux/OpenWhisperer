@@ -25,11 +25,12 @@
     modelSupportsEffort,
     type SdkProvider,
   } from "$lib/utils/models";
+  import { allowedAccountsForRepo } from "$lib/utils/accounts";
   import {
-    allowedAccountsForRepo,
-    isDefaultAccountId,
-  } from "$lib/utils/accounts";
-  import { autoAccountIdForRepo } from "$lib/utils/accountAutoSelect";
+    autoAccountOptionLabel,
+    paceStateLookup,
+    pickAccountIdForRepo,
+  } from "$lib/utils/accountAutoSelect";
 
   interface NotionCard {
     id: string;
@@ -73,7 +74,8 @@
     launchProvider === 'openai' ? $settings.openai_model : $settings.default_model,
   );
   let launchEffort = $state<EffortLevel>(settingsToStoreEffort($settings.default_effort_level));
-  let launchAccountId = $state<string | undefined>(undefined);
+  // '' = Auto (pace auto-select resolves the account per launch, so a batch spreads).
+  let launchAccountId = $state('');
 
   const showProviderChoice = $derived(
     $settings.enabled_providers.claude && $settings.enabled_providers.openai,
@@ -99,19 +101,24 @@
       (launchProvider === 'openai' ? $settings.openai_model : $settings.default_model);
   });
 
+  const paceAuto = $derived(
+    $settings.account_auto_select === 'pace' && launchAccounts.length > 1,
+  );
+
   $effect(() => {
     const ids = launchAccounts.map((account) => account.id);
     if (launchAccountId && ids.includes(launchAccountId)) return;
-    launchAccountId =
-      autoAccountIdForRepo($settings.accounts, $activeRepo, accountProvider) ??
-      launchAccounts[0]?.id;
+    const next = paceAuto
+      ? ''
+      : pickAccountIdForRepo($settings.accounts, $activeRepo, accountProvider);
+    if (launchAccountId !== next) launchAccountId = next;
   });
 
   function selectLaunchProvider(provider: SdkProvider) {
     if (provider === launchProvider) return;
     launchProvider = provider;
     launchModel = provider === 'openai' ? $settings.openai_model : $settings.default_model;
-    launchAccountId = undefined;
+    launchAccountId = '';
   }
 
   function selectedLaunchConfig(): LaunchConfig | null {
@@ -121,8 +128,8 @@
       provider: launchProvider,
       model: launchModel,
       effortLevel: launchEffort,
-      accountId:
-        launchAccountId && !isDefaultAccountId(launchAccountId) ? launchAccountId : undefined,
+      // A machine-default pick stays its reserved id so pace auto-select doesn't re-route it.
+      accountId: launchAccountId || undefined,
     };
   }
 
@@ -657,6 +664,9 @@
           class="h-7 px-2 rounded border border-border bg-surface text-[11px] text-text-primary focus:outline-none focus:border-accent"
           bind:value={launchAccountId}
         >
+          {#if paceAuto}
+            <option value="">{autoAccountOptionLabel(launchAccounts, $paceStateLookup)}</option>
+          {/if}
           {#each launchAccounts as account (account.id)}
             <option value={account.id}>{account.label}</option>
           {/each}

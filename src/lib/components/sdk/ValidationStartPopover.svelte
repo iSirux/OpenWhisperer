@@ -22,11 +22,12 @@
   import ScheduleTimePicker from '$lib/components/schedule/ScheduleTimePicker.svelte';
   import { settings } from '$lib/stores/settings';
   import { repos } from '$lib/stores/repos';
+  import { allowedAccountsForRepo } from '$lib/utils/accounts';
   import {
-    allowedAccountsForRepo,
-    isDefaultAccountId,
-  } from '$lib/utils/accounts';
-  import { autoAccountIdForRepo } from '$lib/utils/accountAutoSelect';
+    autoAccountOptionLabel,
+    paceStateLookup,
+    pickAccountIdForRepo,
+  } from '$lib/utils/accountAutoSelect';
   import EffortToggle from '$lib/components/EffortToggle.svelte';
   import SendTimingIcon from '$lib/components/sdk/SendTimingIcon.svelte';
   import { modifierCombo } from '$lib/stores/ctrlHint';
@@ -108,7 +109,9 @@
   );
   const accountProvider = $derived(reviewerProvider === 'openai' ? 'OpenAI' : 'Claude');
   const accounts = $derived(allowedAccountsForRepo($settings.accounts, repo, accountProvider));
-  let reviewerAccountId = $state<string | undefined>(seeded.reviewerAccountId ?? undefined);
+  // '' = Auto: pace auto-select (or the repo default) resolves it when the run starts.
+  let reviewerAccountId = $state(seeded.reviewerAccountId ?? '');
+  const paceAuto = $derived($settings.account_auto_select === 'pace' && accounts.length > 1);
 
   $effect(() => {
     const sessionChoiceIsValid =
@@ -121,8 +124,8 @@
   $effect(() => {
     const ids = accounts.map((account) => account.id);
     if (reviewerAccountId && ids.includes(reviewerAccountId)) return;
-    reviewerAccountId =
-      autoAccountIdForRepo($settings.accounts, repo, accountProvider) ?? accounts[0]?.id;
+    const next = paceAuto ? '' : pickAccountIdForRepo($settings.accounts, repo, accountProvider);
+    if (reviewerAccountId !== next) reviewerAccountId = next;
   });
 
   // The model the effort toggle caps itself against (resolved like the run will be).
@@ -149,7 +152,7 @@
     reviewerModel = provider === 'openai'
       ? ($settings.openai_model || openaiModels[0]?.id || DEFAULT_MODEL_ID)
       : ($settings.default_model || claudeModels[0]?.id || DEFAULT_MODEL_ID);
-    reviewerAccountId = undefined;
+    reviewerAccountId = '';
   }
 
   let orderedSelected = $derived(VALIDATION_STEP_ORDER.filter((s) => selectedSteps.has(s)));
@@ -185,10 +188,8 @@
     const base = {
       steps: orderedSelected,
       reviewerEffort: reviewerEffort && effortSupported ? reviewerEffort : null,
-      reviewerAccountId:
-        reviewerAccountId && !isDefaultAccountId(reviewerAccountId)
-          ? reviewerAccountId
-          : null,
+      // A machine-default pick stays its reserved id so Auto doesn't re-route it.
+      reviewerAccountId: reviewerAccountId || null,
       adversarialVerify,
       baseBranch: seeded.baseBranch ?? null,
     };
@@ -285,6 +286,9 @@
     <div class="vsp-section">
       <label class="vsp-section-label" for="vsp-account">Account</label>
       <select id="vsp-account" class="vsp-select" bind:value={reviewerAccountId}>
+        {#if paceAuto}
+          <option value="">{autoAccountOptionLabel(accounts, $paceStateLookup)}</option>
+        {/if}
         {#each accounts as account (account.id)}
           <option value={account.id}>{account.label}</option>
         {/each}

@@ -16,7 +16,7 @@
  * account that created it, and the prompt cache is account-scoped.
  */
 
-import { get } from 'svelte/store';
+import { derived, get } from 'svelte/store';
 import { settings, type AgentAccount, type SdkProvider } from '$lib/stores/settings';
 import {
   rateLimits,
@@ -142,6 +142,27 @@ export function rateLimitStateFor(account: AgentAccount): RateLimitState | null 
     return get(account.provider === 'OpenAI' ? codexRateLimits : rateLimits);
   }
   return get(accountRateLimits)[account.id] ?? null;
+}
+
+/** `rateLimitStateFor` as a store, so account pickers re-rank as usage data refreshes. */
+export const paceStateLookup = derived(
+  [rateLimits, codexRateLimits, accountRateLimits],
+  ([claude, codex, perAccount]) =>
+    (account: AgentAccount): RateLimitState | null =>
+      isDefaultAccountId(account.id)
+        ? account.provider === 'OpenAI'
+          ? codex
+          : claude
+        : perAccount[account.id] ?? null,
+);
+
+/** Label for a picker's "Auto" option: the account pace auto-select would pick right now. */
+export function autoAccountOptionLabel(
+  allowed: AgentAccount[],
+  stateFor: (account: AgentAccount) => RateLimitState | null | undefined,
+): string {
+  const pick = pickAccountByPace(allowed, stateFor).account;
+  return pick ? `Auto (${pick.label})` : 'Auto';
 }
 
 export function isPaceAutoSelectEnabled(): boolean {

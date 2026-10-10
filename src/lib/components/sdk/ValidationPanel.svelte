@@ -17,7 +17,11 @@
     type SdkProvider,
   } from '$lib/utils/models';
   import { allowedAccountsForRepo } from '$lib/utils/accounts';
-  import { autoAccountIdForRepo } from '$lib/utils/accountAutoSelect';
+  import {
+    autoAccountOptionLabel,
+    paceStateLookup,
+    pickAccountIdForRepo,
+  } from '$lib/utils/accountAutoSelect';
   import { dockOrientation } from '$lib/stores/dockOrientation';
   import EffortToggle from '$lib/components/EffortToggle.svelte';
 
@@ -153,6 +157,10 @@
   let fixAccounts = $derived(
     allowedAccountsForRepo($settings.accounts, fixRepo, fixAccountProvider),
   );
+  // Pace auto-select on: an unset fix account = Auto, resolved when the fix session launches.
+  let fixPaceAuto = $derived(
+    $settings.account_auto_select === 'pace' && fixAccounts.length > 1,
+  );
   let showFixProviderChoice = $derived(
     $settings.enabled_providers.claude && $settings.enabled_providers.openai,
   );
@@ -169,12 +177,11 @@
   $effect(() => {
     if (run.fixTarget !== 'new-session') return;
     const ids = fixAccounts.map((account) => account.id);
-    if (run.fixAccountId && ids.includes(run.fixAccountId)) return;
-    validation.setFixAccount(
-      run.id,
-      autoAccountIdForRepo($settings.accounts, fixRepo, fixAccountProvider) ??
-        fixAccounts[0]?.id,
-    );
+    if (run.fixAccountId ? ids.includes(run.fixAccountId) : fixPaceAuto) return;
+    const next = fixPaceAuto
+      ? undefined
+      : pickAccountIdForRepo($settings.accounts, fixRepo, fixAccountProvider);
+    if (run.fixAccountId !== next) validation.setFixAccount(run.id, next);
   });
 
   function selectFixProvider(provider: SdkProvider) {
@@ -852,11 +859,14 @@
               account
               <select
                 class="v-fix-target-select"
-                value={run.fixAccountId}
+                value={run.fixAccountId ?? ''}
                 disabled={run.responding}
                 aria-label="Fix session account"
-                onchange={(e) => validation.setFixAccount(run.id, e.currentTarget.value)}
+                onchange={(e) => validation.setFixAccount(run.id, e.currentTarget.value || undefined)}
               >
+                {#if fixPaceAuto}
+                  <option value="">{autoAccountOptionLabel(fixAccounts, $paceStateLookup)}</option>
+                {/if}
                 {#each fixAccounts as account (account.id)}
                   <option value={account.id}>{account.label}</option>
                 {/each}
