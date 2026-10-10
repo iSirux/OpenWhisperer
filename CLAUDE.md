@@ -8,7 +8,7 @@ OpenWhisperer is a Tauri v2 desktop application that provides a voice-controlled
 
 > **Log files:** `%APPDATA%\open-whisperer\logs\` (Windows) / `~/Library/Application Support/open-whisperer/logs/` (macOS) — named `backend[-dev]-YYYY-MM-DD.log` and `frontend[-dev]-YYYY-MM-DD.log`.
 
-> **Push means release:** after every push to `main`, dispatch a release without asking — even if another release run is already in progress — via `gh workflow run release.yml --ref main -f bump=minor` (minor unless told otherwise). Report the run id and move on; **don't watch the run** or follow up on its result unless asked.
+> **Push means release:** after every push to `main` that changes the shipped app, dispatch a release without asking — even if another release run is already in progress — via `gh workflow run release.yml --ref main -f bump=minor` (minor unless told otherwise). Report the run id and move on; **don't watch the run** or follow up on its result unless asked. Skip the release when the push changes nothing users get (docs, `CLAUDE.md`, comments, tests, CI-only tweaks).
 
 ## Development Commands
 
