@@ -169,5 +169,13 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    /* The app shell disables selection; PR / validation text (findings, logs,
+       transcripts, diffs) must be copyable. Controls stay unselectable. */
+    user-select: text;
+  }
+
+  .dock-body :global(button),
+  .dock-body :global([role='tab']) {
+    user-select: none;
   }
 </style>
