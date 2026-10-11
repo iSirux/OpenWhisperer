@@ -48,6 +48,9 @@
     textareaEl.focus();
     const end = textareaEl.value.length;
     textareaEl.setSelectionRange(end, end);
+    // Setting the selection doesn't scroll an already-focused textarea, so a
+    // quote appended past the visible rows would leave the caret off-screen.
+    textareaEl.scrollTop = textareaEl.scrollHeight;
   }
 
   function autoResize() {
