@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { HoveredBlock } from "$lib/actions/blockReply";
+  import { ctrlHeld } from "$lib/stores/ctrlHint";
 
   // Gutter button beside the hovered markdown block: one click quotes that block
   // into the prompt draft — the no-selection shortcut for "reply to this point".
@@ -16,6 +17,18 @@
 
   /** Fits the transcript's 1rem side padding. */
   const SIZE = 16;
+
+  // While the button is hovered, or Ctrl is held (Ctrl+click replies — see the
+  // blockReply action), tint the block it would quote so the target is
+  // unambiguous. A class on the `{@html}` block — dropped if a streaming
+  // re-render replaces it, which is harmless.
+  let hovering = $state(false);
+  $effect(() => {
+    if (!hovering && !$ctrlHeld) return;
+    const el = block.el;
+    el.classList.add("block-reply-target");
+    return () => el.classList.remove("block-reply-target");
+  });
 
   let position = $derived.by(() => {
     const box = bounds.getBoundingClientRect();
@@ -40,8 +53,10 @@
     data-block-reply-ui
     style="top: {position.top}px; left: {position.left}px; width: {SIZE}px; height: {SIZE}px;"
     onmousedown={(e) => e.preventDefault()}
-    onclick={onReply}
-    title="Reply to this (Alt+R)"
+    onclick={() => onReply()}
+    onmouseenter={() => (hovering = true)}
+    onmouseleave={() => (hovering = false)}
+    title="Reply to this (Alt+R, or Ctrl+click the text)"
     aria-label="Quote this in the prompt"
   >
     <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -72,6 +87,13 @@
       color 0.12s ease;
   }
 
+  /* Invisible padding around the small visible button: easier to hit. */
+  .block-reply-btn::before {
+    content: "";
+    position: absolute;
+    inset: -6px -4px -6px -8px;
+  }
+
   .block-reply-btn:hover {
     background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-elevated));
     color: var(--color-accent);
@@ -80,5 +102,12 @@
   .block-reply-btn svg {
     width: 11px;
     height: 11px;
+  }
+
+  :global(.block-reply-target) {
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent);
+    border-radius: 3px;
+    cursor: pointer;
   }
 </style>

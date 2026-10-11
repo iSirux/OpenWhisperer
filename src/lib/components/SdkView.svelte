@@ -1122,8 +1122,7 @@
   // already has it in context, the quote only points at it).
   let hoveredBlock = $state.raw<HoveredBlock | null>(null);
 
-  function handleBlockReply() {
-    const el = hoveredBlock?.el;
+  function handleBlockReply(el = hoveredBlock?.el) {
     hoveredBlock = null;
     // A streaming re-render may have replaced the block since it was hovered.
     if (!el?.isConnected) return;
@@ -2120,6 +2119,7 @@
   }}
   use:blockReply={{
     onChange: (block) => (hoveredBlock = block),
+    onCtrlClick: (el) => handleBlockReply(el),
   }}
 >
   {#if quoteSelection}
