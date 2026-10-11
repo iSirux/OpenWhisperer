@@ -75,6 +75,30 @@ fn main() {
             )
         }
         Command::List => send(&cli, "list", current_dir(), Payload::Empty {}),
+        // The app has no per-schedule read: `show` asks for the list and picks one.
+        Command::Show { id } => send_rendered(
+            &cli,
+            "list",
+            current_dir(),
+            Payload::Empty {},
+            &Render::Show(id.clone()),
+        ),
+        Command::Update { id, prompt, label } => {
+            let prompt = resolve_optional_prompt(prompt);
+            if prompt.is_none() && label.is_none() {
+                usage_error("nothing to update: pass a new prompt (argument, --prompt-file or \"-\") and/or --label");
+            }
+            send(
+                &cli,
+                "update",
+                current_dir(),
+                Payload::Update {
+                    schedule_id: id.clone(),
+                    prompt,
+                    label: label.clone(),
+                },
+            )
+        }
         Command::Cancel { id } => send(
             &cli,
             "cancel",
@@ -170,6 +194,23 @@ enum Command {
     },
     /// List the schedules OpenWhisperer knows about
     List,
+    /// Show one schedule in full, prompt included (id or unambiguous prefix, see `ow list`)
+    Show {
+        /// Schedule id or a unique prefix of it
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Replace a schedule's prompt and/or label, keeping its timing and run history
+    Update {
+        /// Schedule id or a unique prefix of it
+        #[arg(value_name = "ID")]
+        id: String,
+        #[command(flatten)]
+        prompt: OptionalPromptArgs,
+        /// New short title
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+    },
     /// Delete a schedule by id (see `ow list`)
     Cancel {
         /// Schedule id
@@ -202,6 +243,18 @@ struct PromptArgs {
     prompt: Option<String>,
 
     /// Read the prompt from a file instead
+    #[arg(long = "prompt-file", value_name = "PATH", conflicts_with = "prompt")]
+    prompt_file: Option<PathBuf>,
+}
+
+/// Like [`PromptArgs`], for commands where a new prompt is optional (`update`).
+#[derive(Args)]
+struct OptionalPromptArgs {
+    /// The new prompt ("-" reads stdin); omit to keep the current one
+    #[arg(value_name = "PROMPT")]
+    prompt: Option<String>,
+
+    /// Read the new prompt from a file instead
     #[arg(long = "prompt-file", value_name = "PATH", conflicts_with = "prompt")]
     prompt_file: Option<PathBuf>,
 }
@@ -365,7 +418,23 @@ enum Payload {
     Cancel {
         schedule_id: String,
     },
+    #[serde(rename_all = "camelCase")]
+    Update {
+        schedule_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
     Empty {},
+}
+
+/// How a successful ack is printed.
+enum Render {
+    /// The ack's `message` (plus the schedule table for `list`).
+    Default,
+    /// One schedule out of a `list` ack, in full.
+    Show(String),
 }
 
 #[derive(Serialize)]
@@ -409,6 +478,17 @@ fn resolve_prompt(args: &PromptArgs) -> String {
         usage_error("the prompt is empty");
     }
     trimmed
+}
+
+/// The new prompt for `update`, if one was given.
+fn resolve_optional_prompt(args: &OptionalPromptArgs) -> Option<String> {
+    if args.prompt.is_none() && args.prompt_file.is_none() {
+        return None;
+    }
+    Some(resolve_prompt(&PromptArgs {
+        prompt: args.prompt.clone(),
+        prompt_file: args.prompt_file.clone(),
+    }))
 }
 
 /// Build the request `target`, detecting the repository of the current
@@ -488,6 +568,17 @@ fn current_dir() -> String {
 
 /// Write the request and (unless `--no-wait`) wait for the app's ack.
 fn send(cli: &Cli, kind: &'static str, cwd: String, payload: Payload) -> ! {
+    send_rendered(cli, kind, cwd, payload, &Render::Default)
+}
+
+/// [`send`], printing a successful ack as `render` says.
+fn send_rendered(
+    cli: &Cli,
+    kind: &'static str,
+    cwd: String,
+    payload: Payload,
+    render: &Render,
+) -> ! {
     let dir = inbox::resolve_dir(cli.dev).unwrap_or_else(|err| fail(err));
     inbox::ensure_dir(&dir).unwrap_or_else(|err| fail(err));
 
@@ -516,7 +607,7 @@ fn send(cli: &Cli, kind: &'static str, cwd: String, payload: Payload) -> ! {
 
     let timeout = cli.timeout.unwrap_or(if kind == "run" { 120 } else { 10 });
     match inbox::poll_ack(&dir, &id, Duration::from_secs(timeout)) {
-        Some(ack) => print_ack(cli, kind, &ack),
+        Some(ack) => print_ack(cli, kind, &ack, render),
         None if kind == "schedule" => {
             // Durable: the app applies leftover schedule requests on launch.
             println!(
@@ -529,7 +620,7 @@ fn send(cli: &Cli, kind: &'static str, cwd: String, payload: Payload) -> ! {
             let removed = inbox::remove_request(&dir, &id);
             // Completion may have raced the deadline and cancellation attempt.
             if let Some(ack) = inbox::poll_ack(&dir, &id, Duration::ZERO) {
-                print_ack(cli, kind, &ack);
+                print_ack(cli, kind, &ack, render);
             }
             let cancelled = removed.is_ok();
             let message = if cancelled {
@@ -554,9 +645,20 @@ fn send(cli: &Cli, kind: &'static str, cwd: String, payload: Payload) -> ! {
 }
 
 /// Render the ack: `--json` dumps it verbatim, otherwise `message` (plus the
-/// schedule table for `list`).
-fn print_ack(cli: &Cli, kind: &str, ack: &Value) -> ! {
+/// schedule table for `list`). `show` prints its one schedule either way.
+fn print_ack(cli: &Cli, kind: &str, ack: &Value, render: &Render) -> ! {
     let ok = ack.get("ok").and_then(Value::as_bool).unwrap_or(false);
+
+    if let (true, Render::Show(query)) = (ok, render) {
+        let schedules = ack.get("schedules").and_then(Value::as_array);
+        let schedule = find_schedule(schedules, query).unwrap_or_else(|err| fail(err));
+        if cli.json {
+            print_json(schedule);
+        } else {
+            print_schedule(schedule);
+        }
+        exit(0);
+    }
 
     if cli.json {
         print_json(ack);
@@ -644,6 +746,67 @@ fn print_schedule_table(schedules: Option<&Vec<Value>>) {
             }
         }
         println!("{}", line.trim_end());
+    }
+}
+
+/// The schedule a full id or unambiguous prefix names — the same rule the app
+/// applies to `cancel` and `update`.
+fn find_schedule<'a>(schedules: Option<&'a Vec<Value>>, query: &str) -> Result<&'a Value, String> {
+    let query = query.trim();
+    let all = schedules.map(Vec::as_slice).unwrap_or_default();
+    let id_of = |s: &Value| {
+        s.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let exact: Vec<&Value> = all.iter().filter(|s| id_of(s) == query).collect();
+    let matches = if exact.is_empty() {
+        all.iter().filter(|s| id_of(s).starts_with(query)).collect()
+    } else {
+        exact
+    };
+    match matches.as_slice() {
+        [] => Err(format!("no schedule with id {query} (see `ow list`)")),
+        [one] => Ok(one),
+        many => Err(format!(
+            "ambiguous id prefix {query} ({} matches)",
+            many.len()
+        )),
+    }
+}
+
+/// `ow show`: the schedule's fields, then its prompt verbatim.
+fn print_schedule(schedule: &Value) {
+    let enabled = match schedule.get("enabled").and_then(Value::as_bool) {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "-",
+    };
+    let time = |key: &str| {
+        schedule
+            .get(key)
+            .and_then(Value::as_i64)
+            .map(timeparse::format_local)
+            .unwrap_or_else(|| "-".to_string())
+    };
+    let runs = schedule
+        .get("runCount")
+        .and_then(Value::as_u64)
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "-".to_string());
+
+    println!("{} ({})", field(schedule, "label"), field(schedule, "id"));
+    println!("When:     {}", field(schedule, "when"));
+    println!("Next:     {}", time("nextFireAt"));
+    println!("Enabled:  {enabled}");
+    println!("Target:   {}", field(schedule, "target"));
+    println!("Source:   {}", field(schedule, "source"));
+    println!("Runs:     {runs} (last: {})", time("lastRunAt"));
+    println!();
+    match schedule.get("prompt").and_then(Value::as_str) {
+        Some(prompt) => println!("{prompt}"),
+        None => println!("(this OpenWhisperer version does not report prompts — update the app)"),
     }
 }
 

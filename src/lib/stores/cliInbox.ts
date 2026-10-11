@@ -1,7 +1,7 @@
 /**
  * `ow` CLI inbox — applies requests written by the `ow` CLI (run by an agent
  * inside its session, or by the user in a terminal): create a schedule, launch a
- * session now, cancel/list schedules, ping.
+ * session now, list/update/cancel schedules, ping.
  *
  * Protocol and rationale: docs/cli-scheduling-spec.md. The backend only moves
  * files (`take_cli_requests` / `write_cli_ack`); everything that needs app state
@@ -63,7 +63,7 @@ interface CliRequest {
   version: number;
   id: string;
   createdAt: number;
-  kind: 'schedule' | 'run' | 'cancel' | 'list' | 'ping';
+  kind: 'schedule' | 'run' | 'cancel' | 'update' | 'list' | 'ping';
   cwd: string;
   sessionId: string | null;
   prompt?: string;
@@ -410,17 +410,66 @@ async function handleRun(req: CliRequest): Promise<CliAck> {
   };
 }
 
-function handleCancel(req: CliRequest): CliAck {
-  const q = (req.scheduleId ?? '').trim();
+/** The one schedule a full id or unambiguous id prefix names. */
+function findScheduleById(raw: string | undefined): Schedule {
+  const q = (raw ?? '').trim();
   if (!q) throw new CliError('Missing schedule id');
   const all = get(schedules);
   let matches = all.filter((s) => s.id === q);
   if (matches.length === 0) matches = all.filter((s) => s.id.startsWith(q));
   if (matches.length === 0) throw new CliError(`No schedule with id ${q}`);
   if (matches.length > 1) throw new CliError(`Ambiguous id prefix ${q} (${matches.length} matches)`);
-  const [match] = matches;
+  return matches[0];
+}
+
+function handleCancel(req: CliRequest): CliAck {
+  const match = findScheduleById(req.scheduleId);
   schedules.remove(match.id);
   return { ok: true, kind: 'cancel', message: `Deleted schedule "${match.label}" (${match.id})` };
+}
+
+/**
+ * Edit a schedule's prompt and/or label in place. The id, timing, history and
+ * run count stay, so a recurring job keeps its cadence and record — unlike
+ * cancelling and scheduling it again.
+ */
+function handleUpdate(req: CliRequest): CliAck {
+  const match = findScheduleById(req.scheduleId);
+  const prompt = typeof req.prompt === 'string' && req.prompt.trim() ? req.prompt : undefined;
+  const label = typeof req.label === 'string' ? req.label : undefined;
+  if (prompt === undefined && label === undefined) {
+    throw new CliError('Nothing to update: pass a new prompt and/or --label');
+  }
+  schedules.update(match.id, {
+    ...(prompt !== undefined ? { prompt } : {}),
+    ...(label !== undefined ? { label } : {}),
+  });
+  const updated = schedules.getSchedule(match.id) ?? match;
+  const changed = [prompt !== undefined ? 'prompt' : null, label !== undefined ? 'label' : null]
+    .filter(Boolean)
+    .join(' and ');
+  return {
+    ok: true,
+    kind: 'update',
+    message: `Updated the ${changed} of schedule "${updated.label}" (${updated.id})`,
+    schedule: listItem(updated),
+  };
+}
+
+/** One schedule as `list` (and `update`) report it, prompt included. */
+function listItem(s: Schedule) {
+  return {
+    id: s.id,
+    label: s.label,
+    when: describeScheduleSpec(s.when),
+    nextFireAt: s.nextFireAt,
+    enabled: s.enabled,
+    target: targetSummary(s),
+    source: s.source ?? 'app',
+    prompt: s.prompt,
+    lastRunAt: s.lastRunAt ?? null,
+    runCount: s.runCount,
+  };
 }
 
 function handleList(): CliAck {
@@ -431,15 +480,7 @@ function handleList(): CliAck {
     ok: true,
     kind: 'list',
     message: `${items.length} schedule${items.length === 1 ? '' : 's'}`,
-    schedules: items.map((s) => ({
-      id: s.id,
-      label: s.label,
-      when: describeScheduleSpec(s.when),
-      nextFireAt: s.nextFireAt,
-      enabled: s.enabled,
-      target: targetSummary(s),
-      source: s.source ?? 'app',
-    })),
+    schedules: items.map(listItem),
   };
 }
 
@@ -468,6 +509,8 @@ async function handle(req: CliRequest): Promise<CliAck> {
       return handleRun(req);
     case 'cancel':
       return handleCancel(req);
+    case 'update':
+      return handleUpdate(req);
     case 'list':
       return handleList();
     case 'ping':

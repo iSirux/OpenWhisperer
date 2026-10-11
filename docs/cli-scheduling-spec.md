@@ -52,7 +52,7 @@ launch, which can take longer than the original 10-second timeout.
 If no ack arrives in time:
 - `schedule` → the request is **left in the inbox** (durable; applied on next
   app launch). CLI prints a warning with the request id and exits 0.
-- `run` / `cancel` / `list` / `ping` → the CLI attempts to delete its request
+- `run` / `cancel` / `update` / `list` / `ping` → the CLI attempts to delete its request
   and checks once more for a racing ack. Successful deletion cancels an unclaimed
   request (exit 1). If deletion fails, the app may already be executing it:
   report an unknown outcome (exit 3), request id and ack path. Never claim that
@@ -72,7 +72,7 @@ If no ack arrives in time:
   "version": 1,
   "id": "<uuid v4>",
   "createdAt": 1756900000000,            // epoch ms
-  "kind": "schedule" | "run" | "cancel" | "list" | "ping",
+  "kind": "schedule" | "run" | "cancel" | "update" | "list" | "ping",
   "cwd": "F:/Repos/Foo-worktrees/feature-x",   // CLI's cwd, absolute, forward slashes
   "sessionId": "<OPENWHISPERER_SESSION_ID>" | null,
 
@@ -104,8 +104,11 @@ If no ack arrives in time:
   "waitForIdle": false,
   "catchUp": "run_once" | "skip",
 
-  // cancel only
-  "scheduleId": "…"
+  // cancel + update
+  "scheduleId": "…",                     // full id or unambiguous prefix
+
+  // update: "prompt" and/or "label" (above), at least one, replace the schedule's
+  // own — id, timing, history and run count are kept
 }
 ```
 
@@ -115,7 +118,8 @@ If no ack arrives in time:
 { "ok": true, "kind": "schedule", "message": "Scheduled \"Follow up on feature X\" — Once · tomorrow 09:00 · Foo (worktree feature-x)",
   "scheduleId": "…", "label": "…", "nextFireAt": 1756976400000, "repo": "Foo", "cwd": "F:/Repos/Foo-worktrees/feature-x" }
 { "ok": true, "kind": "run", "message": "Started session …", "sessionId": "…", "repo": "Foo", "cwd": "…" }
-{ "ok": true, "kind": "list", "message": "3 schedules", "schedules": [ { "id", "label", "when": "Daily 09:00", "nextFireAt", "enabled", "target": "new session · Foo (worktree feature-x)", "source": "cli" | "app" } ] }
+{ "ok": true, "kind": "list", "message": "3 schedules", "schedules": [ { "id", "label", "when": "Daily 09:00", "nextFireAt", "enabled", "target": "new session · Foo (worktree feature-x)", "source": "cli" | "app", "prompt", "lastRunAt", "runCount" } ] }
+{ "ok": true, "kind": "update", "message": "Updated the prompt of schedule …", "schedule": { /* as in list */ } }
 { "ok": true, "kind": "cancel", "message": "Deleted schedule …" }
 { "ok": true, "kind": "ping", "message": "OpenWhisperer 1.32.0 (dev)", "sessionId": "…" | null }
 { "ok": false, "error": "…" }
@@ -170,7 +174,8 @@ ow run --same-session "<prompt>"                    # follow-up turn in the invo
 ow schedule "<prompt>" --at <when>                  # one-shot
 ow schedule "<prompt>" --in <dur>                   # one-shot, relative
 ow schedule "<prompt>" --every <rule> [--time HH:MM] [--on …] [--interval N] [--until <when>] [--max-runs N]
-ow list [--json]        ow cancel <id>        ow ping        ow install-skills        ow self-install
+ow list [--json]        ow show <id>        ow cancel <id>        ow ping        ow install-skills        ow self-install
+ow update <id> ["<prompt>" | --prompt-file <path> | -] [--label <text>]   # in place: timing and history kept
 ```
 
 Prompt: positional, or `--prompt-file <path>`, or `-` for stdin.

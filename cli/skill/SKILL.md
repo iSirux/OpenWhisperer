@@ -11,7 +11,7 @@ description: Schedule a prompt for later, make it recurring, or run it now as a 
 
 1. **Get the current local date and time first** (`date` in bash, `Get-Date` in PowerShell). Never guess the date, the weekday, or the time.
 2. Turn the user's phrasing into exactly one timing flag (table below). If it is genuinely ambiguous ("later", "sometime next week"), ask one short question instead of picking.
-3. **Write the prompt for a fresh agent that has no memory of this conversation.** State the goal, the branch and files involved, what was already done, and what "done" looks like. Include how to verify. Long prompts: write them to a temp file and pass `--prompt-file`.
+3. **Write the prompt for a fresh agent that has no memory of this conversation.** State the goal, the branch and files involved, what was already done, and what "done" looks like. Include how to verify. Long prompts: write them to a temp file and pass `--prompt-file`. For a recurring task, first read a few existing recurring prompts in the same repo (`ow list`, then `ow show <id>`) and match how the user words them.
 4. Run `ow`, then relay its confirmation line (label, when, repo/worktree) to the user verbatim. If it times out, read the reported outcome: a cancelled request did not execute, but an unknown outcome may already have started. Check the app or the reported ack file before retrying an unknown outcome; never launch a duplicate automatically. Older CLIs incorrectly report "not running" even when a slow launch succeeded, so verify those outcomes too.
 
 ## Commands
@@ -23,6 +23,8 @@ ow schedule "<prompt>" --at <when>                  # one-shot at a time
 ow schedule "<prompt>" --in <duration>              # one-shot, relative
 ow schedule "<prompt>" --every <rule> [--time HH:MM] [--on ...] [--interval N] [--until <when>] [--max-runs N]
 ow list                                             # existing schedules (ids, next fire)
+ow show <schedule-id>                               # one schedule in full, prompt included (id or unique prefix)
+ow update <schedule-id> "<new prompt>" [--label ...]  # edit in place: timing, run history and id are kept
 ow cancel <schedule-id>
 ow ping                                             # is the app reachable?
 ```
@@ -80,3 +82,5 @@ ow run "Update docs/ for the new export feature implemented on branch export-v2 
 - `run` waits up to 120 seconds by default for worktree creation and session startup; other commands wait 10 seconds. `--timeout <seconds>` overrides either default.
 - On timeout, exit 1 with "cancelled before execution" means the CLI removed the unclaimed request. Exit 3 means the outcome is unknown: the app may have claimed it and may still complete it. Inspect the app or the reported `<id>.ack.json` before retrying. A timeout does not prove the app is closed. A `schedule` request is kept for later processing and exits 0.
 - Times are the user's local wall clock. No timezone flags.
+- To change a schedule's wording, use `ow update`, not `cancel` + `schedule`: that keeps its id, cadence and run history. Changing the timing still needs cancel + schedule.
+- `ow show` on an app older than the CLI prints "does not report prompts": the app needs updating, the schedule is fine.
