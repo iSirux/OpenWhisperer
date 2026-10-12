@@ -511,6 +511,7 @@ pub fn run() {
             git_cmds::open_in_vscode,
             git_cmds::open_in_terminal,
             git_cmds::open_in_explorer,
+            git_cmds::open_local_path,
             // --- GitHub integration ---
             github_cmds::detect_github_url,
             github_cmds::list_gh_accounts,

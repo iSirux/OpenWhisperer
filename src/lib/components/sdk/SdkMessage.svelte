@@ -183,7 +183,11 @@
     </div>
   {:else if message.type === "text"}
     <div class="text-message-container">
-      <div class="text-content markdown-body" data-block-reply={onReply ? "" : undefined}>
+      <div
+        class="text-content markdown-body"
+        data-block-reply={onReply ? "" : undefined}
+        data-link-base={sessionCwd || undefined}
+      >
         {@html renderMarkdown(message.content ?? "")}
       </div>
       <div class="text-message-actions">

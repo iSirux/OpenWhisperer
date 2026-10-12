@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { beforeNavigate } from '$app/navigation';
   import { openUrl } from '@tauri-apps/plugin-opener';
+  import { invoke } from '@tauri-apps/api/core';
   import { initLogger } from '$lib/utils/logger';
 
   // Prevent browser back/forward navigation from causing full page reloads
@@ -41,6 +42,25 @@
         } catch (err) {
           console.error('Failed to open URL in browser:', err);
         }
+        return;
+      }
+
+      // Other markdown links: local file paths (relative ones resolve against
+      // the session cwd from the enclosing [data-link-base]) or other schemes.
+      // Never let them navigate the webview.
+      if (!anchor.hasAttribute('data-external') || href.startsWith('#')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        const isLocal = /^file:/i.test(href) || /^[a-z]:[\\/]/i.test(href) || !/^[a-z][a-z0-9+.-]*:/i.test(href);
+        if (isLocal) {
+          const base = anchor.closest<HTMLElement>('[data-link-base]')?.dataset.linkBase;
+          await invoke('open_local_path', { path: href, base: base ?? null });
+        } else {
+          await openUrl(href);
+        }
+      } catch (err) {
+        console.error('Failed to open link:', err);
       }
     };
 

@@ -328,6 +328,78 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a local file or folder linked from agent markdown with its default app.
+/// `path` is a markdown link target (`report.html`, `src/a.ts#L12`,
+/// `file:///C:/x.html`, `C:\x.html`); relative targets resolve against `base`
+/// (the session's cwd). Goes through the Rust opener API because the JS
+/// `opener:default` scope doesn't allow arbitrary paths.
+#[tauri::command]
+pub fn open_local_path(
+    app: tauri::AppHandle,
+    path: String,
+    base: Option<String>,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let resolved = resolve_link_path(&path, base.as_deref())
+        .ok_or_else(|| format!("File not found: {}", path))?;
+    app.opener()
+        .open_path(resolved.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("Failed to open {}: {}", resolved.display(), e))
+}
+
+fn resolve_link_path(link: &str, base: Option<&str>) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+
+    let mut s = link.trim();
+    if let Some(rest) = s.strip_prefix("file://") {
+        s = rest;
+    }
+    // Drop `#L12` fragments and `?query` suffixes.
+    let s = s.split(['#', '?']).next().unwrap_or(s);
+    let decoded = percent_decode(s);
+    let mut s = decoded.as_str();
+    // `file:///C:/x` leaves `/C:/x`.
+    if s.len() >= 3 && s.starts_with('/') && s.as_bytes()[2] == b':' {
+        s = &s[1..];
+    }
+
+    let candidate = |p: &str| -> Option<PathBuf> {
+        let p = Path::new(p);
+        let full = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            Path::new(base?).join(p)
+        };
+        full.exists().then_some(full)
+    };
+
+    candidate(s).or_else(|| {
+        // `src/a.ts:12` / `src/a.ts:12:4` line suffixes.
+        let trimmed = s.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
+        (trimmed != s && !trimmed.is_empty()).then(|| candidate(trimmed)).flatten()
+    })
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(b) = u8::from_str_radix(hex, 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Open a file explorer at a specific path
 #[tauri::command]
 pub fn open_in_explorer(path: String) -> Result<(), String> {
