@@ -63,6 +63,10 @@ winreg = "0.55"
 # Meeting mode system audio: default-render loopback + per-process loopback
 # (Win10 2004+) — see src/meeting/capture/windows.rs.
 wasapi = "0.24"
+# WebView2 renderer-crash recovery (ProcessFailed → Reload) — see
+# src/webview_recovery.rs. Keep these on the versions wry already uses.
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Meeting mode system audio on macOS 13+ — see src/meeting/capture/macos.rs.

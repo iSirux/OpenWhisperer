@@ -19,6 +19,8 @@ mod sidecar;
 mod usage_stats;
 mod util;
 mod validation;
+#[cfg(windows)]
+mod webview_recovery;
 mod whisper;
 #[cfg(windows)]
 mod win_env;
@@ -418,6 +420,13 @@ pub fn run() {
                 }
             }
 
+            // A crashed WebView2 renderer leaves a window blank white for good;
+            // reload it instead (agents keep running in the sidecar meanwhile).
+            #[cfg(windows)]
+            for window in app.webview_windows().values() {
+                webview_recovery::install(window);
+            }
+
             // Build tray menu + icon and wire up its handlers
             setup_tray(app)?;
 
@@ -528,6 +537,7 @@ pub fn run() {
             sdk_cmds::update_sdk_model,
             sdk_cmds::update_sdk_effort,
             sdk_cmds::close_sdk_session,
+            sdk_cmds::list_live_sdk_sessions,
             sdk_cmds::answer_ask_user_question,
             sdk_cmds::answer_plan_approval,
             sdk_cmds::answer_codex_approval,

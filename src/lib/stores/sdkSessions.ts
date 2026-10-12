@@ -2717,6 +2717,70 @@ function createSdkSessionsStore() {
     },
 
     /**
+     * Reattach to turns still running in the sidecar after the webview reloaded while
+     * the backend kept going (a WebView2 renderer crash — `webview_recovery.rs` reloads
+     * the page). Restore marks every session idle; re-creating a live one would kill its
+     * agent, so the ones the sidecar reports live get their listeners back and return to
+     * 'querying' instead. Whatever streamed while the window was dead is gone.
+     *
+     * Run after `loadSessionsFromDisk` and before the Smart Queue starts — it would
+     * otherwise dispatch parked turns into sessions it believes are idle.
+     */
+    async reattachRunningSessions(): Promise<void> {
+      let liveIds: string[];
+      try {
+        liveIds = await invoke<string[]>('list_live_sdk_sessions', { replay: false });
+      } catch (error) {
+        console.warn('[sdkSessions] Could not list live sidecar sessions:', error);
+        return;
+      }
+      const known = new Set(get({ subscribe }).map(s => s.id));
+      const ids = liveIds.filter(id => known.has(id) && !liveSessions.has(id));
+      if (ids.length === 0) return;
+      console.log(`[sdkSessions] Reattaching to ${ids.length} running session(s): ${ids.join(', ')}`);
+
+      // The sidecar was found running, so there's nothing to start.
+      sidecarStarted = true;
+      for (const id of ids) {
+        listeners.get(id)?.forEach(unlisten => unlisten());
+        listeners.set(id, await setupEventListeners(id));
+        liveSessions.add(id);
+      }
+      const now = Date.now();
+      const reattached = new Set(ids);
+      update(sessions => sessions.map(s => reattached.has(s.id)
+        ? {
+            ...s,
+            status: 'querying' as const,
+            currentWorkStartedAt: now,
+            lastActivityAt: now,
+            messages: [...s.messages, {
+              type: 'notification' as const,
+              content: 'The app window reloaded while this session was running — reconnected. Output from around the reload may be missing.',
+              timestamp: now,
+            }],
+          }
+        : s));
+
+      // Second pass, now that the listeners exist: re-sends any question / approval still
+      // waiting on the user, and shows which turns ended before we subscribed — their
+      // sdk-done was lost, so settle those here.
+      let stillLive = ids;
+      try {
+        stillLive = await invoke<string[]>('list_live_sdk_sessions', { replay: true });
+      } catch (error) {
+        console.warn('[sdkSessions] Could not re-check live sidecar sessions:', error);
+      }
+      const ended = new Set(ids.filter(id => !stillLive.includes(id)));
+      if (ended.size > 0) {
+        update(sessions => sessions.map(s => ended.has(s.id) && s.status === 'querying' && !s.completionDeferred
+          ? { ...s, status: 'idle' as const, ...calculateWorkPeriod(s) }
+          : s));
+      }
+      for (const id of ids) debouncedSave(id);
+    },
+
+    /**
      * Set the session's display name up front. A preset name also makes
      * sendPrompt skip LLM auto-naming for the first prompt.
      */

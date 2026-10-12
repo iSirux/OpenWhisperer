@@ -309,6 +309,13 @@ pub enum OutboundMessage {
         /// "claude" | "openai"
         provider: String,
     },
+    /// Which sessions have a turn in flight (for a reloaded frontend to reattach
+    /// to). `replay` re-sends interactive requests still awaiting the user.
+    /// Replies via `live-sessions-{id}`.
+    ListLiveSessions {
+        id: String,
+        replay: bool,
+    },
     /// User's answers to AskUserQuestion tool
     AnswerAskUserQuestion {
         id: String,
@@ -570,6 +577,11 @@ pub enum InboundMessage {
     ModelsListError {
         id: String,
         error: String,
+    },
+    /// Reply to `ListLiveSessions`: ids of sessions with a turn in flight.
+    LiveSessions {
+        id: String,
+        sessions: Vec<String>,
     },
     /// Streaming progress from a one-shot validation agent (tool calls / text),
     /// forwarded so the run executor can surface live activity and reset its
@@ -887,6 +899,7 @@ impl InboundMessage {
             InboundMessage::ValidationAgentError { .. } => "validation-agent-error",
             InboundMessage::ModelsListed { .. } => "models-listed",
             InboundMessage::ModelsListError { .. } => "models-list-error",
+            InboundMessage::LiveSessions { .. } => "live-sessions",
             InboundMessage::ValidationAgentProgress { .. } => "validation-agent-progress",
             InboundMessage::SdkSessionId { .. } => "sdk-session-id",
             InboundMessage::ParallelSessionNotification { .. } => "sdk-parallel-notification",
@@ -927,6 +940,7 @@ impl InboundMessage {
             | M::ValidationAgentError { id, .. }
             | M::ModelsListed { id, .. }
             | M::ModelsListError { id, .. }
+            | M::LiveSessions { id, .. }
             | M::ValidationAgentProgress { id, .. }
             | M::SdkSessionId { id, .. }
             | M::ParallelSessionNotification { id, .. } => Some(id),
@@ -1733,6 +1747,9 @@ impl SidecarManager {
             InboundMessage::ModelsListError { id, error } => {
                 log::warn!("[sidecar] Model listing failed for {}: {}", id, error);
                 Self::emit(app, suffix, &id, error);
+            }
+            InboundMessage::LiveSessions { id, sessions } => {
+                Self::emit(app, suffix, &id, sessions);
             }
             InboundMessage::ValidationAgentProgress {
                 id,

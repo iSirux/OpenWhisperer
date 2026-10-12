@@ -401,12 +401,20 @@ type InboundMessage =
   | AnswerPlanApprovalMessage
   | AnswerCodexApprovalMessage
   | ValidationAgentMessage
-  | ListModelsMessage;
+  | ListModelsMessage
+  | ListLiveSessionsMessage;
 
 interface ListModelsMessage {
   type: "list_models";
   id: string;
   provider: "claude" | "openai";
+}
+
+interface ListLiveSessionsMessage {
+  type: "list_live_sessions";
+  id: string;
+  /** Re-send interactive requests still waiting on the user (see handleListLiveSessions). */
+  replay?: boolean;
 }
 
 type OpenAiExecutionMode = "sdk" | "app_server";
@@ -473,9 +481,10 @@ interface Session {
   appServerTurnId?: string; // Active app-server turn ID
   codexApprovalPolicy?: string; // Codex app-server approvalPolicy for thread/start|resume ("never" default)
   codexSandboxMode?: string; // Codex app-server sandbox for thread/start|resume
-  // Outstanding Codex approval requests (JSON-RPC request id -> nothing; presence = pending).
-  // The app-server blocks the turn until we respond via appServerWriteJson.
-  pendingCodexApprovalIds?: Set<number>;
+  // Outstanding Codex approval requests (JSON-RPC request id -> the request as sent
+  // to the frontend, kept for replay). The app-server blocks the turn until we
+  // respond via appServerWriteJson.
+  pendingCodexApprovals?: Map<number, Record<string, unknown>>;
   // Pending manual compaction (Codex app-server). thread/compact/start returns
   // immediately and streams its own turn via notifications; this waiter is
   // resolved by that turn's turn/completed so handleCompact can emit `done`.
@@ -503,6 +512,10 @@ interface Session {
     resolve: (decision: { action: string; feedback?: string }) => void;
     reject: (error: Error) => void;
   };
+  // What was sent for the pending AskUserQuestion / ExitPlanMode above, so a
+  // reloaded frontend can be shown it again (meaningful only while pending).
+  pendingAskQuestions?: PlanningQuestion[];
+  pendingPlanRequest?: { allowedPrompts: Array<{ tool: string; prompt: string }>; plan?: string };
   // Note: ExitPlanMode approval is handled by canUseTool which blocks the SDK
   // server-side.
   // Persistent message queue for streaming input mode. Follow-up messages
@@ -1421,12 +1434,7 @@ function handleCodexApprovalRequest(
     return;
   }
 
-  if (!session.pendingCodexApprovalIds) {
-    session.pendingCodexApprovalIds = new Set();
-  }
-  session.pendingCodexApprovalIds.add(requestId);
-
-  send({
+  const request = {
     type: "codex_approval_request",
     id: sessionId,
     requestId,
@@ -1435,7 +1443,13 @@ function handleCodexApprovalRequest(
     cwd: typeof p.cwd === "string" ? p.cwd : undefined,
     reason: typeof p.reason === "string" ? p.reason : undefined,
     grantRoot: typeof p.grantRoot === "string" ? p.grantRoot : undefined,
-  });
+  };
+  if (!session.pendingCodexApprovals) {
+    session.pendingCodexApprovals = new Map();
+  }
+  session.pendingCodexApprovals.set(requestId, request);
+
+  send(request);
 }
 
 // Respond to a pending Codex approval request with a decision string
@@ -1448,8 +1462,8 @@ function respondCodexApproval(
 ): void {
   const session = sessions.get(sessionId);
   if (!session || !session.appServer) return;
-  if (!session.pendingCodexApprovalIds?.has(requestId)) return;
-  session.pendingCodexApprovalIds.delete(requestId);
+  if (!session.pendingCodexApprovals?.has(requestId)) return;
+  session.pendingCodexApprovals.delete(requestId);
   appServerWriteJson(session.appServer, {
     id: requestId,
     result: { decision },
@@ -4008,7 +4022,10 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
           sendAskUserQuestions(msg.id, askInput.questions);
           const answers = await new Promise<Record<string, string>>((resolve, reject) => {
             const s = sessions.get(msg.id);
-            if (s) { s.pendingAskUserAnswer = { resolve, reject }; }
+            if (s) {
+              s.pendingAskUserAnswer = { resolve, reject };
+              s.pendingAskQuestions = askInput.questions;
+            }
             else { reject(new Error("Session not found for AskUserQuestion")); }
           });
           send({ type: "debug", id: msg.id, message: `AskUserQuestion answered: ${JSON.stringify(answers)}` });
@@ -4025,7 +4042,10 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
 
         const decision = await new Promise<{ action: string; feedback?: string }>((resolve, reject) => {
           const s = sessions.get(msg.id);
-          if (s) { s.pendingPlanApproval = { resolve, reject }; }
+          if (s) {
+            s.pendingPlanApproval = { resolve, reject };
+            s.pendingPlanRequest = { allowedPrompts: exitInput.allowedPrompts || [], plan: exitInput.plan || undefined };
+          }
           else { reject(new Error("Session not found for ExitPlanMode")); }
         });
 
@@ -4260,6 +4280,16 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   const provider = inferProvider(msg.provider, msg.model);
   const openaiMode: OpenAiExecutionMode =
     provider === "openai" ? "app_server" : "sdk";
+
+  // Re-registering a live id (a reloaded frontend that didn't reattach) must not
+  // orphan the old entry's query / agent process: its loop would just stop
+  // emitting while the process keeps working. Swap the entry in synchronously —
+  // messages are handled concurrently — and tear the old one down behind it.
+  const previous = sessions.get(msg.id);
+  if (previous) {
+    send({ type: "debug", id: msg.id, message: "Session re-created — disposing the previous instance" });
+    void disposeSession(msg.id, previous);
+  }
 
   sessions.set(msg.id, {
     cwd: msg.cwd,
@@ -5551,8 +5581,8 @@ async function handleStop(msg: StopMessage): Promise<void> {
   // OpenAI Codex: use AbortController to cancel
   if (session.provider === "openai") {
     // Cancel any outstanding approval prompts so the app-server unblocks cleanly.
-    if (session.pendingCodexApprovalIds?.size && session.appServer) {
-      for (const reqId of [...session.pendingCodexApprovalIds]) {
+    if (session.pendingCodexApprovals?.size && session.appServer) {
+      for (const reqId of [...session.pendingCodexApprovals.keys()]) {
         respondCodexApproval(msg.id, reqId, "cancel");
       }
     }
@@ -5770,57 +5800,7 @@ async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (session) {
-    if (session.provider === "openai") {
-      // Abort any active Codex query
-      if (session.abortController) {
-        session.abortController.abort();
-      }
-      if (session.openaiMode === "app_server") {
-        await stopCodexAppServer(session);
-      }
-      session.codexThread = undefined;
-    } else {
-      const pendingCount = session.claudeQueue.length;
-      if (pendingCount > 0) {
-        session.claudeQueue.length = 0;
-        send({
-          type: "debug",
-          id: msg.id,
-          message: `[claude queue] cleared pending=${pendingCount} due to close`,
-        });
-      }
-      // Ending the input stream is what actually lets the CLI exit: in
-      // streaming-input mode it sits on stdin between turns, so interrupt()
-      // alone ends the turn and leaves the process running (see the note in
-      // handleStop). A survivor keeps the session cwd as its working
-      // directory, which on Windows makes that directory permanently
-      // undeletable — post-merge worktree cleanup then always fails.
-      if (session.inputQueue) {
-        session.inputQueue.done();
-        session.inputQueue = undefined;
-      }
-      session.claudePendingTurns = 0;
-      cancelPendingDone(session);
-
-      const iterator = session.queryIterator;
-      const abortController = session.abortController;
-      session.queryIterator = undefined;
-      session.abortController = undefined;
-
-      if (iterator) {
-        // Bounded — a hung interrupt() must not stall the close, and the
-        // abort below kills the process either way.
-        await Promise.race([
-          iterator.interrupt().catch(() => {}),
-          new Promise<void>((resolve) => setTimeout(resolve, 2000)),
-        ]);
-      }
-      // Unlike stop there is nothing left to wind down gracefully here, so the
-      // abort is immediate: callers (worktree cleanup) rely on the process
-      // being gone once `closed` comes back.
-      abortController?.abort();
-      session.claudeProcessing = false;
-    }
+    await disposeSession(msg.id, session);
   }
   for (const key of reasoningByItemId.keys()) {
     if (key.startsWith(`${msg.id}:`)) {
@@ -5830,6 +5810,88 @@ async function handleClose(msg: CloseMessage): Promise<void> {
   lastMainAgentUsage.delete(msg.id);
   sessions.delete(msg.id);
   send({ type: "closed", id: msg.id });
+}
+
+// Stop everything a session owns: running query, queued prompts, agent process.
+async function disposeSession(id: string, session: Session): Promise<void> {
+  if (session.provider === "openai") {
+    // Abort any active Codex query
+    if (session.abortController) {
+      session.abortController.abort();
+    }
+    if (session.openaiMode === "app_server") {
+      await stopCodexAppServer(session);
+    }
+    session.codexThread = undefined;
+    return;
+  }
+
+  const pendingCount = session.claudeQueue.length;
+  if (pendingCount > 0) {
+    session.claudeQueue.length = 0;
+    send({
+      type: "debug",
+      id,
+      message: `[claude queue] cleared pending=${pendingCount} due to close`,
+    });
+  }
+  // Ending the input stream is what actually lets the CLI exit: in
+  // streaming-input mode it sits on stdin between turns, so interrupt()
+  // alone ends the turn and leaves the process running (see the note in
+  // handleStop). A survivor keeps the session cwd as its working
+  // directory, which on Windows makes that directory permanently
+  // undeletable — post-merge worktree cleanup then always fails.
+  if (session.inputQueue) {
+    session.inputQueue.done();
+    session.inputQueue = undefined;
+  }
+  session.claudePendingTurns = 0;
+  cancelPendingDone(session);
+
+  const iterator = session.queryIterator;
+  const abortController = session.abortController;
+  session.queryIterator = undefined;
+  session.abortController = undefined;
+
+  if (iterator) {
+    // Bounded — a hung interrupt() must not stall the close, and the
+    // abort below kills the process either way.
+    await Promise.race([
+      iterator.interrupt().catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+    ]);
+  }
+  // Unlike stop there is nothing left to wind down gracefully here, so the
+  // abort is immediate: callers (worktree cleanup) rely on the process
+  // being gone once `closed` comes back.
+  abortController?.abort();
+  session.claudeProcessing = false;
+}
+
+// Sessions with a turn in flight, for a frontend that lost track of them (its
+// webview reloaded after a renderer crash while agents kept working here). With
+// `replay`, interactive requests still waiting on the user are re-sent so the
+// reloaded UI can answer them.
+function handleListLiveSessions(msg: ListLiveSessionsMessage): void {
+  const live: string[] = [];
+  for (const [id, session] of sessions) {
+    const running = session.provider === "claude"
+      ? session.claudeProcessing || !!session.queryIterator
+      : !!session.abortController || !!session.appServerTurnId || !!session.compactWaiter;
+    if (!running) continue;
+    live.push(id);
+    if (!msg.replay) continue;
+    if (session.pendingAskUserAnswer && session.pendingAskQuestions) {
+      sendAskUserQuestions(id, session.pendingAskQuestions);
+    }
+    if (session.pendingPlanApproval && session.pendingPlanRequest) {
+      sendPlanApprovalRequest(id, session.pendingPlanRequest.allowedPrompts, session.pendingPlanRequest.plan);
+    }
+    for (const request of session.pendingCodexApprovals?.values() ?? []) {
+      send(request);
+    }
+  }
+  send({ type: "live_sessions", id: msg.id, sessions: live });
 }
 
 // Effort levels per OpenAI model as last reported by Codex `model/list`
@@ -5905,6 +5967,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "list_models":
       await handleListModels(msg);
+      break;
+    case "list_live_sessions":
+      handleListLiveSessions(msg);
       break;
     case "answer_ask_user_question": {
       const session = sessions.get(msg.id);

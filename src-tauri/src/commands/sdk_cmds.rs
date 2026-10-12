@@ -1,8 +1,10 @@
 use crate::commands::settings_cmds::ConfigState;
 use crate::config::{CodexThreadOwner, McpServerConfig};
 use crate::sidecar::{HistoryMessage, ImageData, OutboundMessage, SidecarManager};
+use parking_lot::Mutex;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Listener, State};
+use tokio::sync::oneshot;
 
 #[tauri::command]
 pub fn start_sidecar(app: AppHandle, sidecar: State<Arc<SidecarManager>>) -> Result<(), String> {
@@ -161,6 +163,40 @@ pub fn update_sdk_effort(
 #[tauri::command]
 pub fn close_sdk_session(sidecar: State<Arc<SidecarManager>>, id: String) -> Result<(), String> {
     sidecar.send(OutboundMessage::Close { id })
+}
+
+/// Ids of sessions with a turn still in flight in the sidecar — for a frontend
+/// that reloaded (WebView2 renderer crash) while agents kept working, so it can
+/// reattach instead of treating them as idle. Never starts the sidecar: if it
+/// isn't running, nothing is live.
+#[tauri::command]
+pub async fn list_live_sdk_sessions(
+    app: AppHandle,
+    sidecar: State<'_, Arc<SidecarManager>>,
+    replay: bool,
+) -> Result<Vec<String>, String> {
+    if !sidecar.is_started() {
+        return Ok(Vec::new());
+    }
+    let id = format!("live-{}", uuid::Uuid::new_v4());
+    let (tx, rx) = oneshot::channel::<Vec<String>>();
+    let tx = Mutex::new(Some(tx));
+    let listener = app.listen(format!("live-sessions-{}", id), move |event| {
+        let ids = serde_json::from_str::<Vec<String>>(event.payload()).unwrap_or_default();
+        if let Some(tx) = tx.lock().take() {
+            let _ = tx.send(ids);
+        }
+    });
+    let result = match sidecar.send(OutboundMessage::ListLiveSessions { id, replay }) {
+        Ok(()) => match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+            Ok(Ok(ids)) => Ok(ids),
+            Ok(Err(_)) => Err("Live session listing was dropped".to_string()),
+            Err(_) => Err("Timed out listing live sessions".to_string()),
+        },
+        Err(e) => Err(e),
+    };
+    app.unlisten(listener);
+    result
 }
 
 /// Send user's answers to an AskUserQuestion tool call back to the sidecar.
