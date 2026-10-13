@@ -1,7 +1,8 @@
 <script lang="ts">
   import PrPanel from './PrPanel.svelte';
   import ValidationPanel from './ValidationPanel.svelte';
-  import type { SdkSession } from '$lib/stores/sdkSessions';
+  import { untrack } from 'svelte';
+  import { sdkSessions, type SdkSession } from '$lib/stores/sdkSessions';
   import type { SessionPrEntry } from '$lib/stores/sessionPrs';
   import type { ValidationRunView } from '$lib/stores/validation';
   import type { RepoConfig } from '$lib/stores/repos';
@@ -42,7 +43,10 @@
     const gated = validationRun?.status === 'gate';
 
     if (prevPr === null) {
-      active = val && (gated || !pr) ? 'validation' : 'pr';
+      // Reopen on the tab the user left, unless a gate is waiting on them.
+      const saved = untrack(() => session.dockUi?.dockTab);
+      if (pr && val && saved && !gated) active = saved;
+      else active = val && (gated || !pr) ? 'validation' : 'pr';
     } else {
       if (pr && !prevPr) active = 'pr';
       if (val && !prevValidation) active = 'validation';
@@ -55,6 +59,12 @@
     // Keep the selection valid when the active view closes.
     if (active === 'pr' && !pr && val) active = 'validation';
     else if (active === 'validation' && !val && pr) active = 'pr';
+  });
+
+  // Remember the tab — only while there's a real choice, so a lone panel
+  // doesn't overwrite the preference.
+  $effect(() => {
+    if (hasPr && hasValidation) sdkSessions.setDockUi(session.id, { dockTab: active });
   });
 </script>
 

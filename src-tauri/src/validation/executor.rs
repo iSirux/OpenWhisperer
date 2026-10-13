@@ -390,6 +390,9 @@ enum FixResult {
 /// Result of a step's gate cycle.
 enum StepEnd {
     Passed,
+    /// The user ended the whole run from this step's gate: the step passes,
+    /// every later step is skipped, and the run finishes as passed.
+    Completed,
     Skipped,
     Failed(String),
     Cancelled,
@@ -457,6 +460,19 @@ impl RunCtx {
             let end = self.run_step(name, resume).await;
             match end {
                 StepEnd::Passed | StepEnd::Skipped => continue,
+                StepEnd::Completed => {
+                    self.log(format!("Run completed manually at step: {}", name.key()));
+                    let now = now_ms();
+                    for step in self.run.steps.iter_mut() {
+                        if !step.status.is_terminal() {
+                            step.status = StepStatus::Skipped;
+                            step.finished_at = Some(now);
+                            step.note = Some("Skipped — run completed manually".to_string());
+                        }
+                    }
+                    self.finish(RunStatus::Passed, None);
+                    return;
+                }
                 StepEnd::Cancelled => {
                     // Cancel path already handled via the manager; just stop.
                     return;
@@ -757,7 +773,7 @@ impl RunCtx {
         };
         // Stamp terminal step status + finished timestamp.
         let status = match &end {
-            StepEnd::Passed => Some(StepStatus::Passed),
+            StepEnd::Passed | StepEnd::Completed => Some(StepStatus::Passed),
             StepEnd::Skipped => Some(StepStatus::Skipped),
             StepEnd::Failed(_) => Some(StepStatus::Failed),
             StepEnd::Cancelled => None,
@@ -940,6 +956,22 @@ impl RunCtx {
 
             match action.as_str() {
                 "approve" => return StepEnd::Passed,
+                "complete" => {
+                    let open = findings.iter().filter(|f| f.blocks()).count();
+                    self.append_step_note(
+                        name,
+                        if open > 0 {
+                            format!(
+                                "Run completed manually — {} open finding{} accepted without a fix",
+                                open,
+                                if open == 1 { "" } else { "s" }
+                            )
+                        } else {
+                            "Run completed manually".to_string()
+                        },
+                    );
+                    return StepEnd::Completed;
+                }
                 "skip" => {
                     self.set_step_note(name, "Step skipped by user");
                     return StepEnd::Skipped;
@@ -1499,12 +1531,7 @@ impl RunCtx {
                 }
 
                 // Park a ci_failure gate.
-                match self.ci_failure_gate(StepName::Ci, findings).await {
-                    StepEnd::Passed => return StepEnd::Passed,
-                    StepEnd::Skipped => return StepEnd::Skipped,
-                    StepEnd::Cancelled => return StepEnd::Cancelled,
-                    StepEnd::Failed(e) => return StepEnd::Failed(e),
-                }
+                return self.ci_failure_gate(StepName::Ci, findings).await;
             }
 
             // Idle timeout → gate.
@@ -1515,12 +1542,7 @@ impl RunCtx {
                     .step_mut(StepName::Ci)
                     .map(|s| s.findings.clone())
                     .unwrap_or_default();
-                match self.ci_failure_gate(StepName::Ci, findings).await {
-                    StepEnd::Passed => return StepEnd::Passed,
-                    StepEnd::Skipped => return StepEnd::Skipped,
-                    StepEnd::Cancelled => return StepEnd::Cancelled,
-                    StepEnd::Failed(e) => return StepEnd::Failed(e),
-                }
+                return self.ci_failure_gate(StepName::Ci, findings).await;
             }
         }
     }

@@ -8,7 +8,10 @@
     type StepStatus,
     type AgentActivityItem,
   } from '$lib/stores/validation';
-  import { sdkSessions, type EffortLevel } from '$lib/stores/sdkSessions';
+  import { sdkSessions, type EffortLevel, type SessionDockUi } from '$lib/stores/sdkSessions';
+  import { get } from 'svelte/store';
+  import { untrack } from 'svelte';
+  import { persistScroll } from '$lib/actions/persistScroll';
   import { settings, type SdkProvider as AccountProvider } from '$lib/stores/settings';
   import { repos } from '$lib/stores/repos';
   import {
@@ -26,6 +29,15 @@
   import EffortToggle from '$lib/components/EffortToggle.svelte';
 
   let { run }: { run: ValidationRunView } = $props();
+
+  /** The owning session's persisted dock state, read once to seed local UI. */
+  const savedDockUi: SessionDockUi = untrack(
+    () => get(sdkSessions).find((s) => s.id === run.sessionId)?.dockUi ?? {},
+  );
+  /** Live saved scroll positions (the scroll action restores per tab). */
+  let savedScroll = $derived(
+    $sdkSessions.find((s) => s.id === run.sessionId)?.dockUi?.scroll,
+  );
 
   const STEP_LABELS: Record<StepName, string> = {
     simplify: 'Simplify',
@@ -241,6 +253,16 @@
     if (run.responding) return;
     validation.respond(run.id, 'skip');
   }
+  function completeRun() {
+    if (run.responding) return;
+    validation.respond(run.id, 'complete');
+  }
+  /** Steps a manual Complete would skip (shown in its tooltip). */
+  let remainingAfterGate = $derived(
+    steps
+      .filter((s) => s.name !== gate?.step && !['passed', 'skipped', 'failed'].includes(s.status))
+      .map((s) => STEP_LABELS[s.name]),
+  );
 
   // --- Ship gate editable proposal ------------------------------------------
   let shipCommit = $state('');
@@ -264,10 +286,15 @@
     validation.executeShip(run.id, shipCommit, shipTitle, shipBody);
   }
 
-  // --- Per-step expandable output / transcript ------------------------------
-  let openOutput = $state<Record<string, boolean>>({});
-  let openTranscript = $state<Record<string, boolean>>({});
-  let openDiff = $state<Record<string, boolean>>({});
+  // --- Per-step expandable output / transcript / diff -----------------------
+  // Keyed `output:<step>` / `diff:<step>` / `transcript:<step>`; persisted on
+  // the session so the drawers reopen as they were left.
+  let drawers = $state<Record<string, boolean>>(savedDockUi.validationDrawers ?? {});
+  function toggleDrawer(key: string) {
+    const change = { [key]: !drawers[key] };
+    drawers = { ...drawers, ...change };
+    sdkSessions.setDockUi(run.sessionId, { validationDrawers: change });
+  }
 
   function stepHasDetail(step: ValidationStep): boolean {
     return !!(
@@ -339,7 +366,10 @@
   // tabbed content, while header/stepper/gate actions stay pinned. The pane's
   // height is user-resizable via the dock's drag handle.
   type PanelTab = 'gate' | 'steps' | 'activity' | 'log';
-  let activeTab = $state<PanelTab>('steps');
+  let activeTab = $state<PanelTab>((savedDockUi.validationTab as PanelTab | undefined) ?? 'steps');
+  $effect(() => {
+    sdkSessions.setDockUi(run.sessionId, { validationTab: activeTab });
+  });
 
   const GATE_TAB_LABELS: Record<string, string> = {
     findings: 'Findings',
@@ -577,7 +607,14 @@
       {/each}
     </div>
 
-    <div class="v-body">
+    <div
+      class="v-body"
+      use:persistScroll={{
+        sessionId: run.sessionId,
+        key: `validation:${activeTab}`,
+        saved: savedScroll?.[`validation:${activeTab}`],
+      }}
+    >
       {#if activeTab === 'gate' && gate}
         {#if gate.kind === 'ship' && gate.ship}
           {@const ship = gate.ship}
@@ -719,12 +756,12 @@
                     </span>
                   {/if}
                   {#if step.proof.outputTail}
-                    <button class="v-inline-toggle" onclick={() => (openOutput[step.name] = !openOutput[step.name])}>
-                      {openOutput[step.name] ? 'Hide output' : 'Show output'}
+                    <button class="v-inline-toggle" onclick={() => toggleDrawer(`output:${step.name}`)}>
+                      {drawers[`output:${step.name}`] ? 'Hide output' : 'Show output'}
                     </button>
                   {/if}
                 </div>
-                {#if step.proof.outputTail && openOutput[step.name]}
+                {#if step.proof.outputTail && drawers[`output:${step.name}`]}
                   <pre class="v-output">{step.proof.outputTail}</pre>
                 {/if}
               {/if}
@@ -748,20 +785,20 @@
               {/if}
 
               {#if step.fixReviewDiff}
-                <button class="v-inline-toggle" onclick={() => (openDiff[step.name] = !openDiff[step.name])}>
-                  {openDiff[step.name] ? 'Hide fix diff' : 'View fix diff'}
+                <button class="v-inline-toggle" onclick={() => toggleDrawer(`diff:${step.name}`)}>
+                  {drawers[`diff:${step.name}`] ? 'Hide fix diff' : 'View fix diff'}
                 </button>
-                {#if openDiff[step.name]}
+                {#if drawers[`diff:${step.name}`]}
                   <pre class="v-diff">{#each step.fixReviewDiff.split('\n') as line}<span class={diffLineClass(line)}>{line}
 </span>{/each}</pre>
                 {/if}
               {/if}
 
               {#if step.transcript}
-                <button class="v-inline-toggle" onclick={() => (openTranscript[step.name] = !openTranscript[step.name])}>
-                  {openTranscript[step.name] ? 'Hide agent transcript' : 'View agent transcript'}
+                <button class="v-inline-toggle" onclick={() => toggleDrawer(`transcript:${step.name}`)}>
+                  {drawers[`transcript:${step.name}`] ? 'Hide agent transcript' : 'View agent transcript'}
                 </button>
-                {#if openTranscript[step.name]}
+                {#if drawers[`transcript:${step.name}`]}
                   <pre class="v-transcript">{step.transcript}</pre>
                 {/if}
               {/if}
@@ -882,6 +919,18 @@
         <button class="v-btn v-btn-ghost" onclick={skip} disabled={run.responding} title="Skip this step and continue">
           Skip step
         </button>
+        {#if gate.kind === 'findings' || gate.kind === 'fix_review'}
+          <button
+            class="v-btn v-btn-complete"
+            onclick={completeRun}
+            disabled={run.responding}
+            title={remainingAfterGate.length > 0
+              ? `Accept the remaining findings without fixing them and end the run as passed — skips ${remainingAfterGate.join(', ')}`
+              : 'Accept the remaining findings without fixing them and end the run as passed'}
+          >
+            Complete run
+          </button>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -1044,6 +1093,12 @@
   .v-btn-ghost {
     background: transparent;
     color: var(--color-text-secondary);
+  }
+  /* Ends the run — green like a pass, pushed to the far end of the row. */
+  .v-btn-complete {
+    margin-left: auto;
+    color: rgb(74, 222, 128);
+    border-color: rgba(74, 222, 128, 0.4);
   }
 
   /* Stepper */

@@ -898,7 +898,8 @@ export function queuedValidationsOf(session: SdkSession): RateLimitedState[] {
 /** Resolve a gate. `fix` sends the selected findings (+ any user findings) to the fixer. */
 async function respond(
   runId: string,
-  action: 'approve' | 'skip' | 'fix',
+  /** `complete` (findings / fix_review gates) ends the whole run as passed. */
+  action: 'approve' | 'complete' | 'skip' | 'fix',
   findingIds?: string[],
   instructions?: string,
   addedFindings?: ValidationFinding[],

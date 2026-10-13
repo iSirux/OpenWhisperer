@@ -620,9 +620,9 @@ fn is_no_pr_error(err: &str) -> bool {
     e.contains("no pull requests found") || e.contains("could not find pull request")
 }
 
-/// Core of [`fetch_branch_pr`]: fetch the PR whose head is `branch` (open
-/// preferred by gh), or `None` when the branch has no PR. `pub(crate)` so the
-/// validation pipeline can reuse the same gh call + normalization for ship/ci.
+/// Fetch the PR whose head is `branch` (open preferred by gh), or `None` when
+/// the branch has no PR. Used by the validation pipeline for ship/ci; the
+/// session PR panel lists every PR via [`fetch_branch_prs`].
 pub(crate) async fn fetch_branch_pr_status(
     repo_path: &str,
     gh_user: Option<&str>,
@@ -645,15 +645,33 @@ pub(crate) async fn fetch_branch_pr_status(
     Ok(Some(raw.into_status()))
 }
 
-/// Fetch the PR whose head is `branch` (open preferred by gh), or None when the
-/// branch has no PR. Runs in the repo/worktree directory so gh resolves the remote.
+/// Every PR (any state) whose head is `branch`, newest first — a branch reused
+/// after a merge, or opened against several bases, has more than one. Runs in
+/// the repo/worktree directory so gh resolves the remote. Empty when none.
 #[tauri::command]
-pub async fn fetch_branch_pr(
+pub async fn fetch_branch_prs(
     repo_path: String,
     gh_user: Option<String>,
     branch: String,
-) -> Result<Option<GitHubPrStatus>, String> {
-    fetch_branch_pr_status(&repo_path, gh_user.as_deref(), &branch).await
+) -> Result<Vec<GitHubPrStatus>, String> {
+    let args: Vec<String> = vec![
+        "pr".into(),
+        "list".into(),
+        "--head".into(),
+        branch,
+        "--state".into(),
+        "all".into(),
+        "--limit".into(),
+        "20".into(),
+        "--json".into(),
+        PR_VIEW_FIELDS.into(),
+    ];
+    let stdout = run_gh(&repo_path, gh_user.as_deref(), &args).await?;
+    let raw: Vec<GhRawPr> = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("Failed to parse gh pr list output: {}", e))?;
+    let mut prs: Vec<GitHubPrStatus> = raw.into_iter().map(GhRawPr::into_status).collect();
+    prs.sort_by(|a, b| b.number.cmp(&a.number));
+    Ok(prs)
 }
 
 /// A PR's unified diff, plus whether it was cut short (see [`MAX_PR_DIFF_BYTES`]).

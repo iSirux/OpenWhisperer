@@ -285,6 +285,10 @@ pub struct PersistedSdkSession {
     /// Whether the PR dock panel was left open, so the dock reopens after restart
     #[serde(default)]
     pub pr_panel_open: bool,
+    /// Dock UI state (PR pick, active tabs, scroll positions, collapsed sections)
+    /// so the dock reopens exactly as it was left (opaque JSON, frontend-owned schema)
+    #[serde(default)]
+    pub dock_ui: Option<serde_json::Value>,
     /// Compact latest validation-run summary — drives the restart-surviving
     /// validation badge (opaque JSON, frontend-owned schema)
     #[serde(default)]

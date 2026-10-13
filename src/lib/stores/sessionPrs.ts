@@ -12,8 +12,9 @@ import {
 
 /**
  * Per-session GitHub PR state backing the PR badge and panel.
- * Detection: a session's branch is checked for an existing PR via
- * `fetch_branch_pr` (gh CLI, pinned to the repo's `gh_user`). A summary is
+ * Detection: a session's branch is checked for PRs via `fetch_branch_prs`
+ * (gh CLI, pinned to the repo's `gh_user`); when there are several, the panel
+ * lets the user pick which one it shows. A summary of the shown PR is
  * mirrored onto `SdkSession.pr` (auto-persisted) so badges survive restart;
  * the full live status (checks, mergeability) lives only here.
  */
@@ -65,7 +66,12 @@ export interface PrDiff {
 }
 
 export interface SessionPrEntry {
+  /** The PR the panel shows — the user's pick from `prs`, else the default (see `pickPr`). */
   pr: GitHubPrStatus | null;
+  /** Every PR whose head is the session's branch, newest first. */
+  prs: GitHubPrStatus[];
+  /** PR number the user picked in the panel; null = follow the default. */
+  selectedNumber: number | null;
   loading: boolean;
   merging: boolean;
   error: string | null;
@@ -90,6 +96,8 @@ export interface SessionPrEntry {
 
 const EMPTY_ENTRY: SessionPrEntry = {
   pr: null,
+  prs: [],
+  selectedNumber: null,
   loading: false,
   merging: false,
   error: null,
@@ -241,12 +249,30 @@ function toSummary(pr: GitHubPrStatus): SessionPrSummary {
   return { number: pr.number, url: pr.url, state: pr.state, title: pr.title, isDraft: pr.is_draft };
 }
 
-/** Deep equality of two PR statuses. Small plain objects with a backend-fixed key order,
- *  so a JSON comparison is exact and cheap. */
-function samePrStatus(a: GitHubPrStatus | null, b: GitHubPrStatus | null): boolean {
+/** Deep equality of PR statuses (or lists of them). Small plain objects with a
+ *  backend-fixed key order, so a JSON comparison is exact and cheap. */
+function samePrData(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * The PR to show from a branch's list: the user's pick while it still exists,
+ * else the newest open PR (what `gh pr view <branch>` would pick), else the
+ * newest overall. `prs` is newest first.
+ */
+function pickPr(prs: GitHubPrStatus[], selectedNumber: number | null): GitHubPrStatus | null {
+  if (selectedNumber != null) {
+    const picked = prs.find((p) => p.number === selectedNumber);
+    if (picked) return picked;
+  }
+  return prs.find((p) => p.state === 'open') ?? prs[0] ?? null;
+}
+
+/** Another PR on the same branch is still open — deleting the branch would close it. */
+export function otherOpenPr(entry: SessionPrEntry): GitHubPrStatus | null {
+  return entry.prs.find((p) => p.number !== entry.pr?.number && p.state === 'open') ?? null;
 }
 
 function createSessionPrsStore() {
@@ -265,7 +291,9 @@ function createSessionPrsStore() {
       const prev = map.get(sessionId);
       const base = prev ?? EMPTY_ENTRY;
       const changedKeys = keys.filter((key) =>
-        key === 'pr' ? !samePrStatus(base.pr, changes.pr ?? null) : base[key] !== changes[key]
+        key === 'pr' || key === 'prs'
+          ? !samePrData(base[key], changes[key] ?? null)
+          : base[key] !== changes[key]
       );
       if (prev && changedKeys.length === 0) continue;
       const entry: SessionPrEntry = { ...base };
@@ -311,20 +339,23 @@ function createSessionPrsStore() {
     const siblingIds = siblings.map((s) => s.id);
     patchMany(siblingIds, { loading: true, error: null });
     try {
-      const pr = await invoke<GitHubPrStatus | null>('fetch_branch_pr', {
+      const prs = await invoke<GitHubPrStatus[]>('fetch_branch_prs', {
         repoPath: session.cwd,
         ghUser: repo?.gh_user || null,
         branch,
       });
       const now = Date.now();
-      // The result is the same PR for every session in the scope — apply it to
-      // all of them so their badges/panels never diverge.
+      // The list is the same for every session in the scope — apply it to all
+      // of them so their badges/panels never diverge. Each keeps its own pick.
       const wasKnown = siblings.some((s) => entryFor(s.id).pr != null);
-      const summary = pr ? toSummary(pr) : null;
-      patchMany(siblingIds, { pr, loading: false, lastFetched: now });
-      // No-op for an unchanged summary (setSessionPr compares before writing).
-      for (const s of siblings) sdkSessions.setSessionPr(s.id, summary);
-      maybeAutoOpen(session, pr, wasKnown);
+      patchMany(siblingIds, { prs, loading: false, lastFetched: now });
+      for (const s of siblings) {
+        const pr = pickPr(prs, entryFor(s.id).selectedNumber ?? s.dockUi?.prSelected ?? null);
+        patch(s.id, { pr });
+        // No-op for an unchanged summary (setSessionPr compares before writing).
+        sdkSessions.setSessionPr(s.id, pr ? toSummary(pr) : null);
+      }
+      maybeAutoOpen(session, entryFor(session.id).pr, wasKnown);
     } catch (e) {
       // Keep siblings' last good PR; only the initiating session records the error.
       patchMany(siblingIds, { loading: false });
@@ -361,6 +392,7 @@ function createSessionPrsStore() {
   function rehydrateFromSessions(): void {
     for (const s of get(sdkSessions)) {
       if (s.prPanelOpen) patch(s.id, { panelOpen: true });
+      if (s.dockUi?.prSelected != null) patch(s.id, { selectedNumber: s.dockUi.prSelected });
     }
   }
 
@@ -378,7 +410,11 @@ function createSessionPrsStore() {
         number: pr.number,
         strategy,
       });
-      patch(session.id, { merging: false });
+      // Stay on the PR just merged — with another PR still open on the branch,
+      // the default pick would otherwise jump to that one and hide the
+      // merged banner / cleanup actions.
+      patch(session.id, { merging: false, selectedNumber: pr.number });
+      sdkSessions.setDockUi(session.id, { prSelected: pr.number });
       // Remember the strategy per repo (best-effort).
       if (repo && repo.last_merge_strategy !== strategy) {
         const index = get(repos).list.findIndex((r) => r.id === repo.id);
@@ -402,6 +438,13 @@ function createSessionPrsStore() {
     const repo = resolveRepo(session);
     if (!branch || !repo?.path) {
       patch(session.id, { cleanupError: 'Could not resolve the session branch or repository' });
+      return;
+    }
+    const stillOpen = otherOpenPr(entry);
+    if (stillOpen) {
+      patch(session.id, {
+        cleanupError: `PR #${stillOpen.number} is still open on this branch — deleting the branch would close it.`,
+      });
       return;
     }
     const isWorktree =
@@ -508,6 +551,13 @@ function createSessionPrsStore() {
           ghUser: repo?.gh_user || null,
           number: pr.number,
         });
+        // The user switched PRs while this was in flight — the panel's effect
+        // already fired (and bailed on diffLoading), so fetch the current one.
+        if (entryFor(session.id).pr?.number !== pr.number) {
+          patch(session.id, { diffLoading: false });
+          void sessionPrs.loadDiff(session);
+          return;
+        }
         patch(session.id, {
           diff: result.patch,
           diffTruncated: result.truncated,
@@ -526,6 +576,16 @@ function createSessionPrsStore() {
     mergeAndFinish,
 
     rehydrateFromSessions,
+
+    /** Show another of the branch's PRs in this session's panel (and badge). */
+    selectPr(session: SdkSession, number: number): void {
+      const entry = entryFor(session.id);
+      const pr = entry.prs.find((p) => p.number === number);
+      if (!pr || entry.merging || entry.cleaning || entry.finishing) return;
+      patch(session.id, { selectedNumber: number, pr, mergeError: null, cleanupError: null });
+      sdkSessions.setSessionPr(session.id, toSummary(pr));
+      sdkSessions.setDockUi(session.id, { prSelected: number });
+    },
 
     openPanel(sessionId: string): void {
       patch(sessionId, { panelOpen: true, mergeError: null });

@@ -2,6 +2,8 @@
   import {
     sessionPrs,
     fetchWorkingTreeState,
+    otherOpenPr,
+    type GitHubPrStatus,
     type SessionPrEntry,
     type MergeStrategy,
   } from '$lib/stores/sessionPrs';
@@ -16,6 +18,8 @@
   import type { RepoConfig } from '$lib/stores/repos';
   import { dockOrientation } from '$lib/stores/dockOrientation';
   import { renderMarkdown } from '$lib/utils/markdown';
+  import { persistScroll } from '$lib/actions/persistScroll';
+  import { untrack } from 'svelte';
 
   let {
     session,
@@ -28,14 +32,29 @@
   } = $props();
 
   let pr = $derived(entry.pr);
-  let effectiveState = $derived(
-    pr ? (pr.is_draft && pr.state === 'open' ? 'draft' : pr.state) : null
-  );
 
-  let descriptionOpen = $state(true);
+  function displayState(p: GitHubPrStatus): string {
+    return p.is_draft && p.state === 'open' ? 'draft' : p.state;
+  }
+
+  function stateLabel(state: string | null): string {
+    return state === 'open' ? 'Open' : state === 'draft' ? 'Draft' : state === 'merged' ? 'Merged' : 'Closed';
+  }
+
+  let effectiveState = $derived(pr ? displayState(pr) : null);
+
+  /** Deleting the branch would close another PR that's still open on it. */
+  let blockingOpenPr = $derived(otherOpenPr(entry));
+
+  // Seeded once from the session's persisted dock state; changes are saved back.
+  let descriptionOpen = $state(untrack(() => session.dockUi?.prDescriptionOpen ?? true));
 
   type PrTab = 'overview' | 'diff';
-  let tab = $state<PrTab>('overview');
+  let tab = $state<PrTab>(untrack(() => session.dockUi?.prTab ?? 'overview'));
+
+  $effect(() => {
+    sdkSessions.setDockUi(session.id, { prTab: tab, prDescriptionOpen: descriptionOpen });
+  });
 
   // The diff is fetched lazily — only once the user asks for it, and again when
   // a push changes the PR's diffstat while the tab is open (the panel polls the
@@ -115,7 +134,7 @@
 
   /** The combined action also deletes the worktree and archives its sessions —
    *  never do that while an agent is still working in there. */
-  let canFinish = $derived(canMerge && !scopeBusy);
+  let canFinish = $derived(canMerge && !scopeBusy && !blockingOpenPr);
 
   let finishLabel = $derived(
     entry.merging
@@ -176,9 +195,11 @@
     run(action);
   }
 
-  // Poll while the panel is open on an open PR (checks/reviews move on GitHub).
+  // Poll while the branch has an open PR (checks/reviews move on GitHub) —
+  // even when an older merged one is selected, so the list stays current.
+  let anyOpen = $derived(entry.prs.some((p) => p.state === 'open'));
   $effect(() => {
-    if (!pr || pr.state !== 'open') return;
+    if (!anyOpen) return;
     const t = setInterval(() => {
       void sessionPrs.refresh(session);
     }, 15_000);
@@ -220,7 +241,7 @@
           {pr.title}
         </button>
         <span class="pr-chip state-{effectiveState}">
-          {effectiveState === 'open' ? 'Open' : effectiveState === 'draft' ? 'Draft' : effectiveState === 'merged' ? 'Merged' : 'Closed'}
+          {stateLabel(effectiveState)}
         </span>
         {#if reviewLabel && pr.state === 'open'}
           <span
@@ -287,6 +308,28 @@
     </div>
   </div>
 
+  {#if pr && entry.prs.length > 1}
+    <div class="pr-picker" role="radiogroup" aria-label="Pull requests on this branch">
+      <span class="pr-picker-label">{entry.prs.length} PRs on this branch</span>
+      {#each entry.prs as option (option.number)}
+        {@const optionState = displayState(option)}
+        <button
+          class="pr-picker-option state-{optionState}"
+          class:active={option.number === pr.number}
+          role="radio"
+          aria-checked={option.number === pr.number}
+          onclick={() => sessionPrs.selectPr(session, option.number)}
+          disabled={busy}
+          title="{option.title} ({option.head_ref} → {option.base_ref})"
+        >
+          <span class="pr-picker-dot" aria-hidden="true"></span>
+          #{option.number}
+          <span class="pr-picker-state">{stateLabel(optionState)}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   {#if pr}
     <div class="pr-tabs" role="tablist">
       <button
@@ -313,7 +356,14 @@
   {#if pr && tab === 'diff'}
     <PrDiffView {session} {entry} />
   {:else}
-  <div class="pr-body">
+  <div
+    class="pr-body"
+    use:persistScroll={{
+      sessionId: session.id,
+      key: 'pr:overview',
+      saved: session.dockUi?.scroll?.['pr:overview'],
+    }}
+  >
   {#if entry.error}
     <div class="pr-error">{entry.error}</div>
   {/if}
@@ -451,7 +501,9 @@
             disabled={!canFinish}
             title={scopeBusy
               ? 'An agent is still working in this worktree — wait for it to finish'
-              : isWorktree
+              : blockingOpenPr
+                ? `PR #${blockingOpenPr.number} is still open on this branch — deleting the branch would close it`
+                : isWorktree
                 ? 'Merge, then delete the branch and worktree and archive every session in it'
                 : 'Merge, then delete the branch and archive this session'}
           >
@@ -473,10 +525,12 @@
           <button
             class="pr-cleanup-btn"
             onclick={() => sessionPrs.cleanup(session)}
-            disabled={entry.cleaning || scopeBusy}
+            disabled={entry.cleaning || scopeBusy || !!blockingOpenPr}
             title={scopeBusy
               ? 'An agent is still working in this worktree — wait for it to finish'
-              : 'Only proceeds when there are no uncommitted changes or unpushed commits'}
+              : blockingOpenPr
+                ? `PR #${blockingOpenPr.number} is still open on this branch — deleting the branch would close it`
+                : 'Only proceeds when there are no uncommitted changes or unpushed commits'}
           >
             {entry.cleaning
               ? 'Cleaning up…'
@@ -540,6 +594,70 @@
     padding: 0.6rem 0.85rem 0.5rem;
     flex-shrink: 0;
   }
+
+  /* Which of the branch's PRs the panel shows — only when there's more than one. */
+  .pr-picker {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding: 0 0.85rem 0.45rem;
+    flex-shrink: 0;
+  }
+
+  .pr-picker-label {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    margin-right: 0.15rem;
+  }
+
+  .pr-picker-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.08rem 0.45rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    color: var(--color-text-secondary);
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .pr-picker-option:hover:not(:disabled) {
+    color: var(--color-text-primary);
+  }
+
+  .pr-picker-option:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .pr-picker-option.active {
+    color: var(--color-text-primary);
+    border-color: var(--color-accent);
+  }
+
+  .pr-picker-state {
+    font-family: inherit;
+    font-weight: 500;
+    color: var(--color-text-muted);
+  }
+
+  .pr-picker-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 999px;
+    background: var(--color-text-muted);
+  }
+
+  .pr-picker-option.state-open .pr-picker-dot { background: rgb(74, 222, 128); }
+  .pr-picker-option.state-draft .pr-picker-dot { background: rgb(148, 163, 184); }
+  .pr-picker-option.state-merged .pr-picker-dot { background: rgb(192, 132, 252); }
+  .pr-picker-option.state-closed .pr-picker-dot { background: rgb(248, 113, 113); }
 
   /* Overview ↔ Diff, between the fixed header and the body/footer. */
   .pr-tabs {

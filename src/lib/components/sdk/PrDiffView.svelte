@@ -1,6 +1,8 @@
 <script lang="ts">
   import { sessionPrs, type SessionPrEntry } from '$lib/stores/sessionPrs';
-  import type { SdkSession } from '$lib/stores/sdkSessions';
+  import { sdkSessions, type SdkSession } from '$lib/stores/sdkSessions';
+  import { persistScroll } from '$lib/actions/persistScroll';
+  import { untrack } from 'svelte';
   import { parseUnifiedDiff, type DiffFile } from '$lib/utils/gitDiff';
 
   let {
@@ -23,9 +25,12 @@
     deletions: files.reduce((n, f) => n + f.deletions, 0),
   });
 
-  // Expansion is keyed by file path so it survives a refetch of the same diff;
-  // `null` means "not decided by the user" and falls back to the size default.
-  let expanded = $state<Record<string, boolean>>({});
+  // Expansion is keyed by file path so it survives a refetch of the same diff
+  // (and, persisted on the session, a restart); a missing entry means "not
+  // decided by the user" and falls back to the size default.
+  let expanded = $state<Record<string, boolean>>(
+    untrack(() => session.dockUi?.prDiffExpanded ?? {})
+  );
   let autoExpand = $derived(totalLines <= AUTO_EXPAND_LINE_BUDGET);
 
   function isOpen(file: DiffFile): boolean {
@@ -33,13 +38,16 @@
   }
 
   function toggle(file: DiffFile) {
-    expanded = { ...expanded, [file.path]: !isOpen(file) };
+    const change = { [file.path]: !isOpen(file) };
+    expanded = { ...expanded, ...change };
+    sdkSessions.setDockUi(session.id, { prDiffExpanded: change });
   }
 
   function setAll(open: boolean) {
     const next: Record<string, boolean> = {};
     for (const f of files) next[f.path] = open;
     expanded = next;
+    sdkSessions.setDockUi(session.id, { prDiffExpanded: next });
   }
 
   const STATUS_LABEL: Record<DiffFile['status'], string> = {
@@ -72,7 +80,14 @@
     </button>
   </div>
 
-  <div class="diff-body">
+  <div
+    class="diff-body"
+    use:persistScroll={{
+      sessionId: session.id,
+      key: 'pr:diff',
+      saved: session.dockUi?.scroll?.['pr:diff'],
+    }}
+  >
     {#if entry.diffError}
       <div class="diff-error">{entry.diffError}</div>
     {/if}

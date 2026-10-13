@@ -517,7 +517,7 @@ pub fn run() {
             github_cmds::list_gh_accounts,
             github_cmds::fetch_github_issues,
             github_cmds::fetch_github_issue,
-            github_cmds::fetch_branch_pr,
+            github_cmds::fetch_branch_prs,
             github_cmds::fetch_pr_diff,
             github_cmds::merge_github_pr,
             // --- Agent accounts (multi-account) ---

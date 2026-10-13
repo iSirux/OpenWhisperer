@@ -691,6 +691,25 @@ export interface SessionValidationSummary {
   updatedAt: number;
 }
 
+/** How the session dock (PR + validation panels) was left, so returning to the
+ *  session — or restarting — shows it exactly as before. Every field optional;
+ *  absent = the panel's own default. */
+export interface SessionDockUi {
+  /** Dock tab when both panels are open. */
+  dockTab?: 'pr' | 'validation';
+  /** PR the user picked when the branch has several (null = follow the default). */
+  prSelected?: number | null;
+  prTab?: 'overview' | 'diff';
+  prDescriptionOpen?: boolean;
+  /** Diff file path → expanded, for files the user toggled (others follow the size-based default). */
+  prDiffExpanded?: Record<string, boolean>;
+  validationTab?: string;
+  /** Validation step drawers left open, keyed `output:<step>` / `diff:<step>` / `transcript:<step>`. */
+  validationDrawers?: Record<string, boolean>;
+  /** scrollTop per scroll area, keyed e.g. `pr:overview`, `pr:diff`, `validation:steps`. */
+  scroll?: Record<string, number>;
+}
+
 export interface SdkSession {
   id: string;
   cwd: string;
@@ -714,6 +733,8 @@ export interface SdkSession {
   pr?: SessionPrSummary | null;
   /** Whether the PR dock panel was left open for this session. Persisted so the dock reopens after restart. */
   prPanelOpen?: boolean;
+  /** Dock UI state (tabs, PR pick, scroll, collapsed sections). Persisted. */
+  dockUi?: SessionDockUi;
   /** Compact summary of the latest Validation run for this session (drives header/list badge). Persisted. */
   validation?: SessionValidationSummary | null;
   /** Full latest Validation run snapshot (steps/gate/outcome/panel-open state) so the whole
@@ -3488,6 +3509,26 @@ function createSdkSessionsStore() {
     },
 
     /** Persist whether the PR dock panel is open for a session (survives restart). */
+    /** Merge a patch into the session's dock UI state; skips no-op writes. Nested
+     *  maps (`scroll`, `prDiffExpanded`, `validationDrawers`) are merged key-wise. */
+    setDockUi(id: string, changes: SessionDockUi): void {
+      let current: SdkSession | undefined;
+      subscribe(sessions => { current = sessions.find(s => s.id === id); })();
+      if (!current) return;
+      const prev = current.dockUi ?? {};
+      const next: SessionDockUi = { ...prev, ...changes };
+      if (changes.scroll) next.scroll = { ...prev.scroll, ...changes.scroll };
+      if (changes.validationDrawers) {
+        next.validationDrawers = { ...prev.validationDrawers, ...changes.validationDrawers };
+      }
+      if (changes.prDiffExpanded) {
+        next.prDiffExpanded = { ...prev.prDiffExpanded, ...changes.prDiffExpanded };
+      }
+      if (JSON.stringify(next) === JSON.stringify(prev)) return;
+      update(sessions => sessions.map(s => s.id === id ? { ...s, dockUi: next } : s));
+      debouncedSave(id);
+    },
+
     setSessionPrPanelOpen(id: string, open: boolean): void {
       let current: SdkSession | undefined;
       subscribe(sessions => { current = sessions.find(s => s.id === id); })();
