@@ -103,21 +103,21 @@ export function getSdkSmartStatus(session: SdkSession): {
     return { status: 'queued' };
   }
 
-  // Smart Queue: a live session with a pending turn waiting on a rate-limit
-  // reset or a scheduled send surfaces as rate_limited (takes precedence over
-  // the message-derived querying/idle status below). A turn parked until the
-  // repo/worktree goes idle isn't a rate-limit condition — it surfaces as queued,
-  // except while this session's own query is still running (stay querying).
+  // Smart Queue: a live session with a pending turn waiting on a rate-limit reset
+  // surfaces as rate_limited (takes precedence over the message-derived
+  // querying/idle status below). A deliberately-deferred turn (scheduled send or
+  // waiting for idle) isn't a rate-limit condition — it surfaces as queued, except
+  // while this session's own query is still running (stay querying). The list row
+  // shows what the parked turns are waiting on either way.
   const parked = parkedTurnsOf(session);
   if (parked.length > 0) {
     // A turn rejected mid-run by a rate limit is a real blocked state, whatever the
-    // session is doing now. A deliberately-deferred turn is not: if the session is
-    // still working, it stays "querying" and the parked turn shows as a ghost bubble.
+    // session is doing now.
     if (parked.some((t) => t.reason === 'rate_limit')) {
       return { status: 'rate_limited' };
     }
     if (session.status !== 'querying' && session.status !== 'initializing') {
-      return { status: parked.some((t) => t.reason === 'scheduled') ? 'rate_limited' : 'queued' };
+      return { status: 'queued' };
     }
   }
 

@@ -97,6 +97,7 @@ export interface DisplaySession {
   // window resets or a scheduled window boundary (status === 'queued').
   queueInfo?: QueueInfo | null;
   // Smart Queue: pending turns on a live session waiting to be sent
-  // (rate-limit reset or scheduled send; surfaces as status 'rate_limited').
+  // (a rate-limit rejection surfaces as status 'rate_limited'; a scheduled or
+  // wait-for-idle send as 'queued' once the session is idle).
   parkedTurns?: RateLimitedState[];
 }

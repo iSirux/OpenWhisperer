@@ -177,6 +177,49 @@
     }
   });
 
+  // Queued-message row for a LIVE session holding parked turns (scheduled sends,
+  // waiting for idle, rate-limit retries). Shown regardless of the session's own
+  // status — a session awaiting input or still running can have messages queued.
+  // Describes the oldest turn (dispatch order); the count covers the rest.
+  const parkedInfo = $derived.by(() => {
+    if (session.type !== "sdk" || session.status === "queued") return null;
+    const turns = session.parkedTurns ?? [];
+    if (turns.length === 0) return null;
+    const t = turns[0];
+    const what =
+      t.action === "compact" ? "Compact" : t.action === "validate" ? "Validation" : "Message";
+    const label = turns.length > 1 ? `${turns.length} queued` : `${what} queued`;
+    const refMs = now * 1000;
+    let detail: string;
+    switch (t.reason) {
+      case "scheduled": {
+        const target = t.targetStartAt ?? t.resetsAt;
+        const countdown = formatMsRemaining(target, refMs);
+        if (!t.window && target != null) {
+          const at = formatScheduleTarget(target, refMs);
+          detail = countdown ? `${at} · in ${countdown}` : at;
+        } else {
+          const window = t.window === "7d" ? "7d" : "5h";
+          detail = countdown ? `next ${window} reset · in ${countdown}` : `next ${window} reset`;
+        }
+        break;
+      }
+      case "after_sessions":
+        detail = t.scope === "session" ? "when this session is idle" : "when the worktree is idle";
+        break;
+      default: {
+        const countdown = formatMsRemaining(t.resetsAt, refMs);
+        detail = countdown ? `rate limited · resets in ${countdown}` : "rate limited";
+      }
+    }
+    const preview = t.prompt?.trim();
+    return {
+      label,
+      detail,
+      title: preview ? `${label} · ${detail}\n\n${capText(preview)}` : `${label} · ${detail}`,
+    };
+  });
+
   // Compact validation-run status badge from the mirrored session summary.
   const validationBadge = $derived.by(() => {
     if (session.type !== "sdk" || !session.validation) return null;
@@ -524,10 +567,11 @@
     </div>
   {/if}
 
-  <!-- Schedule / queue row (Smart Queue: parked until reset / scheduled window /
-       repository idle) -->
-  {#if scheduleInfo}
-    <div class="schedule-row" title={scheduleInfo.title}>
+  <!-- Schedule / queue row (Smart Queue: a queued launch or a live session's
+       queued messages, parked until reset / scheduled time / idle) -->
+  {#if scheduleInfo ?? parkedInfo}
+    {@const info = (scheduleInfo ?? parkedInfo)!}
+    <div class="schedule-row" title={info.title}>
       <svg
         class="w-3 h-3 shrink-0"
         fill="none"
@@ -542,9 +586,9 @@
         />
       </svg>
       <span class="truncate">
-        {scheduleInfo.label}
-        {#if scheduleInfo.detail}
-          · {scheduleInfo.detail}
+        {info.label}
+        {#if info.detail}
+          · {info.detail}
         {/if}
       </span>
     </div>
