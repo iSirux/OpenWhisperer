@@ -68,7 +68,15 @@
   const isRestorable = $derived(entry.sessionType === 'sdk');
 </script>
 
-<div class="archive-entry p-3 border-b border-border/50 hover:bg-surface-elevated/50 transition-all group">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="archive-entry p-3 border-b border-border/50 hover:bg-surface-elevated/50 transition-all group {isRestorable ? 'cursor-pointer select-none' : ''}"
+  title={isRestorable ? 'Double-click to restore' : undefined}
+  ondblclick={(e) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    if (isRestorable && !restoring) onrestore(entry.id);
+  }}
+>
   <!-- Header row -->
   <div class="flex items-center justify-between mb-1">
     <div class="flex items-center gap-2 min-w-0 flex-1">
@@ -150,6 +158,13 @@
       <span class="text-text-muted italic">No title</span>
     {/if}
   </div>
+
+  <!-- First prompt preview (mirrors the session header) -->
+  {#if entry.name && entry.prompt}
+    <div class="text-xs text-text-muted truncate" title={entry.prompt}>
+      {entry.prompt}
+    </div>
+  {/if}
 
   <!-- AI summary -->
   {#if entry.summary}
