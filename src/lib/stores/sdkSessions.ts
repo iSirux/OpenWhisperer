@@ -1402,21 +1402,33 @@ function createSdkSessionsStore() {
         // end), so a task_started with no task_completed means its task_notification was lost —
         // and task_completed is the ONLY authoritative terminal signal for an async subagent, so
         // that block would otherwise read "Running" forever. Synthesize a 'stopped' marker.
-        // Matches the renderer's pairing (toolUseId first, taskId fallback), so it's idempotent:
-        // once closed, later turns never re-close it, and a real completion landing afterwards
-        // still wins (it's appended later and overwrites in the renderer's index).
-        const closedTaskKeys = new Set<string>();
+        // Matches the renderer's pairing (toolUseId first, else the latest earlier start with the
+        // same taskId — a continued agent reuses its taskId, so an OLD round's completion must
+        // not count as closing the new one), so it's idempotent: once closed, later turns never
+        // re-close it, and a real completion landing afterwards still wins.
+        const openStarts: SdkMessage[] = [];
+        // Completions that arrived before any start (old SDKs sent task_started late) close the
+        // next matching start instead.
+        const earlyCompletions: SdkMessage[] = [];
+        const startedKeys = new Set<string>();
         for (const m of closedThinkingMessages) {
-          if (m.type !== 'task_completed') continue;
-          if (m.toolUseId) closedTaskKeys.add(m.toolUseId);
-          if (m.taskId) closedTaskKeys.add(m.taskId);
+          if (m.type === 'task_started') {
+            if (m.toolUseId) startedKeys.add(m.toolUseId);
+            if (m.taskId) startedKeys.add(m.taskId);
+            const e = earlyCompletions.findIndex(c =>
+              (!!c.toolUseId && c.toolUseId === m.toolUseId) || (!!c.taskId && c.taskId === m.taskId));
+            if (e >= 0) earlyCompletions.splice(e, 1);
+            else openStarts.push(m);
+          } else if (m.type === 'task_completed') {
+            let k = m.toolUseId ? openStarts.findIndex(s => s.toolUseId === m.toolUseId) : -1;
+            if (k < 0 && m.taskId) k = openStarts.findLastIndex(s => s.taskId === m.taskId);
+            if (k >= 0) openStarts.splice(k, 1);
+            else if (!(m.toolUseId && startedKeys.has(m.toolUseId)) && !(m.taskId && startedKeys.has(m.taskId))) {
+              earlyCompletions.push(m);
+            }
+          }
         }
-        const syntheticCompletions: SdkMessage[] = closedThinkingMessages
-          .filter(m =>
-            m.type === 'task_started' &&
-            !(m.toolUseId && closedTaskKeys.has(m.toolUseId)) &&
-            !(m.taskId && closedTaskKeys.has(m.taskId))
-          )
+        const syntheticCompletions: SdkMessage[] = openStarts
           .map(m => ({
             type: 'task_completed' as const,
             taskId: m.taskId,

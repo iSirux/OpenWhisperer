@@ -258,8 +258,12 @@ export interface TaskIndex {
   // on toolUseId alone then leaves the task block spinning "Running" forever even though the
   // subagent finished (its task_completed is the ONLY authoritative terminal signal; see the
   // effectiveTaskCompleted comment in buildTaskRenderItem). task_id is always present on both,
-  // so index it too.
-  taskCompletedByTaskId: Map<string, SdkMessage>;
+  // so index it too. Every completion is kept (stream order): continuing a background agent via
+  // SendMessage re-emits task_started with the SAME taskId (but a new toolUseId), so one taskId
+  // can have several start/complete rounds — see findTaskCompleted.
+  taskCompletedByTaskId: Map<string, SdkMessage[]>;
+  // taskId -> every task_started for it, in stream order (several when the agent was continued).
+  taskStartsByTaskId: Map<string, SdkMessage[]>;
   // Maps toolUseId -> child messages (those with matching parentToolUseId)
   taskChildrenMap: Map<string, SdkMessage[]>;
   // Set of toolUseIds that are task containers (for quick lookup)
@@ -272,16 +276,43 @@ export interface TaskIndex {
   nestedByParent: Map<string, Map<string, NestedTaskSummary>>;
 }
 
-/** Resolve a task block's completion: by toolUseId, else by the started message's taskId. */
+/**
+ * Resolve a task block's completion: by toolUseId, else by the started message's taskId.
+ *
+ * The taskId fallback only accepts a completion from this start's own round — between it and
+ * the next task_started for the same taskId. A continued agent (SendMessage) reuses the taskId,
+ * so without the bound its new block would pick up the PREVIOUS round's completion and read
+ * "Failed"/"Completed" while it is actually running again.
+ */
 export function findTaskCompleted(
   ix: TaskIndex,
   toolUseId: string,
   startMsg?: SdkMessage
 ): SdkMessage | undefined {
-  return (
-    ix.taskCompletedMap.get(toolUseId) ??
-    (startMsg?.taskId ? ix.taskCompletedByTaskId.get(startMsg.taskId) : undefined)
-  );
+  const byToolUse = ix.taskCompletedMap.get(toolUseId);
+  if (byToolUse || !startMsg?.taskId) return byToolUse;
+  const completions = ix.taskCompletedByTaskId.get(startMsg.taskId);
+  if (!completions) return undefined;
+  const starts = ix.taskStartsByTaskId.get(startMsg.taskId) ?? [];
+  const k = starts.indexOf(startMsg);
+  // The first round also accepts completions that landed before its start (old SDKs sent
+  // task_started late, after the task had already finished).
+  const from = k > 0 ? startMsg.timestamp : Number.NEGATIVE_INFINITY;
+  const until = k >= 0 && k < starts.length - 1 ? starts[k + 1].timestamp : Number.POSITIVE_INFINITY;
+  for (let i = completions.length - 1; i >= 0; i--) {
+    const c = completions[i];
+    if (c.timestamp >= from && c.timestamp < until) return c;
+  }
+  return undefined;
+}
+
+/** Record a task_started / task_completed in the taskId-keyed round indexes. */
+export function indexTaskRound(ix: TaskIndex, msg: SdkMessage): void {
+  if (!msg.taskId) return;
+  const map = msg.type === 'task_started' ? ix.taskStartsByTaskId : ix.taskCompletedByTaskId;
+  const list = map.get(msg.taskId);
+  if (list) list.push(msg);
+  else map.set(msg.taskId, [msg]);
 }
 
 // Collapse nested subagents (a subagent spawned inside another subagent) into
@@ -381,7 +412,11 @@ export function buildTaskRenderItem(msg: SdkMessage, ix: TaskIndex): RenderItem 
   const toolUseId = msg.toolUseId!;
   const taskStartMsg = ix.taskStartMap.get(toolUseId);
   const taskCompletedMsg = findTaskCompleted(ix, toolUseId, taskStartMsg);
-  const taskInput = msg.input as Record<string, unknown> | undefined;
+  // A continued agent's block anchors on the SendMessage call, whose input carries no
+  // subagent_type/model — label it from the original Agent launch (first round's toolUseId).
+  const launchId = taskStartMsg?.taskId ? ix.taskStartsByTaskId.get(taskStartMsg.taskId)?.[0]?.toolUseId : undefined;
+  const launchInput = launchId && launchId !== toolUseId ? ix.taskToolInput.get(launchId) : undefined;
+  const taskInput = (launchInput ?? msg.input) as Record<string, unknown> | undefined;
 
   // Build taskStarted: merge real task_started with tool input data.
   // The SDK's task_type is internal (e.g. "local_agent") - prefer subagent_type from tool input.
@@ -551,13 +586,14 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
     taskStartMap: new Map(),
     taskCompletedMap: new Map(),
     taskCompletedByTaskId: new Map(),
+    taskStartsByTaskId: new Map(),
     taskChildrenMap: new Map(),
     knownTaskToolUseIds,
     taskParentId: new Map(),
     taskToolInput: new Map(),
     nestedByParent: new Map(),
   };
-  const { taskStartMap, taskCompletedMap, taskCompletedByTaskId, taskChildrenMap } = ix;
+  const { taskStartMap, taskCompletedMap, taskChildrenMap } = ix;
 
   // Step 1: Find top-level subagent tool calls (tool_start or merged tool_result).
   // "Agent" is the modern async subagent tool; "Task" is the legacy synchronous
@@ -589,10 +625,8 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
         taskChildrenMap.set(msg.toolUseId, []);
       }
     }
-    if (msg.type === 'task_completed') {
-      if (msg.toolUseId) taskCompletedMap.set(msg.toolUseId, msg);
-      if (msg.taskId) taskCompletedByTaskId.set(msg.taskId, msg);
-    }
+    if (msg.type === 'task_completed' && msg.toolUseId) taskCompletedMap.set(msg.toolUseId, msg);
+    if (msg.type === 'task_started' || msg.type === 'task_completed') indexTaskRound(ix, msg);
   }
 
   // Step 2.5: Detect task containers from parentToolUseId references.

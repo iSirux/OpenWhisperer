@@ -393,6 +393,31 @@ test('scenario: an id swapped in place later becomes a task container', () => {
   assertSequence('id-swap', [s1, s2, s3, s4]);
 });
 
+test('scenario: a failed agent continued via SendMessage reads as running again', () => {
+  // Real shape: the continuation re-emits task_started with the SAME taskId but the SendMessage's
+  // toolUseId, and task_notification carries no toolUseId.
+  const agent: SdkMessage = { type: 'tool_start', tool: 'Agent', toolUseId: 'ag', input: { subagent_type: 'general-purpose', model: 'opus' }, timestamp: 1 };
+  const start1: SdkMessage = { type: 'task_started', toolUseId: 'ag', taskId: 't', taskType: 'local_agent', description: 'Sweep', timestamp: 2 };
+  const failed: SdkMessage = { type: 'task_completed', taskId: 't', taskStatus: 'failed', summary: 'limit', timestamp: 3 };
+  const send: SdkMessage = { type: 'tool_start', tool: 'SendMessage', toolUseId: 'sm', input: { to: 't' }, timestamp: 4 };
+  const start2: SdkMessage = { type: 'task_started', toolUseId: 'sm', taskId: 't', taskType: 'local_agent', description: 'Sweep', timestamp: 5 };
+  const done: SdkMessage = { type: 'task_completed', taskId: 't', taskStatus: 'completed', summary: 'ok', timestamp: 6 };
+  const s1 = [agent, start1, failed, send, start2];
+  const s2 = [...s1, done];
+  assertSequence('continued-agent', [s1, s2]);
+
+  const tasks = (msgs: SdkMessage[]) =>
+    buildRenderItems(processSdkMessages(msgs), false).filter((i) => i.type === 'task') as Extract<RenderItem, { type: 'task' }>[];
+  const [orig, resumed] = tasks(s1);
+  assert.equal(orig.taskCompleted?.taskStatus, 'failed');
+  assert.equal(resumed.taskCompleted, undefined);
+  assert.equal(resumed.taskStarted.taskType, 'general-purpose');
+  assert.equal(resumed.taskModel, 'opus');
+  const [orig2, resumed2] = tasks(s2);
+  assert.equal(orig2.taskCompleted?.taskStatus, 'failed');
+  assert.equal(resumed2.taskCompleted?.taskStatus, 'completed');
+});
+
 test('scenario: parallel same-millisecond tools finishing out of order in grid mode', () => {
   const starts: SdkMessage[] = ['p1', 'p2', 'p3'].map((id) => ({ type: 'tool_start', tool: 'Read', toolUseId: id, input: { id }, timestamp: 10 }));
   const res = (id: string, ts: number): SdkMessage => ({ type: 'tool_result', tool: 'Read', toolUseId: id, output: id, timestamp: ts });

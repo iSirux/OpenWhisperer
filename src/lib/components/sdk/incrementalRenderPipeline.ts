@@ -7,6 +7,7 @@ import {
   computeNestedByParent,
   collectOrphanTasks,
   insertOrphanTasks,
+  indexTaskRound,
   type RenderItem,
   type TaskIndex,
 } from './sdkViewMessageProcessing';
@@ -315,6 +316,7 @@ export function createRenderItemsBuilder(): RenderItemsBuilder {
       taskStartMap: new Map(),
       taskCompletedMap: new Map(),
       taskCompletedByTaskId: new Map(),
+      taskStartsByTaskId: new Map(),
       taskChildrenMap: new Map(),
       knownTaskToolUseIds: knownSet,
       taskParentId: new Map(),
@@ -384,9 +386,9 @@ export function createRenderItemsBuilder(): RenderItemsBuilder {
     }
     if (msg.type === 'task_completed') {
       if (id) ix.taskCompletedMap.set(id, msg);
-      if (msg.taskId) ix.taskCompletedByTaskId.set(msg.taskId, msg);
       tasksDirty = true;
     }
+    if (msg.type === 'task_started' || msg.type === 'task_completed') indexTaskRound(ix, msg);
     // Step 2.5
     if (parent) register(parent, step25);
     // Step 3.5
