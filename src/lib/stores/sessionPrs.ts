@@ -178,6 +178,23 @@ function sessionBranch(session: SdkSession): string | null {
 }
 
 /**
+ * Every branch whose PRs belong to this session: the checked-out branch, plus
+ * the branch it was created on when the agent has since moved to another (e.g.
+ * a stacked follow-up PR) — the earlier PR is still this session's work.
+ */
+function sessionPrBranches(session: SdkSession): string[] {
+  const current = sessionBranch(session);
+  const created = session.createdBranch?.trim() || null;
+  return [current, created].filter((b, i, all): b is string => !!b && all.indexOf(b) === i);
+}
+
+/** The PR's head is the branch the session has checked out — the only one
+ *  branch/worktree cleanup may touch. */
+export function prOnCheckedOutBranch(session: SdkSession, pr: GitHubPrStatus | null): boolean {
+  return !!pr && pr.head_ref === sessionBranch(session);
+}
+
+/**
  * Stable key for the "worktree scope" a session's PR belongs to: the same
  * checked-out directory + branch. Sessions sharing a scope are looking at the
  * exact same PR, so their PR state must stay in lock-step (that's the divergence
@@ -186,9 +203,11 @@ function sessionBranch(session: SdkSession): string | null {
  */
 function scopeKeyFor(session: SdkSession): string | null {
   if (!session.cwd || session.cwd === '.') return null;
-  const branch = sessionBranch(session);
-  if (!branch) return null;
-  return `${normalizeScopePath(session.cwd)}::${branch}`;
+  const branches = sessionPrBranches(session);
+  if (branches.length === 0) return null;
+  // All PR branches, not just the checked-out one: the PR list must be the same
+  // for every session sharing the key.
+  return `${normalizeScopePath(session.cwd)}::${branches.join('|')}`;
 }
 
 /** All live sessions in the same worktree scope (including `session` itself). */
@@ -272,7 +291,11 @@ function pickPr(prs: GitHubPrStatus[], selectedNumber: number | null): GitHubPrS
 
 /** Another PR on the same branch is still open — deleting the branch would close it. */
 export function otherOpenPr(entry: SessionPrEntry): GitHubPrStatus | null {
-  return entry.prs.find((p) => p.number !== entry.pr?.number && p.state === 'open') ?? null;
+  return (
+    entry.prs.find(
+      (p) => p.number !== entry.pr?.number && p.head_ref === entry.pr?.head_ref && p.state === 'open'
+    ) ?? null
+  );
 }
 
 function createSessionPrsStore() {
@@ -313,16 +336,21 @@ function createSessionPrsStore() {
   }
 
   /** Whether this session is even a PR candidate (GitHub repo, non-default branch). */
+  /** The session's PR branches minus the default branch — a "PR for main" is
+   *  meaningless. Empty when the default branch can't be resolved. */
+  async function prBranchesToFetch(session: SdkSession, repo: RepoConfig | undefined): Promise<string[]> {
+    if (!repo?.path) return [];
+    const tail = defaultBranchTail(await getDefaultBranch(repo.path));
+    if (!tail) return [];
+    return sessionPrBranches(session).filter((b) => b !== tail);
+  }
+
+  /** Whether this session is even a PR candidate (GitHub repo, non-default branch). */
   async function isCandidate(session: SdkSession): Promise<boolean> {
     if (!session.cwd || session.cwd === '.') return false;
-    const branch = sessionBranch(session);
-    if (!branch) return false;
     const repo = resolveRepo(session);
     if (!repo?.github_url) return false;
-    const tail = defaultBranchTail(await getDefaultBranch(repo.path));
-    // On the default branch (or unknown default) a "PR for this branch" is meaningless.
-    if (!tail || branch === tail) return false;
-    return true;
+    return (await prBranchesToFetch(session, repo)).length > 0;
   }
 
   async function refresh(session: SdkSession): Promise<void> {
@@ -333,17 +361,25 @@ function createSessionPrsStore() {
     const branch = sessionBranch(session);
     if (!branch) return;
     const repo = resolveRepo(session);
+    const fetched = await prBranchesToFetch(session, repo);
+    const branches = fetched.length > 0 ? fetched : [branch];
     // Mark every session in the scope as loading so a sibling's detection tick
     // doesn't kick off a second concurrent fetch of the same PR.
     const siblings = scopeSiblings(session);
     const siblingIds = siblings.map((s) => s.id);
     patchMany(siblingIds, { loading: true, error: null });
     try {
-      const prs = await invoke<GitHubPrStatus[]>('fetch_branch_prs', {
-        repoPath: session.cwd,
-        ghUser: repo?.gh_user || null,
-        branch,
-      });
+      // Checked-out branch first, so the default pick prefers its open PR.
+      const lists = await Promise.all(
+        branches.map((b) =>
+          invoke<GitHubPrStatus[]>('fetch_branch_prs', {
+            repoPath: session.cwd,
+            ghUser: repo?.gh_user || null,
+            branch: b,
+          })
+        )
+      );
+      const prs = lists.flat().filter((p, i, all) => all.findIndex((q) => q.number === p.number) === i);
       const now = Date.now();
       // The list is the same for every session in the scope — apply it to all
       // of them so their badges/panels never diverge. Each keeps its own pick.
@@ -440,6 +476,10 @@ function createSessionPrsStore() {
       patch(session.id, { cleanupError: 'Could not resolve the session branch or repository' });
       return;
     }
+    if (!prOnCheckedOutBranch(session, entry.pr)) {
+      patch(session.id, { cleanupError: `This PR's branch isn't the one checked out here — clean it up from its own session.` });
+      return;
+    }
     const stillOpen = otherOpenPr(entry);
     if (stillOpen) {
       patch(session.id, {
@@ -461,9 +501,13 @@ function createSessionPrsStore() {
         branch,
         worktreePath: isWorktree ? session.cwd : null,
       });
-      // The branch/worktree is now gone for every session in the scope — stop
-      // them all from re-fetching a dead path.
-      for (const s of scopeSiblings(session)) {
+      // The branch/worktree is now gone for every session on it — stop them all
+      // from re-fetching a dead path.
+      const cwd = normalizeScopePath(session.cwd);
+      const onBranch = get(sdkSessions).filter(
+        (s) => s.cwd && normalizeScopePath(s.cwd) === cwd && sessionBranch(s) === branch
+      );
+      for (const s of onBranch) {
         patch(s.id, { cleaning: false, cleanupResult: result });
       }
     } catch (e) {
@@ -490,6 +534,9 @@ function createSessionPrsStore() {
     try {
       await merge(session, strategy);
       if (entryFor(session.id).mergeError) return;
+      // A PR from another branch (e.g. the one the session was created on) has
+      // no branch/worktree here to clean up.
+      if (!prOnCheckedOutBranch(session, entry.pr)) return;
       await cleanup(session);
       if (entryFor(session.id).cleanupError) return;
       if (isWorktree && session.cwd) {

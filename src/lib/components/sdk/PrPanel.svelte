@@ -3,6 +3,7 @@
     sessionPrs,
     fetchWorkingTreeState,
     otherOpenPr,
+    prOnCheckedOutBranch,
     type GitHubPrStatus,
     type SessionPrEntry,
     type MergeStrategy,
@@ -45,6 +46,13 @@
 
   /** Deleting the branch would close another PR that's still open on it. */
   let blockingOpenPr = $derived(otherOpenPr(entry));
+
+  /** The shown PR is on the checked-out branch — cleanup only applies to that one
+   *  (a PR from the branch the session was created on has nothing here to delete). */
+  let onCheckedOutBranch = $derived(prOnCheckedOutBranch(session, pr));
+
+  /** The list spans more than one branch (created-on branch + current one). */
+  let multiBranch = $derived(new Set(entry.prs.map((p) => p.head_ref)).size > 1);
 
   // Seeded once from the session's persisted dock state; changes are saved back.
   let descriptionOpen = $state(untrack(() => session.dockUi?.prDescriptionOpen ?? true));
@@ -309,8 +317,8 @@
   </div>
 
   {#if pr && entry.prs.length > 1}
-    <div class="pr-picker" role="radiogroup" aria-label="Pull requests on this branch">
-      <span class="pr-picker-label">{entry.prs.length} PRs on this branch</span>
+    <div class="pr-picker" role="radiogroup" aria-label="Pull requests for this session">
+      <span class="pr-picker-label">{entry.prs.length} PRs {multiBranch ? 'for this session' : 'on this branch'}</span>
       {#each entry.prs as option (option.number)}
         {@const optionState = displayState(option)}
         <button
@@ -452,6 +460,8 @@
             .filter(Boolean)
             .join(' · ') || 'nothing to do'}.
           Archive the session when you're done.
+        {:else if !onCheckedOutBranch}
+          Merged. Its branch ({pr.head_ref}) isn't checked out here, so there's nothing to clean up from this session.
         {:else}
           Merged. You can now clean up: delete the branch/worktree and archive this session when you're done.
         {/if}
@@ -495,6 +505,7 @@
                 ? 'Checking…'
                 : 'Merge'}
           </button>
+          {#if onCheckedOutBranch}
           <button
             class="pr-merge-btn pr-finish-btn"
             onclick={() => requestMerge('finish')}
@@ -509,6 +520,7 @@
           >
             {entry.finishing ? finishLabel : isWorktree ? 'Merge & clean up' : 'Merge & archive'}
           </button>
+          {/if}
         {/if}
       </div>
       {#if entry.cleanupError}
@@ -521,7 +533,7 @@
   {:else if pr && pr.state === 'merged'}
     <div class="pr-footer">
       <div class="pr-cleanup-row">
-        {#if !entry.cleanupResult}
+        {#if !entry.cleanupResult && onCheckedOutBranch}
           <button
             class="pr-cleanup-btn"
             onclick={() => sessionPrs.cleanup(session)}
