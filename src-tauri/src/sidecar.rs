@@ -266,6 +266,12 @@ pub enum OutboundMessage {
         #[serde(rename = "effortLevel")]
         effort_level: Option<String>,
     },
+    /// Stop one background task of a Claude session (`query.stopTask`).
+    StopTask {
+        id: String,
+        #[serde(rename = "taskId")]
+        task_id: String,
+    },
     Close {
         id: String,
     },

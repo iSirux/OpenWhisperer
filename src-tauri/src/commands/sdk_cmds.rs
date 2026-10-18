@@ -161,6 +161,15 @@ pub fn update_sdk_effort(
 }
 
 #[tauri::command]
+pub fn stop_sdk_task(
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    task_id: String,
+) -> Result<(), String> {
+    sidecar.send(OutboundMessage::StopTask { id, task_id })
+}
+
+#[tauri::command]
 pub fn close_sdk_session(sidecar: State<Arc<SidecarManager>>, id: String) -> Result<(), String> {
     sidecar.send(OutboundMessage::Close { id })
 }

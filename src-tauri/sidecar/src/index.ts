@@ -276,6 +276,14 @@ interface UpdateModelMessage {
   model: string;
 }
 
+// Stop one background task (backgrounded Bash, async subagent) of a Claude session.
+// The SDK answers with a task_notification (status "stopped"), which wakes the agent.
+interface StopTaskMessage {
+  type: "stop_task";
+  id: string;
+  taskId: string;
+}
+
 interface UpdateEffortMessage {
   type: "update_effort";
   id: string;
@@ -395,6 +403,7 @@ type InboundMessage =
   | CompactMessage
   | UpdateModelMessage
   | UpdateEffortMessage
+  | StopTaskMessage
   | GenerateRepoDescriptionMessage
   | GenerateRepoDescriptionWithCodexMessage
   | AnswerAskUserQuestionMessage
@@ -5797,6 +5806,27 @@ async function handleUpdateEffort(msg: UpdateEffortMessage): Promise<void> {
   });
 }
 
+async function handleStopTask(msg: StopTaskMessage): Promise<void> {
+  // Prompts are stream-injected into one long-lived query, so the iterator is
+  // still there after the agent ended its turn — exactly when a hung
+  // background command needs stopping.
+  const iterator = sessions.get(msg.id)?.queryIterator;
+  if (!iterator) {
+    send({ type: "debug", id: msg.id, message: `[stop_task] no live query; cannot stop task ${msg.taskId}` });
+    return;
+  }
+  try {
+    await iterator.stopTask(msg.taskId);
+    send({ type: "debug", id: msg.id, message: `[stop_task] stopped task ${msg.taskId}` });
+  } catch (err) {
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `[stop_task] failed to stop task ${msg.taskId}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
+
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (session) {
@@ -5952,6 +5982,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case "update_effort":
       await handleUpdateEffort(msg);
+      break;
+    case "stop_task":
+      await handleStopTask(msg);
       break;
     case "close":
       await handleClose(msg);

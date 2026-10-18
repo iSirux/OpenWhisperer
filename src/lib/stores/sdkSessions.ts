@@ -885,6 +885,8 @@ export interface LiveBackgroundTask {
   /** The bash command for local_bash tasks (resolved from the tool_use input), else the task description. */
   label: string;
   startedAt: number;
+  /** Set when the user pressed Stop; cleared with the task by its task_notification. */
+  stopRequestedAt?: number;
 }
 
 /** Word-boundary substring match of any configured server pattern against the command text.
@@ -1158,6 +1160,33 @@ function findToolStartFromTail(messages: SdkMessage[], toolUseId: string): SdkMe
   return undefined;
 }
 
+/** Task id from Claude Code's "Command did not complete within its 120s timeout and was moved to
+ *  the background (ID: bd11ldr3u)" Bash result. */
+function movedToBackgroundTaskId(output: string): string | undefined {
+  return /moved to the background \(ID: ([\w-]+)\)/.exec(output)?.[1];
+}
+
+/**
+ * A foreground Bash that hit its timeout keeps running as a background task. Its task_started was
+ * skipped (no run_in_background), so start tracking it here: the agent typically ends its turn
+ * "waiting for the completion notification", and an untracked command left the session reading
+ * Done while it hung — e.g. a heredoc command whose path-less `rg` blocked on stdin forever.
+ */
+function withAutoBackgroundedTask(
+  s: SdkSession,
+  taskId: string,
+  toolUseId: string,
+  now: number
+): LiveBackgroundTask[] {
+  const live = s.liveBackgroundTasks ?? [];
+  if (live.some(t => t.taskId === taskId)) return live;
+  const toolMsg = findToolStartFromTail(s.messages, toolUseId);
+  const cmd = toolMsg?.input?.command;
+  const label = typeof cmd === 'string' && cmd.trim() ? cmd : 'Bash command';
+  const kind: BackgroundTaskKind = matchesServerCommand(label) ? 'server' : 'command';
+  return [...live, { taskId, toolUseId, kind, label, startedAt: toolMsg?.timestamp ?? now }];
+}
+
 /**
  * Apply `fn` to the session `id`, returning the SAME array when the session is missing or `fn`
  * returned it unchanged — so a no-op event (e.g. an untracked foreground-bash task_started)
@@ -1183,7 +1212,7 @@ function findOpenThinkingMessageIndex(
       const msg = messages[i];
       if (
         msg.type === 'thinking' &&
-        !msg.thinkingDurationMs &&
+        msg.thinkingDurationMs == null &&
         msg.parentToolUseId === parentToolUseId &&
         msg.turnUuid === turnUuid
       ) {
@@ -1197,7 +1226,7 @@ function findOpenThinkingMessageIndex(
       const msg = messages[i];
       if (
         msg.type === 'thinking' &&
-        !msg.thinkingDurationMs &&
+        msg.thinkingDurationMs == null &&
         msg.parentToolUseId === parentToolUseId &&
         !msg.turnUuid
       ) {
@@ -1210,7 +1239,7 @@ function findOpenThinkingMessageIndex(
     const msg = messages[i];
     if (
       msg.type === 'thinking' &&
-      !msg.thinkingDurationMs &&
+      msg.thinkingDurationMs == null &&
       msg.parentToolUseId === parentToolUseId
     ) {
       return i;
@@ -1220,10 +1249,12 @@ function findOpenThinkingMessageIndex(
   return -1;
 }
 
+// "Open" means no duration yet — a 0 ms duration (thinking immediately followed by
+// text) is a finished block and must not be re-stamped with the time until turn end.
 function closeOpenThinkingMessages(messages: SdkMessage[], closedAt: number): SdkMessage[] {
   let hasOpenThinking = false;
   for (const msg of messages) {
-    if (msg.type === 'thinking' && !msg.thinkingDurationMs) {
+    if (msg.type === 'thinking' && msg.thinkingDurationMs == null) {
       hasOpenThinking = true;
       break;
     }
@@ -1231,7 +1262,7 @@ function closeOpenThinkingMessages(messages: SdkMessage[], closedAt: number): Sd
   if (!hasOpenThinking) return messages;
 
   return messages.map((msg) => {
-    if (msg.type !== 'thinking' || msg.thinkingDurationMs) return msg;
+    if (msg.type !== 'thinking' || msg.thinkingDurationMs != null) return msg;
     return {
       ...msg,
       thinkingDurationMs: Math.max(0, closedAt - msg.timestamp),
@@ -1660,12 +1691,16 @@ function createSdkSessionsStore() {
         // Fresh agent activity cancels a pending deferred-completion grace finalize.
         noteAgentActivity(id);
         const now = Date.now();
+        const movedTaskId = toolName === 'Bash' ? movedToBackgroundTaskId(e.payload.output) : undefined;
         queueUpdate(sessions =>
           sessions.map(s =>
             s.id !== id ? s : (() => {
               const base = reactivateOnActivity(s, now);
               return {
                 ...base,
+                liveBackgroundTasks: movedTaskId
+                  ? withAutoBackgroundedTask(base, movedTaskId, e.payload.toolUseId, now)
+                  : base.liveBackgroundTasks,
                 messages: [
                   ...base.messages,
                   {
@@ -3426,6 +3461,30 @@ function createSdkSessionsStore() {
       } catch (error) {
         console.error('Failed to update SDK effort:', error);
       }
+    },
+
+    /** Stop a backgrounded command. The SDK reports it via task_notification (status "stopped"),
+     *  which drops it from the live set and wakes the agent so it can react. */
+    async stopBackgroundTask(id: string, taskId: string): Promise<void> {
+      update(sessions => patchSession(sessions, id, s => ({
+        ...s,
+        liveBackgroundTasks: (s.liveBackgroundTasks ?? []).map(t =>
+          t.taskId === taskId ? { ...t, stopRequestedAt: Date.now() } : t),
+      })));
+      try {
+        await invoke('stop_sdk_task', { id, taskId });
+      } catch (error) {
+        console.error('Failed to stop background task:', error);
+      }
+      // No notification within a few seconds (no live query, or the stop failed): give the
+      // Stop button back instead of reading "Stopping…" forever.
+      setTimeout(() => {
+        update(sessions => patchSession(sessions, id, s => {
+          const live = s.liveBackgroundTasks ?? [];
+          if (!live.some(t => t.taskId === taskId && t.stopRequestedAt)) return s;
+          return { ...s, liveBackgroundTasks: live.map(t => t.taskId === taskId ? { ...t, stopRequestedAt: undefined } : t) };
+        }));
+      }, 10_000);
     },
 
     /** @deprecated Use updateSessionEffort instead */

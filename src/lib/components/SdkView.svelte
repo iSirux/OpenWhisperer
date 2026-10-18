@@ -51,7 +51,7 @@
   import { blockReply, blockQuoteText, type HoveredBlock } from "$lib/actions/blockReply";
   import BlockReplyButton from "./sdk/BlockReplyButton.svelte";
   import { formatQuote, QUOTE_MESSAGE_MAX_CHARS } from "$lib/utils/quote";
-  import { formatScheduleTarget } from "$lib/utils/duration";
+  import { formatScheduleTarget, formatToolRunDuration } from "$lib/utils/duration";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import LaunchBar from "./sdk/LaunchBar.svelte";
   import { launchStore, getLaunchRuntime, queuedLaunch } from "$lib/stores/launchProfiles";
@@ -1789,10 +1789,12 @@
   let queueInfo = $derived(session?.queueInfo);
   let sessionProvider = $derived(session?.provider ?? "claude");
 
-  // Live countdown tick for queue/schedule labels (only runs while a countdown is shown).
+  // Live tick for queue/schedule countdowns and background-command run times (only runs while
+  // one of them is shown).
   let nowTick = $state(Date.now());
+  let hasTimedBackgroundTasks = $derived(liveCommandTasks.length > 0 || liveServerTasks.length > 0);
   $effect(() => {
-    if (!isQueued) return;
+    if (!isQueued && !hasTimedBackgroundTasks) return;
     nowTick = Date.now();
     const t = setInterval(() => {
       nowTick = Date.now();
@@ -2336,37 +2338,36 @@
       <!-- Background activity chips: agents (subagents running async), commands (backgrounded
            bash expected to finish — defers completion), and servers (pattern-matched bash that
            can run indefinitely and never blocks completion). Grouped tightly so they sit right
-           under the loading indicator. -->
+           under the loading indicator. Each command/server gets its own row with its run time and
+           a Stop button: a hung command (the agent idle, waiting for a notification that never
+           comes) is otherwise only recoverable by nudging the agent, and leaves an orphan. -->
       {#if liveAgentCount > 0 || liveCommandTasks.length > 0 || liveServerTasks.length > 0}
         <div class="background-activity">
-          {#if liveAgentCount > 0 || liveCommandTasks.length > 0}
+          {#if liveAgentCount > 0}
             <div class="background-tasks-indicator">
               <span class="background-tasks-dot"></span>
-              {[
-                liveAgentCount > 0
-                  ? `${liveAgentCount} agent${liveAgentCount === 1 ? "" : "s"}`
-                  : null,
-                liveCommandTasks.length > 0
-                  ? `${liveCommandTasks.length} command${liveCommandTasks.length === 1 ? "" : "s"}`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(" · ")} running in background
+              {liveAgentCount} agent{liveAgentCount === 1 ? "" : "s"} running in background
             </div>
           {/if}
-          {#if liveServerTasks.length > 0}
-            <div
-              class="background-tasks-indicator"
-              title={liveServerTasks.map((t) => t.label).join("\n")}
-            >
-              <span class="background-tasks-dot server-dot"></span>
-              {#if liveServerTasks.length === 1}
-                Server running: <span class="server-command-label">{liveServerTasks[0].label}</span>
-              {:else}
-                {liveServerTasks.length} servers running
+          {#each [...liveCommandTasks, ...liveServerTasks] as task (task.taskId)}
+            <div class="background-tasks-indicator" title={task.label}>
+              <span class="background-tasks-dot" class:server-dot={task.kind === "server"}></span>
+              {task.kind === "server" ? "Server running:" : "Running in background:"}
+              <span class="server-command-label">{task.label}</span>
+              <span class="background-task-elapsed">{formatToolRunDuration(task.startedAt, nowTick)}</span>
+              {#if sessionId}
+                <button
+                  type="button"
+                  class="background-task-stop"
+                  disabled={!!task.stopRequestedAt}
+                  title="Stop this command — the agent is notified and continues"
+                  onclick={() => sdkSessions.stopBackgroundTask(sessionId, task.taskId)}
+                >
+                  {task.stopRequestedAt ? "Stopping…" : "Stop"}
+                </button>
               {/if}
             </div>
-          {/if}
+          {/each}
         </div>
       {/if}
 
@@ -2862,6 +2863,30 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .background-task-elapsed {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .background-task-stop {
+    padding: 0.0625rem 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: 0.6875rem;
+    cursor: pointer;
+  }
+
+  .background-task-stop:hover:not(:disabled) {
+    color: var(--color-error, #ef4444);
+    border-color: var(--color-error, #ef4444);
+  }
+
+  .background-task-stop:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   @keyframes background-tasks-pulse {
