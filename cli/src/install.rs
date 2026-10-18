@@ -1,7 +1,8 @@
 //! `ow self-install` and `ow install-skills`.
 //!
 //! `install-skills` writes the embedded skill (`cli/skill/SKILL.md`) into the
-//! global skill directories of the supported agents. `self-install` copies the
+//! global skill directories of the supported agents, including the profile
+//! folder of every OpenWhisperer agent account. `self-install` copies the
 //! running binary into the user bin dir, puts that dir on the user PATH
 //! (Windows registry + `WM_SETTINGCHANGE` broadcast) and then installs the
 //! skills.
@@ -38,14 +39,77 @@ fn bin_name() -> &'static str {
     }
 }
 
-/// Default skill directories: `~/.claude`, `~/.codex` and `~/.agents`.
+/// Default skill directories, one per agent profile root: `~/.claude`,
+/// `~/.codex` and `~/.agents`, the profile this process is pinned to
+/// (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), and the profile folder of every
+/// OpenWhisperer agent account. Claude Code and Codex read personal skills from
+/// `<profile>/skills` only, so a session started on an account never sees
+/// `~/.claude/skills`.
 fn default_skill_dirs() -> Result<Vec<PathBuf>, String> {
     let home =
         dirs::home_dir().ok_or_else(|| "could not determine the home directory".to_string())?;
-    Ok([".claude", ".codex", ".agents"]
+    let mut roots: Vec<PathBuf> = [".claude", ".codex", ".agents"]
         .iter()
-        .map(|agent| home.join(agent).join("skills").join(SKILL_NAME))
+        .map(|agent| home.join(agent))
+        .collect();
+    for var in ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] {
+        if let Some(dir) = std::env::var_os(var).filter(|dir| !dir.is_empty()) {
+            roots.push(PathBuf::from(dir));
+        }
+    }
+    roots.extend(account_profile_dirs());
+    Ok(dedupe(roots)
+        .into_iter()
+        .map(|root| root.join("skills").join(SKILL_NAME))
         .collect())
+}
+
+/// Profile folders of the app's agent accounts, read from its config files
+/// (release and dev builds keep separate ones). Only folders that exist: a
+/// removed account's folder is not recreated just to hold a skill.
+fn account_profile_dirs() -> Vec<PathBuf> {
+    let Some(config) = dirs::config_dir() else {
+        return Vec::new();
+    };
+    let app = config.join("open-whisperer");
+    ["config.json", "config.dev.json"]
+        .iter()
+        .filter_map(|file| fs::read_to_string(app.join(file)).ok())
+        .filter_map(|text| serde_json::from_str(&text).ok())
+        .flat_map(|config| account_dirs_in_config(&config))
+        .filter(|dir| dir.is_dir())
+        .collect()
+}
+
+/// The `config_dir` of every account in an app config. The machine-login
+/// accounts have none.
+fn account_dirs_in_config(config: &serde_json::Value) -> Vec<PathBuf> {
+    config["accounts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|account| account["config_dir"].as_str())
+        .filter(|dir| !dir.trim().is_empty())
+        .map(|dir| PathBuf::from(dir.trim()))
+        .collect()
+}
+
+/// Drop repeats, comparing paths the way the platform does (case-insensitive
+/// on Windows, either slash, no trailing separator). Keeps the first spelling.
+fn dedupe(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| {
+            let key = path.to_string_lossy().replace('\\', "/");
+            let key = key.trim_end_matches('/');
+            seen.insert(if cfg!(windows) {
+                key.to_lowercase()
+            } else {
+                key.to_string()
+            })
+        })
+        .collect()
 }
 
 /// Write `SKILL.md` into each target directory (created if missing, existing
@@ -212,4 +276,58 @@ fn register_on_path(dir: &Path) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_dirs_come_from_accounts_with_a_folder() {
+        let config = serde_json::json!({
+            "accounts": [
+                { "id": "default-claude", "provider": "Claude", "config_dir": null },
+                { "id": "acct-1", "provider": "Claude", "config_dir": "/profiles/acct-1" },
+                { "id": "acct-2", "provider": "OpenAI", "config_dir": " /profiles/codex " },
+                { "id": "acct-3", "provider": "Claude", "config_dir": "" }
+            ]
+        });
+
+        assert_eq!(
+            account_dirs_in_config(&config),
+            vec![
+                PathBuf::from("/profiles/acct-1"),
+                PathBuf::from("/profiles/codex")
+            ]
+        );
+        assert!(account_dirs_in_config(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn dedupe_keeps_the_first_spelling() {
+        let paths = vec![
+            PathBuf::from("/home/me/.codex"),
+            PathBuf::from("/home/me/.codex/"),
+            PathBuf::from("/home/me/.claude"),
+        ];
+
+        assert_eq!(
+            dedupe(paths),
+            vec![
+                PathBuf::from("/home/me/.codex"),
+                PathBuf::from("/home/me/.claude")
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dedupe_ignores_case_and_slashes_on_windows() {
+        let paths = vec![
+            PathBuf::from(r"C:\Users\me\AppData\Roaming\open-whisperer\agent-accounts\a"),
+            PathBuf::from("c:/users/me/appdata/roaming/open-whisperer/agent-accounts/a/"),
+        ];
+
+        assert_eq!(dedupe(paths).len(), 1);
+    }
 }

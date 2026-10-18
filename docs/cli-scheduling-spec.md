@@ -3,7 +3,9 @@
 A small standalone CLI (`ow`, crate in `cli/`) that coding agents (Claude Code,
 Codex) call from inside a session to schedule prompts in OpenWhisperer: one-shot
 at a time, recurring, or run now. The agent learns how to use it from a skill
-(`cli/skill/SKILL.md`, installed globally by `ow install-skills`).
+(`cli/skill/SKILL.md`, installed by `ow install-skills` into `~/.claude`, `~/.codex`,
+`~/.agents`, the pinned `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, and the profile folder of
+every agent account, since sessions on an account read skills only from that profile).
 
 Design decisions (agreed 2026-09-03):
 

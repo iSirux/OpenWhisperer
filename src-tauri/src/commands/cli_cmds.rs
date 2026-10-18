@@ -10,6 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use tauri::State;
+
+use crate::commands::settings_cmds::ConfigState;
 use crate::config::AppConfig;
 use crate::persist::atomic_write;
 use crate::proc::run_program;
@@ -219,15 +222,53 @@ fn cli_version(path: &Path) -> Option<String> {
     Some(line.strip_prefix("ow ").unwrap_or(line).to_string())
 }
 
-/// Mirrors `cli/src/install.rs::default_skill_dirs`.
-fn skill_files() -> Vec<PathBuf> {
+/// Mirrors `cli/src/install.rs::default_skill_dirs`: the home profiles plus the
+/// profile folder of every agent account, since a session pinned to an account
+/// reads skills only from `<profile>/skills`. (The app runs on no profile of its
+/// own, so there is no `CLAUDE_CONFIG_DIR` / `CODEX_HOME` to add.)
+fn skill_files(account_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    [".claude", ".codex", ".agents"]
+    let mut roots: Vec<PathBuf> = [".claude", ".codex", ".agents"]
         .iter()
-        .map(|agent| home.join(agent).join("skills").join("openwhisperer").join("SKILL.md"))
+        .map(|agent| home.join(agent))
+        .collect();
+    roots.extend(account_dirs.iter().filter(|dir| dir.is_dir()).cloned());
+    let mut seen = std::collections::HashSet::new();
+    roots
+        .into_iter()
+        .filter(|root| seen.insert(normalize_for_compare(&root.to_string_lossy())))
+        .map(|root| root.join("skills").join("openwhisperer").join("SKILL.md"))
         .collect()
+}
+
+/// Profile folders of the configured agent accounts (the machine-login accounts have none).
+fn account_profile_dirs(config: &AppConfig) -> Vec<PathBuf> {
+    config
+        .accounts
+        .iter()
+        .filter_map(|account| account.config_dir.as_deref())
+        .filter(|dir| !dir.trim().is_empty())
+        .map(|dir| PathBuf::from(dir.trim()))
+        .collect()
+}
+
+/// Give a new or re-pointed account profile the `ow` skill, so its sessions can
+/// schedule follow-ups like sessions on the machine login do. Only when the CLI
+/// is installed: without `ow` the skill would describe a command that isn't
+/// there. Best-effort; "Update CLI & skills" (`ow self-install`) repairs it.
+pub fn install_account_skill(profile_dir: &Path) {
+    let cli_installed = cli_bin_dir()
+        .map(|dir| dir.join(cli_exe_name()).is_file())
+        .unwrap_or(false);
+    if !cli_installed {
+        return;
+    }
+    let dir = profile_dir.join("skills").join("openwhisperer");
+    if let Err(e) = fs::create_dir_all(&dir).and_then(|_| fs::write(dir.join("SKILL.md"), SKILL_MD)) {
+        log::warn!("cli: could not install the ow skill into {:?}: {}", dir, e);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -252,8 +293,9 @@ pub struct CliStatus {
 
 /// What Settings → System shows: is the CLI installed, which version, are the skills current.
 #[tauri::command]
-pub async fn get_cli_status() -> CliStatus {
-    tokio::task::spawn_blocking(|| {
+pub async fn get_cli_status(config: State<'_, ConfigState>) -> Result<CliStatus, String> {
+    let account_dirs = account_profile_dirs(&config.lock());
+    Ok(tokio::task::spawn_blocking(move || {
         let bundled = bundled_cli_path();
         let bin_dir = cli_bin_dir();
         let installed_path = bin_dir.as_ref().map(|d| d.join(cli_exe_name()));
@@ -269,7 +311,7 @@ pub async fn get_cli_status() -> CliStatus {
             },
             installed_path: installed_path.map(|p| p.to_string_lossy().to_string()),
             installed,
-            skills: skill_files()
+            skills: skill_files(&account_dirs)
                 .into_iter()
                 .map(|path| {
                     let current = fs::read_to_string(&path).ok();
@@ -291,7 +333,7 @@ pub async fn get_cli_status() -> CliStatus {
         installed: false,
         installed_version: None,
         skills: Vec::new(),
-    })
+    }))
 }
 
 /// Run the bundled binary's `self-install` (copy to the bin dir, user PATH,
@@ -335,6 +377,20 @@ mod tests {
         };
         assert!(path_list_contains(listed, &dir));
         assert!(!path_list_contains("/usr/bin", &dir));
+    }
+
+    #[test]
+    fn skill_files_add_each_existing_account_profile_once() {
+        let profile = std::env::temp_dir().join(format!("ow-skill-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&profile).unwrap();
+        let removed = profile.join("removed-account");
+
+        let files = skill_files(&[profile.clone(), profile.clone(), removed]);
+
+        let expected = profile.join("skills").join("openwhisperer").join("SKILL.md");
+        assert_eq!(files.iter().filter(|file| **file == expected).count(), 1);
+        assert_eq!(files.len(), 4, "three home profiles plus the one account");
+        fs::remove_dir_all(&profile).unwrap();
     }
 
     #[test]

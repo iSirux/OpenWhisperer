@@ -8,12 +8,13 @@
 //! disabled flag are editable, their directory isn't, and they can't be removed.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
 use tauri::State;
 
+use crate::commands::cli_cmds::install_account_skill;
 use crate::commands::settings_cmds::ConfigState;
 use crate::config::{
     default_codex_home, is_default_account_id, AgentAccount, AppConfig, SdkProvider,
@@ -71,6 +72,7 @@ pub fn create_agent_account(
             dir.to_string_lossy().to_string()
         }
     };
+    install_account_skill(Path::new(&dir));
 
     let account = AgentAccount {
         id,
@@ -115,6 +117,9 @@ pub fn update_agent_account(
         Some(dir) => Some(validate_existing_dir(&dir)?),
         None => None,
     };
+    if let Some(dir) = &config_dir {
+        install_account_skill(Path::new(dir));
+    }
     let snapshot = {
         let mut cfg = config.lock();
         let account = cfg
