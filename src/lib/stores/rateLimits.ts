@@ -437,15 +437,25 @@ export function formatTimeRemaining(isoTimestamp: string): string {
 	return `${minutes}m`;
 }
 
-/** Calculate pace: actual usage vs what's expected given elapsed time */
+/**
+ * Calculate pace: actual usage vs what's expected given elapsed time.
+ *
+ * `dailyBudget` (for the 7d window) grants each started day's whole share up
+ * front instead of a straight line: the window is split evenly over the local
+ * calendar days it touches, and the expectation covers today through
+ * midnight. A busy morning then reads as on/under budget until it actually
+ * exceeds today's share. `budgetUntil` is when today's share ends (epoch ms).
+ */
 export function calculatePace(
 	utilization: number,
 	resetsAt: string,
-	windowHours: number
+	windowHours: number,
+	opts: { dailyBudget?: boolean } = {}
 ): {
 	expectedPercent: number;
 	paceRatio: number;
 	paceLabel: string;
+	budgetUntil?: number;
 } {
 	if (!resetsAt) return { expectedPercent: 0, paceRatio: 1, paceLabel: 'unknown' };
 
@@ -454,7 +464,22 @@ export function calculatePace(
 	const windowMs = windowHours * 3_600_000;
 	const windowStart = resetTime - windowMs;
 	const elapsed = now - windowStart;
-	const elapsedFraction = Math.max(0, Math.min(1, elapsed / windowMs));
+	let budgetUntil: number | undefined;
+	let elapsedFraction: number;
+	if (opts.dailyBudget) {
+		// Local calendar days touched by the window; the last one only counts if
+		// the reset isn't exactly at its midnight. Round absorbs DST shifts.
+		const dayStart = (t: number) => new Date(t).setHours(0, 0, 0, 0);
+		const daysBetween = (a: number, b: number) => Math.round((dayStart(b) - dayStart(a)) / 86_400_000);
+		const totalDays = Math.max(1, daysBetween(windowStart, resetTime - 1) + 1);
+		const daySoFar = Math.max(1, Math.min(totalDays, daysBetween(windowStart, now) + 1));
+		const tomorrow = new Date(now);
+		tomorrow.setHours(24, 0, 0, 0);
+		budgetUntil = Math.min(resetTime, tomorrow.getTime());
+		elapsedFraction = daySoFar / totalDays;
+	} else {
+		elapsedFraction = Math.max(0, Math.min(1, elapsed / windowMs));
+	}
 	const expectedPercent = elapsedFraction * 100;
 
 	const paceRatio = expectedPercent > 0 ? utilization / expectedPercent : 0;
@@ -466,7 +491,7 @@ export function calculatePace(
 	else if (paceRatio < 1.5) paceLabel = 'elevated';
 	else paceLabel = 'high';
 
-	return { expectedPercent, paceRatio, paceLabel };
+	return { expectedPercent, paceRatio, paceLabel, budgetUntil };
 }
 
 /** Format cents to dollar string, e.g. 1250 → "$12.50" */

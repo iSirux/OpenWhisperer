@@ -31,14 +31,14 @@
   let rl = $derived($rateLimitData);
   let rlLoading = $derived($isRateLimitLoading);
   let claude7dPace = $derived(
-    rl?.seven_day ? calculatePace(rl.seven_day.utilization, rl.seven_day.resets_at, 168) : null
+    rl?.seven_day ? calculatePace(rl.seven_day.utilization, rl.seven_day.resets_at, 168, { dailyBudget: true }) : null
   );
 
   // Codex API rate limit data
   let cx = $derived($codexRateLimitData);
   let cxLoading = $derived($isCodexRateLimitLoading);
   let codex7dPace = $derived(
-    cx?.seven_day ? calculatePace(cx.seven_day.utilization, cx.seven_day.resets_at, 168) : null
+    cx?.seven_day ? calculatePace(cx.seven_day.utilization, cx.seven_day.resets_at, 168, { dailyBudget: true }) : null
   );
 
   function getPaceDiff(utilization: number, expectedPercent: number): string {
@@ -178,7 +178,7 @@
                   </div>
                   {#if claude7dPace}
                     <div class="flex items-center justify-between mt-1.5 text-[10px] text-text-muted" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
-                      <span>Expected: {claude7dPace.expectedPercent.toFixed(1)}% (linear)</span>
+                      <span>Expected: {claude7dPace.expectedPercent.toFixed(1)}% (by end of today)</span>
                       <span>Actual: {rl.seven_day.utilization.toFixed(1)}%</span>
                     </div>
                   {/if}
@@ -273,7 +273,7 @@
                   </div>
                   {#if codex7dPace}
                     <div class="flex items-center justify-between mt-1.5 text-[10px] text-text-muted" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
-                      <span>Expected: {codex7dPace.expectedPercent.toFixed(1)}% (linear)</span>
+                      <span>Expected: {codex7dPace.expectedPercent.toFixed(1)}% (by end of today)</span>
                       <span>Actual: {cx.seven_day.utilization.toFixed(1)}%</span>
                     </div>
                   {/if}

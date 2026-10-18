@@ -28,14 +28,14 @@
 
   // Calculate paces per provider
   let claudePace5h = $derived(claude?.five_hour ? calculatePace(claude.five_hour.utilization, claude.five_hour.resets_at, 5) : null);
-  let claudePace7d = $derived(claude?.seven_day ? calculatePace(claude.seven_day.utilization, claude.seven_day.resets_at, 168) : null);
+  let claudePace7d = $derived(claude?.seven_day ? calculatePace(claude.seven_day.utilization, claude.seven_day.resets_at, 168, { dailyBudget: true }) : null);
   let codexPace5h = $derived(codex?.five_hour ? calculatePace(codex.five_hour.utilization, codex.five_hour.resets_at, 5) : null);
-  let codexPace7d = $derived(codex?.seven_day ? calculatePace(codex.seven_day.utilization, codex.seven_day.resets_at, 168) : null);
+  let codexPace7d = $derived(codex?.seven_day ? calculatePace(codex.seven_day.utilization, codex.seven_day.resets_at, 168, { dailyBudget: true }) : null);
 
   function paceLabel(paceRatio: number, utilization: number): string {
     if (utilization < 1) return 'idle';
-    if (paceRatio >= 1.2) return 'ahead of linear pace';
-    if (paceRatio <= 0.8) return 'behind linear pace';
+    if (paceRatio >= 1.2) return 'ahead of pace';
+    if (paceRatio <= 0.8) return 'behind pace';
     return 'on pace';
   }
 
@@ -81,6 +81,11 @@
       lines.push(
         `7d window: ${data.seven_day.utilization.toFixed(1)}% used, resets ${formatResetAt(data.seven_day.resets_at)}${pace7dData ? ` (${paceLabel(pace7dData.paceRatio, data.seven_day.utilization)})` : ''}`
       );
+      if (pace7dData?.budgetUntil) {
+        lines.push(
+          `  today's budget: up to ${Math.round(pace7dData.expectedPercent)}% by ${formatResetAt(new Date(pace7dData.budgetUntil).toISOString())}`
+        );
+      }
     }
     // Per-model weekly caps (e.g. Fable) — separate buckets that don't count
     // against the all-model 7d window. Active ones first, then by utilization.
@@ -172,7 +177,7 @@
   {@const data = state?.data ?? null}
   {@const authExpired = state?.authExpired ?? false}
   {@const p5h = data?.five_hour ? calculatePace(data.five_hour.utilization, data.five_hour.resets_at, 5) : null}
-  {@const p7d = data?.seven_day ? calculatePace(data.seven_day.utilization, data.seven_day.resets_at, 168) : null}
+  {@const p7d = data?.seven_day ? calculatePace(data.seven_day.utilization, data.seven_day.resets_at, 168, { dailyBudget: true }) : null}
   {@const isCodex = account.provider === 'OpenAI'}
   <!-- Only accounts with usage data earn a header pill; a never-logged-in
        account's status lives in Settings → Accounts, not the header. -->
