@@ -542,6 +542,10 @@ interface Session {
   // message cancels it (a queued turn is running; its own result emits done);
   // if it fires, the injected prompts were steered and this done is real.
   pendingDoneTimer?: ReturnType<typeof setTimeout>;
+  // True from a prompt (or any CLI message) until the next `result`. The query
+  // iterator outlives every turn in streaming input mode, so it can't tell an
+  // idle session from a working one — list_live_sessions reports this instead.
+  claudeTurnActive?: boolean;
 }
 
 interface QueuedPrompt {
@@ -4802,6 +4806,7 @@ async function runClaudeQueryItem(
     // Fresh query: exactly one turn is pending (self-heals any stale count or
     // deferred done left by a torn-down predecessor query).
     session.claudePendingTurns = 1;
+    session.claudeTurnActive = true;
     cancelPendingDone(session);
     inputQueue.enqueue({
       type: "user",
@@ -4960,6 +4965,9 @@ async function runClaudeQueryItem(
       // a prior result (injected-prompt ambiguity) would be premature. The
       // result case in handleSdkMessage re-arms it when needed.
       cancelPendingDone(session);
+      // A result ends the turn; anything else means the CLI is working (including
+      // a turn it starts on its own, e.g. woken by a background task).
+      session.claudeTurnActive = message.type !== "result";
       sendTrace(msg.id, `Received message #${messageCount}: type=${message.type}`);
       try {
         // Capture SDK session ID from system init message for resume
@@ -5039,6 +5047,7 @@ async function runClaudeQueryItem(
       session.abortController = undefined;
       session.queryIterator = undefined;
       session.claudePendingTurns = 0;
+      session.claudeTurnActive = false;
       cancelPendingDone(session);
       if (session.inputQueue) {
         session.inputQueue.done();
@@ -5175,6 +5184,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     const injectSessionId = session.sdkSessionId || msg.id;
     const contentBlocks = buildContentBlocks(msg.prompt, msg.images ?? []);
     session.claudePendingTurns = (session.claudePendingTurns ?? 1) + 1;
+    session.claudeTurnActive = true;
     // This prompt starts (or joins) a turn whose own result settles the done.
     cancelPendingDone(session);
     session.inputQueue.enqueue({
@@ -5658,6 +5668,7 @@ async function handleStop(msg: StopMessage): Promise<void> {
   // A stop settles the turn — a deferred done firing after it would emit a
   // spurious completion on the stopped (or a future) turn.
   session.claudePendingTurns = 0;
+  session.claudeTurnActive = false;
   cancelPendingDone(session);
 
   const pendingCount = session.claudeQueue.length;
@@ -5876,6 +5887,7 @@ async function disposeSession(id: string, session: Session): Promise<void> {
     session.inputQueue = undefined;
   }
   session.claudePendingTurns = 0;
+  session.claudeTurnActive = false;
   cancelPendingDone(session);
 
   const iterator = session.queryIterator;
@@ -5905,8 +5917,12 @@ async function disposeSession(id: string, session: Session): Promise<void> {
 function handleListLiveSessions(msg: ListLiveSessionsMessage): void {
   const live: string[] = [];
   for (const [id, session] of sessions) {
+    // Claude: a turn in flight, a deferred done still pending, or a queued prompt
+    // whose query hasn't started yet — not merely a live (idle) query process.
     const running = session.provider === "claude"
-      ? session.claudeProcessing || !!session.queryIterator
+      ? !!session.claudeTurnActive ||
+        !!session.pendingDoneTimer ||
+        (session.claudeProcessing && !session.queryIterator)
       : !!session.abortController || !!session.appServerTurnId || !!session.compactWaiter;
     if (!running) continue;
     live.push(id);

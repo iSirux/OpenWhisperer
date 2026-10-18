@@ -1,6 +1,6 @@
 import { derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, listen as tauriListen, type EventCallback, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
 import { repos, findRepoById } from './repos';
 import { touchRepoForCwd } from './repoRecency';
@@ -1401,6 +1401,92 @@ function createSdkSessionsStore() {
   }
 
   /**
+   * Lost-sdk-done reconciler.
+   *
+   * A turn only settles when its sdk-done reaches the listener. In real use one session's
+   * sdk-done listener lost its JS callback (Tauri logged "Couldn't find callback id" at every
+   * turn end) while its other listeners kept working, so every turn of that session sat at
+   * "Responding…" forever. The deferral watchdog above doesn't cover this: nothing was deferred.
+   *
+   * So a session that has been `querying` with no inbound event for RECONCILE_SILENCE_MS is
+   * checked against the sidecar's own view (`list_live_sdk_sessions`). Two consecutive checks
+   * that find no turn in flight finalize the turn, and the session's listeners are re-attached
+   * so later turns don't need rescuing too.
+   */
+  const RECONCILE_INTERVAL_MS = 60_000;
+  const RECONCILE_SILENCE_MS = 2 * 60_000;
+  const RECONCILE_MISSES_TO_FINALIZE = 2;
+  const lastInboundAt = new Map<string, number>();
+  const reconcileMisses = new Map<string, number>();
+  let reconcileRunning = false;
+
+  async function reconcileStuckSessions(): Promise<void> {
+    if (reconcileRunning || !sidecarStarted) return;
+    const now = Date.now();
+    const candidates = get({ subscribe }).filter(s =>
+      s.status === 'querying' &&
+      liveSessions.has(s.id) &&
+      !s.completionDeferred &&
+      !s.stopRequestedAt &&
+      !s.overflowRecovery &&
+      !s.pendingPlanApproval &&
+      !s.askUserQuestion &&
+      now - (lastInboundAt.get(s.id) ?? s.currentWorkStartedAt ?? s.lastActivityAt) > RECONCILE_SILENCE_MS
+    );
+    const candidateIds = new Set(candidates.map(s => s.id));
+    for (const id of reconcileMisses.keys()) {
+      if (!candidateIds.has(id)) reconcileMisses.delete(id);
+    }
+    if (candidates.length === 0) return;
+
+    reconcileRunning = true;
+    try {
+      let liveIds: Set<string>;
+      try {
+        liveIds = new Set(await invoke<string[]>('list_live_sdk_sessions', { replay: false }));
+      } catch (error) {
+        console.warn('[sdkSessions] reconcile: could not list live sidecar sessions:', error);
+        return;
+      }
+      for (const s of candidates) {
+        // Activity may have landed while the listing was in flight.
+        if (liveIds.has(s.id) || (lastInboundAt.get(s.id) ?? 0) > now) {
+          reconcileMisses.delete(s.id);
+          continue;
+        }
+        const misses = (reconcileMisses.get(s.id) ?? 0) + 1;
+        if (misses < RECONCILE_MISSES_TO_FINALIZE) {
+          reconcileMisses.set(s.id, misses);
+          continue;
+        }
+        reconcileMisses.delete(s.id);
+        console.warn(
+          `[sdkSessions] reconcile: session is 'querying' but the sidecar has no turn in flight — ` +
+          `sdk-done never arrived; finalizing and re-attaching listeners (session: ${s.id})`
+        );
+        finalizeCompletion(s.id, false);
+        await reattachListeners(s.id);
+      }
+    } finally {
+      reconcileRunning = false;
+    }
+  }
+
+  async function reattachListeners(id: string): Promise<void> {
+    listeners.get(id)?.forEach(unlisten => unlisten());
+    listeners.delete(id);
+    try {
+      listeners.set(id, await setupEventListeners(id));
+    } catch (error) {
+      console.error(`[sdkSessions] reconcile: failed to re-attach listeners (session: ${id}):`, error);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    setInterval(() => { void reconcileStuckSessions(); }, RECONCILE_INTERVAL_MS);
+  }
+
+  /**
    * Run the real end-of-turn completion: append the terminal marker, flip to idle,
    * mark unread, clear progressive usage, play the completion sound, and kick off AI
    * analysis of the (now complete) transcript.
@@ -1560,6 +1646,13 @@ function createSdkSessionsStore() {
 
   async function setupEventListeners(id: string): Promise<UnlistenFn[]> {
     const unlisteners: UnlistenFn[] = [];
+    // Every inbound event stamps the session's last-activity time for the lost-sdk-done
+    // reconciler (shadows the imported `listen` for this function only).
+    const listen = <T,>(event: string, handler: EventCallback<T>): Promise<UnlistenFn> =>
+      tauriListen<T>(event, (e) => {
+        lastInboundAt.set(id, Date.now());
+        return handler(e);
+      });
 
     // Text events (payload includes parentToolUseId for task scoping, turnUuid for fork support)
     unlisteners.push(
@@ -1770,6 +1863,9 @@ function createSdkSessionsStore() {
     // Done events
     unlisteners.push(
       await listen(`sdk-done-${id}`, async () => {
+        // Logged per turn: a turn that ends without this line had its sdk-done lost
+        // (see reconcileStuckSessions).
+        console.log(`[sdkSessions] sdk-done received (session: ${id})`);
         // A real result supersedes any pending deferred-completion grace finalize:
         // whatever branch we take below is the authoritative settling of this turn.
         cancelDeferredFinalize(id);
@@ -2411,6 +2507,7 @@ function createSdkSessionsStore() {
       })
     );
 
+    console.log(`[sdkSessions] ${unlisteners.length} event listeners attached (session: ${id})`);
     return unlisteners;
   }
 
