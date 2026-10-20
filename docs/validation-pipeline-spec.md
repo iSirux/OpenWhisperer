@@ -186,7 +186,7 @@ Sidecar behavior (clone the `handleGenerateRepoDescription` pattern, Claude prov
 - `resumeSessionId` (SDK `resume` option) is still accepted by the sidecar, but the executor never
   sends it: every validation agent is a fresh one-shot session (see "One producer pass per step").
 
-Rust side awaits the result with an activity-aware timeout: a 10-minute idle window that resets
+Rust side awaits the result with an activity-aware timeout: a 1-hour idle window that resets
 on every progress event, plus an overall cap (`agent_timeout_minutes`, default 60, §7). Progress
 events are re-emitted run-scoped as `validation-agent-activity-{run_id}` (§3). Prompts are
 built in Rust (`src-tauri/src/validation/prompts.rs`) — see §5 for required prompt content.
@@ -332,7 +332,7 @@ pub struct ValidationConfig {
   pub auto_fix_limits: HashMap<String,u32>, // defaults: review 0, test 2, docs 0, lint 2, ci 2
   pub ci_timeout_minutes: u32,           // default 45
   pub agent_timeout_minutes: u32,        // default 60 — overall cap per agent call; agents also
-                                         // have a fixed 10-min idle window reset on every
+                                         // have a fixed 1-hour idle window reset on every
                                          // streamed progress event (tool call / text)
 }
 ```

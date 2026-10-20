@@ -26,7 +26,7 @@ use super::types::*;
 /// Idle window for a one-shot validation agent: reset on every streamed
 /// progress event (tool call / text), so a working agent is never cut off.
 /// The overall cap is configurable (`agent_timeout_minutes`).
-const AGENT_IDLE_TIMEOUT_SECS: u64 = 600;
+const AGENT_IDLE_TIMEOUT_SECS: u64 = 3600;
 /// Tail length kept for command/log proof and CI log excerpts.
 const OUTPUT_TAIL: usize = 2000;
 const CI_LOG_TAIL: usize = 32_000;

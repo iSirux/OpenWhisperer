@@ -34,7 +34,7 @@ pub struct ValidationConfig {
     #[serde(default = "default_ci_timeout_minutes")]
     pub ci_timeout_minutes: u32,
     /// Overall time cap for a single validation agent call, in minutes. Agents
-    /// also have a fixed 10-minute idle window that resets on every streamed
+    /// also have a fixed 1-hour idle window that resets on every streamed
     /// tool call / text block, so this cap only cuts off runaways.
     #[serde(default = "default_agent_timeout_minutes")]
     pub agent_timeout_minutes: u32,

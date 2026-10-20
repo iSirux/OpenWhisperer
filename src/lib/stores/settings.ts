@@ -640,7 +640,7 @@ export interface ValidationConfig {
   ci_timeout_minutes: number;
   /**
    * Overall time cap for a single validation agent call, in minutes. Agents
-   * also have a fixed 10-minute idle window that resets on every streamed
+   * also have a fixed 1-hour idle window that resets on every streamed
    * tool call / text block, so this cap only cuts off runaways.
    */
   agent_timeout_minutes: number;

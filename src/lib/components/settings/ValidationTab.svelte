@@ -171,7 +171,7 @@
       <label class="block text-sm font-medium text-text-secondary mb-1" for="val-agent-timeout">Agent time cap (minutes)</label>
       <p class="text-xs text-text-muted mb-2">
         Overall cap per agent call. Agents never time out while actively working
-        (10-minute idle window, reset on every tool call).
+        (1-hour idle window, reset on every tool call).
       </p>
       <input
         id="val-agent-timeout"
