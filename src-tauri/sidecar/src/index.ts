@@ -3570,10 +3570,18 @@ async function runValidationQuery(
     if (message.type === "system" && message.subtype === "init") {
       sdkSessionId = message.session_id;
     } else if (message.type === "system") {
-      const sys = message as { subtype?: string; task_id?: string; tool_use_id?: string };
+      const sys = message as {
+        subtype?: string;
+        task_id?: string;
+        tool_use_id?: string;
+        patch?: { status?: string };
+      };
+      const terminalUpdate =
+        sys.subtype === "task_updated" &&
+        ["completed", "failed", "killed"].includes(sys.patch?.status ?? "");
       if (sys.subtype === "task_started" && sys.task_id && sys.tool_use_id) {
         taskToolUse.set(sys.task_id, sys.tool_use_id);
-      } else if (sys.subtype === "task_notification") {
+      } else if (sys.subtype === "task_notification" || terminalUpdate) {
         const toolUseId =
           sys.tool_use_id ?? (sys.task_id ? taskToolUse.get(sys.task_id) : undefined);
         if (toolUseId) pendingBackground.delete(toolUseId);
@@ -3661,9 +3669,17 @@ async function runValidationQuery(
           durationMs: r.duration_ms || 0,
         };
       }
-      // Turn ended. Background work still running → keep the stream open so
-      // its task_notification resumes the agent. Otherwise, if nothing was
-      // submitted, ask once for the submit call before closing.
+      // Turn ended. Once the submit call is acked the agent is done: leftover
+      // background work (or a task_notification that never correlates) must
+      // not hold the result back, so end the query outright. Otherwise, with
+      // background work still running, keep the stream open so its
+      // task_notification resumes the agent; if nothing was submitted, ask
+      // once for the submit call before closing.
+      if ([...submissions.values()].some((s) => s.acked)) {
+        input.done();
+        iterator.close();
+        break;
+      }
       if (pendingBackground.size > 0) {
         continue;
       }
