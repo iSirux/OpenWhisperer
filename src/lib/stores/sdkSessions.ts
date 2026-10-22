@@ -1555,6 +1555,24 @@ function createSdkSessionsStore() {
             timestamp: now,
           }));
 
+        // Same for tool calls: the turn is over, so a tool_start with no tool_result had its
+        // result event lost, and its card would spin "running" (timer counting) forever.
+        const resultIds = new Set<string>();
+        for (const m of closedThinkingMessages) {
+          if (m.type === 'tool_result' && m.toolUseId) resultIds.add(m.toolUseId);
+        }
+        const syntheticToolResults: SdkMessage[] = closedThinkingMessages
+          .filter(m => m.type === 'tool_start' && !!m.toolUseId && !resultIds.has(m.toolUseId))
+          .map(m => ({
+            type: 'tool_result' as const,
+            tool: m.tool,
+            toolUseId: m.toolUseId,
+            output: '(No result received — the result event was lost.)',
+            parentToolUseId: m.parentToolUseId,
+            turnUuid: m.turnUuid,
+            timestamp: now,
+          }));
+
         // Long-lived servers legitimately outlive a turn; anything else still tracked in the live
         // set at a real completion is stale. Left in place it would silently re-defer every LATER
         // turn, since background tasks deliberately carry across turns.
@@ -1563,6 +1581,7 @@ function createSdkSessionsStore() {
         const updatedMessages = [
           ...closedThinkingMessages,
           ...syntheticCompletions,
+          ...syntheticToolResults,
           { type: terminalType, timestamp: now },
         ];
         sessionMessages = updatedMessages;

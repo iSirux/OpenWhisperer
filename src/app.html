@@ -5,6 +5,28 @@
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWhisperer</title>
+    <script>
+      // Tauri (2.11 core.js) ids every IPC callback with a random u32 from
+      // crypto.getRandomValues and never checks the id is free: an invoke() that
+      // draws a live event listener's id overwrites it, then deletes it when it
+      // settles, so that listener goes silently dead ("Couldn't find callback id"
+      // on every later event). It once killed one session's sdk-tool-result
+      // listener, leaving every later tool call stuck "running". Re-draw any
+      // single-u32 id already taken in Tauri's callback map. Must run before app
+      // code registers listeners, hence inline here.
+      (function () {
+        const crypto = window.crypto;
+        const original = crypto.getRandomValues.bind(crypto);
+        crypto.getRandomValues = function (array) {
+          original(array);
+          const callbacks = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.callbacks;
+          if (callbacks && array instanceof Uint32Array && array.length === 1) {
+            while (callbacks.has(array[0])) original(array);
+          }
+          return array;
+        };
+      })();
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">
