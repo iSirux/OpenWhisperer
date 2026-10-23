@@ -92,10 +92,22 @@
 
     document.addEventListener('click', handleCodeCopyClick);
 
+    // Liveness ping for the backend's hung-renderer watchdog (webview_recovery.rs):
+    // a visible window that stops beating for minutes gets its renderer reloaded.
+    const heartbeat = () => invoke('webview_heartbeat').catch(() => {});
+    heartbeat();
+    const heartbeatTimer = window.setInterval(heartbeat, 10_000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') heartbeat();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       window.removeEventListener('popstate', handlePopState);
       document.removeEventListener('click', handleLinkClick);
       document.removeEventListener('click', handleCodeCopyClick);
+      window.clearInterval(heartbeatTimer);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   });
 

@@ -250,6 +250,16 @@ pub fn write_frontend_log(
     }
 }
 
+/// Liveness ping from each page, every 10 s — feeds the hung-renderer watchdog
+/// in `webview_recovery` (Windows only; a no-op elsewhere).
+#[tauri::command(async)]
+pub fn webview_heartbeat(webview: tauri::Webview) {
+    #[cfg(windows)]
+    crate::webview_recovery::heartbeat(webview.label());
+    #[cfg(not(windows))]
+    let _ = webview;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

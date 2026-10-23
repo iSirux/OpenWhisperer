@@ -344,6 +344,10 @@ pub fn run() {
             let _ = window.unminimize();
             let _ = window.set_focus();
         }
+        // The user may be relaunching because the window is frozen; re-focusing
+        // a hung page wouldn't help, so check it's alive and recover if not.
+        #[cfg(windows)]
+        webview_recovery::probe_after_relaunch();
     }));
 
     builder
@@ -728,6 +732,7 @@ pub fn run() {
             sequence_cmds::generate_node_config,
             // --- Logging ---
             log_cmds::write_frontend_log,
+            log_cmds::webview_heartbeat,
         ])
         .run(context)
         .expect("error while running tauri application");
