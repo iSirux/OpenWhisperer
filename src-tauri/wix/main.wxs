@@ -108,8 +108,14 @@
 
         <Directory Id="TARGETDIR" Name="SourceDir">
             <Directory Id="DesktopFolder" Name="Desktop">
+                <!-- No Icon="ProductIcon" on the shortcuts: an Icon-table icon lives at
+                     %WINDIR%\Installer\{ProductCode}\ProductIcon, and the ProductCode changes on
+                     every update, so a taskbar pin (a copy of this .lnk) keeps pointing at a
+                     folder the upgrade deletes and turns into a blank page. Without it the
+                     shortcut takes the icon embedded in the exe, whose path never changes.
+                     Pins made before this fix are repaired at startup (taskbar_pin_repair.rs). -->
                 <Component Id="ApplicationShortcutDesktop" Guid="*">
-                    <Shortcut Id="ApplicationDesktopShortcut" Name="{{product_name}}" Description="Runs {{product_name}}" Target="[!Path]" WorkingDirectory="INSTALLDIR" Icon="ProductIcon">
+                    <Shortcut Id="ApplicationDesktopShortcut" Name="{{product_name}}" Description="Runs {{product_name}}" Target="[!Path]" WorkingDirectory="INSTALLDIR">
                         <ShortcutProperty Key="System.AppUserModel.ID" Value="{{bundle_id}}"/>
                     </Shortcut>
                     <RemoveFolder Id="DesktopFolder" On="uninstall" />
@@ -198,7 +204,6 @@
                     Name="{{product_name}}"
                     Description="Runs {{product_name}}"
                     Target="[!Path]"
-                    Icon="ProductIcon"
                     WorkingDirectory="INSTALLDIR">
                     <ShortcutProperty Key="System.AppUserModel.ID" Value="{{bundle_id}}"/>
                 </Shortcut>

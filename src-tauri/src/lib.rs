@@ -17,6 +17,8 @@ mod sequences;
 mod session_persistence;
 mod sidecar;
 mod usage_stats;
+#[cfg(windows)]
+mod taskbar_pin_repair;
 mod util;
 mod validation;
 #[cfg(windows)]
@@ -423,6 +425,11 @@ pub fn run() {
                     let _ = main_window.set_icon(win_icon);
                 }
             }
+
+            // Taskbar pins made from older installers point at an MSI icon file
+            // that each update deletes (blank page icon) — retarget them at the exe.
+            #[cfg(windows)]
+            taskbar_pin_repair::spawn();
 
             // A crashed WebView2 renderer leaves a window blank white for good;
             // reload it instead (agents keep running in the sidecar meanwhile).

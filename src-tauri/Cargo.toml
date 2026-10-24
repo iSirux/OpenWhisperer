@@ -67,6 +67,9 @@ wasapi = "0.24"
 # src/webview_recovery.rs. Keep these on the versions wry already uses.
 webview2-com = "0.38"
 windows-core = "0.61"
+# IShellLink, to repair taskbar pins left with a dead MSI icon path — see
+# src/taskbar_pin_repair.rs.
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Meeting mode system audio on macOS 13+ — see src/meeting/capture/macos.rs.
