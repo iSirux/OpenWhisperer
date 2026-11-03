@@ -3,8 +3,7 @@ import { get } from 'svelte/store';
 import { activeSdkSessionId, sdkSessions } from '$lib/stores/sdkSessions';
 import { repos, type RepoConfig } from '$lib/stores/repos';
 import type { LaunchCommand, LaunchProfile } from '$lib/types/launch';
-import { settings } from '$lib/stores/settings';
-import { newestModelId } from '$lib/stores/modelCatalog';
+import { newestModelInFamily } from '$lib/stores/modelCatalog';
 import { DEFAULT_MODEL_ID, DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
 import { REPO_ICON_NAMES } from '$lib/utils/repoIcons';
 import { loadRepoIconImage } from '$lib/utils/repoIconImage';
@@ -237,14 +236,12 @@ export async function startRepoExploreSession(
   const repoId = repo.id;
   if (!repoId) throw new Error('Repository has no id');
 
-  // Always the newest model the provider offers (live catalog), so exploration
-  // picks up new releases without a code change.
-  const config = get(settings);
-  const enabledIds =
-    (provider === 'openai' ? config.enabled_openai_models : config.enabled_models) ?? [];
+  // A cheap mid-tier family, at its newest version in the live catalog, so
+  // exploration picks up new releases without a code change.
   const model =
-    newestModelId(provider, enabledIds) ??
-    (provider === 'openai' ? DEFAULT_OPENAI_MODEL_ID : DEFAULT_MODEL_ID);
+    provider === 'openai'
+      ? (newestModelInFamily('openai', 'terra') ?? DEFAULT_OPENAI_MODEL_ID)
+      : (newestModelInFamily('claude', 'sonnet') ?? DEFAULT_MODEL_ID);
   const sessionId = await sdkSessions.createSession(repo.path, model, 'low', undefined, provider);
   sdkSessions.setSessionName(sessionId, `Explore ${repo.name}`);
 

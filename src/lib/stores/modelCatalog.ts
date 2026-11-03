@@ -171,18 +171,16 @@ function compareVersions(a: number[], b: number[]): number {
 }
 
 /**
- * The newest-version model the provider currently offers (`claude-opus-5-5`
- * beats `claude-fable-5-1` and `claude-haiku-4-5`; `gpt-6-*` beats `gpt-5.6-*`),
- * preferring the user's enabled models. Ties keep the provider's listing order,
- * which puts the most capable model of a generation first.
+ * The newest version of a model family the provider currently offers
+ * (`sonnet` → `claude-sonnet-5-5` once it ships; `terra` → `gpt-5.6-terra`).
  */
-export function newestModelId(provider: SdkProvider, enabledIds: string[] = []): string | null {
-  const current = getModelsForProvider(provider).filter((m) => !m.legacy && !m.isAuto);
-  const enabled = current.filter((m) => enabledIds.includes(m.id));
+export function newestModelInFamily(provider: SdkProvider, family: string): string | null {
   let best: { id: string; version: number[] } | null = null;
-  for (const m of enabled.length > 0 ? enabled : current) {
+  for (const m of getModelsForProvider(provider)) {
+    if (m.legacy || m.isAuto) continue;
     const fv = modelFamilyVersion(provider, m.id);
-    if (fv && (!best || compareVersions(fv.version, best.version) > 0)) {
+    if (fv?.family !== family) continue;
+    if (!best || compareVersions(fv.version, best.version) > 0) {
       best = { id: m.id, version: fv.version };
     }
   }
