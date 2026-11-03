@@ -20,10 +20,22 @@ import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 
 import { repos, findRepoById } from './repos';
-import { sdkSessions, hasBusySessionsInScope, type EffortLevel, type SdkSession } from './sdkSessions';
+import {
+  sdkSessions,
+  hasBusySessionsInScope,
+  type EffortLevel,
+  type SdkMessage,
+  type SdkSession,
+} from './sdkSessions';
 import { providerExhaustion } from './queueDetection';
 import { launchSession, createSessionQueue } from '$lib/utils/sessionLaunch';
 import { formatScheduleTarget } from '$lib/utils/duration';
+import { evaluateScheduledTurn, type RunErrorClass } from '$lib/utils/scheduleRunOutcome';
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from '@tauri-apps/plugin-notification';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -82,12 +94,25 @@ export interface ScheduleMessageTarget {
 }
 
 export interface ScheduleRun {
+  /** Stable id so the outcome watcher can update this entry once the turn settles.
+   *  Absent on runs recorded before outcome tracking existed (and on skipped runs). */
+  id?: string;
   at: number;
+  /** 'ok' means launched/sent and — once the first turn settled — not seen failing.
+   *  A run whose first turn ends in an API/auth error is flipped to 'failed'. */
   status: 'ok' | 'failed' | 'skipped' | 'deferred'; // deferred = launched but parked (rate limit)
   sessionId?: string;
+  /** Raw error text (launch exception, or the agent's error output). */
   error?: string;
-  /** Non-fatal remark, e.g. "worktree gone, ran in main repo". */
+  /** Short remark: a failure reason ("Login expired (OAuth)", "API overloaded (529)") and/or
+   *  a non-fatal note ("worktree gone, ran in main repo"), joined with " · ". */
   note?: string;
+  /** Automatic-retry state of a failed run (transient errors only, one retry). */
+  retry?: 'pending' | 'sent' | 'skipped';
+  /** When the pending retry is due / was sent (epoch ms). */
+  retryAt?: number;
+  /** On an automatic retry run: the `id` of the failed run it re-sends. */
+  retryOf?: string;
 }
 
 export interface Schedule {
@@ -387,7 +412,12 @@ function normalizeSchedule(raw: Partial<Schedule>): Schedule | null {
     // Drop malformed rows rather than letting one of them break every surface that
     // renders the history list.
     history: Array.isArray(raw.history)
-      ? raw.history.filter((r) => !!r && typeof r === 'object').slice(0, MAX_HISTORY)
+      ? raw.history
+          .filter((r) => !!r && typeof r === 'object')
+          .slice(0, MAX_HISTORY)
+          // A retry timer doesn't survive a restart: a run still waiting on one was
+          // never retried, so say so rather than showing "retrying" forever.
+          .map((r) => (r.retry === 'pending' ? { ...r, retry: 'skipped' as const } : r))
       : [],
   };
 }
@@ -609,6 +639,24 @@ function createSchedulesStore() {
     schedulePersist();
   }
 
+  /** Driver-facing: patch one history entry by its `id` (no-op if it was evicted/deleted). */
+  function updateRun(id: string, runId: string, patch: Partial<ScheduleRun>) {
+    let changed = false;
+    update((items) =>
+      items.map((s) => {
+        if (s.id !== id || !s.history.some((r) => r.id === runId)) return s;
+        changed = true;
+        return { ...s, history: s.history.map((r) => (r.id === runId ? { ...r, ...patch } : r)) };
+      })
+    );
+    if (changed) schedulePersist();
+  }
+
+  /** A history entry by id. */
+  function getRun(id: string, runId: string): ScheduleRun | undefined {
+    return getSchedule(id)?.history.find((r) => r.id === runId);
+  }
+
   /**
    * Fire a schedule right now, out of band: does NOT count toward `maxRuns` and
    * ignores the idle hold (it's an explicit user action). A *future* `nextFireAt`
@@ -649,6 +697,8 @@ function createSchedulesStore() {
     markFired,
     markMissed,
     recordRun,
+    updateRun,
+    getRun,
   };
 }
 
@@ -684,6 +734,34 @@ export const selectedSchedule = derived(
   [schedules, selectedScheduleId],
   ([$items, $id]) => ($id ? $items.find((s) => s.id === $id) ?? null : null)
 );
+
+/** The newest run that actually happened (skipped occurrences never ran). */
+export function lastRealRun(schedule: Schedule): ScheduleRun | undefined {
+  return schedule.history.find((r) => r.status !== 'skipped');
+}
+
+/**
+ * One-line remark for a history row: the failure reason / note plus the automatic
+ * retry state, e.g. "API overloaded (529) · retrying at 07:05" or
+ * "Automatic retry · Login expired (OAuth)".
+ */
+export function describeRunNote(run: ScheduleRun): string | undefined {
+  const parts: string[] = [];
+  if (run.retryOf) parts.push('Automatic retry');
+  if (run.note) parts.push(run.note);
+  else if (run.error) parts.push(run.error);
+  if (run.retry === 'pending') {
+    const at = run.retryAt
+      ? new Date(run.retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : null;
+    parts.push(at ? `retrying at ${at}` : 'retrying');
+  } else if (run.retry === 'sent') {
+    parts.push('retried');
+  } else if (run.retry === 'skipped') {
+    parts.push('not retried');
+  }
+  return parts.length ? parts.join(' · ') : undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Schedule context notice
@@ -724,8 +802,9 @@ function buildScheduleNotice(schedule: Schedule): string {
     const previous = schedule.history.find((r) => r.status !== 'skipped');
     if (previous) {
       const failed = previous.status === 'failed';
+      const reason = failed ? (previous.note ? `failed: ${previous.note}` : 'failed') : '';
       lines.push(
-        `Previous run: ${formatScheduleTarget(previous.at, now)}${failed ? ' (failed to start)' : ''}`
+        `Previous run: ${formatScheduleTarget(previous.at, now)}${reason ? ` (${reason})` : ''}`
       );
     }
 
@@ -748,6 +827,242 @@ function buildScheduleNotice(schedule: Schedule): string {
  * hammering git/the sidecar.
  */
 const launchQueue = createSessionQueue();
+
+// ---------------------------------------------------------------------------
+// First-turn outcome tracking
+// ---------------------------------------------------------------------------
+//
+// A run is recorded when its session launches / its turn is sent, but the agent
+// turn can still fail (an expired login, a 529). Each fired run is watched until
+// its first turn settles; a failure flips the history entry to `failed` with a
+// short reason. Transient errors get ONE automatic retry into the same session
+// after RETRY_DELAY_MS; everything else (auth above all) raises a system
+// notification instead. Nothing here is persisted beyond the history entry: an app
+// restart mid-turn leaves the run as recorded, and a pending retry is dropped
+// (`normalizeSchedule` marks it 'skipped').
+
+/** Delay before the one automatic retry of a transiently failed run. */
+const RETRY_DELAY_MS = 5 * 60_000;
+
+/** Give up watching a turn after this long (covers a Smart-Queue-parked launch + a long turn). */
+const WATCH_TIMEOUT_MS = 24 * 60 * 60_000;
+
+/** Coalesce failure notifications: a 07:00 pileup of expired-login runs → one toast. */
+const NOTIFY_COALESCE_MS = 30_000;
+
+interface RunWatch {
+  scheduleId: string;
+  runId: string;
+  sessionId: string;
+  /** Session message count just before the turn went out (0 for a fresh session). */
+  base: number;
+  prompt: string;
+  action?: 'compact';
+  /** Send-time schedule notice the original turn carried (message targets only — a
+   *  session target's notice rides the session's system prompt and stays in force). */
+  scheduleNotice?: string;
+  allowRetry: boolean;
+}
+
+function joinNotes(...notes: Array<string | undefined>): string | undefined {
+  const parts = notes.filter((n): n is string => !!n && !!n.trim());
+  return parts.length ? parts.join(' · ') : undefined;
+}
+
+function truncateError(text: string, max = 500): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+function countUserTurns(messages: SdkMessage[]): number {
+  let n = 0;
+  for (const m of messages) if (m.type === 'user' && !m.queued) n++;
+  return n;
+}
+
+/**
+ * Descriptive framing for the automatic retry — like the schedule notice itself, no
+ * behavioural instructions. Extends the original notice when the turn had one.
+ */
+function buildRetryNotice(original: string | undefined, reason: string): string {
+  const line = `This is an automatic retry: the previous attempt at this scheduled prompt ended with a transient error (${reason}). Anything that attempt already did is above in this conversation.`;
+  const closing = '\n</system-message>';
+  if (original && original.endsWith(closing)) {
+    return `${original.slice(0, -closing.length)}\n\n${line}${closing}`;
+  }
+  return `<system-message>\n${line}${closing}`;
+}
+
+let pendingFailureNotices: Array<{ label: string; error: Pick<RunErrorClass, 'kind' | 'note'> }> = [];
+let notifyTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Queue a system notification for a scheduled run that failed for good. */
+function notifyRunFailure(label: string, error: Pick<RunErrorClass, 'kind' | 'note'>): void {
+  pendingFailureNotices.push({ label, error });
+  if (notifyTimer) return;
+  notifyTimer = setTimeout(() => void flushFailureNotices(), NOTIFY_COALESCE_MS);
+}
+
+async function flushFailureNotices(): Promise<void> {
+  const items = pendingFailureNotices;
+  pendingFailureNotices = [];
+  notifyTimer = null;
+  if (items.length === 0) return;
+  const title =
+    items.length === 1
+      ? `Scheduled run failed: ${items[0].label}`
+      : `${items.length} scheduled runs failed`;
+  const reasons = [...new Set(items.map((i) => i.error.note))].join(', ');
+  const auth = items.some((i) => i.error.kind === 'auth');
+  const body = auth ? `${reasons} — log in again in Settings → Accounts.` : reasons;
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) granted = (await requestPermission()) === 'granted';
+    if (granted) sendNotification({ title, body });
+  } catch (error) {
+    console.warn('[schedules] Failed to send failure notification:', error);
+  }
+}
+
+/**
+ * Watch a fired run's first turn until it settles, the session goes away, or
+ * WATCH_TIMEOUT_MS passes, then reconcile the history entry with what happened.
+ * Call it once the turn has been handed to the session (after `launchSession` /
+ * `sendPrompt` resolved), so the turn's user message is already in place.
+ */
+function watchRunOutcome(watch: RunWatch): void {
+  let finished = false;
+  let unsubscribe: (() => void) | null = null;
+  let lastMessages: SdkMessage[] | undefined;
+  let lastStatus: string | undefined;
+  let lastParked: unknown;
+
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    unsubscribe?.();
+  };
+  const timer = setTimeout(finish, WATCH_TIMEOUT_MS);
+
+  unsubscribe = sdkSessions.subscribe((sessions) => {
+    if (finished) return;
+    const session = sessions.find((s) => s.id === watch.sessionId);
+    // Closed / archived: leave the run as recorded.
+    if (!session) return finish();
+    // Store writes for OTHER sessions wake us too — only re-evaluate on a change here.
+    if (
+      session.messages === lastMessages &&
+      session.status === lastStatus &&
+      session.parkedTurns === lastParked
+    ) {
+      return;
+    }
+    lastMessages = session.messages;
+    lastStatus = session.status;
+    lastParked = session.parkedTurns;
+
+    const outcome = evaluateScheduledTurn(session, watch.base);
+    if (outcome.state === 'pending') return;
+    finish();
+    // Settle outside the subscriber: it writes to stores and may schedule a retry.
+    const userTurns = countUserTurns(session.messages);
+    queueMicrotask(() => settleRun(watch, outcome, userTurns));
+  });
+  // The first (synchronous) call may already have settled before `unsubscribe` existed.
+  if (finished) unsubscribe();
+}
+
+function settleRun(
+  watch: RunWatch,
+  outcome: ReturnType<typeof evaluateScheduledTurn>,
+  userTurnsAtSettle: number
+): void {
+  const run = schedules.getRun(watch.scheduleId, watch.runId);
+  if (!run) return; // schedule deleted or the entry aged out of the history
+
+  if (outcome.state === 'deferred') {
+    if (run.status === 'ok') {
+      schedules.updateRun(watch.scheduleId, watch.runId, {
+        status: 'deferred',
+        note: joinNotes(run.note, outcome.note),
+      });
+    }
+    return;
+  }
+  if (outcome.state !== 'failed') return; // ok / stopped by the user
+
+  const { error } = outcome;
+  const patch: Partial<ScheduleRun> = {
+    status: 'failed',
+    note: joinNotes(run.note, error.note),
+    error: truncateError(outcome.detail),
+  };
+  console.warn(`[schedules] Scheduled run failed (${error.kind}: ${error.note}) — session ${watch.sessionId}`);
+
+  if (error.retryable && watch.allowRetry) {
+    const retryAt = Date.now() + RETRY_DELAY_MS;
+    schedules.updateRun(watch.scheduleId, watch.runId, { ...patch, retry: 'pending', retryAt });
+    setTimeout(() => void retryRun(watch, error, userTurnsAtSettle), RETRY_DELAY_MS);
+    return;
+  }
+
+  schedules.updateRun(watch.scheduleId, watch.runId, patch);
+  const label = schedules.getSchedule(watch.scheduleId)?.label ?? 'Schedule';
+  notifyRunFailure(label, error);
+}
+
+/** The one automatic retry of a transiently failed run: re-send into the same session. */
+async function retryRun(watch: RunWatch, error: RunErrorClass, userTurnsAtFailure: number): Promise<void> {
+  const run = schedules.getRun(watch.scheduleId, watch.runId);
+  if (!run || run.retry !== 'pending') return;
+
+  const session = get(sdkSessions).find((s) => s.id === watch.sessionId);
+  // Don't retry over the user: the session is gone, busy, or someone already
+  // continued it by hand (e.g. typed "keep going") since the failure.
+  if (
+    !session ||
+    session.status === 'queued' ||
+    isSessionBusy(session) ||
+    countUserTurns(session.messages) > userTurnsAtFailure
+  ) {
+    schedules.updateRun(watch.scheduleId, watch.runId, { retry: 'skipped' });
+    return;
+  }
+
+  const retryRunId = crypto.randomUUID();
+  const base = session.messages.length;
+  const at = Date.now();
+  schedules.updateRun(watch.scheduleId, watch.runId, { retry: 'sent', retryAt: at });
+  schedules.recordRun(watch.scheduleId, {
+    id: retryRunId,
+    at,
+    status: 'ok',
+    sessionId: watch.sessionId,
+    retryOf: watch.runId,
+  });
+
+  try {
+    if (watch.action === 'compact') {
+      await sdkSessions.compactSession(watch.sessionId);
+    } else {
+      await sdkSessions.sendPrompt(watch.sessionId, watch.prompt, undefined, {
+        systemNotice: buildRetryNotice(watch.scheduleNotice, error.note),
+      });
+    }
+  } catch (sendError) {
+    console.error('[schedules] Automatic retry could not be sent:', sendError);
+    schedules.updateRun(watch.scheduleId, retryRunId, {
+      status: 'failed',
+      note: 'Retry could not be sent',
+      error: truncateError(String(sendError)),
+    });
+    notifyRunFailure(schedules.getSchedule(watch.scheduleId)?.label ?? 'Schedule', error);
+    return;
+  }
+
+  watchRunOutcome({ ...watch, runId: retryRunId, base, allowRetry: false });
+}
 
 /** Statuses a message target can be delivered to. Busy sessions are held earlier. */
 function isMessageTargetUsable(session: SdkSession): boolean {
@@ -778,13 +1093,17 @@ async function launchForSchedule(
   }
 ): Promise<string | null> {
   const at = Date.now();
+  const runId = crypto.randomUUID();
   const repo = findRepoById(get(repos).list, config.repoId);
   if (!repo) {
     schedules.recordRun(schedule.id, {
+      id: runId,
       at,
       status: 'failed',
       error: 'Repository no longer exists',
+      note: 'Repository no longer exists',
     });
+    notifyRunFailure(schedule.label, { kind: 'other', note: 'Repository no longer exists' });
     return null;
   }
 
@@ -830,15 +1149,34 @@ async function launchForSchedule(
     });
     const parked = get(sdkSessions).find((s) => s.id === sessionId)?.status === 'queued';
     schedules.recordRun(schedule.id, {
+      id: runId,
       at,
       status: exhausted || parked ? 'deferred' : 'ok',
       sessionId,
       ...(note ? { note } : {}),
     });
+    // The launch only means the session started — follow its first turn (including
+    // one the Smart Queue parked and sends later) so a failed turn isn't left as "ok".
+    // The schedule notice rides the session's system prompt, so a retry needs none.
+    watchRunOutcome({
+      scheduleId: schedule.id,
+      runId,
+      sessionId,
+      base: 0,
+      prompt: schedule.prompt,
+      allowRetry: true,
+    });
     return sessionId;
   } catch (error) {
     console.error('[schedules] Launch failed:', error);
-    schedules.recordRun(schedule.id, { at, status: 'failed', error: String(error) });
+    schedules.recordRun(schedule.id, {
+      id: runId,
+      at,
+      status: 'failed',
+      error: truncateError(String(error)),
+      note: joinNotes(note, 'Launch failed'),
+    });
+    notifyRunFailure(schedule.label, { kind: 'other', note: 'Launch failed' });
     return null;
   }
 }
@@ -861,27 +1199,44 @@ async function runMessageTarget(schedule: Schedule): Promise<string | null> {
   }
 
   const at = Date.now();
+  const runId = crypto.randomUUID();
+  // Where this turn begins in the transcript — the outcome watcher only looks past it.
+  const base = session.messages.length;
+  // A compaction turn carries no prompt of its own — nothing to frame.
+  const notice = target.action === 'compact' ? undefined : buildScheduleNotice(schedule);
   try {
     if (target.action === 'compact') {
-      // A compaction turn carries no prompt of its own — nothing to frame.
       await sdkSessions.compactSession(target.sessionId);
     } else {
       // Mid-session: no system-prompt rail exists, so the notice rides the sent
       // prompt (send-time only — the transcript keeps the user's prompt verbatim).
       await sdkSessions.sendPrompt(target.sessionId, schedule.prompt, undefined, {
-        systemNotice: buildScheduleNotice(schedule),
+        systemNotice: notice,
       });
     }
-    schedules.recordRun(schedule.id, { at, status: 'ok', sessionId: target.sessionId });
+    schedules.recordRun(schedule.id, { id: runId, at, status: 'ok', sessionId: target.sessionId });
+    watchRunOutcome({
+      scheduleId: schedule.id,
+      runId,
+      sessionId: target.sessionId,
+      base,
+      prompt: schedule.prompt,
+      action: target.action,
+      scheduleNotice: notice,
+      allowRetry: true,
+    });
     return target.sessionId;
   } catch (error) {
     console.error('[schedules] Scheduled message failed:', error);
     schedules.recordRun(schedule.id, {
+      id: runId,
       at,
       status: 'failed',
       sessionId: target.sessionId,
-      error: String(error),
+      error: truncateError(String(error)),
+      note: 'Could not send the message',
     });
+    notifyRunFailure(schedule.label, { kind: 'other', note: 'Could not send the message' });
     return null;
   }
 }

@@ -8,6 +8,7 @@
   import {
     schedules,
     describeScheduleSpec,
+    describeRunNote,
     selectedScheduleId,
     type RecurrenceRule,
     type Schedule,
@@ -520,16 +521,34 @@
       <div>
         <p class="text-xs font-medium text-text-secondary mb-1">Run history</p>
         <div class="space-y-1">
-          {#each schedule.history as run (run.at + run.status)}
+          {#each schedule.history as run, i (run.id ?? `${run.at}-${run.status}-${i}`)}
+            {@const remark = describeRunNote(run)}
+            {@const retrying = run.status === 'failed' && run.retry === 'pending'}
             <div
-              class="flex items-center gap-2 p-2 rounded border border-border bg-surface-elevated/50 text-xs"
+              class="flex items-center gap-2 p-2 rounded border text-xs {run.status === 'failed' &&
+              !retrying
+                ? 'border-red-500/40 bg-red-500/5'
+                : 'border-border bg-surface-elevated/50'}"
             >
-              <span class="{RUN_STATUS_CLASS[run.status] ?? 'text-text-muted'} shrink-0 w-16">
-                {run.status}
+              <span
+                class="{retrying
+                  ? 'text-amber-400'
+                  : (RUN_STATUS_CLASS[run.status] ?? 'text-text-muted')} shrink-0 w-16"
+              >
+                {retrying ? 'retrying' : run.status}
               </span>
               <span class="text-text-muted shrink-0">{new Date(run.at).toLocaleString()}</span>
-              {#if run.error}
-                <span class="text-text-muted truncate flex-1" title={run.error}>{run.error}</span>
+              {#if remark}
+                <span
+                  class="truncate flex-1 {run.status === 'failed'
+                    ? 'text-red-300'
+                    : 'text-text-muted'}"
+                  title={[remark, run.error && run.error !== remark ? run.error : null]
+                    .filter(Boolean)
+                    .join('\n')}
+                >
+                  {remark}
+                </span>
               {/if}
               {#if run.sessionId}
                 {@const sessionId = run.sessionId}

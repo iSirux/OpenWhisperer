@@ -8,8 +8,11 @@
   import {
     schedules,
     describeScheduleSpec,
+    describeRunNote,
+    lastRealRun,
     selectedScheduleId,
     type Schedule,
+    type ScheduleRun,
   } from '$lib/stores/schedules';
   import { sdkSessions, activeSdkSessionId, settingsToStoreEffort } from '$lib/stores/sdkSessions';
   import { selectedPileItemId } from '$lib/stores/pile';
@@ -115,6 +118,19 @@
     deferred: 'text-amber-400',
   };
 
+  /** A failed run with its automatic retry still pending reads as "retrying", not red. */
+  function isRetrying(run: ScheduleRun | undefined): boolean {
+    return run?.status === 'failed' && run.retry === 'pending';
+  }
+
+  function runTitle(run: ScheduleRun): string {
+    const when = `Last run ${new Date(run.at).toLocaleString()}`;
+    const remark = describeRunNote(run);
+    return [when, remark, run.error && run.error !== remark ? run.error : undefined]
+      .filter(Boolean)
+      .join('\n');
+  }
+
   async function runNow(schedule: Schedule) {
     openMenuId = null;
     runningId = schedule.id;
@@ -174,12 +190,15 @@
     {:else}
       <div class="flex flex-col gap-1 p-1.5">
         {#each items as schedule (schedule.id)}
-          {@const lastRun = schedule.history[0]}
+          {@const lastRun = lastRealRun(schedule) ?? schedule.history[0]}
+          {@const lastFailed = lastRun?.status === 'failed' && !isRetrying(lastRun)}
           <div
             class="rounded border p-2 cursor-pointer transition-colors {$selectedScheduleId ===
             schedule.id
               ? 'border-accent bg-accent/10'
-              : 'border-border bg-surface-elevated/50 hover:bg-surface-elevated'}"
+              : lastFailed
+                ? 'border-red-500/50 bg-red-500/5 hover:bg-red-500/10'
+                : 'border-border bg-surface-elevated/50 hover:bg-surface-elevated'}"
             class:opacity-60={!schedule.enabled}
             onclick={() => openSchedule(schedule)}
             onkeydown={(e) => e.key === 'Enter' && openSchedule(schedule)}
@@ -188,8 +207,15 @@
           >
             <div class="flex items-start gap-1.5">
               <div class="flex-1 min-w-0">
-                <span class="block text-xs font-medium text-text-primary truncate">
-                  {schedule.label}
+                <span class="flex items-center gap-1 text-xs font-medium text-text-primary">
+                  {#if lastFailed && lastRun}
+                    <span
+                      class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"
+                      title={runTitle(lastRun)}
+                      aria-label="Last run failed"
+                    ></span>
+                  {/if}
+                  <span class="truncate min-w-0">{schedule.label}</span>
                 </span>
                 <p class="text-[11px] text-text-muted truncate mt-0.5">
                   {describeScheduleSpec(schedule.when, now)}
@@ -314,11 +340,18 @@
               {/if}
               {#if lastRun}
                 <span
-                  class="text-[10px] ml-auto shrink-0 {RUN_STATUS_CLASS[lastRun.status] ??
-                    'text-text-muted'}"
-                  title={lastRun.error ?? `Last run ${new Date(lastRun.at).toLocaleString()}`}
+                  class="text-[10px] ml-auto shrink-0 truncate max-w-[140px] {isRetrying(lastRun)
+                    ? 'text-amber-400'
+                    : (RUN_STATUS_CLASS[lastRun.status] ?? 'text-text-muted')}"
+                  title={runTitle(lastRun)}
                 >
-                  {lastRun.status}
+                  {#if isRetrying(lastRun)}
+                    retrying
+                  {:else if lastFailed && lastRun.note}
+                    failed · {lastRun.note}
+                  {:else}
+                    {lastRun.status}
+                  {/if}
                 </span>
               {/if}
             </div>
