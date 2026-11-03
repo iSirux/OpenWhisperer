@@ -4,12 +4,16 @@
 //! OpenWhisperer desktop app: run it now as a new session, continue the
 //! invoking session, or schedule it once / recurring. Communication is a
 //! request/ack file exchange in an inbox directory (see [`inbox`]), so the
-//! commands also work while the app is closed — a `schedule` request simply
-//! stays in the inbox until the next launch.
+//! commands also work while the app is closed — a `schedule` (or `pile add`,
+//! quick-action / chip edit) request simply stays in the inbox until the next
+//! launch. `sessions` and `transcript` read the app's session files directly
+//! (see [`sessions`]).
 
+mod appdata;
 mod git;
 mod inbox;
 mod install;
+mod sessions;
 mod timeparse;
 
 use std::fmt::Display;
@@ -107,6 +111,90 @@ fn main() {
                 schedule_id: id.clone(),
             },
         ),
+        Command::Sessions(args) => {
+            let data = app_data(&cli);
+            let listing = sessions::list(
+                &data,
+                &sessions::ListOptions {
+                    since: args.since.as_deref(),
+                    repo: args.repo.as_deref(),
+                    scheduled: if args.scheduled {
+                        Some(true)
+                    } else if args.interactive {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    limit: args.limit,
+                },
+            )
+            .unwrap_or_else(|err| fail(err));
+            if cli.json {
+                print_serialized(&listing);
+            } else {
+                sessions::print_table(&listing);
+            }
+            exit(0)
+        }
+        Command::Transcript(args) => {
+            let data = app_data(&cli);
+            let detail = if args.user_only {
+                sessions::Detail::UserOnly
+            } else if args.full {
+                sessions::Detail::Full
+            } else {
+                sessions::Detail::Conversation
+            };
+            let transcript = sessions::transcript(
+                &data,
+                &args.id,
+                &sessions::TranscriptOptions {
+                    detail,
+                    max_chars: args.max_chars,
+                },
+            )
+            .unwrap_or_else(|err| fail(err));
+            if cli.json {
+                print_serialized(&transcript);
+            } else {
+                sessions::print_transcript(&transcript);
+            }
+            exit(0)
+        }
+        Command::Pile {
+            action: PileCommand::Add {
+                text,
+                title,
+                repo,
+                model,
+            },
+        } => {
+            let text = resolve_prompt(text);
+            let cwd = current_dir();
+            let info = git::detect(Path::new(&cwd));
+            let target = Target {
+                mode: "new_session",
+                repo_path: info.repo_path,
+                worktree_path: info.worktree_path,
+                branch: info.branch,
+                repo: repo.clone(),
+                model: model.clone(),
+                effort: None,
+                new_worktree: false,
+            };
+            send(
+                &cli,
+                "pile_add",
+                cwd,
+                Payload::PileAdd {
+                    text,
+                    title: title.clone(),
+                    target,
+                },
+            )
+        }
+        Command::QuickAction { action } => edit_list(&cli, ListKind::QuickAction, action),
+        Command::Chip { action } => edit_list(&cli, ListKind::Chip, action),
         Command::Ping => send(&cli, "ping", current_dir(), Payload::Empty {}),
         Command::Doctor => {
             print_diagnostics(&cli);
@@ -142,17 +230,20 @@ fn main() {
     // Keep usage strings as "ow …" instead of the argv[0] "ow.exe" on Windows.
     bin_name = "ow",
     version,
-    about = "Hand a prompt to OpenWhisperer: run it now, or schedule it once or recurring",
+    about = "Hand a prompt to OpenWhisperer (run it now, or schedule it once or recurring), read its sessions, and add Pile items",
     long_about = "Hand a prompt to the OpenWhisperer desktop app, which runs it as an agent \
                   session in the repository and worktree of the current directory.\n\n\
                   The app must be running for scheduled runs to fire; schedules are durable \
-                  and catch up on the next launch."
+                  and catch up on the next launch.\n\n\
+                  `sessions` and `transcript` read the app's session files directly; `pile add` \
+                  and quick-action / chip edits are applied by the app (on its next launch if \
+                  it is closed)."
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 
-    /// Print the raw response JSON instead of a human-readable summary
+    /// Print JSON instead of a human-readable summary
     #[arg(long, global = true, help_heading = "Common options")]
     json: bool,
 
@@ -165,7 +256,7 @@ struct Cli {
     )]
     timeout: Option<u64>,
 
-    /// Use the development inbox directory (cli-inbox-dev)
+    /// Use the development build's inbox and data files (cli-inbox-dev, sessions-dev, …)
     #[arg(long, global = true, help_heading = "Common options")]
     dev: bool,
 
@@ -217,6 +308,26 @@ enum Command {
         #[arg(value_name = "ID")]
         id: String,
     },
+    /// List recent agent sessions, live and archived (reads the app's files; works while it is closed)
+    Sessions(SessionsArgs),
+    /// Print a session's conversation (id or unique prefix, see `ow sessions`)
+    Transcript(TranscriptArgs),
+    /// Add findings to the app's Pile (an inbox of prompts to launch later)
+    Pile {
+        #[command(subcommand)]
+        action: PileCommand,
+    },
+    /// List, add or remove the quick actions shown under the prompt input
+    #[command(name = "quick-action")]
+    QuickAction {
+        #[command(subcommand)]
+        action: ListCommand,
+    },
+    /// List, add or remove the prompt chips (toggles appended to a prompt on send)
+    Chip {
+        #[command(subcommand)]
+        action: ListCommand,
+    },
     /// Check whether OpenWhisperer is reachable
     Ping,
     /// Like `ping`, plus the resolved inbox directory, session id and bin directory
@@ -233,6 +344,117 @@ enum Command {
         #[arg(long = "skills-only")]
         skills_only: bool,
     },
+}
+
+#[derive(Args)]
+struct SessionsArgs {
+    /// Only sessions active since: 7d, 24h, today, yesterday, 2026-10-27, 2026-10-27T09:00
+    #[arg(long, value_name = "WHEN")]
+    since: Option<String>,
+
+    /// Registered repository name, or a substring of the repo path / working directory
+    #[arg(long, value_name = "NAME|PATH")]
+    repo: Option<String>,
+
+    /// Only sessions launched by a schedule
+    #[arg(long, conflicts_with = "interactive")]
+    scheduled: bool,
+
+    /// Only sessions not launched by a schedule
+    #[arg(long)]
+    interactive: bool,
+
+    /// Maximum number of sessions, most recently active first (0 = no limit)
+    #[arg(long, value_name = "N", default_value_t = 50)]
+    limit: usize,
+}
+
+#[derive(Args)]
+struct TranscriptArgs {
+    /// Session id or a unique prefix of it
+    #[arg(value_name = "ID")]
+    id: String,
+
+    /// Only the user's prompts
+    #[arg(long = "user-only", conflicts_with = "full")]
+    user_only: bool,
+
+    /// Also one line per tool call (tool name + what it acted on) and app notices
+    #[arg(long)]
+    full: bool,
+
+    /// Truncate each message to N characters (0 = no truncation)
+    #[arg(long = "max-chars", value_name = "N", default_value_t = 2000)]
+    max_chars: usize,
+}
+
+#[derive(Subcommand)]
+enum PileCommand {
+    /// Add a text item to the Pile, tagged with the invoking session
+    Add {
+        #[command(flatten)]
+        text: PromptArgs,
+
+        /// Short title (the app generates one when omitted)
+        #[arg(long, value_name = "TEXT")]
+        title: Option<String>,
+
+        /// Repository name or path (default: the repository of the current
+        /// directory; the app recommends one when neither resolves)
+        #[arg(long, value_name = "NAME|PATH")]
+        repo: Option<String>,
+
+        /// Model name or short alias for when the item is launched
+        #[arg(long, value_name = "NAME")]
+        model: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ListCommand {
+    /// Show the current entries
+    List,
+    /// Add an entry (an existing one, compared case-insensitively, is left as is)
+    Add {
+        #[arg(value_name = "TEXT")]
+        text: String,
+    },
+    /// Remove an entry (exact text, case-insensitive)
+    Remove {
+        #[arg(value_name = "TEXT")]
+        text: String,
+    },
+}
+
+#[derive(Copy, Clone)]
+enum ListKind {
+    QuickAction,
+    Chip,
+}
+
+impl ListKind {
+    /// Request kind, also the noun in messages.
+    fn request_kind(self) -> &'static str {
+        match self {
+            ListKind::QuickAction => "quick_action",
+            ListKind::Chip => "chip",
+        }
+    }
+
+    /// Key in config.json.
+    fn config_key(self) -> &'static str {
+        match self {
+            ListKind::QuickAction => "quick_actions",
+            ListKind::Chip => "prompt_chips",
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            ListKind::QuickAction => "quick action",
+            ListKind::Chip => "prompt chip",
+        }
+    }
 }
 
 /// Where the prompt text comes from: positional, file, or stdin (`-`).
@@ -426,7 +648,25 @@ enum Payload {
         #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
+    PileAdd {
+        text: String,
+        title: Option<String>,
+        target: Target,
+    },
+    /// `quick_action` / `chip` add|remove
+    ListEdit {
+        op: &'static str,
+        text: String,
+    },
     Empty {},
+}
+
+/// Requests the app applies on its next launch when it does not answer now
+/// (they change durable state and are safe to apply late). Everything else is
+/// cancelled on timeout, so a stale command can never fire later.
+fn is_durable(kind: &str) -> bool {
+    matches!(kind, "schedule" | "pile_add" | "quick_action" | "chip")
 }
 
 /// How a successful ack is printed.
@@ -608,12 +848,19 @@ fn send_rendered(
     let timeout = cli.timeout.unwrap_or(if kind == "run" { 120 } else { 10 });
     match inbox::poll_ack(&dir, &id, Duration::from_secs(timeout)) {
         Some(ack) => print_ack(cli, kind, &ack, render),
-        None if kind == "schedule" => {
-            // Durable: the app applies leftover schedule requests on launch.
-            println!(
-                "OpenWhisperer did not respond (is it running?). The schedule request was saved \
+        None if is_durable(kind) => {
+            // Durable: the app applies leftover requests of these kinds on launch.
+            let message = format!(
+                "OpenWhisperer did not respond (is it running?). The {kind} request was saved \
                  and will be applied when the app starts. Request id: {id}"
             );
+            if cli.json {
+                print_json(&serde_json::json!({
+                    "ok": true, "kind": kind, "id": id, "pending": true, "message": message,
+                }));
+            } else {
+                println!("{message}");
+            }
             exit(0);
         }
         None => {
@@ -681,6 +928,14 @@ fn print_ack(cli: &Cli, kind: &str, ack: &Value, render: &Render) -> ! {
         print_schedule_table(ack.get("schedules").and_then(Value::as_array));
     }
     exit(0);
+}
+
+/// Pretty JSON in the struct's field order (a `Value` would sort the keys).
+fn print_serialized<T: Serialize>(value: &T) {
+    match serde_json::to_string_pretty(value) {
+        Ok(text) => println!("{text}"),
+        Err(err) => fail(format!("could not serialize the output: {err}")),
+    }
 }
 
 fn print_json(value: &Value) {
@@ -816,6 +1071,54 @@ fn field(value: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("-")
         .to_string()
+}
+
+/// The app instance whose files the read-only commands use.
+fn app_data(cli: &Cli) -> appdata::AppData {
+    appdata::AppData::resolve(cli.dev).unwrap_or_else(|err| fail(err))
+}
+
+/// `ow quick-action …` / `ow chip …`: `list` reads the config file directly,
+/// `add` / `remove` go through the inbox so the app applies them through its
+/// normal settings save (writing config.json from here would be overwritten by
+/// the app's in-memory copy on its next save).
+fn edit_list(cli: &Cli, kind: ListKind, action: &ListCommand) -> ! {
+    let (op, text) = match action {
+        ListCommand::List => {
+            let data = app_data(cli);
+            let path = data.config_file();
+            let config: Value = appdata::read_json(&path)
+                .unwrap_or_else(|err| fail(err))
+                .unwrap_or_else(|| fail(format!("{} does not exist yet", path.display())));
+            let entries = config.get(kind.config_key()).cloned();
+            if cli.json {
+                print_json(&entries.unwrap_or(Value::Null));
+            } else {
+                match entries.as_ref().and_then(Value::as_array) {
+                    Some(list) if list.is_empty() => println!("No {}s.", kind.noun()),
+                    Some(list) => {
+                        for (index, entry) in list.iter().enumerate() {
+                            println!("{:>2}. {}", index + 1, entry.as_str().unwrap_or("?"));
+                        }
+                    }
+                    None => println!("No {}s saved yet (the app uses its built-in defaults).", kind.noun()),
+                }
+            }
+            exit(0)
+        }
+        ListCommand::Add { text } => ("add", text),
+        ListCommand::Remove { text } => ("remove", text),
+    };
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        usage_error(format!("the {} text is empty", kind.noun()));
+    }
+    send(
+        cli,
+        kind.request_kind(),
+        current_dir(),
+        Payload::ListEdit { op, text },
+    )
 }
 
 /// Extra `ow doctor` output. In `--json` mode it goes to stderr so stdout

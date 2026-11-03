@@ -253,6 +253,15 @@
                     >
                       Meeting
                     </span>
+                  {:else if item.source?.kind === 'cli'}
+                    <span
+                      class="text-[10px] px-1.5 py-px rounded bg-sky-500/15 text-sky-400 shrink-0"
+                      title="Added by an agent via ow pile add{item.source.session_name
+                        ? ` (session “${item.source.session_name}”)`
+                        : ''}"
+                    >
+                      Agent
+                    </span>
                   {/if}
                   {#if item.hasScreenshot}
                     <svg

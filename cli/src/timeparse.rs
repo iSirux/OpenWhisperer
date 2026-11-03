@@ -5,7 +5,7 @@
 //! grammar is unit-testable without touching the real clock. All wall-clock
 //! reasoning happens in the machine's local timezone.
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
 use serde_json::{json, Value};
 
 /// Default time of day used when a form carries a date but no time.
@@ -381,6 +381,55 @@ fn local_ms(now: DateTime<Local>, date: NaiveDate, hour: u32, minute: u32) -> Re
     ))
 }
 
+/// Parse a `--since` value to the epoch-millisecond start of the window: a
+/// look-back duration (`7d`, `24h`, `2w`, `90m`), `today` / `yesterday`
+/// (local midnight), a date (`YYYY-MM-DD`, local midnight), a local date-time
+/// (`YYYY-MM-DDTHH:MM[:SS]` or with a space), an RFC 3339 timestamp with an
+/// offset, or raw epoch milliseconds.
+pub fn parse_since(input: &str, now: DateTime<Local>) -> Result<i64, String> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return Err("empty --since value".to_string());
+    }
+    if raw.len() >= 10 && raw.bytes().all(|b| b.is_ascii_digit()) {
+        return parse_at(raw, now);
+    }
+    if !raw.bytes().all(|b| b.is_ascii_digit()) {
+        if let Ok(delta) = parse_duration_ms(raw) {
+            return Ok(now.timestamp_millis() - delta);
+        }
+    }
+    match raw.to_ascii_lowercase().as_str() {
+        "today" => return local_ms(now, now.date_naive(), 0, 0),
+        "yesterday" => {
+            let date = now
+                .date_naive()
+                .pred_opt()
+                .ok_or_else(|| "date out of range".to_string())?;
+            return local_ms(now, date, 0, 0);
+        }
+        _ => {}
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc3339(raw) {
+        return Ok(dt.timestamp_millis());
+    }
+    for format in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, format) {
+            let ms = local_ms(now, naive.date(), naive.hour(), naive.minute())?;
+            return Ok(ms + i64::from(naive.second()) * 1000);
+        }
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        return local_ms(now, date, 0, 0);
+    }
+    if raw.get(..10).and_then(|head| NaiveDate::parse_from_str(head, "%Y-%m-%d").ok()).is_some() {
+        return parse_at(raw, now);
+    }
+    Err(format!(
+        "could not understand --since '{raw}' (use e.g. 7d, 24h, today, yesterday, 2026-10-27, 2026-10-27T09:00)"
+    ))
+}
+
 /// Format an epoch-millisecond timestamp as local `YYYY-MM-DD HH:MM`.
 pub fn format_local(at_ms: i64) -> String {
     match Local.timestamp_millis_opt(at_ms).single() {
@@ -687,6 +736,31 @@ mod tests {
             max_runs: None,
         };
         assert!(build_recurring_when(&spec, now()).is_err());
+    }
+
+    #[test]
+    fn since_accepts_durations_days_and_dates() {
+        let n = now();
+        assert_eq!(parse_since("7d", n).unwrap(), n.timestamp_millis() - 7 * 86_400_000);
+        assert_eq!(parse_since("24h", n).unwrap(), n.timestamp_millis() - 86_400_000);
+        let today = parse_since("today", n).unwrap();
+        assert_eq!((ymd(today), hm(today)), ((2026, 9, 3), (0, 0)));
+        let yesterday = parse_since("yesterday", n).unwrap();
+        assert_eq!((ymd(yesterday), hm(yesterday)), ((2026, 9, 2), (0, 0)));
+        let date = parse_since("2026-08-27", n).unwrap();
+        assert_eq!((ymd(date), hm(date)), ((2026, 8, 27), (0, 0)));
+        let datetime = parse_since("2026-08-27T13:45", n).unwrap();
+        assert_eq!((ymd(datetime), hm(datetime)), ((2026, 8, 27), (13, 45)));
+        let seconds = parse_since("2026-08-27T13:45:30", n).unwrap();
+        assert_eq!(seconds - datetime, 30_000);
+        assert_eq!(
+            parse_since("2026-08-27T00:00:00Z", n).unwrap(),
+            chrono::Utc
+                .with_ymd_and_hms(2026, 8, 27, 0, 0, 0)
+                .unwrap()
+                .timestamp_millis()
+        );
+        assert!(parse_since("whenever", n).is_err());
     }
 
     #[test]

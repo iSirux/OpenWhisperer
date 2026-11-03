@@ -319,6 +319,29 @@
           </div>
         {/if}
       </div>
+    {:else if item.source?.kind === 'cli'}
+      <!-- Added by an agent via `ow pile add` -->
+      {@const source = item.source}
+      {@const fromSession = source.session_id
+        ? $sdkSessions.find((s) => s.id === source.session_id)
+        : undefined}
+      <div class="p-3 bg-surface-elevated rounded border border-border flex items-center gap-2 text-[11px]">
+        <span class="text-xs font-medium text-text-secondary">Added by an agent</span>
+        {#if fromSession}
+          <button
+            class="text-accent hover:underline truncate"
+            onclick={() => openSession(fromSession.id)}
+            title="Open the session that added this item"
+          >
+            {fromSession.aiMetadata?.name || source.session_name || 'session'}
+          </button>
+        {:else if source.session_name}
+          <span class="text-text-muted truncate">{source.session_name}</span>
+        {/if}
+        {#if source.branch}
+          <span class="text-text-muted truncate" title={source.cwd}>· {source.branch}</span>
+        {/if}
+      </div>
     {/if}
 
     <!-- Audio + waveform -->

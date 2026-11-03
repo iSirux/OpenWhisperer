@@ -1,4 +1,4 @@
-# `ow` CLI — agent-driven scheduling (2026-09)
+# `ow` CLI — agent-driven scheduling, session reading, Pile (2026-09, extended 2026-11)
 
 A small standalone CLI (`ow`, crate in `cli/`) that coding agents (Claude Code,
 Codex) call from inside a session to schedule prompts in OpenWhisperer: one-shot
@@ -52,8 +52,9 @@ prints it, deletes it. A run's ack is sent after worktree creation and session
 launch, which can take longer than the original 10-second timeout.
 
 If no ack arrives in time:
-- `schedule` → the request is **left in the inbox** (durable; applied on next
-  app launch). CLI prints a warning with the request id and exits 0.
+- `schedule`, `pile_add`, `quick_action`, `chip` (the **durable** kinds) → the
+  request is **left in the inbox** and applied on next app launch. CLI prints a
+  note with the request id and exits 0 (`--json`: `{ ok: true, pending: true, … }`).
 - `run` / `cancel` / `update` / `list` / `ping` → the CLI attempts to delete its request
   and checks once more for a racing ack. Successful deletion cancels an unclaimed
   request (exit 1). If deletion fails, the app may already be executing it:
@@ -63,7 +64,7 @@ If no ack arrives in time:
   same distinction as `status: "cancelled" | "unknown"`.
   The app only applies a request after successfully removing its file, so a
   cancellation that wins the deletion race prevents execution. The app also
-  refuses non-`schedule` requests older than 60 s before handling them; the
+  refuses non-durable requests older than 60 s before handling them; the
   longer run timeout allows an already-claimed launch to finish.
 - Acks older than 1 h are swept by the app on each poll.
 
@@ -74,7 +75,8 @@ If no ack arrives in time:
   "version": 1,
   "id": "<uuid v4>",
   "createdAt": 1756900000000,            // epoch ms
-  "kind": "schedule" | "run" | "cancel" | "update" | "list" | "ping",
+  "kind": "schedule" | "run" | "cancel" | "update" | "list" | "ping"
+        | "pile_add" | "quick_action" | "chip",
   "cwd": "F:/Repos/Foo-worktrees/feature-x",   // CLI's cwd, absolute, forward slashes
   "sessionId": "<OPENWHISPERER_SESSION_ID>" | null,
 
@@ -111,6 +113,15 @@ If no ack arrives in time:
 
   // update: "prompt" and/or "label" (above), at least one, replace the schedule's
   // own — id, timing, history and run count are kept
+
+  // pile_add: "text" (required), "title" | null, and "target" as above — only
+  // repo/repoPath/worktreePath/branch (repo detection) and model are read
+  "text": "…",
+  "title": "…" | null,
+
+  // quick_action + chip
+  "op": "add" | "remove",
+  "text": "…"
 }
 ```
 
@@ -124,6 +135,8 @@ If no ack arrives in time:
 { "ok": true, "kind": "update", "message": "Updated the prompt of schedule …", "schedule": { /* as in list */ } }
 { "ok": true, "kind": "cancel", "message": "Deleted schedule …" }
 { "ok": true, "kind": "ping", "message": "OpenWhisperer 1.32.0 (dev)", "sessionId": "…" | null }
+{ "ok": true, "kind": "pile_add", "message": "Added \"…\" to the Pile (Foo)", "itemId": "…", "repo": "Foo" | null }
+{ "ok": true, "kind": "quick_action" | "chip", "message": "Added quick action \"…\"", "changed": true | false, "entries": ["…"] }
 { "ok": false, "error": "…" }
 ```
 
@@ -152,6 +165,19 @@ If no ack arrives in time:
   `after_sessions` rail (`schedule: 'after_sessions'`) until the scope is idle.
   `run --same-session` → a message-target schedule at *now* (so it waits for the
   session to be idle instead of colliding with a running turn).
+- `pile_add` → `pile.addTextItem({ transcript: text, title, repoId, model, source })`
+  with `source = { kind: 'cli', session_id, session_name, cwd, branch }` (a
+  `PileItemSource` variant next to `meeting`; text items skip dictation cleanup,
+  missing title/repo/model are filled by the Pile's background LLM pass). Repo:
+  `--repo` (unknown → refused) else cwd detection as above; an unregistered cwd
+  leaves the repo open instead of refusing. `--model` goes through
+  `resolveModelAlias` like `run`. The Pile shows an "Agent" badge and, in the
+  detail view, a link to the invoking session.
+- `quick_action` / `chip` → `settings.save({ ...config, quick_actions | prompt_chips })`
+  (the normal save path, so the in-memory config and an open Settings page stay in
+  sync). Case-insensitive like Settings → General; adding an existing entry is an
+  `ok` no-op (`changed: false`); removing a missing one is refused (the error
+  lists the current entries); length caps 60 (quick action) / 40 (chip).
 - CLI grammar extras beyond the table below (implemented in `cli/src/timeparse.rs`):
   `--in` also takes `s`/`w` units; `--every` accepts `daily|weekly|monthly|weekday`
   aliases; `today HH:MM` never rolls over (the app rejects a past time).
@@ -178,6 +204,11 @@ ow schedule "<prompt>" --in <dur>                   # one-shot, relative
 ow schedule "<prompt>" --every <rule> [--time HH:MM] [--on …] [--interval N] [--until <when>] [--max-runs N]
 ow list [--json]        ow show <id>        ow cancel <id>        ow ping        ow install-skills        ow self-install
 ow update <id> ["<prompt>" | --prompt-file <path> | -] [--label <text>]   # in place: timing and history kept
+ow sessions [--since <when>] [--repo <name|path>] [--scheduled|--interactive] [--limit N]   # read-only
+ow transcript <id> [--user-only|--full] [--max-chars N]                                     # read-only
+ow pile add ["<text>" | --prompt-file <path> | -] [--title T] [--repo <name|path>] [--model <name>]
+ow quick-action list | add "<text>" | remove "<text>"
+ow chip list | add "<text>" | remove "<text>"
 ```
 
 Prompt: positional, or `--prompt-file <path>`, or `-` for stdin.
@@ -204,3 +235,60 @@ when it ends in `/.git`, else itself), `git rev-parse --abbrev-ref HEAD`
 
 Exit codes: 0 ok (incl. schedule left in inbox), 1 app error / cancelled before
 execution, 2 usage error, 3 timeout with unknown outcome (may already be running).
+
+## Reading sessions (`ow sessions`, `ow transcript`) — ow 0.4.0
+
+Read-only and local: no request/ack, the CLI reads the app's own files, so
+they work while the app is closed. Instance selection follows the inbox rule:
+`OPENWHISPERER_INBOX_DIR` set → its parent is the config dir and a
+`cli-inbox-dev` name means the dev build's files; otherwise
+`<config dir>/open-whisperer` with `--dev` choosing the `-dev` / `.dev` files.
+`ow quick-action list` / `ow chip list` read `config.json` / `config.dev.json` the
+same way (add/remove go through the inbox, see above).
+
+Sources:
+- live: `sessions[-dev]/index.json` (`entries[]`: id, name, model, cwd, status,
+  createdAt, lastActivityAt, totalCost) + `sessions[-dev]/data/<id>.json`
+- archived: `archive[-dev]/index.json` (`{ entries: [...] }`) +
+  `archive[-dev]/sessions/<id>.json`. Sequence executions (`sessionType:
+  "sequence"`) are skipped.
+- repo names: `config[.dev].json` `repos[]` — by the session's `repoId`, else by
+  path (exact → `<repo>-worktrees/<branch>` convention → longest containing repo).
+
+Cost model: `--since` (last activity; archived entries without `lastActivityAt`
+use `archivedAt`, re-checked after backfill) and `--repo` filter on the indexes
+first, rows are sorted by last activity, and session files are only opened for
+rows that will be printed — or examined, with `--scheduled` / `--interactive` —
+until `--limit` (default 50, 0 = all) is reached. Live index entries always need
+their file (effort, message counts, schedule and PR are not in the live index).
+Archive entries written since the fields below were added are complete from the
+index; older ones are backfilled from their file. Without `--since`, `--limit 0`
+can mean reading the whole archive (GBs).
+
+Archive index additions (`ArchiveEntry` in `src-tauri/src/archive.rs`, all
+optional with serde default so old indexes load; `userMessageCount` presence
+marks an entry that has them): `cwd`, `effortLevel`, `lastActivityAt`,
+`userMessageCount` (user prompts, queued ghost turns excluded), `scheduleId` /
+`scheduleLabel` (from `scheduleTag`), `prNumber` / `prState` (`open` | `draft` |
+`merged` | `closed`).
+
+`ow sessions --json` → `{ "sessions": [row…], "truncated": bool }`, row =
+`{ id, name, repo, repoPath, cwd, branch, model, provider, effort ("off" when
+none), status, archived, createdAt, lastActivityAt, archivedAt, userMessages,
+messages, schedule: { id, label } | null, pr: { number, state } | null, cost,
+prompt (first user prompt, ≤200 chars), detailsAvailable }`. Fields that come
+from the session file are `null` when it is missing (`detailsAvailable: false`).
+
+`ow transcript <id|prefix>` (the prefix must be unique across live + archive).
+Message `type`s in the files: `user`, `text`, `thinking`, `tool_start`,
+`tool_result`, `task_started`, `task_completed`, `subagent_start`,
+`subagent_stop`, `notification`, `error`, `stopped`, `done`; messages with
+`parentToolUseId` belong to a subagent. Output: default = `user` + main-agent
+`text` + `error` + `stopped` (as "interrupted"); `--user-only` = `user` only;
+`--full` adds main-agent `tool_start` as one line (tool + command / file /
+pattern / description, ≤160 chars) and `notification`s. Subagent internals,
+thinking and tool output are never printed. Text is cut to `--max-chars` (default
+2000, 0 = no cut) with a `… [+N chars]` marker; queued (not yet sent) user turns
+are flagged. `--json` → `{ session: row, messages: [{ role:
+user|assistant|tool|error|interrupted|notice, timestamp, text?, tool?, images?,
+queued? }] }`.

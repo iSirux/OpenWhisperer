@@ -1,6 +1,6 @@
 ---
 name: openwhisperer
-description: Schedule a prompt for later, make it recurring, or run it now as a new OpenWhisperer agent session in the current repo/worktree via the `ow` CLI. Use when the user says things like "schedule a follow-up", "do this tomorrow at 9", "tonight", "in 2 hours", "every morning / every weekday / every Monday", "check back later", "run this again next week", "remind me to…", or wants a recurring agent task.
+description: Schedule a prompt for later, make it recurring, or run it now as a new OpenWhisperer agent session in the current repo/worktree via the `ow` CLI. Use when the user says things like "schedule a follow-up", "do this tomorrow at 9", "tonight", "in 2 hours", "every morning / every weekday / every Monday", "check back later", "run this again next week", "remind me to…", or wants a recurring agent task. Also use to read recent OpenWhisperer sessions and their transcripts (workflow reviews, "what did the agents do this week"), to drop findings into the user's Pile for later, or to add/remove quick actions and prompt chips.
 ---
 
 # OpenWhisperer scheduling (`ow`)
@@ -75,6 +75,24 @@ User: "Start a separate session now to update the docs for what we just did."
 ```
 ow run "Update docs/ for the new export feature implemented on branch export-v2 (see the diff against main). Keep the existing doc style."
 ```
+
+## Reviewing sessions and leaving findings
+
+For workflow reviews ("how did the agents do this week?"), read the user's sessions and leave findings where the user will act on them:
+
+```
+ow sessions --since 7d [--repo <name>] [--scheduled | --interactive] [--limit N] [--json]
+ow transcript <session-id-or-prefix> [--user-only | --full] [--max-chars N] [--json]
+ow pile add "<finding + suggested next step>" [--title "<short title>"] [--repo <name>] [--model <name>]
+ow quick-action list | add "<text>" | remove "<text>"
+ow chip list | add "<text>" | remove "<text>"
+```
+
+- `ow sessions` lists live and archived sessions, most recently active first: id, repo, model, effort, user/total message counts, cost, status, the schedule that launched it, its PR. `--since` takes `7d`, `24h`, `today`, `yesterday` or a date. These read the app's files and work even while the app is closed.
+- `ow transcript` prints a session: by default the user's prompts and the agent's replies (each cut to 2000 chars; `--max-chars 0` = everything). `--user-only` shows just what the user asked, which is the quickest way to spot repeated corrections. `--full` adds one line per tool call.
+- `ow pile add` puts a text item in the user's Pile, an inbox they launch sessions from later. Write it as a self-contained prompt a future agent can act on. Use it for anything the user should decide on; don't launch work yourself.
+- Quick actions are one-click prompts under the input box (max 60 chars). Prompt chips are toggles appended to a prompt (max 40 chars). Adding one that already exists does nothing. Only change these when the user asked you to, or when a review explicitly covers them. Run `list` first.
+- If the app is closed, `pile add` and quick-action/chip edits are saved and applied on its next launch.
 
 ## Gotchas
 

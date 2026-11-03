@@ -17,6 +17,17 @@ export interface ArchiveEntry {
   durationMs: number;
   totalCost?: number;
   messageCount: number;
+  // Added for the `ow sessions` CLI; absent on entries archived before.
+  cwd?: string;
+  effortLevel?: string;
+  lastActivityAt?: number;
+  /** User prompts sent (queued ghost turns excluded); its presence marks an entry with these fields */
+  userMessageCount?: number;
+  /** Native schedule that launched the session (from `scheduleTag`) */
+  scheduleId?: string;
+  scheduleLabel?: string;
+  prNumber?: number;
+  prState?: 'open' | 'draft' | 'merged' | 'closed';
 }
 
 export interface ArchiveSearchResult {

@@ -38,7 +38,7 @@ export type PileItemStatus = 'transcribing' | 'processing' | 'ready' | 'error';
  * contract. `t0`/`t1` are seconds from meeting start; `seg_id` names the
  * segment clip playable via `meeting_read_segment_audio`.
  */
-export interface PileItemSource {
+export interface MeetingPileItemSource {
   kind: 'meeting';
   meeting_id: string;
   item_id: string;
@@ -50,6 +50,22 @@ export interface PileItemSource {
   /** Set when the item was promoted from a journal item */
   journal_item_id?: string;
 }
+
+/**
+ * An item an agent added with `ow pile add` (e.g. a workflow-review finding).
+ * `session_id` / `session_name` name the OpenWhisperer session it ran in, when it
+ * ran inside one; `cwd` / `branch` are where the CLI was invoked.
+ */
+export interface CliPileItemSource {
+  kind: 'cli';
+  session_id?: string;
+  session_name?: string;
+  cwd?: string;
+  branch?: string;
+}
+
+/** Where a text item came from. Absent for recordings. */
+export type PileItemSource = MeetingPileItemSource | CliPileItemSource;
 
 export interface PileItem {
   id: string;
@@ -89,7 +105,7 @@ export interface PileItem {
   /** Debug-recordings log entry for the originating recording, so re-transcription
    *  and the LLM pipeline attach their stages to the log (no-op if evicted). */
   debugRecordingId?: string;
-  /** Origin of a text item (e.g. a meeting triage item). Absent for recordings. */
+  /** Origin of a text item (a meeting triage item, or `ow pile add`). Absent for recordings. */
   source?: PileItemSource;
 }
 

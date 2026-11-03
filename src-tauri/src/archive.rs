@@ -41,6 +41,34 @@ pub struct ArchiveEntry {
     pub total_cost: Option<f64>,
     /// Number of messages in the session
     pub message_count: u32,
+    // -- Fields below were added for the `ow sessions` CLI so it can list archived
+    // sessions from the index alone. Entries archived before they existed lack them
+    // (the CLI falls back to the session file); `user_message_count` marks an entry
+    // that has them, since `None` is also a real value for the others.
+    /// Working directory the session ran in (the worktree for worktree sessions)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Effort level (`None` = off)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_level: Option<String>,
+    /// Last activity (ms epoch)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<u64>,
+    /// Number of user prompts sent (queued ghost turns excluded)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_message_count: Option<u32>,
+    /// Native schedule that launched the session (`scheduleTag.id`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<String>,
+    /// Label of that schedule at launch time (`scheduleTag.label`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_label: Option<String>,
+    /// PR detected for the session's branch (`pr.number`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u64>,
+    /// "open" | "draft" | "merged" | "closed"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_state: Option<String>,
 }
 
 /// The archive index file containing all entry metadata
@@ -458,6 +486,25 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession, repos: &[RepoConf
         .map(|c| truncate_chars(c, 200));
 
     let message_count = session.messages.len() as u32;
+    let user_message_count = session
+        .messages
+        .iter()
+        .filter(|m| m.msg_type == "user" && m.queued.is_none())
+        .count() as u32;
+    let tag_field = |key: &str| {
+        session
+            .schedule_tag
+            .as_ref()
+            .and_then(|tag| tag.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    let pr = session.pr.as_ref();
+    let pr_state = pr.and_then(|pr| {
+        let draft = pr.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
+        let state = pr.get("state").and_then(|v| v.as_str())?;
+        Some(if draft && state == "open" { "draft" } else { state }.to_string())
+    });
 
     ArchiveEntry {
         id: session.id.clone(),
@@ -482,6 +529,14 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession, repos: &[RepoConf
         duration_ms: session.accumulated_duration_ms,
         total_cost: session.usage.as_ref().map(|u| u.total_cost_usd),
         message_count,
+        cwd: Some(session.cwd.clone()).filter(|c| !c.is_empty()),
+        effort_level: session.effort_level.clone(),
+        last_activity_at: session.last_activity_at,
+        user_message_count: Some(user_message_count),
+        schedule_id: tag_field("id"),
+        schedule_label: tag_field("label"),
+        pr_number: pr.and_then(|pr| pr.get("number")).and_then(|v| v.as_u64()),
+        pr_state,
     }
 }
 
@@ -496,6 +551,48 @@ mod tests {
             "name": "test",
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn archive_entry_carries_schedule_pr_and_user_count() {
+        let session: PersistedSdkSession = serde_json::from_value(serde_json::json!({
+            "id": "s1",
+            "cwd": r"F:\Repos\Foo-worktrees\feature-x",
+            "model": "claude-opus-5-5",
+            "effortLevel": "high",
+            "status": "idle",
+            "createdAt": 1,
+            "lastActivityAt": 5,
+            "messages": [
+                { "type": "user", "content": "do it", "timestamp": 1 },
+                { "type": "text", "content": "done", "timestamp": 2 },
+                { "type": "user", "content": "more", "timestamp": 3 },
+                { "type": "user", "content": "later", "queued": "session_idle", "timestamp": 4 },
+            ],
+            "scheduleTag": { "id": "sch-1", "label": "Weekly review" },
+            "pr": { "number": 42, "state": "open", "isDraft": true, "title": "t", "url": "u" },
+        }))
+        .unwrap();
+
+        let entry = sdk_session_to_archive_entry(&session, &[]);
+        assert_eq!(entry.message_count, 4);
+        assert_eq!(entry.user_message_count, Some(2));
+        assert_eq!(entry.schedule_id.as_deref(), Some("sch-1"));
+        assert_eq!(entry.schedule_label.as_deref(), Some("Weekly review"));
+        assert_eq!(entry.pr_number, Some(42));
+        assert_eq!(entry.pr_state.as_deref(), Some("draft"));
+        assert_eq!(entry.effort_level.as_deref(), Some("high"));
+        assert_eq!(entry.last_activity_at, Some(5));
+        assert_eq!(entry.cwd.as_deref(), Some(r"F:\Repos\Foo-worktrees\feature-x"));
+
+        // Old index entries (no new fields) still load.
+        let old: ArchiveEntry = serde_json::from_value(serde_json::json!({
+            "id": "x", "sessionType": "sdk", "name": null, "summary": null, "category": null,
+            "prompt": null, "model": null, "repoPath": null, "status": "idle",
+            "createdAt": 1, "archivedAt": 2, "durationMs": 0, "totalCost": null, "messageCount": 0
+        }))
+        .unwrap();
+        assert!(old.user_message_count.is_none() && old.schedule_id.is_none());
     }
 
     #[test]

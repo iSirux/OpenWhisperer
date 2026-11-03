@@ -1,7 +1,9 @@
 /**
  * `ow` CLI inbox — applies requests written by the `ow` CLI (run by an agent
  * inside its session, or by the user in a terminal): create a schedule, launch a
- * session now, list/update/cancel schedules, ping.
+ * session now, list/update/cancel schedules, add a Pile item, add/remove a quick
+ * action or prompt chip, ping. (`ow sessions` / `ow transcript` and the
+ * quick-action/chip `list` read the app's files directly and never get here.)
  *
  * Protocol and rationale: docs/cli-scheduling-spec.md. The backend only moves
  * files (`take_cli_requests` / `write_cli_ack`); everything that needs app state
@@ -17,6 +19,7 @@ import { dev } from '$app/environment';
 import { repos, findRepoById, type RepoConfig } from './repos';
 import { sdkSessions, normalizeScopePath, type EffortLevel, type SdkSession } from './sdkSessions';
 import { settings } from './settings';
+import { pile } from './pile';
 import {
   schedules,
   describeScheduleSpec,
@@ -35,8 +38,13 @@ import {
 } from '$lib/utils/models';
 
 const POLL_MS = 2000;
-/** Non-`schedule` requests older than this are refused: a stale `run` must never fire later. */
+/** Non-durable requests older than this are refused: a stale `run` must never fire later. */
 const STALE_MS = 60_000;
+/**
+ * Requests that change durable state and are safe to apply late: the CLI leaves
+ * them in the inbox when the app does not answer, and they apply on next launch.
+ */
+const DURABLE_KINDS: ReadonlySet<string> = new Set(['schedule', 'pile_add', 'quick_action', 'chip']);
 
 type Provider = 'claude' | 'openai';
 type CliEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -63,7 +71,16 @@ interface CliRequest {
   version: number;
   id: string;
   createdAt: number;
-  kind: 'schedule' | 'run' | 'cancel' | 'update' | 'list' | 'ping';
+  kind:
+    | 'schedule'
+    | 'run'
+    | 'cancel'
+    | 'update'
+    | 'list'
+    | 'ping'
+    | 'pile_add'
+    | 'quick_action'
+    | 'chip';
   cwd: string;
   sessionId: string | null;
   prompt?: string;
@@ -73,6 +90,12 @@ interface CliRequest {
   waitForIdle?: boolean;
   catchUp?: 'skip' | 'run_once';
   scheduleId?: string;
+  /** pile_add: the item text; quick_action / chip: the entry */
+  text?: string;
+  /** pile_add */
+  title?: string | null;
+  /** quick_action / chip */
+  op?: 'add' | 'remove';
 }
 
 type CliAck =
@@ -484,6 +507,121 @@ function handleList(): CliAck {
   };
 }
 
+function firstLine(text: string, max = 60): string {
+  const line = text.split(/\r?\n/).find((l) => l.trim())?.trim() ?? '';
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/**
+ * `ow pile add`: a text item in the Pile (no dictation cleanup — the text is
+ * agent-written), tagged with the invoking session. The repo comes from `--repo`
+ * (unknown name → refused) or the CLI's cwd; an unregistered cwd just leaves the
+ * repo open for the Pile's usual LLM recommendation.
+ */
+function handlePileAdd(req: CliRequest): CliAck {
+  if (!pile.isLoaded()) throw new CliError('The Pile has not loaded yet; retry in a moment');
+  const text = typeof req.text === 'string' ? req.text.trim() : '';
+  if (!text) throw new CliError('The text is empty');
+  const target = requireTarget(req);
+
+  let repo: RepoConfig | undefined;
+  if (target.repo?.trim()) {
+    repo = resolveRepo(target, req.cwd);
+  } else {
+    try {
+      repo = resolveRepo(target, req.cwd);
+    } catch (error) {
+      if (!(error instanceof CliError)) throw error;
+    }
+  }
+
+  const requestedModel = target.model?.trim();
+  const model = requestedModel ? resolveModelName(requestedModel) : undefined;
+  const invoking = findSession(req.sessionId);
+  const title = req.title?.trim() || undefined;
+
+  const itemId = pile.addTextItem({
+    transcript: text,
+    title,
+    repoId: repo?.id,
+    model,
+    source: {
+      kind: 'cli',
+      ...(req.sessionId ? { session_id: req.sessionId } : {}),
+      ...(invoking ? { session_name: sessionName(invoking) } : {}),
+      ...(req.cwd ? { cwd: req.cwd } : {}),
+      ...(target.branch ? { branch: target.branch } : {}),
+    },
+  });
+
+  return {
+    ok: true,
+    kind: 'pile_add',
+    message: `Added "${title ?? firstLine(text)}" to the Pile${
+      repo ? ` (${repo.name})` : ' (no registered repository matched; the app will recommend one)'
+    }`,
+    itemId,
+    repo: repo?.name ?? null,
+  };
+}
+
+const LIST_EDITS = {
+  quick_action: { key: 'quick_actions', noun: 'quick action', max: 60 },
+  chip: { key: 'prompt_chips', noun: 'prompt chip', max: 40 },
+} as const;
+
+/**
+ * `ow quick-action add|remove` / `ow chip add|remove`, applied through the
+ * settings store's normal save so the in-memory config (and an open Settings
+ * page) stays in sync. Entries compare case-insensitively, like Settings →
+ * General; adding an existing entry is acknowledged as a no-op.
+ */
+async function handleListEdit(req: CliRequest, kind: 'quick_action' | 'chip'): Promise<CliAck> {
+  const spec = LIST_EDITS[kind];
+  const text = typeof req.text === 'string' ? req.text.trim() : '';
+  if (!text) throw new CliError(`The ${spec.noun} text is empty`);
+  if (req.op !== 'add' && req.op !== 'remove') {
+    throw new CliError(`Unknown operation "${String(req.op)}" (use add|remove)`);
+  }
+
+  const current: string[] = get(settings)[spec.key] ?? [];
+  const lower = text.toLowerCase();
+  const exists = current.some((entry) => entry.toLowerCase() === lower);
+
+  let next: string[];
+  if (req.op === 'add') {
+    if (exists) {
+      return {
+        ok: true,
+        kind,
+        message: `The ${spec.noun} "${text}" already exists; nothing changed`,
+        changed: false,
+        entries: current,
+      };
+    }
+    if (text.length > spec.max) {
+      throw new CliError(`A ${spec.noun} must be ${spec.max} characters or fewer (this one is ${text.length})`);
+    }
+    next = [...current, text];
+  } else {
+    if (!exists) {
+      throw new CliError(
+        `No ${spec.noun} "${text}". Current: ${current.map((entry) => `"${entry}"`).join(', ') || '(none)'}`
+      );
+    }
+    next = current.filter((entry) => entry.toLowerCase() !== lower);
+  }
+
+  await settings.save({ ...get(settings), [spec.key]: next });
+  return {
+    ok: true,
+    kind,
+    message: `${req.op === 'add' ? 'Added' : 'Removed'} ${spec.noun} "${text}"`,
+    changed: true,
+    entries: next,
+  };
+}
+
 async function handlePing(req: CliRequest): Promise<CliAck> {
   const version = await getVersion().catch(() => 'unknown');
   const invoking = findSession(req.sessionId);
@@ -499,7 +637,7 @@ async function handle(req: CliRequest): Promise<CliAck> {
   if (req.version !== 1) {
     throw new CliError(`Unsupported request version ${req.version} — update the ow CLI or the app`);
   }
-  if (req.kind !== 'schedule' && Date.now() - (req.createdAt ?? 0) > STALE_MS) {
+  if (!DURABLE_KINDS.has(req.kind) && Date.now() - (req.createdAt ?? 0) > STALE_MS) {
     throw new CliError('Request expired before the app could handle it (was the app closed?)');
   }
   switch (req.kind) {
@@ -515,6 +653,11 @@ async function handle(req: CliRequest): Promise<CliAck> {
       return handleList();
     case 'ping':
       return handlePing(req);
+    case 'pile_add':
+      return handlePileAdd(req);
+    case 'quick_action':
+    case 'chip':
+      return handleListEdit(req, req.kind);
     default:
       throw new CliError(`Unknown request kind "${String(req.kind)}"`);
   }
@@ -567,9 +710,9 @@ let currentTeardown: (() => void) | null = null;
 
 /**
  * Start polling the inbox. Idempotent. Call once from `(main)/+layout.svelte`
- * after `schedules.load()` — a schedule request needs the store to be loaded, or
- * the resulting persist would be refused (and a `schedule` request left in the
- * inbox is applied on the next launch anyway).
+ * after `schedules.load()` (and the settings + Pile loads before it) — a schedule
+ * request needs the store to be loaded, or the resulting persist would be refused
+ * (and a durable request left in the inbox is applied on the next launch anyway).
  */
 export function startCliInbox(): () => void {
   if (started && currentTeardown) return currentTeardown;
