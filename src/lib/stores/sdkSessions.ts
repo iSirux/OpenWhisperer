@@ -14,6 +14,7 @@ import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screens
 import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
 import { USAGE_LIMIT_CONTINUATION, MAX_USAGE_LIMIT_RETRIES } from '$lib/utils/usageLimitRecovery';
+import { replayCumulativeUsage, stepCumulativeUsage } from '$lib/utils/usageCost';
 import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
 import { defaultAccountIdForRepo, isDefaultAccountId } from '$lib/utils/accounts';
 import {
@@ -242,6 +243,11 @@ export interface SdkUsage {
   cacheCreationTokens: number;
   // True when inputTokens already includes cached tokens (OpenAI/Codex usage semantics).
   inputTokensIncludeCache?: boolean;
+  /**
+   * RAW running total of the Claude CLI process (not this turn's cost) — likewise
+   * `durationApiMs`. Never sum these across records; `utils/usageCost.ts` turns them
+   * into per-turn deltas. Tokens, `durationMs` and `numTurns` are per turn.
+   */
   totalCostUsd: number;
   durationMs: number;
   durationApiMs: number;
@@ -1081,14 +1087,18 @@ function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: S
   const contextWindow = resolveContextWindow(reportedWindow, model, prev.contextWindow);
   const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
+  // totalCostUsd / durationApiMs are running totals of the CLI process, not per-turn
+  // values — sum only this turn's share. queryUsage keeps the raw values (see usageCost.ts).
+  const { costDelta, apiDelta } = stepCumulativeUsage(replayCumulativeUsage(prev.queryUsage), queryUsage);
+
   return {
     totalInputTokens: prev.totalInputTokens + queryUsage.inputTokens,
     totalOutputTokens: prev.totalOutputTokens + queryUsage.outputTokens,
     totalCacheReadTokens: prev.totalCacheReadTokens + queryUsage.cacheReadTokens,
     totalCacheCreationTokens: prev.totalCacheCreationTokens + queryUsage.cacheCreationTokens,
-    totalCostUsd: prev.totalCostUsd + queryUsage.totalCostUsd,
+    totalCostUsd: prev.totalCostUsd + costDelta,
     totalDurationMs: prev.totalDurationMs + queryUsage.durationMs,
-    totalDurationApiMs: prev.totalDurationApiMs + queryUsage.durationApiMs,
+    totalDurationApiMs: prev.totalDurationApiMs + Math.round(apiDelta),
     totalTurns: prev.totalTurns + queryUsage.numTurns,
     contextWindow,
     contextUsagePercent,
@@ -2174,16 +2184,23 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<SdkUsage>(`sdk-usage-${id}`, (e) => {
         const queryUsage = e.payload;
-        usageStats.trackTokenUsage(
-          queryUsage.inputTokens,
-          queryUsage.outputTokens,
-          queryUsage.cacheReadTokens,
-          queryUsage.cacheCreationTokens,
-          queryUsage.totalCostUsd
-        );
-
+        // The payload's totalCostUsd is the CLI's running total, so global stats get
+        // only this turn's share, read off the session's corrected total inside the
+        // update (queued updaters run once, in event order, so back-to-back results
+        // diff correctly).
         queueUpdate(sessions =>
-          sessions.map(s => s.id === id ? { ...s, usage: processQueryUsage(s.usage, queryUsage, s.model) } : s)
+          sessions.map(s => {
+            if (s.id !== id) return s;
+            const usage = processQueryUsage(s.usage, queryUsage, s.model);
+            usageStats.trackTokenUsage(
+              queryUsage.inputTokens,
+              queryUsage.outputTokens,
+              queryUsage.cacheReadTokens,
+              queryUsage.cacheCreationTokens,
+              Math.max(0, usage.totalCostUsd - (s.usage?.totalCostUsd ?? 0))
+            );
+            return { ...s, usage };
+          })
         );
       })
     );

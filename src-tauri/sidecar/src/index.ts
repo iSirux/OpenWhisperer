@@ -546,6 +546,16 @@ interface Session {
   // iterator outlives every turn in streaming input mode, so it can't tell an
   // idle session from a working one — list_live_sessions reports this instead.
   claudeTurnActive?: boolean;
+  // Last cumulative `tokenUsage.total` seen from Codex app-server for this
+  // session's thread (see thread/tokenUsage/updated), so each update can be
+  // turned into the per-call delta the frontend sums.
+  codexTokenTotals?: {
+    threadId?: string;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheCreation: number;
+  };
 }
 
 interface QueuedPrompt {
@@ -1822,26 +1832,70 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
           asNumber(total?.cache_creation_input_tokens) ||
           asNumber(total?.cacheCreationTokens);
 
-        // For App Server, tokenUsage.total reflects current thread context and should
-        // drive final context usage after each turn. tokenUsage.last is per-turn and
-        // used only for live/progressive updates.
-        const finalInput = total ? totalInput : lastInput;
-        const finalOutput = total ? totalOutput : lastOutput;
-        const finalCacheRead = total ? totalCacheRead : lastCached;
-        const finalCacheCreation = total ? totalCacheCreation : lastCacheCreation;
+        // tokenUsage.total is the thread's CUMULATIVE usage (it only grows across
+        // the thread's model calls); tokenUsage.last is the latest model call. The
+        // frontend sums every usage record, so emit the growth of `total` since the
+        // previous update — a repeated update then adds nothing. With no earlier
+        // total for this thread (first update, or the sidecar session was recreated
+        // on a resumed thread whose total already holds earlier spend) or a total
+        // that shrank, fall back to `last`. The context bar reads the main-agent
+        // fields: the latest call's prompt + output is the thread's context.
+        const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+        const prevTotals = session.codexTokenTotals;
+        let deltaInput = lastInput;
+        let deltaOutput = lastOutput;
+        let deltaCacheRead = lastCached;
+        let deltaCacheCreation = lastCacheCreation;
+        if (total) {
+          const grew =
+            prevTotals !== undefined &&
+            prevTotals.threadId === threadId &&
+            totalInput >= prevTotals.input &&
+            totalOutput >= prevTotals.output &&
+            totalCacheRead >= prevTotals.cacheRead &&
+            totalCacheCreation >= prevTotals.cacheCreation;
+          if (grew) {
+            deltaInput = totalInput - prevTotals.input;
+            deltaOutput = totalOutput - prevTotals.output;
+            deltaCacheRead = totalCacheRead - prevTotals.cacheRead;
+            deltaCacheCreation = totalCacheCreation - prevTotals.cacheCreation;
+          } else if (!last) {
+            deltaInput = totalInput;
+            deltaOutput = totalOutput;
+            deltaCacheRead = totalCacheRead;
+            deltaCacheCreation = totalCacheCreation;
+          }
+          session.codexTokenTotals = {
+            threadId,
+            input: totalInput,
+            output: totalOutput,
+            cacheRead: totalCacheRead,
+            cacheCreation: totalCacheCreation,
+          };
+        }
 
-        sendUsage(id, {
-          inputTokens: finalInput,
-          outputTokens: finalOutput,
-          cacheReadTokens: finalCacheRead,
-          cacheCreationTokens: finalCacheCreation,
-          inputTokensIncludeCache: true,
-          totalCostUsd: 0,
-          durationMs: 0,
-          durationApiMs: 0,
-          numTurns: 1,
-          contextWindow,
-        });
+        if (deltaInput > 0 || deltaOutput > 0 || deltaCacheRead > 0 || deltaCacheCreation > 0) {
+          sendUsage(id, {
+            inputTokens: deltaInput,
+            outputTokens: deltaOutput,
+            cacheReadTokens: deltaCacheRead,
+            cacheCreationTokens: deltaCacheCreation,
+            inputTokensIncludeCache: true,
+            totalCostUsd: 0,
+            durationMs: 0,
+            durationApiMs: 0,
+            numTurns: 1,
+            contextWindow,
+            ...(last
+              ? {
+                  mainAgentInputTokens: lastInput,
+                  mainAgentOutputTokens: lastOutput,
+                  mainAgentCacheReadTokens: lastCached,
+                  mainAgentCacheCreationTokens: lastCacheCreation,
+                }
+              : {}),
+          });
+        }
 
         if (last) {
           sendProgressiveUsage(id, {
@@ -5381,6 +5435,13 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         modelUsageValues.length > 0 ? (modelUsageValues[0].contextWindow ?? 0) : 0;
       const contextWindow = Math.max(reportedContextWindow, inferredContextWindow);
 
+      // total_cost_usd and duration_api_ms are RUNNING TOTALS of the CLI process
+      // (continued from the transcript's saved total on resume); usage tokens,
+      // duration_ms and num_turns are per turn. They're forwarded raw on purpose:
+      // only the persisted session knows the previous total across a sidecar or
+      // app restart, so the frontend derives the per-turn share
+      // (src/lib/utils/usageCost.ts), and the sequence engine's single-prompt
+      // runs read the last total as the run's cost.
       sendUsage(id, {
         inputTokens: resultMsg.usage?.input_tokens || 0,
         outputTokens: resultMsg.usage?.output_tokens || 0,

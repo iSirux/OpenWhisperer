@@ -3,6 +3,7 @@ import { get } from 'svelte/store';
 import { settings } from './settings';
 import { sdkSessions, activeSdkSessionId, newParkedTurnId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo, type AskUserQuestionState, type RateLimitedState } from './sdkSessions';
 import { getProviderForModel, type SdkProvider } from '$lib/utils/models';
+import { correctedCumulativeTotals } from '$lib/utils/usageCost';
 import { repos } from './repos';
 import { panes } from './panes';
 
@@ -531,6 +532,20 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
     };
   } else {
     session.askUserQuestion = undefined;
+  }
+
+  // Sessions recorded before the running-total fix summed the CLI's running
+  // totalCostUsd / durationApiMs every turn (costs inflated many times over). The
+  // per-result records are raw for every session, old or new, so rebuild both totals
+  // from them — idempotent, nothing is rewritten unless the session is saved again.
+  if (session.usage && Array.isArray(session.usage.queryUsage) && session.usage.queryUsage.length > 0) {
+    const corrected = correctedCumulativeTotals(session.usage.queryUsage);
+    if (
+      corrected.totalCostUsd !== session.usage.totalCostUsd ||
+      corrected.totalDurationApiMs !== session.usage.totalDurationApiMs
+    ) {
+      session.usage = { ...session.usage, ...corrected };
+    }
   }
 
   // Migrate old sessions without lastActivityAt
