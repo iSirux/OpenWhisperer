@@ -14,7 +14,7 @@ import {
   BOOTSTRAP_OPENAI_MODELS,
   type ListedModel,
 } from "$lib/utils/modelLists.svelte";
-import type { SdkProvider } from "$lib/utils/models";
+import { getModelsForProvider, type SdkProvider } from "$lib/utils/models";
 
 const CACHE_VERSION = 1;
 /** Refetch after this long, or whenever the app version (and so the bundled SDKs) changes. */
@@ -168,6 +168,25 @@ function compareVersions(a: number[], b: number[]): number {
     if (d !== 0) return d;
   }
   return 0;
+}
+
+/**
+ * The newest-version model the provider currently offers (`claude-opus-5-5`
+ * beats `claude-fable-5-1` and `claude-haiku-4-5`; `gpt-6-*` beats `gpt-5.6-*`),
+ * preferring the user's enabled models. Ties keep the provider's listing order,
+ * which puts the most capable model of a generation first.
+ */
+export function newestModelId(provider: SdkProvider, enabledIds: string[] = []): string | null {
+  const current = getModelsForProvider(provider).filter((m) => !m.legacy && !m.isAuto);
+  const enabled = current.filter((m) => enabledIds.includes(m.id));
+  let best: { id: string; version: number[] } | null = null;
+  for (const m of enabled.length > 0 ? enabled : current) {
+    const fv = modelFamilyVersion(provider, m.id);
+    if (fv && (!best || compareVersions(fv.version, best.version) > 0)) {
+      best = { id: m.id, version: fv.version };
+    }
+  }
+  return best?.id ?? null;
 }
 
 /**

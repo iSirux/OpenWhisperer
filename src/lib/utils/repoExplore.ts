@@ -3,7 +3,9 @@ import { get } from 'svelte/store';
 import { activeSdkSessionId, sdkSessions } from '$lib/stores/sdkSessions';
 import { repos, type RepoConfig } from '$lib/stores/repos';
 import type { LaunchCommand, LaunchProfile } from '$lib/types/launch';
-import { DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
+import { settings } from '$lib/stores/settings';
+import { newestModelId } from '$lib/stores/modelCatalog';
+import { DEFAULT_MODEL_ID, DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
 import { REPO_ICON_NAMES } from '$lib/utils/repoIcons';
 import { loadRepoIconImage } from '$lib/utils/repoIconImage';
 
@@ -43,8 +45,6 @@ interface RepoExploreResult {
   commands: RepoExploreCommand[];
   profiles: RepoExploreProfile[];
 }
-
-const EXPLORE_MODEL_CLAUDE = 'claude-haiku-4-5-20251001';
 
 function buildExplorePrompt(repoName: string, repoPath: string): string {
   return `You are analyzing a software repository to generate metadata for it. Explore the codebase, then output a JSON result.
@@ -237,7 +237,14 @@ export async function startRepoExploreSession(
   const repoId = repo.id;
   if (!repoId) throw new Error('Repository has no id');
 
-  const model = provider === 'openai' ? DEFAULT_OPENAI_MODEL_ID : EXPLORE_MODEL_CLAUDE;
+  // Always the newest model the provider offers (live catalog), so exploration
+  // picks up new releases without a code change.
+  const config = get(settings);
+  const enabledIds =
+    (provider === 'openai' ? config.enabled_openai_models : config.enabled_models) ?? [];
+  const model =
+    newestModelId(provider, enabledIds) ??
+    (provider === 'openai' ? DEFAULT_OPENAI_MODEL_ID : DEFAULT_MODEL_ID);
   const sessionId = await sdkSessions.createSession(repo.path, model, 'low', undefined, provider);
   sdkSessions.setSessionName(sessionId, `Explore ${repo.name}`);
 
