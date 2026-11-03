@@ -54,8 +54,23 @@ fn pcm_i16_le(samples: &[i16]) -> Vec<u8> {
     bytes
 }
 
+/// Prefix on every error meaning the realtime connection is gone for good (socket
+/// error, server close, stream end, failed send). Callers use
+/// [`is_connection_lost`] to stop using the session instead of retrying forever —
+/// a dead socket once got ~4 sends/s for an hour, each failing the same way.
+pub const CONNECTION_LOST_PREFIX: &str = "Realtime connection lost: ";
+
+pub fn connection_lost(detail: impl std::fmt::Display) -> String {
+    format!("{}{}", CONNECTION_LOST_PREFIX, detail)
+}
+
+pub fn is_connection_lost(err: &str) -> bool {
+    err.starts_with(CONNECTION_LOST_PREFIX)
+}
+
 /// Non-blocking receive: wait up to 10ms for the next text frame and hand it to
-/// `parse`. Non-text frames, timeouts and stream-end all map to `Ok(None)`.
+/// `parse`. Non-text frames and timeouts map to `Ok(None)`; a socket error, a
+/// server close frame or the end of the stream is a [`connection_lost`] error.
 async fn ws_try_recv<F>(
     socket: &mut WsStream,
     mut parse: F,
@@ -65,10 +80,12 @@ where
 {
     match timeout(Duration::from_millis(10), socket.next()).await {
         Ok(Some(Ok(Message::Text(text)))) => parse(&text),
-        Ok(Some(Ok(Message::Close(_)))) => Ok(None),
+        Ok(Some(Ok(Message::Close(_)))) => {
+            Err(connection_lost("server closed the WebSocket"))
+        }
         Ok(Some(Ok(_))) => Ok(None),
-        Ok(Some(Err(e))) => Err(format!("WebSocket error: {}", e)),
-        Ok(None) => Ok(None),
+        Ok(Some(Err(e))) => Err(connection_lost(format!("WebSocket error: {}", e))),
+        Ok(None) => Err(connection_lost("WebSocket stream ended")),
         Err(_) => Ok(None),
     }
 }
@@ -995,6 +1012,9 @@ struct RealtimeEntry {
     cancel: Arc<AtomicBool>,
     /// The polling task, so `stop_polling` can await its exit before finalizing.
     poll: Option<JoinHandle<()>>,
+    /// Set once the connection is known dead (see [`connection_lost`]): further
+    /// sends fail fast without touching the socket, and finalize is skipped.
+    lost: Arc<AtomicBool>,
 }
 
 /// Manages active real-time transcription sessions
@@ -1017,6 +1037,7 @@ impl RealtimeSessionManager {
                 session: Arc::new(Mutex::new(session)),
                 cancel: Arc::new(AtomicBool::new(false)),
                 poll: None,
+                lost: Arc::new(AtomicBool::new(false)),
             },
         );
     }
@@ -1114,6 +1135,23 @@ impl RealtimeSessionManager {
         sessions.get(session_id).map(|e| e.session.clone())
     }
 
+    /// The session plus its connection-lost flag, if the session exists.
+    pub async fn get_session_with_lost(
+        &self,
+        session_id: &str,
+    ) -> Option<(Arc<Mutex<RealtimeSessionType>>, Arc<AtomicBool>)> {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .map(|e| (e.session.clone(), e.lost.clone()))
+    }
+
+    /// Connection-lost flag for `session_id`, if the session exists.
+    pub async fn get_lost_flag(&self, session_id: &str) -> Option<Arc<AtomicBool>> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(session_id).map(|e| e.lost.clone())
+    }
+
     /// Cancellation flag for `session_id`'s polling loop, if the session exists.
     pub async fn get_cancel(&self, session_id: &str) -> Option<Arc<AtomicBool>> {
         let sessions = self.sessions.lock().await;
@@ -1158,12 +1196,22 @@ impl RealtimeSessionManager {
     }
 
     pub async fn close_session(&self, session_id: &str) -> Result<String, String> {
-        if let Some(session) = self.remove_session(session_id).await {
-            let mut session = session.lock().await;
-            session.finalize().await
-        } else {
-            Err(format!("Session {} not found", session_id))
+        let entry = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.remove(session_id)
+        };
+        let Some(entry) = entry else {
+            return Err(format!("Session {} not found", session_id));
+        };
+        entry.cancel.store(true, Ordering::Relaxed);
+        let mut session = entry.session.lock().await;
+        if entry.lost.load(Ordering::Relaxed) {
+            // The connection is already gone: there is no tail to drain, and
+            // sending eof would only fail with "Sending after closing".
+            let _ = session.close().await;
+            return Ok(String::new());
         }
+        session.finalize().await
     }
 }
 

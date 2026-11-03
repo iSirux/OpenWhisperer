@@ -1,6 +1,15 @@
 <script lang="ts">
   import { settings } from "$lib/stores/settings";
   import "./toggle.css";
+
+  // Whole minutes, 0 = unlimited; an emptied field must not save null (the
+  // backend field is a u32).
+  function setMaxRecordingMinutes(event: Event) {
+    const raw = Number.parseInt((event.currentTarget as HTMLInputElement).value, 10);
+    const minutes = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 600) : 0;
+    $settings.audio.max_recording_minutes = minutes;
+    (event.currentTarget as HTMLInputElement).value = String(minutes);
+  }
 </script>
 
 <div class="space-y-4">
@@ -23,6 +32,31 @@
           class="toggle"
           bind:checked={$settings.audio.capture_screenshot_on_record}
         />
+      </div>
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <label class="text-sm font-medium text-text-secondary" for="max-recording-minutes"
+            >Maximum Recording Length</label
+          >
+          <p class="text-xs text-text-muted mt-0.5">
+            Automatically stop a recording after this many minutes (0 = unlimited). A recording
+            you started is finished with the current stop mode; an open-mic recording is saved to
+            the pile instead of being sent
+          </p>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <input
+            id="max-recording-minutes"
+            type="number"
+            min="0"
+            max="600"
+            step="1"
+            class="w-20 px-2 py-1 bg-surface-elevated border border-border rounded text-sm text-right focus:outline-none focus:border-accent"
+            value={$settings.audio.max_recording_minutes ?? 15}
+            onchange={setMaxRecordingMinutes}
+          />
+          <span class="text-xs text-text-muted">min</span>
+        </div>
       </div>
     </div>
   </div>

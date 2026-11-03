@@ -21,6 +21,31 @@ export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 
  */
 export type RecordingOwner = 'global' | 'view';
 
+/**
+ * What started the current recording. 'wake' = an open-mic wake command; such
+ * recordings additionally auto-stop after sustained silence, since a false wake
+ * on background talk otherwise records until someone notices (once: 98 min).
+ */
+export type RecordingTrigger = 'manual' | 'wake';
+
+/** Why the watchdog asked for a recording to be stopped. */
+export type AutoStopReason = 'max_length' | 'silence';
+
+export interface AutoStopRequest {
+  reason: AutoStopReason;
+  owner: RecordingOwner;
+  trigger: RecordingTrigger;
+  /**
+   * Whether any speech was detected since the recording started: realtime
+   * engine text when it is delivering, else mic level above the open-mic
+   * volume threshold (conservatively counts as speech).
+   */
+  heardSpeech: boolean;
+  elapsedMs: number;
+}
+
+export type AutoStopHandler = (request: AutoStopRequest) => void | Promise<void>;
+
 interface QueuedRecording {
   id: string;
   audioData: Uint8Array;
@@ -73,6 +98,39 @@ function createRecordingStore() {
   let audioChunks: Blob[] = [];
   // Owner of the current recording (see RecordingOwner); null when idle.
   let recordingOwner: RecordingOwner | null = null;
+  // What started the current recording (see RecordingTrigger).
+  let recordingTrigger: RecordingTrigger = 'manual';
+  // Bumped on every startRecording, so a view can tell whether the live
+  // recording is still the one it started (its local flags can go stale).
+  let recordingEpoch = 0;
+  // Notified when a live recording is ended by cancel/discard rather than by
+  // its owner's stop path (e.g. overlay Discard), with that recording's epoch.
+  const abortListeners = new Set<(epoch: number) => void>();
+
+  function notifyAborted(epoch: number | null) {
+    if (epoch === null) return;
+    for (const listener of abortListeners) {
+      try {
+        listener(epoch);
+      } catch (error) {
+        console.error('[recording] Abort listener failed:', error);
+      }
+    }
+  }
+
+  // Auto-stop watchdog (max length for every recording; silence for
+  // wake-triggered ones). The handler is installed by recordingFlow.
+  let autoStopTimer: ReturnType<typeof setInterval> | null = null;
+  let autoStopHandler: AutoStopHandler | null = null;
+  let lastSpeechAt = 0;
+  let heardSpeech = false;
+  // True while the realtime engine is connected and delivering for this
+  // recording — its text is then the speech signal; otherwise the mic level is.
+  let realtimeDelivering = false;
+  // Mic level meter feeding the silence detector (wake-triggered recordings
+  // only). A ScriptProcessor rather than the rAF visualization loop because
+  // rAF is suspended while the window is hidden (the usual open-mic case).
+  let levelProcessor: ScriptProcessorNode | null = null;
   let audioContext: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
   let audioSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
@@ -86,6 +144,7 @@ function createRecordingStore() {
   let realtimeUnlistenPartial: UnlistenFn | null = null;
   let realtimeUnlistenFinal: UnlistenFn | null = null;
   let realtimeUnlistenError: UnlistenFn | null = null;
+  let realtimeUnlistenClosed: UnlistenFn | null = null;
   // Accumulated final text from real-time transcription (when accumulate_transcript is enabled)
   let realtimeAccumulatedText: string = '';
   // Every final segment of the current realtime session, kept regardless of the
@@ -190,22 +249,56 @@ function createRecordingStore() {
 
       // Store sessionId in closure, but check if context is still valid before sending
       const contextRef = realtimeAudioContext;
-      realtimeProcessor.onaudioprocess = (event) => {
+      const processorRef = realtimeProcessor;
+
+      // Audio captured before the backend session exists is buffered (bounded)
+      // and flushed once it's up, instead of being sent into "session not
+      // found" errors — the connect can take seconds (Docker autostart).
+      const MAX_PENDING_CHUNKS = 40; // ~10 s at 16 kHz / 4096-sample buffers
+      const pendingChunks: Int16Array[] = [];
+      let backendReady = false;
+      // Set once the connection is dead: stop streaming for the rest of this
+      // recording (the recording itself goes on — Whisper has the full audio).
+      let connectionLost = false;
+      const handleConnectionLost = (reason: unknown) => {
+        if (connectionLost) return;
+        connectionLost = true;
+        realtimeDelivering = false;
+        pendingChunks.length = 0;
+        processorRef.onaudioprocess = null;
+        try {
+          processorRef.disconnect();
+        } catch {
+          // Already disconnected
+        }
+        const mode = get(settings).realtime?.transcription_mode ?? 'Both';
+        console.warn(
+          `[recording] Realtime session ${sessionId} lost (${String(reason)}); ` +
+            (mode === 'Realtime'
+              ? 'live transcription stops here — in Realtime-only mode the transcript will end at this point'
+              : 'continuing the recording without live transcription (Whisper has the full audio)')
+        );
+      };
+
+      const sendChunk = (chunk: Int16Array) =>
+        invoke('send_realtime_audio', { sessionId, samples: Array.from(chunk) });
+
+      processorRef.onaudioprocess = (event) => {
         // Skip if context was closed (prevents zombie callbacks)
-        if (contextRef.state === 'closed' || !realtimeProcessor) return;
+        if (contextRef.state === 'closed' || connectionLost) return;
 
         const float32Data = event.inputBuffer.getChannelData(0);
         const int16Data = convertFloat32ToInt16(float32Data);
 
+        if (!backendReady) {
+          pendingChunks.push(int16Data);
+          if (pendingChunks.length > MAX_PENDING_CHUNKS) pendingChunks.shift();
+          return;
+        }
+
         // Use non-blocking invoke with catch (don't await to prevent backpressure)
-        invoke('send_realtime_audio', {
-          sessionId,
-          samples: Array.from(int16Data),
-        }).catch((error) => {
-          // Only log if context is still active
-          if (contextRef.state !== 'closed') {
-            console.error('Failed to send realtime audio:', error);
-          }
+        sendChunk(int16Data).catch((error) => {
+          if (contextRef.state !== 'closed') handleConnectionLost(error);
         });
       };
 
@@ -240,6 +333,7 @@ function createRecordingStore() {
           deltaMs: delta,
           displayText,
         });
+        if (partial.trim()) markSpeech();
 
         update((s) => ({ ...s, realtimeTranscript: displayText }));
         emit('realtime-transcript', { text: displayText });
@@ -268,6 +362,7 @@ function createRecordingStore() {
           hasText: !!text,
         });
         if (text) {
+          if (text.trim()) markSpeech();
           realtimeFinalSegments.push(text.trim());
           const shouldAccumulate = currentSettings.realtime?.accumulate_transcript ?? false;
           const prevAccumulated = realtimeAccumulatedText;
@@ -312,12 +407,30 @@ function createRecordingStore() {
         console.error('Realtime transcription error:', event.payload?.error);
       });
 
+      // Emitted once by the backend when the socket dies (or a send fails).
+      realtimeUnlistenClosed = await listen(`realtime-closed-${sessionId}`, (event: any) => {
+        handleConnectionLost(event.payload?.reason ?? 'connection closed');
+      });
+
       // Start the realtime session on the backend
       console.log('[recording] Starting realtime backend session...');
       await invoke('start_realtime_session', { sessionId });
       console.log('[recording] Realtime backend session started, listening for events on:', `realtime-partial-${sessionId}`);
 
       update((s) => ({ ...s, realtimeSessionId: sessionId }));
+
+      // Flush the audio captured while connecting, in order. Chunks keep
+      // queueing behind the flush until it drains, then go out live.
+      while (pendingChunks.length > 0 && !connectionLost && contextRef.state !== 'closed') {
+        const chunk = pendingChunks.shift()!;
+        try {
+          await sendChunk(chunk);
+        } catch (error) {
+          handleConnectionLost(error);
+        }
+      }
+      backendReady = true;
+      if (!connectionLost && contextRef.state !== 'closed') realtimeDelivering = true;
     } catch (error) {
       console.error('Failed to start realtime session:', error);
       // Clean up on error
@@ -333,6 +446,7 @@ function createRecordingStore() {
   async function stopRealtimeSession(): Promise<string> {
     const currentState = get({ subscribe });
     const sessionId = currentState.realtimeSessionId;
+    realtimeDelivering = false;
 
     // Stop feeding audio first. Event listeners are deliberately kept alive
     // until AFTER the backend session stops: the engine often completes the
@@ -396,6 +510,10 @@ function createRecordingStore() {
       realtimeUnlistenError();
       realtimeUnlistenError = null;
     }
+    if (realtimeUnlistenClosed) {
+      realtimeUnlistenClosed();
+      realtimeUnlistenClosed = null;
+    }
 
     const segments = [...realtimeFinalSegments];
     tailText = tailText.trim();
@@ -425,6 +543,103 @@ function createRecordingStore() {
       });
     }
     return realtimeStopPromise;
+  }
+
+  // -------------------------------------------------------------------------
+  // Auto-stop watchdog
+  // -------------------------------------------------------------------------
+
+  function markSpeech() {
+    lastSpeechAt = Date.now();
+    heardSpeech = true;
+  }
+
+  /** Mic level → speech signal, used only while the realtime engine isn't delivering. */
+  function startLevelMeter() {
+    stopLevelMeter();
+    if (!audioContext || !audioSource) return;
+    try {
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (event) => {
+        if (realtimeDelivering) return;
+        const samples = event.inputBuffer.getChannelData(0);
+        let sum = 0;
+        for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+        const rms = Math.sqrt(sum / samples.length);
+        const threshold = get(settings).audio.open_mic?.volume_threshold ?? 0.01;
+        if (rms >= threshold) markSpeech();
+      };
+      audioSource.connect(processor);
+      // ScriptProcessor only runs while connected to the destination (it outputs silence).
+      processor.connect(audioContext.destination);
+      levelProcessor = processor;
+    } catch (error) {
+      console.warn('[recording] Failed to start level meter:', error);
+    }
+  }
+
+  function stopLevelMeter() {
+    if (!levelProcessor) return;
+    levelProcessor.onaudioprocess = null;
+    try {
+      levelProcessor.disconnect();
+    } catch {
+      // Already disconnected
+    }
+    levelProcessor = null;
+  }
+
+  function startAutoStopWatchdog() {
+    stopAutoStopWatchdog();
+    lastSpeechAt = Date.now();
+    heardSpeech = false;
+    if (recordingTrigger === 'wake') startLevelMeter();
+    // Minute-granularity limits, so timer throttling in a hidden window is fine.
+    autoStopTimer = setInterval(checkAutoStop, 1000);
+  }
+
+  function stopAutoStopWatchdog() {
+    if (autoStopTimer !== null) {
+      clearInterval(autoStopTimer);
+      autoStopTimer = null;
+    }
+    stopLevelMeter();
+  }
+
+  function checkAutoStop() {
+    if (!recordingStartTime || !mediaRecorder || mediaRecorder.state === 'inactive') return;
+    const now = Date.now();
+    const elapsedMs = now - recordingStartTime;
+    const audio = get(settings).audio;
+
+    let reason: AutoStopReason | null = null;
+    const maxMinutes = audio.max_recording_minutes ?? 0;
+    if (maxMinutes > 0 && elapsedMs >= maxMinutes * 60_000) {
+      reason = 'max_length';
+    } else if (recordingTrigger === 'wake') {
+      const silenceSecs = audio.open_mic?.silence_timeout_secs ?? 0;
+      if (silenceSecs > 0 && now - lastSpeechAt >= silenceSecs * 1000) reason = 'silence';
+    }
+    if (!reason) return;
+
+    stopAutoStopWatchdog();
+    const request: AutoStopRequest = {
+      reason,
+      owner: recordingOwner ?? 'view',
+      trigger: recordingTrigger,
+      heardSpeech,
+      elapsedMs,
+    };
+    console.warn('[recording] Auto-stopping recording', request);
+    if (autoStopHandler) {
+      Promise.resolve(autoStopHandler(request)).catch((error) =>
+        console.error('[recording] Auto-stop handler failed:', error)
+      );
+    } else {
+      // No flow installed a handler: at least end the capture; the audio stays
+      // in the store ('recorded') rather than being sent anywhere.
+      recording.stopRecording(false).catch(console.error);
+    }
   }
 
   function startVisualizationBroadcast(stream: MediaStream) {
@@ -460,6 +675,8 @@ function createRecordingStore() {
 
   // Synchronous cleanup for visualization (used internally)
   function stopVisualizationBroadcastSync() {
+    // The level meter hangs off the visualization graph.
+    stopLevelMeter();
     if (visualizationAnimationId !== null) {
       cancelAnimationFrame(visualizationAnimationId);
       visualizationAnimationId = null;
@@ -626,9 +843,43 @@ function createRecordingStore() {
      * async transcription window (pass it into stopRecording). */
     newRecordingId: generateId,
 
-    async startRecording(deviceId?: string, owner: RecordingOwner = 'view') {
+    /**
+     * Install the handler the auto-stop watchdog calls when a recording hits
+     * `audio.max_recording_minutes` or (wake-triggered only) the open-mic
+     * silence timeout. recordingFlow owns it: it knows how to stop each kind of
+     * recording properly. Returns an uninstall function.
+     */
+    setAutoStopHandler(handler: AutoStopHandler | null): () => void {
+      autoStopHandler = handler;
+      return () => {
+        if (autoStopHandler === handler) autoStopHandler = null;
+      };
+    },
+
+    /** Epoch of the most recently started recording (see startRecording). */
+    currentEpoch(): number {
+      return recordingEpoch;
+    },
+
+    /**
+     * Subscribe to live recordings being cancelled/discarded out from under
+     * their owner. The listener gets the aborted recording's epoch.
+     */
+    onRecordingAborted(listener: (epoch: number) => void): () => void {
+      abortListeners.add(listener);
+      return () => abortListeners.delete(listener);
+    },
+
+    /** Returns this recording's epoch (compare with currentEpoch() later). */
+    async startRecording(
+      deviceId?: string,
+      owner: RecordingOwner = 'view',
+      trigger: RecordingTrigger = 'manual'
+    ): Promise<number> {
       let stream: MediaStream | null = null;
+      const epoch = ++recordingEpoch;
       recordingOwner = owner;
+      recordingTrigger = trigger;
 
       // Choke point for open-mic teardown: EVERY recording (including
       // view-owned ones that never go through recordingFlow) must silence the
@@ -659,6 +910,9 @@ function createRecordingStore() {
 
         // Start broadcasting audio visualization data to all windows
         startVisualizationBroadcast(stream);
+        // Max-length / silence auto-stop (after the visualization graph exists:
+        // the silence detector's level meter hangs off it).
+        startAutoStopWatchdog();
 
         // Audio is being captured — show 'recording' NOW. The realtime engine
         // connects in the background so the UI never waits on a WebSocket
@@ -678,6 +932,7 @@ function createRecordingStore() {
         console.error('Failed to start recording:', error);
 
         // Clean up any resources that were allocated before the error
+        stopAutoStopWatchdog();
         await stopVisualizationBroadcast();
         await stopRealtimeSessionShared();
 
@@ -701,6 +956,7 @@ function createRecordingStore() {
           stream: null,
         }));
       }
+      return epoch;
     },
 
     async stopRecording(
@@ -711,6 +967,7 @@ function createRecordingStore() {
         // The recording is over as far as live voice/wake command routing is
         // concerned, even though transcription may still be in flight.
         recordingOwner = null;
+        stopAutoStopWatchdog();
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
           // Still need to clean up visualization and realtime transcription even if mediaRecorder is inactive
           stopVisualizationBroadcast().catch(console.error);
@@ -1039,8 +1296,45 @@ function createRecordingStore() {
       }
     },
 
-    async cancelRecording() {
+    /**
+     * End the current recording and throw its audio away, WITHOUT touching the
+     * transcription queue of earlier recordings (unlike cancelRecording, which
+     * resets the whole store). Used for phantom open-mic recordings.
+     */
+    async discardRecording() {
+      // Only a still-live recording counts as aborted (one already in its
+      // owner's stop path has recordingOwner === null).
+      const abortedEpoch = recordingOwner !== null ? recordingEpoch : null;
       recordingOwner = null;
+      stopAutoStopWatchdog();
+      await stopVisualizationBroadcast();
+      await settleRealtimeStart();
+      await stopRealtimeSessionShared();
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.onstop = null;
+        mediaRecorder.stop();
+      }
+      micLease?.release();
+      micLease = null;
+      mediaRecorder = null;
+      audioChunks = [];
+      recordingStartTime = null;
+      update((s) => ({
+        ...s,
+        state: 'idle',
+        error: null,
+        stream: null,
+        realtimeTranscript: '',
+        realtimeSessionId: null,
+      }));
+      emit('recording-state', { state: 'idle' });
+      notifyAborted(abortedEpoch);
+    },
+
+    async cancelRecording() {
+      const abortedEpoch = recordingOwner !== null ? recordingEpoch : null;
+      recordingOwner = null;
+      stopAutoStopWatchdog();
       stopVisualizationBroadcast();
       await settleRealtimeStart();
       await stopRealtimeSessionShared();
@@ -1053,6 +1347,7 @@ function createRecordingStore() {
       audioChunks = [];
       set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0, realtimeTranscript: '', realtimeSessionId: null, lastDebugId: null });
       emit('recording-state', { state: 'idle' });
+      notifyAborted(abortedEpoch);
     },
 
     // Clear completed/errored items from the queue

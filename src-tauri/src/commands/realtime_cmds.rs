@@ -1,16 +1,32 @@
 use crate::config::{AppConfig, RealtimeProvider};
 use crate::docker;
 use crate::realtime::{
-    test_sherpa_connection, test_speaches_connection, test_vosk_connection, test_vsai_connection,
-    RealtimeConnectionTestResult, RealtimeResponse, RealtimeSessionManager,
+    connection_lost, is_connection_lost, test_sherpa_connection, test_speaches_connection,
+    test_vosk_connection, test_vsai_connection, RealtimeConnectionTestResult, RealtimeResponse,
+    RealtimeSessionManager,
 };
 use crate::util::emit_or_log;
 use parking_lot::Mutex as ParkingLotMutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 pub type ConfigState = ParkingLotMutex<AppConfig>;
+
+/// Mark a realtime session's connection as dead and, the first time only, log
+/// it and emit `realtime-closed-{id}` so the frontend stops streaming audio to it
+/// (the recording itself carries on — Whisper still has the full audio).
+fn report_connection_lost(app: &AppHandle, session_id: &str, lost: &AtomicBool, reason: &str) {
+    if lost.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    log::warn!("[realtime] Session {} connection lost: {}", session_id, reason);
+    emit_or_log(
+        app,
+        &format!("realtime-closed-{}", session_id),
+        serde_json::json!({ "reason": reason }),
+    );
+}
 
 #[tauri::command]
 pub async fn test_realtime_connection(
@@ -141,9 +157,12 @@ pub async fn start_realtime_session(
 
     // Cooperative cancellation for the polling loop; stop_realtime_session flips
     // this and awaits the loop's exit before finalizing (I6).
-    let cancel = match realtime_manager.get_cancel(&session_id).await {
-        Some(c) => c,
-        None => return Err("Realtime session vanished right after creation".to_string()),
+    let (cancel, lost) = match (
+        realtime_manager.get_cancel(&session_id).await,
+        realtime_manager.get_lost_flag(&session_id).await,
+    ) {
+        (Some(c), Some(l)) => (c, l),
+        _ => return Err("Realtime session vanished right after creation".to_string()),
     };
 
     let manager = Arc::clone(&*realtime_manager);
@@ -193,6 +212,11 @@ pub async fn start_realtime_session(
                     consecutive_errors = 0;
                     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 }
+                Err(e) if is_connection_lost(&e) => {
+                    // The socket is gone — nothing more will ever arrive.
+                    report_connection_lost(&app_clone, &session_id_clone, &lost, &e);
+                    break;
+                }
                 Err(e) => {
                     consecutive_errors += 1;
                     emit_or_log(
@@ -218,17 +242,31 @@ pub async fn start_realtime_session(
 
 #[tauri::command]
 pub async fn send_realtime_audio(
+    app: AppHandle,
     realtime_manager: State<'_, Arc<RealtimeSessionManager>>,
     session_id: String,
     samples: Vec<i16>,
 ) -> Result<(), String> {
-    let session = realtime_manager
-        .get_session(&session_id)
+    let (session, lost) = realtime_manager
+        .get_session_with_lost(&session_id)
         .await
         .ok_or_else(|| format!("Realtime session {} not found", session_id))?;
 
-    let mut session_guard = session.lock().await;
-    session_guard.send_audio(&samples).await
+    if lost.load(Ordering::Relaxed) {
+        return Err(connection_lost("session already closed"));
+    }
+
+    let result = {
+        let mut session_guard = session.lock().await;
+        session_guard.send_audio(&samples).await
+    };
+    // Every send failure is a socket-level failure (the frame couldn't be
+    // written), so the connection is unusable from here on.
+    result.map_err(|e| {
+        let err = if is_connection_lost(&e) { e } else { connection_lost(e) };
+        report_connection_lost(&app, &session_id, &lost, &err);
+        err
+    })
 }
 
 #[tauri::command]

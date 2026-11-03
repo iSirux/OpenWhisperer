@@ -45,6 +45,15 @@ function createOpenMicStore() {
 
   // Guard against concurrent start() calls - tracks the current initialization promise
   let startPromise: Promise<void> | null = null;
+  // Bumped by stop()/pause(): an in-flight start() that sees a newer generation
+  // tears down what it built instead of flipping state back to "listening".
+  // (A stop during start — e.g. the wake-triggered recording stopping open mic
+  // while a restart was connecting — used to leave a zombie "listening" session.)
+  let startGeneration = 0;
+  // Set once the realtime connection of the current listening session is dead.
+  let connectionLost = false;
+  let unlistenClosed: UnlistenFn | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Visualization context (to match recording store's audio pipeline)
   let vizAudioContext: AudioContext | null = null;
@@ -102,11 +111,12 @@ function createOpenMicStore() {
       return;
     }
 
-    // If there's already a start in progress, wait for it instead of starting again
+    // A start still in flight while state isn't initializing/listening was
+    // superseded by stop() — let it finish tearing down, then start fresh.
     if (startPromise) {
-      console.log("[open-mic] Start already in progress, waiting for it");
+      console.log("[open-mic] Previous start still winding down, waiting for it");
       await startPromise;
-      return;
+      return start();
     }
 
     const currentSettings = get(settings);
@@ -160,6 +170,10 @@ function createOpenMicStore() {
       unlistenError();
       unlistenError = null;
     }
+    if (unlistenClosed) {
+      unlistenClosed();
+      unlistenClosed = null;
+    }
 
     update((s) => ({
       ...s,
@@ -169,6 +183,10 @@ function createOpenMicStore() {
       lastTranscript: "",
     }));
 
+    const generation = ++startGeneration;
+    const superseded = () => generation !== startGeneration;
+    connectionLost = false;
+
     // Wrap the async initialization in a tracked promise
     startPromise = (async () => {
     try {
@@ -176,6 +194,10 @@ function createOpenMicStore() {
       // starting while open mic listens attaches to the already-open stream)
       micLease = await acquireMicStream(currentSettings.audio.device_id || undefined);
       mediaStream = micLease.stream;
+      if (superseded()) {
+        await cleanup();
+        return;
+      }
 
       // Create visualization context (matches recording store's audio pipeline)
       // This adds another consumer to the audio stream for consistent timing
@@ -217,10 +239,20 @@ function createOpenMicStore() {
       // Store context reference to check validity in callback
       const contextRef = audioContext;
 
+      // Errors are ignored here ("not found" is expected while the backend
+      // session is still connecting); a dead socket is reported once via the
+      // `realtime-closed` event, which stops all sends (handleConnectionLost).
+      const send = (chunk: Int16Array) => {
+        invoke("send_realtime_audio", {
+          sessionId: OPEN_MIC_SESSION_ID,
+          samples: Array.from(chunk),
+        }).catch(() => {});
+      };
+
       // Match recording store's audio processing - use non-blocking invoke
       processor.onaudioprocess = (event) => {
         // Skip if context was closed (prevents zombie callbacks)
-        if (contextRef.state === 'closed' || !processor) return;
+        if (contextRef.state === 'closed' || !processor || connectionLost) return;
 
         const float32Data = event.inputBuffer.getChannelData(0);
         const int16Data = convertFloat32ToInt16(float32Data);
@@ -237,29 +269,20 @@ function createOpenMicStore() {
           // If we just crossed the threshold, send buffered pre-roll audio first
           if (!wasAboveThreshold && preRollBuffer.length > 0) {
             for (const bufferedChunk of preRollBuffer) {
-              invoke("send_realtime_audio", {
-                sessionId: OPEN_MIC_SESSION_ID,
-                samples: Array.from(bufferedChunk),
-              }).catch(() => {});
+              send(bufferedChunk);
             }
             preRollBuffer = [];
           }
 
           // Send current audio
-          invoke("send_realtime_audio", {
-            sessionId: OPEN_MIC_SESSION_ID,
-            samples: Array.from(int16Data),
-          }).catch(() => {});
+          send(int16Data);
 
           wasAboveThreshold = true;
           hangoverRemaining = HANGOVER_BUFFERS;
         } else if (hangoverRemaining > 0) {
           // Post-roll: continue sending briefly after threshold drops to avoid cutting off word endings
           hangoverRemaining--;
-          invoke("send_realtime_audio", {
-            sessionId: OPEN_MIC_SESSION_ID,
-            samples: Array.from(int16Data),
-          }).catch(() => {});
+          send(int16Data);
 
           if (hangoverRemaining === 0) {
             wasAboveThreshold = false;
@@ -339,8 +362,29 @@ function createOpenMicStore() {
         }
       );
 
+      // Emitted once by the backend when the socket dies.
+      unlistenClosed = await listen(
+        `realtime-closed-${OPEN_MIC_SESSION_ID}`,
+        (event: any) => {
+          handleConnectionLost(event.payload?.reason ?? "connection closed");
+        }
+      );
+
+      if (superseded()) {
+        await cleanup();
+        return;
+      }
+
       // Start the realtime session on the backend
       await invoke("start_realtime_session", { sessionId: OPEN_MIC_SESSION_ID });
+
+      if (superseded()) {
+        // stop() ran while we were connecting — its cleanup can't have closed
+        // the session we just created, so tear everything down here.
+        console.log("[open-mic] Start superseded by stop, tearing down");
+        await cleanup();
+        return;
+      }
 
       // Clear the UI transcript when starting fresh
       emit("open-mic-realtime-transcript", { text: "" });
@@ -348,6 +392,10 @@ function createOpenMicStore() {
       update((s) => ({ ...s, state: "listening" }));
       console.log("[open-mic] Started passive listening");
     } catch (error) {
+      if (superseded()) {
+        await cleanup();
+        return;
+      }
       console.error("[open-mic] Failed to start:", error);
       update((s) => ({
         ...s,
@@ -395,8 +443,66 @@ function createOpenMicStore() {
     }, 1000);
   }
 
+  // Reconnect after a dropped realtime connection, at most 3 times per 5 min
+  // (a server that keeps dropping us ends in the error state instead of looping).
+  const RECONNECT_DELAY_MS = 3000;
+  const RECONNECT_WINDOW_MS = 5 * 60_000;
+  const MAX_RECONNECTS_PER_WINDOW = 3;
+  let recentReconnects: number[] = [];
+
+  function cancelReconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function handleConnectionLost(reason: unknown) {
+    if (connectionLost) return;
+    connectionLost = true;
+    // Stop streaming right away; the processor stays attached until cleanup.
+    preRollBuffer = [];
+
+    const now = Date.now();
+    recentReconnects = recentReconnects.filter((t) => now - t < RECONNECT_WINDOW_MS);
+    if (recentReconnects.length >= MAX_RECONNECTS_PER_WINDOW) {
+      console.error(
+        `[open-mic] Realtime connection lost again (${String(reason)}); giving up after ${MAX_RECONNECTS_PER_WINDOW} reconnects — open mic paused`
+      );
+      // "paused" (not "error"): the open-mic lifecycle effect auto-restarts
+      // from any other non-listening state, which would defeat the limit.
+      startGeneration++;
+      void cleanup().then(() =>
+        update((s) => ({
+          ...s,
+          state: "paused",
+          error: "Realtime connection keeps dropping — resume to retry",
+          lastTranscript: "",
+          detectedCommand: null,
+        }))
+      );
+      return;
+    }
+
+    console.warn(
+      `[open-mic] Realtime connection lost (${String(reason)}); reconnecting in ${RECONNECT_DELAY_MS / 1000}s`
+    );
+    cancelReconnect();
+    const generation = startGeneration;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      // Stopped, paused or restarted meanwhile — nothing to do.
+      if (generation !== startGeneration) return;
+      if (get({ subscribe }).state !== "listening") return;
+      recentReconnects.push(Date.now());
+      restart().catch((e) => console.error("[open-mic] Reconnect failed:", e));
+    }, RECONNECT_DELAY_MS);
+  }
+
   async function stop() {
     console.log("[open-mic] Stopping passive listening");
+    startGeneration++;
+    cancelReconnect();
     await cleanup();
     // Clear accumulated text when stopping
     realtimeAccumulatedText = "";
@@ -417,6 +523,8 @@ function createOpenMicStore() {
     }
 
     console.log("[open-mic] Pausing passive listening");
+    startGeneration++;
+    cancelReconnect();
     await cleanup();
     update((s) => ({
       ...s,
@@ -460,6 +568,10 @@ function createOpenMicStore() {
     if (unlistenError) {
       unlistenError();
       unlistenError = null;
+    }
+    if (unlistenClosed) {
+      unlistenClosed();
+      unlistenClosed = null;
     }
 
     // Clear pre-roll buffer state

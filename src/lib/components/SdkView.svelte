@@ -16,6 +16,7 @@
     recording,
     isRecording,
     isTranscribing,
+    type AutoStopRequest,
   } from "$lib/stores/recording";
   import { settings } from "$lib/stores/settings";
   import { repos, isAutoRepoSelected } from "$lib/stores/repos";
@@ -586,6 +587,46 @@
   // view-owned recordings (recording.getOwner() !== 'global'), so without
   // this listener spoken commands would only apply on manual stop.
   let unlistenVoiceCommand: UnlistenFn | null = null;
+  let unsubscribeRecordingAborted: (() => void) | null = null;
+
+  // Epoch (recording.startRecording's return) of the recording THIS view
+  // started. The local isRecording*ForCurrentSession flags can outlive it (a
+  // cancel/discard from elsewhere never runs our stop path), so "is the live
+  // recording ours" checks the epoch too.
+  let myRecordingEpoch: number | null = null;
+
+  function ownsLiveRecording(): boolean {
+    return (
+      myRecordingEpoch !== null &&
+      myRecordingEpoch === recording.currentEpoch() &&
+      get(isRecording)
+    );
+  }
+
+  // Our live recording was cancelled/discarded out from under us (overlay
+  // Discard, a cancel voice command elsewhere, ...): drop the stale flags.
+  function handleRecordingAborted(epoch: number) {
+    if (epoch !== myRecordingEpoch) return;
+    myRecordingEpoch = null;
+    isRecordingForCurrentSession = false;
+    isInlineRecordingForCurrentSession = false;
+    pendingReplyTiming = null;
+  }
+
+  // Max-length auto-stop (recording.ts watchdog → recordingFlow) for a
+  // view-owned recording: claim it and stop through our normal path, exactly
+  // like pressing stop — send to the session, or append to the draft.
+  function handleRecordingAutoStop(event: Event) {
+    const request = (event as CustomEvent<AutoStopRequest>).detail;
+    if (request?.owner !== "view" || !ownsLiveRecording()) return;
+    if (isRecordingForCurrentSession) {
+      event.preventDefault();
+      void handleStopRecording();
+    } else if (isInlineRecordingForCurrentSession) {
+      event.preventDefault();
+      void handleStopInlineRecording();
+    }
+  }
 
   function sameElements<T>(a: readonly T[] | undefined, b: readonly T[] | undefined): boolean {
     if (a === b) return true;
@@ -605,7 +646,7 @@
     listen("voice-command-triggered", async () => {
       // Only the pane that started the recording reacts (multiple SdkViews
       // can be mounted in split panes).
-      if (!isRecordingForCurrentSession || !get(isRecording)) return;
+      if (!isRecordingForCurrentSession || !ownsLiveRecording()) return;
       if (get(settings).audio.play_sound_on_voice_command) {
         playVoiceCommandSound();
       }
@@ -613,6 +654,9 @@
     }).then((unlisten) => {
       unlistenVoiceCommand = unlisten;
     });
+
+    unsubscribeRecordingAborted = recording.onRecordingAborted(handleRecordingAborted);
+    window.addEventListener("recording-auto-stop", handleRecordingAutoStop);
 
     unsubscribe = sdkSessions.subscribe((sessions) => {
       const found = sessions.find((s) => s.id === sessionId);
@@ -720,7 +764,7 @@
     // of leaving the mic running with no UI to stop it. The local flags guarantee
     // this recording is ours, so we never hijack a global/other-view recording.
     if (
-      get(isRecording) &&
+      ownsLiveRecording() &&
       (isRecordingForCurrentSession || isInlineRecordingForCurrentSession)
     ) {
       void handleStopInlineRecording();
@@ -728,6 +772,9 @@
     unsubscribe?.();
     unlistenVoiceCommand?.();
     unlistenVoiceCommand = null;
+    unsubscribeRecordingAborted?.();
+    unsubscribeRecordingAborted = null;
+    window.removeEventListener("recording-auto-stop", handleRecordingAutoStop);
   });
 
   // Keep bottom lock behavior when new content arrives.
@@ -1348,7 +1395,13 @@
 
     // No recording overlay for in-session recording — the session view itself
     // already shows the recording state inline (mic button / prompt input).
-    await recording.startRecording($settings.audio.device_id || undefined);
+    myRecordingEpoch = await recording.startRecording($settings.audio.device_id || undefined);
+    if (get(recording).state !== "recording") {
+      // Start failed — don't leave the flag claiming a recording.
+      isRecordingForCurrentSession = false;
+      pendingReplyTiming = null;
+      myRecordingEpoch = null;
+    }
   }
 
   /** `timing` comes from the hold-Space modifier combo (mic button = "now"). */
@@ -1514,7 +1567,12 @@
   async function handleStartInlineRecording() {
     if ($isRecording) return;
     isInlineRecordingForCurrentSession = true;
-    await recording.startRecording($settings.audio.device_id || undefined);
+    myRecordingEpoch = await recording.startRecording($settings.audio.device_id || undefined);
+    if (get(recording).state !== "recording") {
+      // Start failed — don't leave the flag claiming a recording.
+      isInlineRecordingForCurrentSession = false;
+      myRecordingEpoch = null;
+    }
   }
 
   /**

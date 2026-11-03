@@ -27,8 +27,9 @@ interface RepoLike {
  */
 export function makeInlineDictation(getRepo?: () => RepoLike | undefined) {
   return {
-    start: (): Promise<void> =>
-      recording.startRecording(get(settings).audio.device_id || undefined),
+    start: async (): Promise<void> => {
+      await recording.startRecording(get(settings).audio.device_id || undefined);
+    },
 
     async stop(): Promise<string | null> {
       // Capture the realtime transcript before stopping clears it.

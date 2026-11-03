@@ -282,6 +282,12 @@ export interface OpenMicConfig {
   wake_commands: string[];
   /** Minimum volume threshold (0.0-1.0) to send audio to the realtime transcriber (saves resources when silent) */
   volume_threshold: number;
+  /**
+   * A wake-triggered recording auto-stops after this many seconds without
+   * detected speech (0 = never): discarded if nothing was said after the wake
+   * phrase, otherwise saved to the pile (never sent).
+   */
+  silence_timeout_secs: number;
 }
 
 /** Default open mic wake command presets */
@@ -313,6 +319,8 @@ export interface AudioConfig {
   /** Play sound when the agent asks a question (AskUserQuestion tool) */
   play_sound_on_question: boolean;
   recording_linger_ms: number;
+  /** Auto-stop any recording after this many minutes (0 = unlimited) */
+  max_recording_minutes: number;
   include_transcription_notice: boolean;
   /** What "Record & Send" should do when recording stops */
   record_and_send_action: RecordAndSendAction;
@@ -850,6 +858,7 @@ const defaultConfig: AppConfig = {
     play_sound_on_voice_command: true,
     play_sound_on_question: true,
     recording_linger_ms: 500,
+    max_recording_minutes: 15,
     include_transcription_notice: true,
     record_and_send_action: "send",
     capture_screenshot_on_record: false,
@@ -868,6 +877,7 @@ const defaultConfig: AppConfig = {
       enabled: false,
       wake_commands: ["hey claude"],
       volume_threshold: 0.01,
+      silence_timeout_secs: 120,
     },
   },
   repos: [],

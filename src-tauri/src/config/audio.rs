@@ -94,10 +94,20 @@ pub struct OpenMicConfig {
     /// Minimum volume threshold (0.0-1.0) to send audio to the realtime transcriber (saves resources when silent)
     #[serde(default = "default_volume_threshold")]
     pub volume_threshold: f32,
+    /// A recording started by a wake command auto-stops after this many seconds
+    /// without detected speech (0 = never). If nothing was said after the wake
+    /// phrase it is discarded, otherwise it is saved to the pile — never sent,
+    /// since a false wake on background talk would otherwise run unbounded.
+    #[serde(default = "default_open_mic_silence_timeout_secs")]
+    pub silence_timeout_secs: u32,
 }
 
 fn default_volume_threshold() -> f32 {
     0.01 // 1% - very low default to catch most speech
+}
+
+fn default_open_mic_silence_timeout_secs() -> u32 {
+    120
 }
 
 fn default_wake_commands() -> Vec<String> {
@@ -110,6 +120,7 @@ impl Default for OpenMicConfig {
             enabled: false,
             wake_commands: default_wake_commands(),
             volume_threshold: default_volume_threshold(),
+            silence_timeout_secs: default_open_mic_silence_timeout_secs(),
         }
     }
 }
@@ -148,6 +159,10 @@ pub struct AudioConfig {
     pub play_sound_on_question: bool,
     #[serde(default = "default_recording_linger_ms")]
     pub recording_linger_ms: u32,
+    /// Auto-stop any recording after this many minutes (0 = unlimited). Guards
+    /// against a forgotten or falsely wake-triggered recording running for hours.
+    #[serde(default = "default_max_recording_minutes")]
+    pub max_recording_minutes: u32,
     #[serde(default = "default_include_transcription_notice")]
     pub include_transcription_notice: bool,
     #[serde(default)]
@@ -169,6 +184,10 @@ fn default_use_hotkey() -> bool {
 
 fn default_recording_linger_ms() -> u32 {
     500
+}
+
+fn default_max_recording_minutes() -> u32 {
+    15
 }
 
 fn default_hold_space_to_record_inline() -> bool {
@@ -207,6 +226,7 @@ impl Default for AudioConfig {
             play_sound_on_voice_command: default_play_sound_on_voice_command(),
             play_sound_on_question: default_play_sound_on_question(),
             recording_linger_ms: default_recording_linger_ms(),
+            max_recording_minutes: default_max_recording_minutes(),
             include_transcription_notice: default_include_transcription_notice(),
             record_and_send_action: RecordAndSendAction::default(),
             capture_screenshot_on_record: false,

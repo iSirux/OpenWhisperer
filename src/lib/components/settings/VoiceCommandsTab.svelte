@@ -15,6 +15,15 @@
   import { isValidWakeCommand } from "$lib/stores/openMic";
   import "./toggle.css";
 
+  // Whole seconds, 0 = never; an emptied field must not save null (u32 backend field).
+  function setSilenceTimeoutSecs(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const raw = Number.parseInt(input.value, 10);
+    const secs = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 3600) : 0;
+    $settings.audio.open_mic.silence_timeout_secs = secs;
+    input.value = String(secs);
+  }
+
   // Audio level from open mic for threshold preview
   let currentRms = $state(0);
   let isAboveThreshold = $state(false);
@@ -1011,6 +1020,33 @@
           <div class="flex justify-between text-xs text-text-muted mt-1">
             <span>Sensitive</span>
             <span>Conservative</span>
+          </div>
+        </div>
+
+        <!-- Silence auto-stop for wake-triggered recordings -->
+        <div class="border-t border-border/50 pt-4 mt-4 flex items-center justify-between gap-4">
+          <div>
+            <label class="block text-sm font-medium text-text-secondary" for="open-mic-silence-timeout"
+              >Stop After Silence</label
+            >
+            <p class="text-xs text-text-muted mt-0.5">
+              A recording started by a wake command stops after this many seconds without speech
+              (0 = never). If nothing was said after the wake phrase it is discarded; otherwise it
+              is saved to the pile, never sent.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <input
+              id="open-mic-silence-timeout"
+              type="number"
+              min="0"
+              max="3600"
+              step="10"
+              class="w-20 px-2 py-1 bg-surface-elevated border border-border rounded text-sm text-right focus:outline-none focus:border-accent"
+              value={$settings.audio.open_mic.silence_timeout_secs ?? 120}
+              onchange={setSilenceTimeoutSecs}
+            />
+            <span class="text-xs text-text-muted">s</span>
           </div>
         </div>
       </div>

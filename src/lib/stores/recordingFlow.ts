@@ -13,9 +13,14 @@ import { writable, derived, get } from 'svelte/store';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from '@tauri-apps/plugin-notification';
 
 // Stores
-import { recording, isRecording } from '$lib/stores/recording';
+import { recording, isRecording, type AutoStopRequest } from '$lib/stores/recording';
 import { debugRecordings } from '$lib/stores/debugRecordings';
 import { sdkSessions, settingsToStoreEffort } from '$lib/stores/sdkSessions';
 import { settings } from '$lib/stores/settings';
@@ -454,12 +459,129 @@ function createRecordingFlowStore() {
     await Promise.all([
       openMicStopped,
       overlayShown,
-      recording.startRecording(currentSettings.audio.device_id || undefined, 'global'),
+      // 'wake' arms the silence auto-stop (see handleAutoStop).
+      recording.startRecording(currentSettings.audio.device_id || undefined, 'global', 'wake'),
     ]);
     await hotkeyCallbacks?.registerRecordingHotkeys();
 
     console.log('[open-mic] Recording started via wake command');
   }
+
+  // -------------------------------------------------------------------------
+  // Auto-stop (max length / open-mic silence) — see recording.ts watchdog
+  // -------------------------------------------------------------------------
+
+  /** Best-effort system notification so an unattended auto-stop isn't silent. */
+  async function notifyAutoStop(body: string) {
+    try {
+      let granted = await isPermissionGranted();
+      if (!granted) granted = (await requestPermission()) === 'granted';
+      if (granted) sendNotification({ title: 'Recording stopped', body });
+    } catch (error) {
+      console.warn('[recordingFlow] Failed to send auto-stop notification:', error);
+    }
+  }
+
+  /** End a phantom wake-triggered recording: no transcription, no session, no pile item. */
+  async function discardRecordingSilently() {
+    await hotkeyCallbacks?.unregisterRecordingHotkeys();
+    await recording.discardRecording();
+    await overlay.hide();
+    clearOverlayRecordingInfo();
+    cleanupAudioVisualizationListener();
+    if (pendingTranscriptionSessionId) {
+      sdkSessions.cancelPendingTranscription(pendingTranscriptionSessionId);
+      pendingTranscriptionSessionId = null;
+    }
+    update((s) => ({ ...s, isRecordingForNewSession: false }));
+  }
+
+  /**
+   * Stop a view-owned recording (in-session follow-up, New Session form, inline
+   * dictation) that the owning view didn't claim: transcribe it into the pile so
+   * nothing is lost and nothing is sent unattended.
+   */
+  async function stopViewRecordingToPile() {
+    update((s) => ({ ...s, isRecordingForSetup: false }));
+    const capturedRealtimeTranscript = get(recording).realtimeTranscript;
+    const debugId = recording.newRecordingId();
+    try {
+      const transcript = await recording.stopRecording(true, debugId);
+      const finalizedRealtimeTranscript = await recording.getFinalizedRealtimeTranscript(
+        debugId,
+        capturedRealtimeTranscript
+      );
+      debugRecordings.update(debugId, { destination: 'pile' });
+      await handlePileTranscriptReady(
+        transcript || '',
+        null,
+        finalizedRealtimeTranscript,
+        transcript ? undefined : 'No transcription returned',
+        debugId
+      );
+    } catch (error) {
+      await handlePileTranscriptReady(
+        '',
+        null,
+        capturedRealtimeTranscript,
+        error instanceof Error ? error.message : 'Transcription failed',
+        debugId
+      );
+    }
+  }
+
+  async function handleAutoStop(request: AutoStopRequest) {
+    if (!get(isRecording)) return;
+    const minutes = Math.round(request.elapsedMs / 60_000);
+    const why =
+      request.reason === 'max_length'
+        ? `reached the ${minutes}-minute limit`
+        : `heard no speech for ${get(settings).audio.open_mic.silence_timeout_secs ?? 0}s`;
+
+    if (request.owner === 'view') {
+      // Let the owning view stop it through its own path if it wants to
+      // (call preventDefault on the event); otherwise salvage it to the pile.
+      const event = new CustomEvent('recording-auto-stop', {
+        cancelable: true,
+        detail: request,
+      });
+      if (!window.dispatchEvent(event)) {
+        // Claimed (e.g. SdkView): stopped through the view's own path.
+        console.warn(`[recordingFlow] Auto-stopped recording (${why}); handled by its view`);
+        void notifyAutoStop(`The recording ${why} and was stopped.`);
+        return;
+      }
+      console.warn(`[recordingFlow] Auto-stopped recording (${why}); saved to the pile`);
+      void notifyAutoStop(`The recording ${why} and was saved to the pile.`);
+      await stopViewRecordingToPile();
+      return;
+    }
+
+    if (request.trigger === 'wake') {
+      // A wake-triggered recording may be a false wake on background talk —
+      // never send it unattended.
+      if (!request.heardSpeech) {
+        console.warn(`[recordingFlow] Open-mic recording ${why} with no speech after the wake phrase; discarding`);
+        await discardRecordingSilently();
+        return;
+      }
+      console.warn(`[recordingFlow] Open-mic recording ${why}; saving it to the pile`);
+      void notifyAutoStop(`The open-mic recording ${why} and was saved to the pile.`);
+      await stopRecordingToPile();
+      return;
+    }
+
+    // User-started global recording: finish it like the configured stop action.
+    console.warn(`[recordingFlow] Recording ${why}; stopping with the configured stop action`);
+    void notifyAutoStop(`The recording ${why} and was stopped.`);
+    if (get({ subscribe }).isRecordingForNewSession) {
+      await stopRecordingNewSession();
+    } else {
+      await stopRecordingFromHotkey();
+    }
+  }
+
+  recording.setAutoStopHandler(handleAutoStop);
 
   /** Cancel the current recording and any pending session. */
   async function cancelRecording() {
