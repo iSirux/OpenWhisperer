@@ -25,7 +25,7 @@
   import { settings } from '$lib/stores/settings';
   import { navigation } from '$lib/stores/navigation';
   import { formatScheduleTarget } from '$lib/utils/duration';
-  import { getProviderForModel, isAutoModel } from '$lib/utils/models';
+  import { DEFAULT_OPENAI_MODEL_ID, getProviderForModel, isAutoModel } from '$lib/utils/models';
   import { accountsForProvider, allowedAccountsForRepo } from '$lib/utils/accounts';
   import {
     autoAccountOptionLabel,
@@ -140,7 +140,7 @@
     // Switching provider invalidates both the model and the pinned account.
     const model =
       provider === 'openai'
-        ? $settings.openai_model || 'gpt-5.6-terra'
+        ? $settings.openai_model || DEFAULT_OPENAI_MODEL_ID
         : $settings.default_model || 'claude-opus-5-5';
     patchSessionTarget({ provider, model, accountId: undefined });
   }

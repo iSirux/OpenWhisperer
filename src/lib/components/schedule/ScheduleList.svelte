@@ -20,7 +20,7 @@
   import { settings } from '$lib/stores/settings';
   import { navigation } from '$lib/stores/navigation';
   import { formatScheduleTarget } from '$lib/utils/duration';
-  import { getProviderForModel } from '$lib/utils/models';
+  import { DEFAULT_OPENAI_MODEL_ID, getProviderForModel } from '$lib/utils/models';
   import ConfirmDialog from '../ConfirmDialog.svelte';
 
   let openMenuId = $state<string | null>(null);
@@ -65,7 +65,7 @@
     const provider = $settings.sdk_provider === 'OpenAI' ? 'openai' : 'claude';
     const model =
       provider === 'openai'
-        ? $settings.openai_model || 'gpt-5.6-terra'
+        ? $settings.openai_model || DEFAULT_OPENAI_MODEL_ID
         : $settings.default_model || 'claude-opus-5-5';
     const created = schedules.add({
       label: 'New schedule',

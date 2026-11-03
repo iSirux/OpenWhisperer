@@ -172,12 +172,12 @@ function compareVersions(a: number[], b: number[]): number {
 
 /**
  * The newest version of a model family the provider currently offers
- * (`sonnet` → `claude-sonnet-5-5` once it ships; `terra` → `gpt-5.6-terra`).
+ * (`sonnet` → `claude-sonnet-5-5`; `terra` → `gpt-6.1-terra`). Legacy entries
+ * count too — they lose to any newer version anyway.
  */
 export function newestModelInFamily(provider: SdkProvider, family: string): string | null {
   let best: { id: string; version: number[] } | null = null;
   for (const m of getModelsForProvider(provider)) {
-    if (m.legacy || m.isAuto) continue;
     const fv = modelFamilyVersion(provider, m.id);
     if (fv?.family !== family) continue;
     if (!best || compareVersions(fv.version, best.version) > 0) {

@@ -112,6 +112,22 @@ export const BOOTSTRAP_CLAUDE_MODELS: ModelInfo[] = [
 
 export const BOOTSTRAP_OPENAI_MODELS: ModelInfo[] = [
   {
+    id: "gpt-6.1-sol",
+    label: "6.1 Sol",
+    title: "GPT-6.1 Sol - Complex coding and agentic workflows (1.05M context, effort up to max)",
+    maxContextTokens: 1050000,
+    supportsEffort: true,
+    maxEffort: "max",
+  },
+  {
+    id: "gpt-6.1-terra",
+    label: "6.1 Terra",
+    title: "GPT-6.1 Terra - Fast, cost-efficient everyday and computer-use model (1.05M context)",
+    maxContextTokens: 1050000,
+    supportsEffort: true,
+    maxEffort: "max",
+  },
+  {
     id: "gpt-6-astra",
     label: "6 Astra",
     title: "GPT-6 Astra - Most capable OpenAI model (1.05M context, effort up to max)",

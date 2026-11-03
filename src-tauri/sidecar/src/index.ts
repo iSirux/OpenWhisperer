@@ -27,7 +27,7 @@ import { CodexSubagents } from "./codexSubagents";
 import { listClaudeModels, listCodexModels } from "./modelCatalog";
 import { capToolOutput } from "./toolOutputCap";
 
-const OPENAI_MODEL_FALLBACK = "gpt-5.6-terra";
+const OPENAI_MODEL_FALLBACK = "gpt-6.1-terra";
 
 function inferOpenAiContextWindow(model: string | undefined): number {
   const normalized = model?.toLowerCase() ?? "";

@@ -15,7 +15,7 @@ export const AUTO_MODEL: ModelInfo = {
   maxContextTokens: 1000000,
 };
 
-export const DEFAULT_OPENAI_MODEL_ID = "gpt-5.6-terra";
+export const DEFAULT_OPENAI_MODEL_ID = "gpt-6.1-terra";
 
 const OPENAI_MODEL_ALIASES: Record<string, string> = {
   "codex-mini-latest": "gpt-5.4",

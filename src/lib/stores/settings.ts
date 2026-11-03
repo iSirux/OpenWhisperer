@@ -897,8 +897,10 @@ const defaultConfig: AppConfig = {
   accounts: [],
   account_auto_select: "off",
   onboarding_completed: false,
-  openai_model: "gpt-5.6-terra",
+  openai_model: "gpt-6.1-terra",
   enabled_openai_models: [
+    "gpt-6.1-sol",
+    "gpt-6.1-terra",
     "gpt-6-astra",
     "gpt-6-sol",
     "gpt-6-luna",
