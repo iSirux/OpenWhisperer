@@ -13,7 +13,7 @@ import { clampEffortForModel, DEFAULT_MODEL_ID, getMaxContextTokens, getProvider
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
-import { USAGE_LIMIT_CONTINUATION, MAX_USAGE_LIMIT_RETRIES } from '$lib/utils/usageLimitRecovery';
+import { USAGE_LIMIT_CONTINUATION, MAX_USAGE_LIMIT_RETRIES, cutOffBySubagentLimit } from '$lib/utils/usageLimitRecovery';
 import { replayCumulativeUsage, stepCumulativeUsage } from '$lib/utils/usageCost';
 import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
 import { defaultAccountIdForRepo, isDefaultAccountId } from '$lib/utils/accounts';
@@ -1383,6 +1383,22 @@ function createSdkSessionsStore() {
         `finalizing (session: ${id})`
       );
       finalizeCompletion(id, false);
+      // Subagents killed by a usage limit look exactly like this: continue after the reset.
+      const provider = s.provider ?? getProviderForModel(s.model);
+      const cutOff = cutOffBySubagentLimit(
+        stuckSubagents, providerExhaustion(provider, s.accountId), provider, newParkedTurnId(), Date.now()
+      );
+      if (cutOff) {
+        console.info(`[sdkSessions] account at its usage limit — continuing after the reset (session: ${id})`);
+        update(sessions =>
+          sessions.map(x =>
+            x.id === id && !parkedTurnsOf(x).some(t => t.interrupted)
+              ? { ...x, parkedTurns: [...parkedTurnsOf(x), cutOff] }
+              : x
+          )
+        );
+        debouncedSave(id);
+      }
     }, DEFERRED_COMPLETION_MAX_IDLE_MS));
   }
 
