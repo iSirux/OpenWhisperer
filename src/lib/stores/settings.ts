@@ -886,9 +886,9 @@ const defaultConfig: AppConfig = {
   default_model: "claude-opus-5-5",
   default_effort_level: "high",
   enabled_models: [
-    "claude-fable-5-1",
+    "claude-fable-5-2",
     "claude-opus-5-5",
-    "claude-fable-5",
+    "claude-fable-5-1",
     "claude-opus-5",
   ],
   codex_mode: "AppServer",

@@ -37,9 +37,17 @@ export interface ModelInfo {
 // Snapshot used until the first live listing arrives.
 export const BOOTSTRAP_CLAUDE_MODELS: ModelInfo[] = [
   {
+    id: "claude-fable-5-2",
+    label: "Fable 5.2",
+    title: "Fable 5.2 - Most capable widely released model (1M context, adaptive thinking)",
+    maxContextTokens: 1000000,
+    supportsEffort: true,
+    maxEffort: "max",
+  },
+  {
     id: "claude-fable-5-1",
     label: "Fable 5.1",
-    title: "Fable 5.1 - Most capable widely released model (1M context, adaptive thinking)",
+    title: "Fable 5.1 - Previous Fable generation (1M context, adaptive thinking)",
     maxContextTokens: 1000000,
     supportsEffort: true,
     maxEffort: "max",

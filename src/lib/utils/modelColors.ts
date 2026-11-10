@@ -36,6 +36,7 @@ export function getShortModelName(model: string): string {
   const known = getModelById(model);
   if (known) return known.label;
   if (model.includes('fable')) {
+    if (model.includes('fable-5-2')) return 'Fable 5.2';
     if (model.includes('fable-5-1')) return 'Fable 5.1';
     return 'Fable 5';
   }

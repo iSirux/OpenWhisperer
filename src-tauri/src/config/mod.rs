@@ -362,9 +362,9 @@ fn default_autocompact_enabled() -> bool {
 
 fn default_enabled_models() -> Vec<String> {
     vec![
-        "claude-fable-5-1".to_string(),
+        "claude-fable-5-2".to_string(),
         "claude-opus-5-5".to_string(),
-        "claude-fable-5".to_string(),
+        "claude-fable-5-1".to_string(),
         "claude-opus-5".to_string(),
     ]
 }
