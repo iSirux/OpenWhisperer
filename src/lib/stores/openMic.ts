@@ -55,6 +55,26 @@ function createOpenMicStore() {
   let unlistenClosed: UnlistenFn | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // The user's explicit pause, remembered across recordings, settings changes
+  // and app restarts. Only pause()/resume() change it.
+  const USER_PAUSED_KEY = "openMic.userPaused";
+  let userPaused = (() => {
+    try {
+      return localStorage.getItem(USER_PAUSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  })();
+  function setUserPaused(value: boolean) {
+    userPaused = value;
+    try {
+      if (value) localStorage.setItem(USER_PAUSED_KEY, "1");
+      else localStorage.removeItem(USER_PAUSED_KEY);
+    } catch {
+      // Storage unavailable — the pause still holds for this run.
+    }
+  }
+
   // Visualization context (to match recording store's audio pipeline)
   let vizAudioContext: AudioContext | null = null;
   let vizAnalyser: AnalyserNode | null = null;
@@ -104,6 +124,13 @@ function createOpenMicStore() {
   }
 
   async function start() {
+    // The user's pause is sticky: nothing automatic (recording stop, settings
+    // change, reconnect, app restart) may resume listening — only resume().
+    if (userPaused && get(settings).audio.open_mic.enabled) {
+      update((s) => (s.state === "paused" ? s : { ...s, state: "paused", lastTranscript: "" }));
+      return;
+    }
+
     // Prevent double-starting - check both state AND if there's an ongoing start
     const currentState = get({ subscribe });
     if (currentState.state === "listening" || currentState.state === "initializing") {
@@ -516,11 +543,9 @@ function createOpenMicStore() {
   }
 
   async function pause() {
+    setUserPaused(true);
     const currentState = get({ subscribe });
-    if (currentState.state !== "listening") {
-      console.log("[open-mic] Cannot pause - not listening");
-      return;
-    }
+    if (currentState.state === "paused" || currentState.state === "disabled") return;
 
     console.log("[open-mic] Pausing passive listening");
     startGeneration++;
@@ -534,6 +559,7 @@ function createOpenMicStore() {
   }
 
   async function resume() {
+    setUserPaused(false);
     const currentState = get({ subscribe });
     if (currentState.state !== "paused") {
       console.log("[open-mic] Cannot resume - not paused");
