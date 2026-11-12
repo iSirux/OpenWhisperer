@@ -87,6 +87,8 @@
     provider?: SdkProvider;
     /** Agent account to pin the session to (undefined = machine default). */
     accountId?: string;
+    /** `accountId` is the pace auto-select pick (Auto chip), not an explicit choice. */
+    accountAutoSelected?: boolean;
     worktreeMode?: 'main' | 'new' | 'existing';
     worktreeBranch?: string;
     worktreeRepoPath?: string;
@@ -430,6 +432,7 @@
       effortLevel,
       provider,
       accountId: launchAccountId,
+      accountAutoSelected: !userPickedAccount && paceRanking != null,
     };
 
     let effectiveCwd = repoPath;

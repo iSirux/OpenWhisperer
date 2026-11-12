@@ -1026,6 +1026,8 @@ export async function handleSetupSessionStart(
     provider?: import('$lib/utils/models').SdkProvider;
     /** Agent account to pin the session to (undefined = machine default). */
     accountId?: string;
+    /** `accountId` is the pace auto-select pick, not an explicit choice. */
+    accountAutoSelected?: boolean;
     worktreeRepoPath?: string;
     worktreeBranch?: string;
     worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] };
@@ -1096,6 +1098,7 @@ export async function handleSetupSessionStart(
     effortLevel: finalEffort,
     provider: config.provider,
     accountId: config.accountId,
+    accountAutoSelected: config.accountAutoSelected,
     createdBranch: config.worktreeBranch,
     worktreePostSetup: config.worktreePostSetup,
     schedule: config.schedule,

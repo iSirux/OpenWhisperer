@@ -212,6 +212,10 @@ pub struct PersistedSdkSession {
     /// CODEX_HOME that owns the persisted rollout used by thread/resume.
     #[serde(default)]
     pub account_id: Option<String>,
+    /// `account_id` was chosen by pace auto-select, not picked by the user —
+    /// duplicating the session re-runs Auto instead of pinning that account.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub account_auto_selected: bool,
     /// Whether 'auto' model was requested (before resolution)
     #[serde(default)]
     pub auto_model_requested: bool,

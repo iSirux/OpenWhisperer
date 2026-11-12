@@ -53,8 +53,9 @@ export async function createSessionInSameRepo(sourceSessionId?: string): Promise
     repoPath
   );
 
-  // Clone the source session's agent account onto the new setup session.
-  if (source.accountId) {
+  // Clone the source session's agent account onto the new setup session — unless pace
+  // auto-select picked it, in which case the duplicate stays on Auto and re-picks.
+  if (source.accountId && !source.accountAutoSelected) {
     sdkSessions.updateSetupConfig(sessionId, { accountId: source.accountId });
   }
 

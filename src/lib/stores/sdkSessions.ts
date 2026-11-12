@@ -751,6 +751,9 @@ export interface SdkSession {
   provider?: SdkProvider;
   /** Agent account this session is pinned to (isolated login profile). Undefined = machine default. */
   accountId?: string;
+  /** `accountId` was picked by pace auto-select rather than chosen by the user, so
+   *  duplicating the session leaves the account on Auto instead of pinning it. */
+  accountAutoSelected?: boolean;
   autoModelRequested?: boolean;
   effortLevel: EffortLevel;
   /** @deprecated Use effortLevel */
@@ -3808,7 +3811,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; accountId?: string; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; schedule?: QueueWindow | 'after_sessions' | { at: number } }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; accountId?: string; accountAutoSelected?: boolean; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; schedule?: QueueWindow | 'after_sessions' | { at: number } }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -3821,6 +3824,7 @@ function createSdkSessionsStore() {
       if (!config.accountId && isPaceAutoSelectEnabled()) {
         config = {
           ...config,
+          accountAutoSelected: true,
           accountId: pickAccountIdForRepo(
             get(settings).accounts,
             findRepoById(get(repos).list, config.repoId ?? resolveRepoId(config.cwd)),
@@ -3871,6 +3875,7 @@ function createSdkSessionsStore() {
                   effortLevel: config.effortLevel,
                   provider: gatedProvider,
                   ...(config.accountId ? { accountId: config.accountId } : {}),
+                  accountAutoSelected: config.accountAutoSelected || undefined,
                   status: 'queued' as const,
                   preparedPrompt: config.prompt,
                   preparedSystemPrompt: finalSystemPrompt,
@@ -3900,6 +3905,7 @@ function createSdkSessionsStore() {
                 model: config.model,
                 effortLevel: config.effortLevel,
                 ...(config.accountId ? { accountId: config.accountId } : {}),
+                accountAutoSelected: config.accountAutoSelected || undefined,
                 status: 'initializing' as const,
                 // Setup drafts should not carry into the live SDK composer.
                 // If they remain on the session while SdkView mounts, the prompt input
@@ -4285,7 +4291,7 @@ function createSdkSessionsStore() {
           sessionProvider === 'openai' ? 'OpenAI' : 'Claude',
         );
         const pinned = sessionAccountId;
-        update(sessions => sessions.map(s => (s.id === id ? { ...s, accountId: pinned } : s)));
+        update(sessions => sessions.map(s => (s.id === id ? { ...s, accountId: pinned, accountAutoSelected: true } : s)));
       }
 
       // Smart Queue (first-launch gate): only a prompt-bearing launch consumes the rate limit, so
