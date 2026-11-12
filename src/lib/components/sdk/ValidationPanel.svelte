@@ -137,6 +137,16 @@
   let gateFindings = $derived(gate ? [...gate.findings, ...run.userFindings] : []);
   let checkedIds = $derived(new Set(run.selectedFindingIds));
   let checkedCount = $derived(run.selectedFindingIds.length);
+  let discussIds = $derived(new Set(run.discussFindingIds ?? []));
+  let fixIds = $derived(run.selectedFindingIds.filter((id) => !discussIds.has(id)));
+  let discussCount = $derived(checkedCount - fixIds.length);
+  let sendLabel = $derived(
+    discussCount === 0
+      ? `Fix selected (${checkedCount})`
+      : fixIds.length === 0
+        ? `Discuss selected (${discussCount})`
+        : `Fix ${fixIds.length} · discuss ${discussCount}`,
+  );
 
   // A fresh fix session can use any enabled model from either configured
   // provider, independent of the model that performed validation.
@@ -237,13 +247,28 @@
     newFindingText = '';
   }
 
+  /** Send the checked findings, each per its Fix / Discuss mark. */
   function fixSelected() {
     if (run.responding || checkedCount === 0) return;
-    validation.respond(run.id, 'fix', run.selectedFindingIds, instructions || undefined);
+    validation.respondFixAndDiscuss(
+      run.id,
+      fixIds,
+      run.selectedFindingIds.filter((id) => discussIds.has(id)),
+      instructions || undefined,
+    );
+  }
+  /** Send every checked finding to check & discuss — no code changes. */
+  function discussSelected() {
+    if (run.responding || checkedCount === 0) return;
+    validation.respondFixAndDiscuss(run.id, [], run.selectedFindingIds, instructions || undefined);
   }
   function fixOne(id: string) {
     if (run.responding) return;
     validation.respond(run.id, 'fix', [id], instructions || undefined);
+  }
+  function discussOne(id: string) {
+    if (run.responding) return;
+    validation.respondFixAndDiscuss(run.id, [], [id], instructions || undefined);
   }
   function approve() {
     if (run.responding) return;
@@ -678,6 +703,28 @@
                         />
                         <span class="v-finding-title">{finding.title || finding.description}</span>
                       </label>
+                      {#if checkedIds.has(finding.id)}
+                        <div class="v-disposition" role="group" aria-label="What to do with this finding">
+                          <button
+                            class="v-disp-btn"
+                            class:active={!discussIds.has(finding.id)}
+                            disabled={run.responding}
+                            onclick={() => validation.setFindingDiscuss(run.id, finding.id, false)}
+                            title="Fix this finding"
+                          >
+                            Fix
+                          </button>
+                          <button
+                            class="v-disp-btn discuss"
+                            class:active={discussIds.has(finding.id)}
+                            disabled={run.responding}
+                            onclick={() => validation.setFindingDiscuss(run.id, finding.id, true)}
+                            title="Have the agent check this finding and discuss it — no code changes"
+                          >
+                            Discuss
+                          </button>
+                        </div>
+                      {/if}
                       <span class="v-sev-badge {severityClass(finding.severity)}">{finding.severity}</span>
                       <span class="v-action-badge {actionBadgeClass(finding.action)}">{finding.action}</span>
                       <button
@@ -686,7 +733,15 @@
                         disabled={run.responding}
                         title="Send this single finding to the agent to fix"
                       >
-                        Send to agent
+                        Fix now
+                      </button>
+                      <button
+                        class="v-send-btn"
+                        onclick={() => discussOne(finding.id)}
+                        disabled={run.responding}
+                        title="Have the agent check this single finding and discuss it — no code changes; the gate stays open"
+                      >
+                        Discuss
                       </button>
                     </div>
                     {#if finding.title}
@@ -704,7 +759,7 @@
             <textarea
               class="v-textarea"
               rows="2"
-              placeholder="Optional instructions for the agent when fixing…"
+              placeholder="Optional instructions for the agent…"
               bind:value={instructions}
               disabled={run.responding}
             ></textarea>
@@ -837,8 +892,21 @@
         </button>
         <button class="v-btn v-btn-ghost" onclick={skip} disabled={run.responding}>Skip step</button>
       {:else}
-        <button class="v-btn v-btn-primary" onclick={fixSelected} disabled={run.responding || checkedCount === 0}>
-          Fix selected ({checkedCount})
+        <button
+          class="v-btn v-btn-primary"
+          onclick={fixSelected}
+          disabled={run.responding || checkedCount === 0}
+          title="Send the selected findings — Fix ones get fixed, Discuss ones get checked and discussed without code changes"
+        >
+          {sendLabel}
+        </button>
+        <button
+          class="v-btn"
+          onclick={discussSelected}
+          disabled={run.responding || checkedCount === 0}
+          title="Have the agent check every selected finding and discuss it with you — no code changes; the gate stays open"
+        >
+          Check &amp; discuss ({checkedCount})
         </button>
         <label class="v-fix-target" title="Where fix prompts are sent">
           in
@@ -1523,6 +1591,37 @@
     color: var(--color-text-primary);
   }
   .v-send-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .v-disposition {
+    display: inline-flex;
+    flex-shrink: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 5px;
+    overflow: hidden;
+  }
+  .v-disp-btn {
+    font-size: 0.64rem;
+    padding: 0.1rem 0.4rem;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+  .v-disp-btn + .v-disp-btn {
+    border-left: 1px solid var(--color-border);
+  }
+  .v-disp-btn.active {
+    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+  .v-disp-btn.discuss.active {
+    background: color-mix(in srgb, var(--color-warning, #f59e0b) 22%, transparent);
+    color: var(--color-warning, #f59e0b);
+  }
+  .v-disp-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }

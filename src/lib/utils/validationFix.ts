@@ -29,16 +29,39 @@ function location(finding: ValidationFinding): string {
   return finding.line != null ? `${finding.file}:${finding.line}` : finding.file;
 }
 
+const DISCUSS_DISCIPLINE =
+  'For each of these, check whether it is real by reading the relevant code, then discuss it with me: ' +
+  'what you found, whether it is worth fixing, and how you would fix it (with trade-offs). ' +
+  'Do NOT change any code for these — wait for my decision.';
+
+function pushFinding(lines: string[], finding: ValidationFinding, index: number): void {
+  const title = finding.title?.trim();
+  lines.push(
+    `${index + 1}. [${finding.severity}]${title ? ` ${title} —` : ''} (${location(finding)}) ${finding.description}`,
+  );
+  const perFinding = finding.userInstructions?.trim();
+  if (perFinding) {
+    lines.push(`   Instructions: ${perFinding}`);
+  }
+}
+
+/**
+ * Build the prompt for a gate response: `findings` are to be fixed, `discuss`
+ * are to be checked and discussed without code changes. Either may be empty
+ * (not both).
+ */
 export function buildFixPrompt(
   findings: ValidationFinding[],
   instructions?: string,
   context?: FixContext,
+  discuss: ValidationFinding[] = [],
 ): string {
   const lines: string[] = [];
+  const fixing = findings.length > 0;
 
   if (context) {
     lines.push(
-      'You are fixing validation findings for work done in another session in this repository ' +
+      `You are ${fixing ? 'fixing' : 'reviewing'} validation findings for work done in another session in this repository ` +
         `(working directory: ${context.cwd}). The changes under validation are already on the ` +
         'current branch — read the diff and surrounding code as needed.',
     );
@@ -52,21 +75,24 @@ export function buildFixPrompt(
     lines.push('');
   }
 
-  lines.push(
-    'The validation pipeline flagged the following on the changes in this branch. Address them.',
-  );
-  lines.push('');
-
-  findings.forEach((finding, index) => {
-    const title = finding.title?.trim();
+  if (fixing) {
     lines.push(
-      `${index + 1}. [${finding.severity}]${title ? ` ${title} —` : ''} (${location(finding)}) ${finding.description}`,
+      'The validation pipeline flagged the following on the changes in this branch. Address them.',
     );
-    const perFinding = finding.userInstructions?.trim();
-    if (perFinding) {
-      lines.push(`   Instructions: ${perFinding}`);
-    }
-  });
+    lines.push('');
+    findings.forEach((finding, index) => pushFinding(lines, finding, index));
+  }
+
+  if (discuss.length > 0) {
+    if (fixing) lines.push('');
+    lines.push(
+      fixing
+        ? 'Separately, CHECK & DISCUSS (do not fix) these other findings:'
+        : 'The validation pipeline flagged the following on the changes in this branch. Check & discuss them — do not fix them yet.',
+    );
+    lines.push('');
+    discuss.forEach((finding, index) => pushFinding(lines, finding, index));
+  }
 
   const shared = instructions?.trim();
   if (shared) {
@@ -75,7 +101,11 @@ export function buildFixPrompt(
   }
 
   lines.push('');
-  lines.push(FIXER_DISCIPLINE);
+  if (fixing) lines.push(FIXER_DISCIPLINE);
+  if (discuss.length > 0) {
+    if (fixing) lines.push('');
+    lines.push(fixing ? `For the check & discuss findings: ${DISCUSS_DISCIPLINE}` : DISCUSS_DISCIPLINE);
+  }
 
   return lines.join('\n');
 }

@@ -231,6 +231,10 @@ export interface ValidationRunView extends ValidationRun {
   activity: AgentActivityItem[];
   /** Findings the user has checked at the current gate (seeded to auto-fix). */
   selectedFindingIds: string[];
+  /** Selected findings marked "check & discuss" instead of fix (subset of
+   *  selectedFindingIds). Never sent to the backend — they ride along in the
+   *  prompt, so they stay on the gate for a later decision. */
+  discussFindingIds: string[];
   /** User-added findings for the current gate (sent as addedFindings on respond). */
   userFindings: ValidationFinding[];
   /** A respond/ship request is in flight (drives a spinner). */
@@ -267,7 +271,14 @@ export type FixTarget = 'session' | 'new-session';
  */
 export type PersistedValidationRun = Omit<
   ValidationRunView,
-  'log' | 'activity' | 'responding' | 'selectedFindingIds' | 'userFindings' | 'gateSignature' | 'detached'
+  | 'log'
+  | 'activity'
+  | 'responding'
+  | 'selectedFindingIds'
+  | 'discussFindingIds'
+  | 'userFindings'
+  | 'gateSignature'
+  | 'detached'
 >;
 
 // ---------------------------------------------------------------------------
@@ -420,6 +431,7 @@ function toPersistedRun(view: ValidationRunView): PersistedValidationRun {
     activity: _activity,
     responding: _responding,
     selectedFindingIds: _selected,
+    discussFindingIds: _discuss,
     userFindings: _userFindings,
     gateSignature: _sig,
     detached: _detached,
@@ -451,6 +463,7 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
   patchView(runId, (prev) => {
     const sig = gateSignature(incoming.gate);
     let selectedFindingIds = prev.selectedFindingIds;
+    let discussFindingIds = prev.discussFindingIds ?? [];
     let userFindings = prev.userFindings;
     if (sig !== prev.gateSignature) {
       // A new / changed gate (or a cleared gate) — reseed the user's
@@ -458,6 +471,7 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
       selectedFindingIds = (incoming.gate?.findings ?? [])
         .filter((f) => f.action === 'auto-fix')
         .map((f) => f.id);
+      discussFindingIds = [];
       userFindings = [];
     }
     // A new gate needs the user's attention, and pass/fail is the outcome they
@@ -483,6 +497,7 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
       fixAccountId: prev.fixAccountId,
       panelOpen,
       selectedFindingIds,
+      discussFindingIds,
       userFindings,
       gateSignature: sig,
       // Any state change means the backend advanced — clear the spinner.
@@ -604,6 +619,7 @@ async function startRun(
     fixAccountId: origin?.accountId ?? pickedReviewerAccountId ?? undefined,
     panelOpen: true,
     selectedFindingIds: [],
+    discussFindingIds: [],
     userFindings: [],
   };
   await attachRun(runId, seed);
@@ -642,6 +658,7 @@ function viewFromPersisted(p: PersistedValidationRun): ValidationRunView {
     log: [],
     activity: [],
     selectedFindingIds,
+    discussFindingIds: [],
     userFindings: [],
     responding: false,
     gateSignature: gateSignature(p.gate),
@@ -903,7 +920,7 @@ async function respond(
   findingIds?: string[],
   instructions?: string,
   addedFindings?: ValidationFinding[],
-): Promise<void> {
+): Promise<boolean> {
   const view = get(validationRuns).get(runId);
   const selected = findingIds ?? view?.selectedFindingIds ?? [];
   // User-added findings that are part of this fix, unless the caller overrides.
@@ -921,12 +938,73 @@ async function respond(
       addedFindings: added.length > 0 ? added : null,
     });
     // `responding` clears on the next update event.
+    return true;
   } catch (err) {
     patchView(runId, (r) => ({
       responding: false,
       log: appendLog(r.log, `respond failed: ${errMsg(err)}`),
     }));
+    return false;
   }
+}
+
+/**
+ * Findings to check & discuss alongside the next fix prompt for a run, stashed
+ * when the user sends a mixed fix + discuss response and consumed by `startFix`.
+ */
+const pendingDiscuss = new Map<string, ValidationFinding[]>();
+
+/**
+ * Send the gate's findings to the agent with per-finding dispositions:
+ * `fixIds` go through the normal fix loop (the backend is told about them),
+ * `discussIds` are only checked and discussed — they are never sent to the
+ * backend, so they stay on the gate for a later fix/approve decision.
+ * Discuss-only sends a prompt and leaves the gate parked.
+ */
+async function respondFixAndDiscuss(
+  runId: string,
+  fixIds: string[],
+  discussIds: string[],
+  instructions?: string,
+): Promise<void> {
+  const view = get(validationRuns).get(runId);
+  if (!view || view.responding) return;
+  const all = [...(view.gate?.findings ?? []), ...view.userFindings];
+  const discuss = all.filter((f) => discussIds.includes(f.id));
+
+  if (fixIds.length > 0) {
+    if (discuss.length > 0) pendingDiscuss.set(runId, discuss);
+    else pendingDiscuss.delete(runId);
+    // A failed respond leaves no fix request coming — drop the stash.
+    if (!(await respond(runId, 'fix', fixIds, instructions))) pendingDiscuss.delete(runId);
+    return;
+  }
+  if (discuss.length === 0) return;
+
+  const origin = get(sdkSessions).find((s) => s.id === view.sessionId);
+  try {
+    if (view.fixTarget === 'new-session' || !origin) {
+      if (!origin) throw new Error('The session was closed.');
+      const prompt = buildFixPrompt([], instructions, { intent: view.intent, cwd: view.cwd }, discuss);
+      await launchFixSession(view, origin, prompt);
+    } else {
+      const prompt = buildFixPrompt([], instructions, undefined, discuss);
+      // Sends now when idle, else waits for the session's current turn.
+      await sdkSessions.queueTurnAfterSessions(view.sessionId, prompt, undefined, 'session');
+    }
+  } catch (err) {
+    patchView(runId, (r) => ({ log: appendLog(r.log, `discuss failed: ${errMsg(err)}`) }));
+    return;
+  }
+  const sent = new Set(discussIds);
+  patchView(runId, (r) => ({
+    selectedFindingIds: r.selectedFindingIds.filter((id) => !sent.has(id)),
+    discussFindingIds: r.discussFindingIds.filter((id) => !sent.has(id)),
+    log: appendLog(
+      r.log,
+      `sent ${discuss.length} ${discuss.length === 1 ? 'finding' : 'findings'} to check & discuss (gate stays open)`,
+    ),
+  }));
 }
 
 /** Answer a "ship" gate with the (possibly user-edited) commit message / PR text. */
@@ -977,7 +1055,23 @@ function dismiss(runId: string): void {
 
 /** Update the checked findings for the current gate. */
 function selectFindings(runId: string, findingIds: string[]): void {
-  patchView(runId, { selectedFindingIds: findingIds });
+  patchView(runId, (r) => ({
+    selectedFindingIds: findingIds,
+    discussFindingIds: r.discussFindingIds.filter((id) => findingIds.includes(id)),
+  }));
+}
+
+/** Mark a selected finding as "check & discuss" (true) or fix (false). */
+function setFindingDiscuss(runId: string, findingId: string, discuss: boolean): void {
+  patchView(runId, (r) => {
+    const rest = r.discussFindingIds.filter((id) => id !== findingId);
+    return {
+      selectedFindingIds: r.selectedFindingIds.includes(findingId)
+        ? r.selectedFindingIds
+        : [...r.selectedFindingIds, findingId],
+      discussFindingIds: discuss ? [...rest, findingId] : rest,
+    };
+  });
 }
 
 /** Show the dock panel for a run. */
@@ -1100,6 +1194,10 @@ async function startFix(runId: string, payload: ValidationFixRequestPayload): Pr
   const view = get(validationRuns).get(runId);
   if (!view) return;
 
+  // Findings the user marked "check & discuss" ride along in this fix prompt.
+  const discuss = pendingDiscuss.get(runId) ?? [];
+  pendingDiscuss.delete(runId);
+
   const origin = get(sdkSessions).find((s) => s.id === view.sessionId);
   if (!origin) {
     void reportFixFailed(runId, 'The session was closed before the fix could start.');
@@ -1107,11 +1205,11 @@ async function startFix(runId: string, payload: ValidationFixRequestPayload): Pr
   }
 
   if (view.fixTarget === 'new-session') {
-    await startFixInNewSession(runId, view, origin, payload);
+    await startFixInNewSession(runId, view, origin, payload, discuss);
     return;
   }
 
-  const prompt = buildFixPrompt(payload.findings, payload.instructions ?? undefined);
+  const prompt = buildFixPrompt(payload.findings, payload.instructions ?? undefined, undefined, discuss);
 
   const watcher: FixWatcher = {
     runId,
@@ -1141,11 +1239,14 @@ async function startFixInNewSession(
   view: ValidationRunView,
   origin: SdkSession,
   payload: ValidationFixRequestPayload,
+  discuss: ValidationFinding[] = [],
 ): Promise<void> {
-  const prompt = buildFixPrompt(payload.findings, payload.instructions ?? undefined, {
-    intent: view.intent,
-    cwd: view.cwd,
-  });
+  const prompt = buildFixPrompt(
+    payload.findings,
+    payload.instructions ?? undefined,
+    { intent: view.intent, cwd: view.cwd },
+    discuss,
+  );
 
   // Reserve the watcher slot before the async launch so a second fix-request
   // can't double-dispatch while the session is being created.
@@ -1160,30 +1261,8 @@ async function startFixInNewSession(
   fixWatchers.set(runId, watcher);
 
   try {
-    const model = view.fixModel || origin.model;
-    const provider = getProviderForModel(model);
-    const effort = normalizeFixEffort(
-      model,
-      view.fixEffort ?? origin.effortLevel ?? undefined,
-    );
-    // Unset = Auto (resolved at launch); a reserved `default-*` id is an explicit
-    // machine-login pick and is normalized to undefined at session create.
-    const accountId = view.fixAccountId || undefined;
-    const newId = sdkSessions.createSetupSession(
-      model,
-      effort,
-      provider,
-      view.cwd,
-    );
-    watcher.sessionId = newId;
-    await sdkSessions.startSetupSession(newId, {
-      prompt,
-      cwd: view.cwd,
-      repoId: origin.repoId ?? undefined,
-      model,
-      effortLevel: effort,
-      provider,
-      accountId,
+    await launchFixSession(view, origin, prompt, (id) => {
+      watcher.sessionId = id;
     });
   } catch (err) {
     finishFix(watcher, 'failed', errMsg(err));
@@ -1199,6 +1278,37 @@ async function startFixInNewSession(
     const s = sessions.find((sess) => sess.id === watcher.sessionId);
     void onFixTick(watcher, s);
   });
+}
+
+/**
+ * Launch a fresh session in the run's cwd with the gate's fix model / effort /
+ * account, sending `prompt` as its first turn. `onCreated` gets the id before
+ * the (async) start so a watcher can track it.
+ */
+async function launchFixSession(
+  view: ValidationRunView,
+  origin: SdkSession,
+  prompt: string,
+  onCreated?: (id: string) => void,
+): Promise<string> {
+  const model = view.fixModel || origin.model;
+  const provider = getProviderForModel(model);
+  const effort = normalizeFixEffort(model, view.fixEffort ?? origin.effortLevel ?? undefined);
+  // Unset = Auto (resolved at launch); a reserved `default-*` id is an explicit
+  // machine-login pick and is normalized to undefined at session create.
+  const accountId = view.fixAccountId || undefined;
+  const newId = sdkSessions.createSetupSession(model, effort, provider, view.cwd);
+  onCreated?.(newId);
+  await sdkSessions.startSetupSession(newId, {
+    prompt,
+    cwd: view.cwd,
+    repoId: origin.repoId ?? undefined,
+    model,
+    effortLevel: effort,
+    provider,
+    accountId,
+  });
+  return newId;
 }
 
 /** Drive the fix state machine on each sessions-store change. */
@@ -1384,6 +1494,8 @@ export const validation = {
   rehydrateFromSessions,
   resume,
   respond,
+  respondFixAndDiscuss,
+  setFindingDiscuss,
   executeShip,
   cancel,
   dismiss,
