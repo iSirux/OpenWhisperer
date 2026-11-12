@@ -34,7 +34,12 @@
     return () => clearInterval(timer);
   });
 
-  const items = $derived(
+  /** A one-shot that has nothing left to fire — tucked into the collapsed "Done" group. */
+  function isDoneOneOff(s: Schedule): boolean {
+    return s.when.kind === 'at' && s.nextFireAt == null;
+  }
+
+  const sorted = $derived(
     [...$schedules].sort((a, b) => {
       // Armed schedules first (soonest first), then everything paused/spent.
       const aNext = a.enabled && a.nextFireAt != null ? a.nextFireAt : Number.POSITIVE_INFINITY;
@@ -43,6 +48,14 @@
       return b.createdAt - a.createdAt;
     })
   );
+  const items = $derived(sorted.filter((s) => !isDoneOneOff(s)));
+  // Most recently run first.
+  const doneItems = $derived(
+    sorted
+      .filter(isDoneOneOff)
+      .sort((a, b) => (b.lastRunAt ?? b.createdAt) - (a.lastRunAt ?? a.createdAt))
+  );
+  let showDone = $state(false);
 
   const confirmDeleteLabel = $derived(
     confirmDeleteId ? ($schedules.find((s) => s.id === confirmDeleteId)?.label ?? '') : ''
@@ -179,7 +192,7 @@
   </div>
 
   <div class="flex-1 overflow-y-auto">
-    {#if items.length === 0}
+    {#if items.length === 0 && doneItems.length === 0}
       <div class="p-4 text-center text-xs text-text-muted">
         <p class="mb-1 font-medium text-text-secondary">No schedules yet</p>
         <p>
@@ -190,177 +203,206 @@
     {:else}
       <div class="flex flex-col gap-1 p-1.5">
         {#each items as schedule (schedule.id)}
-          {@const lastRun = lastRealRun(schedule) ?? schedule.history[0]}
-          {@const lastFailed = lastRun?.status === 'failed' && !isRetrying(lastRun)}
-          <div
-            class="rounded border p-2 cursor-pointer transition-colors {$selectedScheduleId ===
-            schedule.id
-              ? 'border-accent bg-accent/10'
-              : lastFailed
-                ? 'border-red-500/50 bg-red-500/5 hover:bg-red-500/10'
-                : 'border-border bg-surface-elevated/50 hover:bg-surface-elevated'}"
-            class:opacity-60={!schedule.enabled}
-            onclick={() => openSchedule(schedule)}
-            onkeydown={(e) => e.key === 'Enter' && openSchedule(schedule)}
-            role="button"
-            tabindex="0"
-          >
-            <div class="flex items-start gap-1.5">
-              <div class="flex-1 min-w-0">
-                <span class="flex items-center gap-1 text-xs font-medium text-text-primary">
-                  {#if lastFailed && lastRun}
-                    <span
-                      class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"
-                      title={runTitle(lastRun)}
-                      aria-label="Last run failed"
-                    ></span>
-                  {/if}
-                  <span class="truncate min-w-0">{schedule.label}</span>
-                </span>
-                <p class="text-[11px] text-text-muted truncate mt-0.5">
-                  {describeScheduleSpec(schedule.when, now)}
-                </p>
-              </div>
-
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="flex items-center gap-1 shrink-0" onclick={(e) => e.stopPropagation()}>
-                <label
-                  class="flex items-center cursor-pointer"
-                  title={schedule.enabled ? 'Enabled — click to pause' : 'Paused — click to enable'}
-                >
-                  <input
-                    type="checkbox"
-                    class="accent-accent"
-                    checked={schedule.enabled}
-                    onchange={(e) => schedules.setEnabled(schedule.id, e.currentTarget.checked)}
-                  />
-                </label>
-                <button
-                  class="p-0.5 rounded text-text-muted hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40"
-                  title="Run now (doesn't consume the next occurrence)"
-                  disabled={runningId === schedule.id}
-                  onclick={() => runNow(schedule)}
-                  aria-label="Run now"
-                >
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-                    <path
-                      fill-rule="evenodd"
-                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
-                      clip-rule="evenodd"
-                    />
-                  </svg>
-                </button>
-                <div class="overflow-wrap relative">
-                  <button
-                    class="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-surface transition-colors"
-                    title="More actions"
-                    aria-haspopup="menu"
-                    aria-expanded={openMenuId === schedule.id}
-                    onclick={() =>
-                      (openMenuId = openMenuId === schedule.id ? null : schedule.id)}
-                  >
-                    <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-                      <path
-                        d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM18 10a2 2 0 11-4 0 2 2 0 014 0z"
-                      />
-                    </svg>
-                  </button>
-                  {#if openMenuId === schedule.id}
-                    <div class="overflow-menu" role="menu">
-                      <button
-                        class="overflow-item"
-                        role="menuitem"
-                        disabled={schedule.nextFireAt == null}
-                        onclick={() => skipNext(schedule.id)}
-                      >
-                        Skip next
-                      </button>
-                      <button
-                        class="overflow-item"
-                        role="menuitem"
-                        onclick={() => duplicate(schedule.id)}
-                      >
-                        Duplicate
-                      </button>
-                      <button
-                        class="overflow-item overflow-item--danger"
-                        role="menuitem"
-                        onclick={() => {
-                          openMenuId = null;
-                          confirmDeleteId = schedule.id;
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  {/if}
-                </div>
-              </div>
-            </div>
-
-            <div class="flex items-center gap-1.5 mt-1 flex-wrap">
-              <span
-                class="text-[10px] px-1.5 py-px rounded bg-surface text-text-secondary truncate max-w-[110px]"
-                title={schedule.target.kind === 'message'
-                  ? 'Follow-up message on a bound session'
-                  : 'Launches a new session in this repository'}
-              >
-                {schedule.target.kind === 'message'
-                  ? boundSessionLabel(schedule.target.sessionId)
-                  : repoLabel(schedule.target.repoId)}
-              </span>
-              {#if schedule.target.kind === 'session' && !schedule.target.useWorktree && schedule.target.worktreePath}
-                <span
-                  class="text-[10px] px-1.5 py-px rounded bg-surface text-text-secondary truncate max-w-[110px]"
-                  title="Runs in worktree {schedule.target.worktreePath}"
-                >
-                  ⑂ {schedule.target.worktreePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop()}
-                </span>
-              {/if}
-              {#if schedule.source === 'cli'}
-                <span
-                  class="text-[10px] px-1 py-px rounded border border-border text-text-muted shrink-0"
-                  title="Created by an agent via the ow CLI"
-                >
-                  CLI
-                </span>
-              {/if}
-              {#if schedule.enabled && schedule.nextFireAt != null}
-                <span
-                  class="text-[10px] text-accent shrink-0"
-                  title={formatScheduleTarget(schedule.nextFireAt, now)}
-                >
-                  in {countdown(schedule.nextFireAt)}
-                </span>
-              {:else if !schedule.enabled}
-                <span class="text-[10px] text-text-muted shrink-0">paused</span>
-              {:else}
-                <span class="text-[10px] text-text-muted shrink-0">no upcoming run</span>
-              {/if}
-              {#if lastRun}
-                <span
-                  class="text-[10px] ml-auto shrink-0 truncate max-w-[140px] {isRetrying(lastRun)
-                    ? 'text-amber-400'
-                    : (RUN_STATUS_CLASS[lastRun.status] ?? 'text-text-muted')}"
-                  title={runTitle(lastRun)}
-                >
-                  {#if isRetrying(lastRun)}
-                    retrying
-                  {:else if lastFailed && lastRun.note}
-                    failed · {lastRun.note}
-                  {:else}
-                    {lastRun.status}
-                  {/if}
-                </span>
-              {/if}
-            </div>
-          </div>
+          {@render card(schedule)}
         {/each}
+        {#if doneItems.length > 0}
+          <button
+            class="flex items-center gap-1 px-1 py-1 mt-1 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
+            onclick={() => (showDone = !showDone)}
+            aria-expanded={showDone}
+          >
+            <svg
+              class="w-3 h-3 transition-transform {showDone ? 'rotate-90' : ''}"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fill-rule="evenodd"
+                d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                clip-rule="evenodd"
+              />
+            </svg>
+            Done one-offs ({doneItems.length})
+          </button>
+          {#if showDone}
+            {#each doneItems as schedule (schedule.id)}
+              {@render card(schedule)}
+            {/each}
+          {/if}
+        {/if}
       </div>
     {/if}
   </div>
 </div>
+
+{#snippet card(schedule: Schedule)}
+  {@const lastRun = lastRealRun(schedule) ?? schedule.history[0]}
+  {@const lastFailed = lastRun?.status === 'failed' && !isRetrying(lastRun)}
+  <div
+    class="rounded border p-2 cursor-pointer transition-colors {$selectedScheduleId ===
+    schedule.id
+      ? 'border-accent bg-accent/10'
+      : lastFailed
+        ? 'border-red-500/50 bg-red-500/5 hover:bg-red-500/10'
+        : 'border-border bg-surface-elevated/50 hover:bg-surface-elevated'}"
+    class:opacity-60={!schedule.enabled}
+    onclick={() => openSchedule(schedule)}
+    onkeydown={(e) => e.key === 'Enter' && openSchedule(schedule)}
+    role="button"
+    tabindex="0"
+  >
+    <div class="flex items-start gap-1.5">
+      <div class="flex-1 min-w-0">
+        <span class="flex items-center gap-1 text-xs font-medium text-text-primary">
+          {#if lastFailed && lastRun}
+            <span
+              class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"
+              title={runTitle(lastRun)}
+              aria-label="Last run failed"
+            ></span>
+          {/if}
+          <span class="truncate min-w-0">{schedule.label}</span>
+        </span>
+        <p class="text-[11px] text-text-muted truncate mt-0.5">
+          {describeScheduleSpec(schedule.when, now)}
+        </p>
+      </div>
+
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="flex items-center gap-1 shrink-0" onclick={(e) => e.stopPropagation()}>
+        <label
+          class="flex items-center cursor-pointer"
+          title={schedule.enabled ? 'Enabled — click to pause' : 'Paused — click to enable'}
+        >
+          <input
+            type="checkbox"
+            class="accent-accent"
+            checked={schedule.enabled}
+            onchange={(e) => schedules.setEnabled(schedule.id, e.currentTarget.checked)}
+          />
+        </label>
+        <button
+          class="p-0.5 rounded text-text-muted hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40"
+          title="Run now (doesn't consume the next occurrence)"
+          disabled={runningId === schedule.id}
+          onclick={() => runNow(schedule)}
+          aria-label="Run now"
+        >
+          <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+            <path
+              fill-rule="evenodd"
+              d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
+              clip-rule="evenodd"
+            />
+          </svg>
+        </button>
+        <div class="overflow-wrap relative">
+          <button
+            class="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-surface transition-colors"
+            title="More actions"
+            aria-haspopup="menu"
+            aria-expanded={openMenuId === schedule.id}
+            onclick={() =>
+              (openMenuId = openMenuId === schedule.id ? null : schedule.id)}
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+              <path
+                d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM18 10a2 2 0 11-4 0 2 2 0 014 0z"
+              />
+            </svg>
+          </button>
+          {#if openMenuId === schedule.id}
+            <div class="overflow-menu" role="menu">
+              <button
+                class="overflow-item"
+                role="menuitem"
+                disabled={schedule.nextFireAt == null}
+                onclick={() => skipNext(schedule.id)}
+              >
+                Skip next
+              </button>
+              <button
+                class="overflow-item"
+                role="menuitem"
+                onclick={() => duplicate(schedule.id)}
+              >
+                Duplicate
+              </button>
+              <button
+                class="overflow-item overflow-item--danger"
+                role="menuitem"
+                onclick={() => {
+                  openMenuId = null;
+                  confirmDeleteId = schedule.id;
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-1.5 mt-1 flex-wrap">
+      <span
+        class="text-[10px] px-1.5 py-px rounded bg-surface text-text-secondary truncate max-w-[110px]"
+        title={schedule.target.kind === 'message'
+          ? 'Follow-up message on a bound session'
+          : 'Launches a new session in this repository'}
+      >
+        {schedule.target.kind === 'message'
+          ? boundSessionLabel(schedule.target.sessionId)
+          : repoLabel(schedule.target.repoId)}
+      </span>
+      {#if schedule.target.kind === 'session' && !schedule.target.useWorktree && schedule.target.worktreePath}
+        <span
+          class="text-[10px] px-1.5 py-px rounded bg-surface text-text-secondary truncate max-w-[110px]"
+          title="Runs in worktree {schedule.target.worktreePath}"
+        >
+          ⑂ {schedule.target.worktreePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop()}
+        </span>
+      {/if}
+      {#if schedule.source === 'cli'}
+        <span
+          class="text-[10px] px-1 py-px rounded border border-border text-text-muted shrink-0"
+          title="Created by an agent via the ow CLI"
+        >
+          CLI
+        </span>
+      {/if}
+      {#if schedule.enabled && schedule.nextFireAt != null}
+        <span
+          class="text-[10px] text-accent shrink-0"
+          title={formatScheduleTarget(schedule.nextFireAt, now)}
+        >
+          in {countdown(schedule.nextFireAt)}
+        </span>
+      {:else if !schedule.enabled}
+        <span class="text-[10px] text-text-muted shrink-0">paused</span>
+      {:else}
+        <span class="text-[10px] text-text-muted shrink-0">no upcoming run</span>
+      {/if}
+      {#if lastRun}
+        <span
+          class="text-[10px] ml-auto shrink-0 truncate max-w-[140px] {isRetrying(lastRun)
+            ? 'text-amber-400'
+            : (RUN_STATUS_CLASS[lastRun.status] ?? 'text-text-muted')}"
+          title={runTitle(lastRun)}
+        >
+          {#if isRetrying(lastRun)}
+            retrying
+          {:else if lastFailed && lastRun.note}
+            failed · {lastRun.note}
+          {:else}
+            {lastRun.status}
+          {/if}
+        </span>
+      {/if}
+    </div>
+  </div>
+{/snippet}
 
 <ConfirmDialog
   show={confirmDeleteId != null}
