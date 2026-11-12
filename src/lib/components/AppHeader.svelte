@@ -248,14 +248,32 @@
     {#if $updateAvailable}
       <button
         class="flex items-center gap-1.5 px-2 py-1 bg-accent/15 text-accent rounded text-xs hover:bg-accent/25 transition-colors"
-        onclick={() => goto('/settings?tab=about')}
+        onclick={() => {
+          if ($updater.status === 'ready' || $updater.status === 'available') {
+            void updater.downloadAndInstall();
+          } else if ($updater.status === 'installed') {
+            void updater.restart();
+          } else {
+            goto('/settings?tab=about');
+          }
+        }}
         title={$updater.status === 'downloading'
           ? 'Downloading update...'
-          : `Update v${$updater.version} available — click to install`}
+          : $updater.status === 'installing'
+            ? 'Installing update...'
+            : $updater.status === 'installed'
+              ? 'Update installed — click to restart'
+              : $updater.status === 'ready'
+                ? `Update v${$updater.version} downloaded — click to install and restart now`
+                : `Update v${$updater.version} available — click to download, install and restart`}
       >
-        {#if $updater.status === 'downloading'}
+        {#if $updater.status === 'downloading' || $updater.status === 'installing'}
           <div class="w-2 h-2 bg-accent rounded-full animate-pulse"></div>
-          <span>Updating{$updater.progress != null ? ` ${Math.round($updater.progress * 100)}%` : '...'}</span>
+          <span>
+            {#if $updater.status === 'installing'}Installing...{:else}Updating{$updater.progress != null ? ` ${Math.round($updater.progress * 100)}%` : '...'}{/if}
+          </span>
+        {:else if $updater.status === 'installed'}
+          <span>Restart to update</span>
         {:else}
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0 0l-4-4m4 4l4-4" />

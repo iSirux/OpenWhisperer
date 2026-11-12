@@ -94,16 +94,17 @@
   <div class="border-b border-border pb-6">
     <h3 class="text-sm font-medium text-text-secondary mb-3">Updates</h3>
 
-    {#if $updater.status === "available" || $updater.status === "downloading" || $updater.status === "installed"}
+    {#if $updater.status === "available" || $updater.status === "downloading" || $updater.status === "ready" || $updater.status === "installing" || $updater.status === "installed"}
       <div class="border border-accent/30 bg-accent/5 rounded p-3 mb-3">
         <div class="flex items-center justify-between gap-3">
           <div class="min-w-0">
             <p class="text-sm font-medium text-text">
-              Version {$updater.version} is available
+              Version {$updater.version}
+              {$updater.status === "ready" ? "is downloaded and ready to install" : "is available"}
             </p>
             <p class="text-xs text-text-muted">Current version: {appVersion}</p>
           </div>
-          {#if $updater.status === "available"}
+          {#if $updater.status === "available" || $updater.status === "ready"}
             <button
               onclick={() => updater.downloadAndInstall()}
               class="flex-shrink-0 px-3 py-2 bg-accent text-white rounded text-sm hover:bg-accent/90 transition-colors"
@@ -117,6 +118,8 @@
             >
               Restart Now
             </button>
+          {:else if $updater.status === "installing"}
+            <span class="flex-shrink-0 text-xs text-text-muted">Installing...</span>
           {/if}
         </div>
 
@@ -131,7 +134,9 @@
             </div>
             <p class="text-xs text-text-muted mt-1">
               Downloading{$updater.progress != null ? ` ${Math.round($updater.progress * 100)}%` : ""}...
-              The app will restart to apply the update.
+              {$updater.background
+                ? "Downloading in the background — installing will be instant."
+                : "The app will restart to apply the update."}
             </p>
           </div>
         {/if}

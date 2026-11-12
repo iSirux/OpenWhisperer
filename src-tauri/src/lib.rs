@@ -19,6 +19,7 @@ mod sidecar;
 mod usage_stats;
 #[cfg(windows)]
 mod taskbar_pin_repair;
+mod updater_cleanup;
 mod util;
 mod validation;
 #[cfg(windows)]
@@ -430,6 +431,9 @@ pub fn run() {
             // that each update deletes (blank page icon) — retarget them at the exe.
             #[cfg(windows)]
             taskbar_pin_repair::spawn();
+
+            // Installer folders the updater plugin leaves in %TEMP% after each update.
+            updater_cleanup::spawn(app.package_info().name.clone());
 
             // A crashed WebView2 renderer leaves a window blank white for good;
             // reload it instead (agents keep running in the sidecar meanwhile).
