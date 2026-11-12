@@ -386,6 +386,7 @@
         getCurrentDraft: () => { prompt: string; images: SdkImageContent[] };
         appendToPrompt: (text: string) => void;
         insertQuote: (line: string) => void;
+        loadForEdit: (text: string, images?: SdkImageContent[]) => void;
       }
     | undefined;
 
@@ -1075,6 +1076,29 @@
         ? `${existing.replace(/[ \t]+$/, "")}${text.trim()}`
         : `${existing.trim()} ${text.trim()}`;
     sdkSessions.updateDraft(targetSessionId, combined, current?.draftImages);
+  }
+
+  /**
+   * Edit a queued (not yet sent) turn: take it off the queue and load its text and
+   * images into the prompt input, where it can be changed and sent or re-queued
+   * with any timing. Anything already typed is kept.
+   */
+  function handleEditQueuedTurn(turn: RateLimitedState) {
+    const targetId = sessionId;
+    sdkSessions.clearRateLimited(targetId, turn.id);
+    if (promptInputRef) {
+      promptInputRef.loadForEdit(turn.prompt, turn.images);
+      return;
+    }
+    const current = sdkSessions.getSession(targetId);
+    const existing = (current?.draftPrompt ?? "").replace(/\s+$/, "");
+    const body = turn.prompt.trim();
+    const images = [...(current?.draftImages ?? []), ...(turn.images ?? [])];
+    sdkSessions.updateDraft(
+      targetId,
+      existing && body ? `${existing}\n\n${body}` : existing || body,
+      images.length > 0 ? images : undefined,
+    );
   }
 
   /** Draft + action combined: the typed draft leads, the action text follows. */
@@ -2464,7 +2488,12 @@
            they don't get buried by the still-running turn's streaming. -->
       {#if session}
         {#each ghosts as ghost (ghost.turn.id)}
-          <QueuedTurnGhost {session} turn={ghost.turn} message={ghost.message} />
+          <QueuedTurnGhost
+            {session}
+            turn={ghost.turn}
+            message={ghost.message}
+            onEdit={handleEditQueuedTurn}
+          />
         {/each}
       {/if}
 

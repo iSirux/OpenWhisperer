@@ -292,6 +292,32 @@
   }
 
   /**
+   * Load a queued (not yet sent) turn back into the input for editing. Anything
+   * already typed is kept and leads; the turn's text follows after a blank line,
+   * its images are added to the pending ones, and the caret lands at the end.
+   */
+  export function loadForEdit(text: string, images?: SdkImageContent[]) {
+    const body = text.trim();
+    const base = prompt.replace(/\s+$/, "");
+    if (body) prompt = base ? `${base}\n\n${body}` : body;
+    if (images && images.length > 0) {
+      pendingImages = [
+        ...pendingImages,
+        ...images.map((img) => ({
+          mediaType: img.mediaType,
+          base64Data: img.base64Data,
+          width: img.width ?? 0,
+          height: img.height ?? 0,
+          originalSize: 0,
+          compressedSize: 0,
+        })),
+      ];
+    }
+    flushDraftChange();
+    void tick().then(() => textareaRef?.focusEnd());
+  }
+
+  /**
    * Insert a quoted-selection line as its own new row, leaving the caret on the
    * empty row below it so the follow-up (typed or dictated) continues there.
    * Distinct from `appendToPrompt`, which joins with a space.

@@ -14,7 +14,17 @@
     session,
     turn,
     message,
-  }: { session: SdkSession; turn: RateLimitedState; message: SdkMessage } = $props();
+    onEdit,
+  }: {
+    session: SdkSession;
+    turn: RateLimitedState;
+    message: SdkMessage;
+    /** Take the turn off the queue and load it into the prompt input. */
+    onEdit?: (turn: RateLimitedState) => void;
+  } = $props();
+
+  // Only plain prompt turns carry editable text; compaction and validation runs don't.
+  let editable = $derived(!!onEdit && !turn.action);
 
   // Prefer the flag the turn was parked with; fall back to the turn's reason for
   // turns parked before the `queued` flag existed. 'at_time' (native scheduling) has no
@@ -126,6 +136,16 @@
     >
       {isValidation ? "Run now" : "Send now"}
     </button>
+    {#if editable}
+      <button
+        class="ghost-btn"
+        onclick={() => onEdit?.(turn)}
+        disabled={busy}
+        title="Move this message back into the prompt input to edit it, then send or re-schedule it"
+      >
+        Edit
+      </button>
+    {/if}
     <button class="ghost-btn" onclick={handleCancel} disabled={busy} title={isValidation ? "Cancel this queued validation" : "Cancel this deferred send"}>
       Cancel
     </button>
