@@ -30,6 +30,7 @@ import {
 import { providerExhaustion } from './queueDetection';
 import { launchSession, createSessionQueue } from '$lib/utils/sessionLaunch';
 import { formatScheduleTarget } from '$lib/utils/duration';
+import { awaitingRestartResume } from '$lib/utils/restartResume';
 import { evaluateScheduledTurn, type RunErrorClass } from '$lib/utils/scheduleRunOutcome';
 import {
   isPermissionGranted,
@@ -1069,9 +1070,10 @@ function isMessageTargetUsable(session: SdkSession): boolean {
   return session.status === 'idle' || session.status === 'done' || session.status === 'error';
 }
 
-/** Is this session mid-turn (so a scheduled message must wait rather than interleave)? */
+/** Is this session mid-turn (so a scheduled message must wait rather than interleave)?
+ *  A turn cut off by the last shutdown and waiting to resume counts as mid-turn. */
 function isSessionBusy(session: SdkSession): boolean {
-  return session.status === 'querying' || session.status === 'initializing';
+  return session.status === 'querying' || session.status === 'initializing' || awaitingRestartResume(session);
 }
 
 /**

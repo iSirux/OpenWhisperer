@@ -192,6 +192,9 @@ function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolea
   if (item.kind === 'rateLimited') {
     const own = sessions.find((s) => s.id === item.id);
     if (!own || own.status === 'querying' || own.status === 'initializing') return false;
+    // A question or plan approval restored from before a restart: the turn is still
+    // waiting on the user (live, that reads as 'querying'), so its answer goes first.
+    if (own.askUserQuestion?.questions?.length || own.pendingPlanApproval) return false;
     if (validationHoldsTurn(item.id, item.action)) return false;
   }
 

@@ -899,20 +899,23 @@ async function partialSave(dirtyIds: Set<string>): Promise<void> {
  * Load sessions from disk and restore state.
  * Only loads on the first call - subsequent calls are no-ops to prevent
  * overwriting in-memory state when navigating between routes.
+ *
+ * Returns the ids of restored sessions that were mid-turn when last saved — the app
+ * closed or crashed under them (they're restored as idle; see `persistedToSdkSession`).
  */
-export async function loadSessionsFromDisk(): Promise<void> {
+export async function loadSessionsFromDisk(): Promise<string[]> {
   // Prevent re-loading from disk on route navigation
   // This protects in-memory session state (like querying status)
   if (sessionsLoadedFromDisk) {
     console.log('[sessionPersistence] Sessions already loaded, skipping reload');
-    return;
+    return [];
   }
 
   const currentSettings = get(settings);
 
   if (!currentSettings.session_persistence.enabled) {
     sessionsLoadedFromDisk = true; // Mark as "loaded" even if disabled
-    return;
+    return [];
   }
 
   // Restore as many sessions as we keep before auto-archiving — the "Maximum
@@ -926,7 +929,7 @@ export async function loadSessionsFromDisk(): Promise<void> {
     if (!persistedData || !persistedData.sdk_sessions.length) {
       console.log('[sessionPersistence] No persisted sessions found');
       sessionsLoadedFromDisk = true;
-      return;
+      return [];
     }
 
     // Limit the number of sessions to restore based on setting
@@ -939,6 +942,8 @@ export async function loadSessionsFromDisk(): Promise<void> {
     limitedSdkSessions.forEach(s => {
       console.log(`[sessionPersistence] Loading session ${s.id.slice(0, 8)}: effortLevel =`, s.effortLevel);
     });
+
+    const interruptedIds = limitedSdkSessions.filter(s => s.status === 'querying').map(s => s.id);
 
     // Restore SDK sessions
     let restoredSdkSessionIds: string[] = [];
@@ -959,10 +964,12 @@ export async function loadSessionsFromDisk(): Promise<void> {
 
     sessionsLoadedFromDisk = true;
     console.log('[sessionPersistence] Sessions restored successfully');
+    return interruptedIds;
   } catch (error) {
     console.error('[sessionPersistence] Failed to load sessions:', error);
     // Still mark as loaded to prevent retrying on every route change
     sessionsLoadedFromDisk = true;
+    return [];
   }
 }
 

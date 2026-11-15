@@ -427,11 +427,14 @@
 
     // Load persisted sessions if enabled
     if ($settings.session_persistence.enabled) {
-      await loadSessionsFromDisk();
+      const interruptedSessionIds = await loadSessionsFromDisk();
       // After a webview reload (renderer crash) the sidecar may still be running
       // turns for restored sessions — pick those back up before the Smart Queue
       // starts treating them as idle.
       await sdkSessions.reattachRunningSessions();
+      // Turns the app closed/crashed under (and not reattached above) resume first,
+      // ahead of anything the user queued behind them.
+      sdkSessions.resumeInterruptedSessions(interruptedSessionIds);
       // Restore per-session dock state saved with the sessions: the full
       // validation run (panel survives restart, reattaching to the backend if it
       // still has the run) and the PR panel's open flag.

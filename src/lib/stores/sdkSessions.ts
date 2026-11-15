@@ -14,6 +14,7 @@ import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screens
 import type { McpServerConfig } from '$lib/types/mcp';
 import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
 import { USAGE_LIMIT_CONTINUATION, MAX_USAGE_LIMIT_RETRIES, cutOffBySubagentLimit } from '$lib/utils/usageLimitRecovery';
+import { withRestartResume } from '$lib/utils/restartResume';
 import { replayCumulativeUsage, stepCumulativeUsage } from '$lib/utils/usageCost';
 import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
 import { defaultAccountIdForRepo, isDefaultAccountId } from '$lib/utils/accounts';
@@ -512,6 +513,8 @@ export interface RateLimitedState {
   continuation?: boolean;
   /** Consecutive automatic continuation attempts, persisted with the parked turn. */
   retryAttempts?: number;
+  /** Resumes the turn an app shutdown/crash cut off (see `utils/restartResume.ts`). */
+  restartResume?: boolean;
   /** For a user-scheduled turn: snapshot of the target window's reset time (epoch ms). */
   targetStartAt?: number;
   /** For 'after_sessions': what to wait on. Absent = 'worktree' (pre-existing persisted turns). */
@@ -2998,6 +3001,32 @@ function createSdkSessionsStore() {
           : s));
       }
       for (const id of ids) debouncedSave(id);
+    },
+
+    /**
+     * Sessions that were mid-turn when the app closed or crashed (`ids`, from
+     * `loadSessionsFromDisk`) get a "carry on" turn parked at the front of their queue
+     * (`withRestartResume`). The Smart Queue sends it on start, and turns the user had
+     * queued behind the cut-off turn wait for it instead of firing at once.
+     *
+     * Run after `reattachRunningSessions` (a turn still live in the sidecar needs no
+     * resume) and before the Smart Queue starts.
+     */
+    resumeInterruptedSessions(ids: string[]): void {
+      const pending = new Set(ids.filter(id => !liveSessions.has(id)));
+      if (pending.size === 0) return;
+      const now = Date.now();
+      const resumed: string[] = [];
+      update(sessions => sessions.map(s => {
+        if (!pending.has(s.id) || s.status !== 'idle') return s;
+        const next = withRestartResume(s, newParkedTurnId(), now);
+        if (!next) return s;
+        resumed.push(s.id);
+        return next;
+      }));
+      if (resumed.length === 0) return;
+      console.log(`[sdkSessions] Resuming ${resumed.length} session(s) cut off by the last shutdown: ${resumed.join(', ')}`);
+      for (const id of resumed) debouncedSave(id);
     },
 
     /**

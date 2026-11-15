@@ -51,7 +51,13 @@
         : "Sends at the scheduled time"
       : sendTimingLabel(timing),
   );
-  let label = $derived(isValidation ? `Validation · ${timingLabel.replace(/^Sends/, "Runs")}` : timingLabel);
+  let label = $derived(
+    turn.restartResume
+      ? "Resuming the turn the app closed on"
+      : isValidation
+        ? `Validation · ${timingLabel.replace(/^Sends/, "Runs")}`
+        : timingLabel,
+  );
   // A queued validation also waits for any active run on this session to end.
   let waitingOnRun = $derived(
     isValidation && [...$validationRuns.values()].some(
