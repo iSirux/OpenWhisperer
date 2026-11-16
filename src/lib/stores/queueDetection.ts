@@ -20,6 +20,7 @@ import {
 } from './rateLimits';
 import { settings } from './settings';
 import { isDefaultAccountId } from '$lib/utils/accounts';
+import { extraUsageUsable } from '$lib/utils/extraUsage';
 import type { SdkProvider } from '$lib/utils/models';
 
 export type QueueWindow = '5h' | '7d';
@@ -43,26 +44,12 @@ function storeForProvider(
   return provider === 'openai' ? get(codexRateLimitData) : get(rateLimitData);
 }
 
-/**
- * Whether the account can keep running after its included usage windows fill.
- * Providers may omit the derived utilization/amount fields, so an enabled
- * extra-usage switch is usable unless a reported limit proves otherwise.
- */
+/** Whether the account can keep running after its included usage windows fill (see extraUsageUsable). */
 export function hasUsableExtraUsage(
   provider: SdkProvider,
   accountId?: string
 ): boolean {
-  const extra = storeForProvider(provider, accountId)?.extra_usage;
-  if (!extra?.is_enabled) return false;
-
-  if (extra.monthly_limit != null && extra.used_credits != null) {
-    return extra.used_credits < extra.monthly_limit;
-  }
-  if (extra.utilization != null) {
-    return extra.utilization < EXHAUSTION_THRESHOLD;
-  }
-
-  return true;
+  return extraUsageUsable(storeForProvider(provider, accountId)?.extra_usage, EXHAUSTION_THRESHOLD);
 }
 
 /** Parse an ISO reset timestamp to epoch ms, or undefined if missing/invalid. */
