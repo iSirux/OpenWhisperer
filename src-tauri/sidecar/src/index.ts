@@ -24,6 +24,7 @@ import * as path from "path";
 import { z } from "zod";
 import { isUsageLimitError, appServerErrorMessage } from "./usageLimit";
 import { CodexSubagents } from "./codexSubagents";
+import { NestedSubagentTailer } from "./nestedSubagents";
 import { listClaudeModels, listCodexModels } from "./modelCatalog";
 import { capToolOutput } from "./toolOutputCap";
 
@@ -740,6 +741,34 @@ function sendSubagentModel(
   model: string
 ): void {
   send({ type: "subagent_model", id, toolUseId, model });
+}
+
+// Forwards nested (depth >= 2) subagent activity read from their transcripts —
+// the CLI doesn't stream it (see nestedSubagents.ts).
+const nestedSubagentTailer = new NestedSubagentTailer(
+  (id, event) => {
+    switch (event.type) {
+      case "text":
+        return sendText(id, event.content, event.parentToolUseId);
+      case "tool_start":
+        return sendToolStart(id, event.tool, event.input, event.toolUseId, event.parentToolUseId);
+      case "tool_result":
+        return sendToolResult(id, event.tool, event.output, event.toolUseId, event.parentToolUseId);
+      case "thinking_start":
+        return send({ type: "thinking_start", id, content: event.content, timestamp: event.timestamp, parentToolUseId: event.parentToolUseId });
+      case "thinking_end":
+        return sendThinkingEnd(id, event.durationMs, event.content, event.parentToolUseId);
+      case "subagent_model":
+        return sendSubagentModel(id, event.toolUseId, event.model);
+    }
+  },
+  (id, message) => send({ type: "debug", id, message })
+);
+
+/** The Claude config dir a session's CLI writes its transcripts to. */
+function claudeConfigDir(session: Session): string {
+  const env = session.options.env as Record<string, string | undefined> | undefined;
+  return env?.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 }
 
 function sendTaskStarted(
@@ -5606,7 +5635,18 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           message: `Task started: ${sysMsg.task_id} (toolUseId: ${sysMsg.tool_use_id}, taskType: ${sysMsg.task_type}, desc: ${sysMsg.description?.slice(0, 80)})`,
         });
         sendTaskStarted(id, sysMsg.task_id!, sysMsg.tool_use_id, sysMsg.description || "", sysMsg.task_type);
+        // Agents spawned by a subagent aren't streamed — tail their transcript instead.
+        const taskSession = sessions.get(id);
+        if (sysMsg.task_type === "local_agent" && sysMsg.task_id && sysMsg.tool_use_id && taskSession) {
+          nestedSubagentTailer.start(id, {
+            configDir: claudeConfigDir(taskSession),
+            sdkSessionId: () => sessions.get(id)?.sdkSessionId,
+            agentId: sysMsg.task_id,
+            toolUseId: sysMsg.tool_use_id,
+          });
+        }
       } else if (sysMsg.subtype === "task_notification") {
+        if (sysMsg.task_id) nestedSubagentTailer.finish(id, sysMsg.task_id);
         send({
           type: "debug",
           id,
@@ -5932,6 +5972,7 @@ async function handleClose(msg: CloseMessage): Promise<void> {
 
 // Stop everything a session owns: running query, queued prompts, agent process.
 async function disposeSession(id: string, session: Session): Promise<void> {
+  nestedSubagentTailer.stopSession(id);
   if (session.provider === "openai") {
     // Abort any active Codex query
     if (session.abortController) {
