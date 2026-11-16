@@ -53,6 +53,7 @@
   // Ctrl/Cmd+click (or middle-click) starts a new session in that repo
   // instead of opening the repository view.
   function handleRepoClick(event: MouseEvent, repo: { id?: string | null; path: string }) {
+    if (suppressClick) return;
     if (event.ctrlKey || event.metaKey) {
       void createAndActivateNewSession(repo.path);
     } else {
@@ -66,44 +67,95 @@
     }
   }
 
-  // Drag-and-drop reordering of repos within the rail.
+  // Drag-to-reorder repos within the rail. Pointer-event based rather than HTML5
+  // drag-and-drop: Tauri's native file-drop handler (dragDropEnabled, on by
+  // default) swallows HTML5 dragover/drop events in the Windows webview.
+  const DRAG_THRESHOLD_PX = 5;
+  const AUTO_SCROLL_EDGE_PX = 28;
+
+  let scrollEl = $state<HTMLDivElement | null>(null);
+
+  // Index of the repo being dragged (set once the pointer passes the threshold).
   let dragIndex = $state<number | null>(null);
   // Insertion position: the dragged repo would land *before* the repo at this index.
   let dropIndex = $state<number | null>(null);
 
-  function handleDragStart(event: DragEvent, index: number) {
-    dragIndex = index;
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = 'move';
-      event.dataTransfer.setData('text/plain', String(index));
+  let pressIndex: number | null = null;
+  let pressY = 0;
+  // A completed drag ends with a click on whatever is under the pointer; swallow it.
+  let suppressClick = false;
+
+  function handlePointerDown(event: PointerEvent, index: number) {
+    if (event.button !== 0) return;
+    pressIndex = index;
+    pressY = event.clientY;
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', cancelDrag);
+    window.addEventListener('keydown', handleDragKeydown);
+  }
+
+  function computeDropIndex(clientY: number): number {
+    const buttons = scrollEl?.querySelectorAll<HTMLElement>('[data-repo-index]') ?? [];
+    for (const el of buttons) {
+      const rect = el.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return Number(el.dataset.repoIndex);
     }
+    return $repos.list.length;
   }
 
-  function handleDragOver(event: DragEvent, index: number) {
-    if (dragIndex === null) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const before = event.clientY < rect.top + rect.height / 2;
-    dropIndex = before ? index : index + 1;
+  function autoScroll(clientY: number) {
+    if (!scrollEl) return;
+    const rect = scrollEl.getBoundingClientRect();
+    if (clientY < rect.top + AUTO_SCROLL_EDGE_PX) scrollEl.scrollBy({ top: -12 });
+    else if (clientY > rect.bottom - AUTO_SCROLL_EDGE_PX) scrollEl.scrollBy({ top: 12 });
   }
 
-  function handleDrop(event: DragEvent) {
+  function handlePointerMove(event: PointerEvent) {
+    if (pressIndex === null) return;
+    if (dragIndex === null) {
+      if (Math.abs(event.clientY - pressY) < DRAG_THRESHOLD_PX) return;
+      dragIndex = pressIndex;
+      document.body.classList.add('repo-rail-dragging');
+    }
     event.preventDefault();
+    autoScroll(event.clientY);
+    dropIndex = computeDropIndex(event.clientY);
+  }
+
+  function handlePointerUp() {
     if (dragIndex !== null && dropIndex !== null) {
       // Dropping at an insertion point after the dragged item shifts down by one
       // once the item is removed from its original position.
       const target = dropIndex > dragIndex ? dropIndex - 1 : dropIndex;
       if (target !== dragIndex) void repos.moveRepo(dragIndex, target);
     }
-    dragIndex = null;
-    dropIndex = null;
+    if (dragIndex !== null) {
+      suppressClick = true;
+      setTimeout(() => (suppressClick = false), 0);
+    }
+    cancelDrag();
   }
 
-  function handleDragEnd() {
+  function handleDragKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && dragIndex !== null) {
+      event.preventDefault();
+      cancelDrag();
+    }
+  }
+
+  function cancelDrag() {
+    pressIndex = null;
     dragIndex = null;
     dropIndex = null;
+    document.body.classList.remove('repo-rail-dragging');
+    window.removeEventListener('pointermove', handlePointerMove);
+    window.removeEventListener('pointerup', handlePointerUp);
+    window.removeEventListener('pointercancel', cancelDrag);
+    window.removeEventListener('keydown', handleDragKeydown);
   }
+
+  onDestroy(cancelDrag);
 
   function openAddRepo() {
     navigation.showRepositoryAdd();
@@ -127,7 +179,7 @@
 </script>
 
 <div class="repo-rail">
-  <div class="repo-rail-scroll">
+  <div class="repo-rail-scroll" bind:this={scrollEl}>
     {#if $settings.system.dev_mode}
       <button
         class="rail-btn"
@@ -164,11 +216,8 @@
         class:is-dragging={dragIndex === index}
         class:drop-before={dropIndex === index && dragIndex !== null}
         class:drop-after={dropIndex === index + 1 && index === $repos.list.length - 1 && dragIndex !== null}
-        draggable="true"
-        ondragstart={(e) => handleDragStart(e, index)}
-        ondragover={(e) => handleDragOver(e, index)}
-        ondrop={handleDrop}
-        ondragend={handleDragEnd}
+        data-repo-index={index}
+        onpointerdown={(e) => handlePointerDown(e, index)}
         onclick={(e) => handleRepoClick(e, repo)}
         onauxclick={(e) => handleRepoAuxClick(e, repo)}
         title="{repo.name}&#10;Ctrl+Click or Middle-Click: new session{index < 9
@@ -333,6 +382,12 @@
 
   .rail-btn.is-dragging {
     opacity: 0.4;
+  }
+
+  :global(body.repo-rail-dragging),
+  :global(body.repo-rail-dragging *) {
+    cursor: grabbing !important;
+    user-select: none !important;
   }
 
   .rail-btn.drop-before {
