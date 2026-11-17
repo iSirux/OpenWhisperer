@@ -28,6 +28,8 @@ export interface ArchiveEntry {
   scheduleLabel?: string;
   prNumber?: number;
   prState?: 'open' | 'draft' | 'merged' | 'closed';
+  /** Agent account the session ran on (machine login as its `default-*` id); absent on older entries */
+  accountId?: string;
 }
 
 export interface ArchiveSearchResult {

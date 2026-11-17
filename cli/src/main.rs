@@ -42,7 +42,12 @@ fn main() {
             let label = target.label.clone();
             let wait_for_idle = target.wait_idle;
             let (cwd, target) = build_target(target);
-            send(
+            let render = if target.account.is_some() {
+                Render::RunWithAccount
+            } else {
+                Render::Default
+            };
+            send_rendered(
                 &cli,
                 "run",
                 cwd,
@@ -52,6 +57,7 @@ fn main() {
                     target,
                     wait_for_idle,
                 },
+                &render,
             )
         }
         Command::Schedule {
@@ -180,6 +186,7 @@ fn main() {
                 repo: repo.clone(),
                 model: model.clone(),
                 effort: None,
+                account: None,
                 new_worktree: false,
             };
             send(
@@ -195,6 +202,22 @@ fn main() {
         }
         Command::QuickAction { action } => edit_list(&cli, ListKind::QuickAction, action),
         Command::Chip { action } => edit_list(&cli, ListKind::Chip, action),
+        Command::Accounts { repo } => {
+            let cwd = current_dir();
+            let info = git::detect(Path::new(&cwd));
+            let target = Target {
+                mode: "new_session",
+                repo_path: info.repo_path,
+                worktree_path: info.worktree_path,
+                branch: info.branch,
+                repo: repo.clone(),
+                model: None,
+                effort: None,
+                account: None,
+                new_worktree: false,
+            };
+            send(&cli, "accounts", cwd, Payload::Accounts { target })
+        }
         Command::Ping => send(&cli, "ping", current_dir(), Payload::Empty {}),
         Command::Doctor => {
             print_diagnostics(&cli);
@@ -327,6 +350,12 @@ enum Command {
     Chip {
         #[command(subcommand)]
         action: ListCommand,
+    },
+    /// List the agent accounts (usage pools) with their current usage, to pick one for --account
+    Accounts {
+        /// Repository whose allowed accounts to mark (default: the repository of the current directory)
+        #[arg(long, value_name = "NAME|PATH")]
+        repo: Option<String>,
     },
     /// Check whether OpenWhisperer is reachable
     Ping,
@@ -503,6 +532,13 @@ struct TargetArgs {
     #[arg(long, value_enum, value_name = "LEVEL")]
     effort: Option<Effort>,
 
+    /// Agent account (usage pool) to run on: id, label or a unique part of a
+    /// label (see `ow accounts`), or "auto" to let the app pick by usage pace
+    /// at launch. Default: the invoking session's account. Without --model, the
+    /// account's provider decides where the session runs.
+    #[arg(long, value_name = "NAME|auto")]
+    account: Option<String>,
+
     /// Create a fresh worktree for the run instead of using the current one
     #[arg(long = "new-worktree")]
     new_worktree: bool,
@@ -654,6 +690,9 @@ enum Payload {
         title: Option<String>,
         target: Target,
     },
+    Accounts {
+        target: Target,
+    },
     /// `quick_action` / `chip` add|remove
     ListEdit {
         op: &'static str,
@@ -675,6 +714,8 @@ enum Render {
     Default,
     /// One schedule out of a `list` ack, in full.
     Show(String),
+    /// `run --account`: warn when the app predates `--account` and ignored it.
+    RunWithAccount,
 }
 
 #[derive(Serialize)]
@@ -687,6 +728,8 @@ struct Target {
     repo: Option<String>,
     model: Option<String>,
     effort: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
     new_worktree: bool,
 }
 
@@ -761,6 +804,12 @@ fn build_target(args: &TargetArgs) -> (String, Target) {
         repo: args.repo.clone(),
         model: args.model.clone(),
         effort: args.effort.map(Effort::as_json),
+        account: args
+            .account
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_string),
         new_worktree: args.new_worktree,
     };
     (cwd, target)
@@ -845,7 +894,12 @@ fn send_rendered(
         exit(0);
     }
 
-    let timeout = cli.timeout.unwrap_or(if kind == "run" { 120 } else { 10 });
+    // `accounts` may refresh stale usage data first (up to ~8 s, after any queued requests).
+    let timeout = cli.timeout.unwrap_or(match kind {
+        "run" => 120,
+        "accounts" => 30,
+        _ => 10,
+    });
     match inbox::poll_ack(&dir, &id, Duration::from_secs(timeout)) {
         Some(ack) => print_ack(cli, kind, &ack, render),
         None if is_durable(kind) => {
@@ -907,6 +961,12 @@ fn print_ack(cli: &Cli, kind: &str, ack: &Value, render: &Render) -> ! {
         exit(0);
     }
 
+    if ok && matches!(render, Render::RunWithAccount) && ack.get("account").is_none() {
+        eprintln!(
+            "warning: this OpenWhisperer version ignores --account; the session runs on its default              account. Update the app."
+        );
+    }
+
     if cli.json {
         print_json(ack);
         exit(if ok { 0 } else { 1 });
@@ -927,7 +987,117 @@ fn print_ack(cli: &Cli, kind: &str, ack: &Value, render: &Render) -> ! {
     if kind == "list" {
         print_schedule_table(ack.get("schedules").and_then(Value::as_array));
     }
+    if kind == "accounts" {
+        print_accounts_table(ack.get("accounts").and_then(Value::as_array));
+    }
     exit(0);
+}
+
+/// `ow accounts`: one row per account with its usage and pace headroom.
+fn print_accounts_table(accounts: Option<&Vec<Value>>) {
+    let Some(accounts) = accounts else {
+        println!("(this OpenWhisperer version does not report accounts — update the app)");
+        return;
+    };
+    if accounts.is_empty() {
+        return;
+    }
+    let window = |usage: Option<&Value>, key: &str| -> String {
+        let Some(w) = usage.and_then(|u| u.get(key)).filter(|w| !w.is_null()) else {
+            return "-".into();
+        };
+        let used = w.get("usedPercent").and_then(Value::as_i64).unwrap_or(0);
+        match w.get("resetsAt").and_then(Value::as_i64) {
+            Some(at) => format!("{used}% (resets {})", timeparse::format_local(at)),
+            None => format!("{used}%"),
+        }
+    };
+
+    let mut rows: Vec<Vec<String>> = vec![[
+        "ACCOUNT", "PROVIDER", "5H", "7D", "HEADROOM", "NOTES",
+    ]
+    .map(String::from)
+    .to_vec()];
+    for account in accounts {
+        let usage = account.get("usage").filter(|u| !u.is_null());
+        let flag = |key: &str| account.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let mut notes = Vec::new();
+        if flag("nextAutoPick") {
+            notes.push("next auto pick".to_string());
+        }
+        if !flag("allowedInRepo") {
+            notes.push("not allowed in this repo".to_string());
+        }
+        if flag("authExpired") {
+            notes.push("logged out".to_string());
+        }
+        if let Some(weekly) = usage
+            .and_then(|u| u.get("modelWeekly"))
+            .and_then(Value::as_array)
+        {
+            for w in weekly {
+                notes.push(format!(
+                    "{} weekly {}%",
+                    w.get("model").and_then(Value::as_str).unwrap_or("?"),
+                    w.get("usedPercent").and_then(Value::as_i64).unwrap_or(0)
+                ));
+            }
+        }
+        if usage.is_none() {
+            notes.push(match account.get("error").and_then(Value::as_str) {
+                Some(err) => format!("no usage data: {}", truncate_chars(err, 60)),
+                None => "no usage data yet".to_string(),
+            });
+        }
+        let headroom = account.get("headroom");
+        let headroom = match headroom.and_then(|h| h.get("score")).and_then(Value::as_f64) {
+            Some(score) if headroom.and_then(|h| h.get("unknown")).and_then(Value::as_bool) == Some(true) => {
+                format!("{score:.2} (unknown)")
+            }
+            Some(score) => format!("{score:.2}"),
+            None => "-".into(),
+        };
+        rows.push(vec![
+            format!("{} ({})", field(account, "label"), field(account, "id")),
+            field(account, "provider"),
+            window(usage, "fiveHour"),
+            window(usage, "sevenDay"),
+            headroom,
+            if notes.is_empty() { "-".into() } else { notes.join(", ") },
+        ]);
+    }
+
+    let columns = rows[0].len();
+    let mut widths = vec![0usize; columns];
+    for row in &rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(cell.chars().count());
+        }
+    }
+    println!();
+    for row in &rows {
+        let mut line = String::new();
+        for (index, cell) in row.iter().enumerate() {
+            line.push_str(cell);
+            if index + 1 < columns {
+                line.push_str(&" ".repeat(widths[index] - cell.chars().count() + 2));
+            }
+        }
+        println!("{}", line.trim_end());
+    }
+    println!();
+    println!(
+        "HEADROOM: remaining quota ÷ remaining window time, tighter of 5h/7d (1.00 = on pace, \
+         higher = more room; launches in the last 10 min count against it)."
+    );
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        format!("{}…", text.chars().take(max.saturating_sub(1)).collect::<String>())
+    }
 }
 
 /// Pretty JSON in the struct's field order (a `Value` would sort the keys).

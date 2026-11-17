@@ -34,6 +34,15 @@ use crate::timeparse;
 struct Config {
     #[serde(default)]
     repos: Vec<RepoConf>,
+    #[serde(default)]
+    accounts: Vec<AccountConf>,
+}
+
+#[derive(Deserialize)]
+struct AccountConf {
+    id: String,
+    #[serde(default)]
+    label: String,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +99,7 @@ struct ArchiveEntry {
     schedule_label: Option<String>,
     pr_number: Option<u64>,
     pr_state: Option<String>,
+    account_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +109,7 @@ struct SessionFile<M> {
     repo_id: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    account_id: Option<String>,
     effort_level: Option<String>,
     status: Option<String>,
     last_activity_at: Option<u64>,
@@ -236,6 +247,13 @@ pub struct ScheduleRef {
 }
 
 #[derive(Serialize, Clone)]
+pub struct AccountRef {
+    pub id: String,
+    /// The account's label in the app's settings (`null` = account since removed)
+    pub label: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
 pub struct PrRef {
     pub number: Option<u64>,
     /// "open" | "draft" | "merged" | "closed"
@@ -257,6 +275,8 @@ pub struct SessionRow {
     pub branch: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    /// Agent account (usage pool) it ran on; machine logins as `default-claude` / `default-openai`
+    pub account: Option<AccountRef>,
     /// "off" | "low" | … | "max"
     pub effort: Option<String>,
     pub status: String,
@@ -291,12 +311,25 @@ impl SessionRow {
 // Repositories
 // ---------------------------------------------------------------------------
 
-struct Repos(Vec<RepoConf>);
+/// The registered repositories, plus the account labels rows are shown with.
+struct Repos(Vec<RepoConf>, Vec<AccountConf>);
 
 impl Repos {
     fn load(data: &AppData) -> Self {
         let config: Config = read_json(&data.config_file()).ok().flatten().unwrap_or_default();
-        Self(config.repos)
+        Self(config.repos, config.accounts)
+    }
+
+    fn account(&self, id: &str) -> AccountRef {
+        AccountRef {
+            id: id.to_string(),
+            label: self
+                .1
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.label.clone())
+                .or_else(|| default_account_label(id)),
+        }
     }
 
     fn by_id(&self, id: &str) -> Option<&RepoConf> {
@@ -321,6 +354,31 @@ impl Repos {
             .filter(|r| wanted.starts_with(&format!("{}/", norm(&r.path))))
             .max_by_key(|r| r.path.len())
     }
+}
+
+/// Label of a machine-login account whose config entry is missing (the app
+/// stores both, so this only covers configs from before accounts existed).
+fn default_account_label(id: &str) -> Option<String> {
+    matches!(id, DEFAULT_CLAUDE_ACCOUNT | DEFAULT_OPENAI_ACCOUNT).then(|| "Default".to_string())
+}
+
+const DEFAULT_CLAUDE_ACCOUNT: &str = "default-claude";
+const DEFAULT_OPENAI_ACCOUNT: &str = "default-openai";
+
+/// The account id a session ran on: its pinned id, else (no id = the machine
+/// login) the provider's reserved default id.
+fn session_account_id(account_id: Option<&str>, provider: Option<&str>, model: Option<&str>) -> String {
+    if let Some(id) = account_id.filter(|id| !id.is_empty()) {
+        return id.to_string();
+    }
+    let openai = match provider {
+        Some(p) => p.eq_ignore_ascii_case("openai"),
+        None => model.is_some_and(|m| {
+            let m = m.to_ascii_lowercase();
+            m.starts_with("gpt") || m.contains("codex")
+        }),
+    };
+    if openai { DEFAULT_OPENAI_ACCOUNT } else { DEFAULT_CLAUDE_ACCOUNT }.to_string()
 }
 
 /// Comparable form of a path: forward slashes, no trailing slash, and
@@ -358,6 +416,7 @@ fn live_row(entry: LiveEntry, repos: &Repos) -> SessionRow {
         branch: None,
         model: entry.model,
         provider: None,
+        account: None,
         effort: None,
         status: entry.status,
         archived: false,
@@ -380,8 +439,10 @@ fn archive_row(entry: ArchiveEntry, repos: &Repos) -> SessionRow {
         .as_deref()
         .and_then(|path| repos.for_path(path))
         .or_else(|| entry.cwd.as_deref().and_then(|cwd| repos.for_path(cwd)));
-    // Entries carrying `userMessageCount` were written with every field below.
-    let complete = entry.user_message_count.is_some();
+    // Entries carrying `userMessageCount` were written with every field below;
+    // `accountId` came later, so entries without it get the session file read too.
+    let complete = entry.user_message_count.is_some() && entry.account_id.is_some();
+    let account = entry.account_id.as_deref().map(|id| repos.account(id));
     SessionRow {
         repo: repo.map(|r| r.name.clone()),
         repo_path: entry.repo_path.or_else(|| repo.map(|r| r.path.clone())),
@@ -391,6 +452,7 @@ fn archive_row(entry: ArchiveEntry, repos: &Repos) -> SessionRow {
         branch: None,
         model: entry.model,
         provider: None,
+        account,
         effort: complete.then(|| entry.effort_level.unwrap_or_else(|| "off".to_string())),
         status: entry.status,
         archived: true,
@@ -435,6 +497,11 @@ fn enrich<M: MessageLike>(row: &mut SessionRow, file: &SessionFile<M>, repos: &R
         row.model = file.model.clone();
     }
     row.provider = file.provider.clone();
+    row.account = Some(repos.account(&session_account_id(
+        file.account_id.as_deref(),
+        file.provider.as_deref(),
+        row.model.as_deref(),
+    )));
     row.effort = Some(
         file.effort_level
             .clone()
@@ -612,11 +679,12 @@ pub fn print_table(listing: &Listing) {
         println!("No sessions match.");
         return;
     }
-    let mut table: Vec<[String; 10]> = vec![[
+    let mut table: Vec<[String; 11]> = vec![[
         "ID".into(),
         "LAST ACTIVE".into(),
         "REPO".into(),
         "MODEL".into(),
+        "ACCOUNT".into(),
         "EFFORT".into(),
         "MSGS".into(),
         "COST".into(),
@@ -658,6 +726,9 @@ pub fn print_table(listing: &Listing) {
                 .or_else(|| row.cwd.as_deref().map(basename))
                 .unwrap_or_else(|| "-".into()),
             row.model.clone().unwrap_or_else(|| "-".into()),
+            row.account.as_ref().map_or_else(unknown, |a| {
+                truncate_plain(a.label.as_deref().unwrap_or(&a.id), 24)
+            }),
             row.effort.clone().unwrap_or_else(unknown),
             msgs,
             row.cost.map_or_else(|| "-".into(), |c| format!("${c:.2}")),
@@ -1033,10 +1104,29 @@ mod tests {
             name: name.to_string(),
             path: path.to_string(),
         };
-        Repos(vec![
-            repo("Repos", r"F:\Repos"),
-            repo("Foo", r"F:\Repos\Foo"),
-        ])
+        Repos(
+            vec![repo("Repos", r"F:\Repos"), repo("Foo", r"F:\Repos\Foo")],
+            vec![AccountConf {
+                id: "acct-2".into(),
+                label: "Work".into(),
+            }],
+        )
+    }
+
+    #[test]
+    fn session_account_resolves_machine_logins_and_labels() {
+        let repos = repos();
+        let id = |account: Option<&str>, provider: Option<&str>, model: Option<&str>| {
+            session_account_id(account, provider, model)
+        };
+        assert_eq!(id(Some("acct-2"), Some("claude"), None), "acct-2");
+        assert_eq!(id(None, Some("claude"), None), "default-claude");
+        assert_eq!(id(None, Some("openai"), None), "default-openai");
+        assert_eq!(id(None, None, Some("gpt-6-astra")), "default-openai");
+        assert_eq!(id(Some(""), None, Some("claude-opus-5-5")), "default-claude");
+        assert_eq!(repos.account("acct-2").label.as_deref(), Some("Work"));
+        assert_eq!(repos.account("default-claude").label.as_deref(), Some("Default"));
+        assert_eq!(repos.account("gone").label, None);
     }
 
     #[test]

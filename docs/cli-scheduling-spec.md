@@ -270,10 +270,13 @@ optional with serde default so old indexes load; `userMessageCount` presence
 marks an entry that has them): `cwd`, `effortLevel`, `lastActivityAt`,
 `userMessageCount` (user prompts, queued ghost turns excluded), `scheduleId` /
 `scheduleLabel` (from `scheduleTag`), `prNumber` / `prState` (`open` | `draft` |
-`merged` | `closed`).
+`merged` | `closed`), `accountId` (ow 0.5.0; always set on new entries, the
+machine login as `default-claude` / `default-openai`; an entry is only complete
+from the index when it has both `userMessageCount` and `accountId`).
 
 `ow sessions --json` → `{ "sessions": [row…], "truncated": bool }`, row =
-`{ id, name, repo, repoPath, cwd, branch, model, provider, effort ("off" when
+`{ id, name, repo, repoPath, cwd, branch, model, provider, account: { id,
+label } | null, effort ("off" when
 none), status, archived, createdAt, lastActivityAt, archivedAt, userMessages,
 messages, schedule: { id, label } | null, pr: { number, state } | null, cost,
 prompt (first user prompt, ≤200 chars), detailsAvailable }`. Fields that come
@@ -292,3 +295,26 @@ thinking and tool output are never printed. Text is cut to `--max-chars` (defaul
 are flagged. `--json` → `{ session: row, messages: [{ role:
 user|assistant|tool|error|interrupted|notice, timestamp, text?, tool?, images?,
 queued? }] }`.
+
+## Accounts (`--account`, `ow accounts`) — ow 0.5.0
+
+`target.account` (optional string) on `run` / `schedule`: an account id, label,
+or unique part of a label (case-insensitive; a cross-provider tie goes to the
+invoking session's provider), or `auto`. The app refuses unknown, ambiguous,
+disabled and repo-disallowed accounts, and an account whose provider differs
+from a requested `--model`. Without a model, the account's provider picks the
+model the same way the legacy `provider` field did. `auto` = no inheritance: the
+account is left open and resolved at launch (by usage pace when on, else the
+repo's first allowed account). Without `account`, the invoking session's account
+is inherited within its provider, as before. `run` acks add `account: { id,
+label } | null`; schedule target summaries name the account.
+
+Kind `accounts` (not durable; `target` carries repo detection like `pile_add`).
+The app refreshes stale usage (bounded at ~8 s; the CLI waits 30 s by default)
+and acks `{ repo, autoSelect: "pace" | "off", accounts: [{ id, label, provider,
+machineLogin, allowedInRepo, nextAutoPick, authExpired, fetchedAt, error, usage:
+{ fiveHour, sevenDay: { usedPercent, resetsAt } | null, modelWeekly: [{ model,
+usedPercent, resetsAt }], extraUsage: { usedCents, limitCents } | null } | null,
+headroom: { score, fiveHour, sevenDay, unknown } }] }` for every selectable
+account of each enabled provider. `headroom` is `scoreAccount` from
+`utils/accountAutoSelect.ts`, the recent-launch penalty included.

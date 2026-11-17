@@ -69,6 +69,11 @@ pub struct ArchiveEntry {
     /// "open" | "draft" | "merged" | "closed"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_state: Option<String>,
+    /// Agent account the session ran on, always set on new entries: the machine
+    /// login is written as its reserved `default-claude` / `default-openai` id, so
+    /// `None` means an entry archived before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 /// The archive index file containing all entry metadata
@@ -537,6 +542,20 @@ fn sdk_session_to_archive_entry(session: &PersistedSdkSession, repos: &[RepoConf
         schedule_label: tag_field("label"),
         pr_number: pr.and_then(|pr| pr.get("number")).and_then(|v| v.as_u64()),
         pr_state,
+        account_id: Some(
+            session
+                .account_id
+                .clone()
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| {
+                    if session.provider.as_deref() == Some("openai") {
+                        crate::config::DEFAULT_OPENAI_ACCOUNT_ID
+                    } else {
+                        crate::config::DEFAULT_CLAUDE_ACCOUNT_ID
+                    }
+                    .to_string()
+                }),
+        ),
     }
 }
 
@@ -583,6 +602,7 @@ mod tests {
         assert_eq!(entry.pr_state.as_deref(), Some("draft"));
         assert_eq!(entry.effort_level.as_deref(), Some("high"));
         assert_eq!(entry.last_activity_at, Some(5));
+        assert_eq!(entry.account_id.as_deref(), Some("default-claude"));
         assert_eq!(entry.cwd.as_deref(), Some(r"F:\Repos\Foo-worktrees\feature-x"));
 
         // Old index entries (no new fields) still load.

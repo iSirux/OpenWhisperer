@@ -2,7 +2,7 @@
  * `ow` CLI inbox — applies requests written by the `ow` CLI (run by an agent
  * inside its session, or by the user in a terminal): create a schedule, launch a
  * session now, list/update/cancel schedules, add a Pile item, add/remove a quick
- * action or prompt chip, ping. (`ow sessions` / `ow transcript` and the
+ * action or prompt chip, report the accounts with live usage, ping. (`ow sessions` / `ow transcript` and the
  * quick-action/chip `list` read the app's files directly and never get here.)
  *
  * Protocol and rationale: docs/cli-scheduling-spec.md. The backend only moves
@@ -29,7 +29,23 @@ import {
   type ScheduleSpec,
 } from './schedules';
 import { launchSession, snapshotLaunchConfigForRepo } from '$lib/utils/sessionLaunch';
-import { defaultAccountIdForRepo } from '$lib/utils/accounts';
+import {
+  accountById,
+  accountsForProvider,
+  allowedAccountsForRepo,
+  defaultAccountFor,
+  defaultAccountIdForRepo,
+  isDefaultAccountId,
+  sessionAccount,
+} from '$lib/utils/accounts';
+import {
+  isPaceAutoSelectEnabled,
+  pickAccountByPace,
+  rateLimitStateFor,
+  scoreAccount,
+} from '$lib/utils/accountAutoSelect';
+import { rateLimitStoreForAccount, type RateLimitWindow } from './rateLimits';
+import type { AgentAccount, SdkProvider } from './settings';
 import {
   clampEffortForModel,
   getModelById,
@@ -64,6 +80,11 @@ interface CliTarget {
    * binary keeps working until it is updated.
    */
   provider: Provider | null;
+  /**
+   * Agent account: id, label or unique part of a label, or "auto" (no inheritance —
+   * picked by usage pace at launch). Absent from `ow` binaries before 0.5.0.
+   */
+  account?: string | null;
   newWorktree: boolean;
 }
 
@@ -80,7 +101,8 @@ interface CliRequest {
     | 'ping'
     | 'pile_add'
     | 'quick_action'
-    | 'chip';
+    | 'chip'
+    | 'accounts';
   cwd: string;
   sessionId: string | null;
   prompt?: string;
@@ -225,16 +247,28 @@ function resolveLaunch(target: CliTarget, repo: RepoConfig, invoking?: SdkSessio
   const base = snapshotLaunchConfigForRepo(repo);
   const requested = target.model?.trim();
 
-  // `target.provider` only survives for older `ow` binaries that still send it;
-  // a requested model always wins over it.
-  const legacyProvider = requested ? undefined : (target.provider ?? undefined);
+  const requestedAccount = target.account?.trim() || undefined;
+  const autoAccount = requestedAccount?.toLowerCase() === 'auto';
+  const account =
+    requestedAccount && !autoAccount
+      ? findAccount(requestedAccount, invoking?.provider ?? base.provider)
+      : undefined;
+
+  // Without a model, a requested account picks the provider (an account belongs to
+  // one). `target.provider` only survives for older `ow` binaries that still send
+  // it; a requested model always wins over both.
+  const pinnedProvider = requested
+    ? undefined
+    : account
+      ? toProvider(account.provider)
+      : (target.provider ?? undefined);
 
   const model = requested
     ? resolveModelName(requested)
-    : legacyProvider
-      ? legacyProvider === (invoking?.provider ?? base.provider)
+    : pinnedProvider
+      ? pinnedProvider === (invoking?.provider ?? base.provider)
         ? (invoking?.model ?? base.model)
-        : legacyProvider === 'openai'
+        : pinnedProvider === 'openai'
           ? s.openai_model
           : s.default_model
       : (invoking?.model ?? base.model);
@@ -259,16 +293,104 @@ function resolveLaunch(target: CliTarget, repo: RepoConfig, invoking?: SdkSessio
   );
 
   // An account belongs to one provider, so it is only inheritable within it.
-  const accountId =
-    invoking && (invoking.provider ?? 'claude') === provider
-      ? invoking.accountId
-      : provider === base.provider
-        ? base.accountId
-        : s.account_auto_select === 'pace'
-          ? undefined // picked by usage pace at launch
-          : defaultAccountIdForRepo(s.accounts, repo, provider === 'openai' ? 'OpenAI' : 'Claude');
+  // "auto" skips inheritance: the account is left open and picked at launch (by
+  // usage pace when that is on, else the repo's preferred account).
+  const accountId = account
+    ? checkAccountForLaunch(account, repo, provider)
+    : autoAccount
+      ? undefined
+      : invoking && (invoking.provider ?? 'claude') === provider
+        ? invoking.accountId
+        : provider === base.provider
+          ? base.accountId
+          : s.account_auto_select === 'pace'
+            ? undefined // picked by usage pace at launch
+            : defaultAccountIdForRepo(s.accounts, repo, toSdkProvider(provider));
 
   return { model, effortLevel, provider, accountId };
+}
+
+function toProvider(provider: SdkProvider): Provider {
+  return provider === 'OpenAI' ? 'openai' : 'claude';
+}
+
+function toSdkProvider(provider: Provider): SdkProvider {
+  return provider === 'openai' ? 'OpenAI' : 'Claude';
+}
+
+function providerName(provider: Provider): string {
+  return provider === 'openai' ? 'Codex' : 'Claude';
+}
+
+/** Every account of an enabled provider, machine logins included (disabled ones too). */
+function knownAccounts(): AgentAccount[] {
+  const s = get(settings);
+  return [
+    defaultAccountFor('Claude', s.accounts),
+    defaultAccountFor('OpenAI', s.accounts),
+    ...(s.accounts ?? []).filter((a) => !isDefaultAccountId(a.id)),
+  ].filter((a) => (a.provider === 'OpenAI' ? s.enabled_providers.openai : s.enabled_providers.claude));
+}
+
+function describeAccount(a: AgentAccount): string {
+  return `"${a.label}" (${a.id}, ${providerName(toProvider(a.provider))})`;
+}
+
+/**
+ * The account `--account` names: exact id, then exact label, then a unique part of
+ * a label (or id prefix) — all case-insensitive. Ties across providers go to
+ * `preferProvider` ("default" matches both machine logins).
+ */
+function findAccount(requested: string, preferProvider: Provider): AgentAccount {
+  const all = knownAccounts();
+  const q = requested.toLowerCase();
+  const byId = all.filter((a) => a.id.toLowerCase() === q);
+  const byLabel = all.filter((a) => a.label.trim().toLowerCase() === q);
+  const byPart = all.filter((a) => a.label.toLowerCase().includes(q) || a.id.toLowerCase().startsWith(q));
+  let matches = byId.length > 0 ? byId : byLabel.length > 0 ? byLabel : byPart;
+  if (matches.length > 1) {
+    const preferred = matches.filter((a) => toProvider(a.provider) === preferProvider);
+    if (preferred.length > 0) matches = preferred;
+  }
+  if (matches.length === 0) {
+    throw new CliError(
+      `Unknown account "${requested}". Accounts: ${all.map(describeAccount).join(', ')} (see \`ow accounts\`)`
+    );
+  }
+  if (matches.length > 1) {
+    throw new CliError(`Account "${requested}" is ambiguous: ${matches.map(describeAccount).join(', ')}`);
+  }
+  return matches[0];
+}
+
+/** Refuse an account the launch can't use; returns its id (machine logins as `default-*`). */
+function checkAccountForLaunch(account: AgentAccount, repo: RepoConfig, provider: Provider): string {
+  if (toProvider(account.provider) !== provider) {
+    throw new CliError(
+      `Account "${account.label}" is a ${providerName(toProvider(account.provider))} account, but the model runs on ${providerName(provider)}. Pick a ${providerName(provider)} account or a matching --model.`
+    );
+  }
+  if (account.disabled) {
+    throw new CliError(`Account "${account.label}" is disabled in Settings → Accounts`);
+  }
+  const allowed = allowedAccountsForRepo(get(settings).accounts, repo, account.provider);
+  if (!allowed.some((a) => a.id === account.id)) {
+    throw new CliError(
+      `Account "${account.label}" is not allowed in repository "${repo.name}". Allowed: ${allowed.map((a) => `"${a.label}"`).join(', ')}`
+    );
+  }
+  // A `default-*` id is kept as an explicit machine-login pick, so pace auto-select
+  // doesn't re-route it (normalized to undefined when the session is created).
+  return account.id;
+}
+
+/** How a launch's account reads in an ack. */
+function accountNote(accountId: string | undefined): string {
+  if (accountId) {
+    const account = accountById(get(settings).accounts, accountId);
+    return ` · account "${account?.label ?? accountId}"`;
+  }
+  return isPaceAutoSelectEnabled() ? ' · account picked by usage pace at launch' : '';
 }
 
 function targetSummary(schedule: Schedule): string {
@@ -282,7 +404,7 @@ function targetSummary(schedule: Schedule): string {
     : schedule.target.worktreePath
       ? ` (worktree ${basename(schedule.target.worktreePath)})`
       : '';
-  return `new session · ${repo?.name ?? 'unknown repo'}${where}`;
+  return `new session · ${repo?.name ?? 'unknown repo'}${where}${accountNote(schedule.target.accountId)}`;
 }
 
 function isBusy(session: SdkSession): boolean {
@@ -418,18 +540,29 @@ async function handleRun(req: CliRequest): Promise<CliAck> {
     : worktreePath
       ? ` (worktree ${basename(worktreePath)})`
       : '';
-  const parked = findSession(sessionId)?.status === 'queued';
+  const launched = findSession(sessionId);
+  const parked = launched?.status === 'queued';
+  // A started session carries its resolved account; a parked one may still pick it at dispatch.
+  const account = parked
+    ? launch.accountId
+      ? accountById(get(settings).accounts, launch.accountId)
+      : undefined
+    : launched
+      ? sessionAccount(get(settings).accounts, launched.accountId, launched.provider ?? launch.provider)
+      : undefined;
+  const onAccount = account ? ` on account "${account.label}"` : '';
   return {
     ok: true,
     kind: 'run',
     message: parked
       ? req.waitForIdle
-        ? `Session queued in ${repo.name}${where} — starts when the worktree is idle`
-        : `Session queued in ${repo.name}${where} — the provider's usage window is exhausted; it starts at reset`
-      : `Started session in ${repo.name}${where}`,
+        ? `Session queued in ${repo.name}${where}${onAccount} — starts when the worktree is idle`
+        : `Session queued in ${repo.name}${where}${onAccount} — the account's usage window is exhausted; it starts at reset`
+      : `Started session in ${repo.name}${where}${onAccount}`,
     sessionId,
     repo: repo.name,
     cwd: worktreePath ?? repo.path,
+    account: account ? { id: account.id, label: account.label } : null,
   };
 }
 
@@ -622,6 +755,111 @@ async function handleListEdit(req: CliRequest, kind: 'quick_action' | 'chip'): P
   };
 }
 
+/** Max wait for refreshing stale usage data before answering `ow accounts`. */
+const ACCOUNTS_REFRESH_MS = 8000;
+
+function usageWindow(w: RateLimitWindow | null | undefined) {
+  if (!w) return null;
+  const resetsAt = w.resets_at ? Date.parse(w.resets_at) : NaN;
+  return {
+    usedPercent: Math.round(w.utilization),
+    resetsAt: Number.isNaN(resetsAt) ? null : resetsAt,
+  };
+}
+
+/** Round a headroom number for output (null stays null). */
+function round2(n: number | null): number | null {
+  return n == null ? null : Math.round(n * 100) / 100;
+}
+
+/**
+ * `ow accounts`: every selectable account of each enabled provider with its live
+ * usage (5h / 7d windows, per-model weekly caps, extra usage), the pace headroom
+ * auto-select ranks by, whether the repo of the CLI's cwd allows it, and which
+ * account a new session would get right now. Stale usage is refreshed first.
+ */
+async function handleAccounts(req: CliRequest): Promise<CliAck> {
+  const s = get(settings);
+  let repo: RepoConfig | undefined;
+  if (req.target) {
+    try {
+      repo = resolveRepo(requireTarget(req), req.cwd);
+    } catch (error) {
+      // Outside a registered repo: list every account, just without the repo view.
+      if (!(error instanceof CliError) || req.target.repo?.trim()) throw error;
+    }
+  }
+
+  const providers: Provider[] = [
+    ...(s.enabled_providers.claude ? (['claude'] as const) : []),
+    ...(s.enabled_providers.openai ? (['openai'] as const) : []),
+  ];
+  const listed = providers.map((provider) => ({
+    provider,
+    accounts: accountsForProvider(s.accounts, toSdkProvider(provider)),
+    allowed: allowedAccountsForRepo(s.accounts, repo, toSdkProvider(provider)),
+  }));
+
+  await Promise.race([
+    Promise.all(
+      listed.flatMap(({ provider, accounts }) =>
+        accounts.map((a) => rateLimitStoreForAccount(a.id, provider).fetchIfStale().catch(() => undefined))
+      )
+    ),
+    new Promise((resolve) => setTimeout(resolve, ACCOUNTS_REFRESH_MS)),
+  ]);
+
+  const pace = isPaceAutoSelectEnabled();
+  const now = Date.now();
+  const out = listed.flatMap(({ provider, accounts, allowed }) => {
+    const next = pace && allowed.length > 1 ? pickAccountByPace(allowed, rateLimitStateFor, now).account : allowed[0];
+    return accounts.map((a) => {
+      const state = rateLimitStateFor(a);
+      const score = scoreAccount(state, a.id, now);
+      const data = state?.data;
+      const extra = data?.extra_usage;
+      return {
+        id: a.id,
+        label: a.label,
+        provider,
+        machineLogin: isDefaultAccountId(a.id),
+        allowedInRepo: allowed.some((x) => x.id === a.id),
+        nextAutoPick: next?.id === a.id,
+        authExpired: score.authExpired,
+        fetchedAt: state?.lastFetched ?? null,
+        error: data ? null : (state?.error ?? state?.lastError ?? null),
+        usage: data
+          ? {
+              fiveHour: usageWindow(data.five_hour),
+              sevenDay: usageWindow(data.seven_day),
+              modelWeekly: (data.scoped_windows ?? [])
+                .filter((w) => w.is_active)
+                .map((w) => ({ model: w.model, ...usageWindow(w) })),
+              extraUsage: extra?.is_enabled
+                ? { usedCents: extra.used_credits, limitCents: extra.monthly_limit }
+                : null,
+            }
+          : null,
+        headroom: {
+          score: round2(score.score),
+          fiveHour: round2(score.fiveHour),
+          sevenDay: round2(score.sevenDay),
+          unknown: score.unknown,
+        },
+      };
+    });
+  });
+
+  return {
+    ok: true,
+    kind: 'accounts',
+    message: `${out.length} account${out.length === 1 ? '' : 's'}${repo ? ` · repository ${repo.name}` : ''} · auto-select ${pace ? 'by usage pace' : 'off (the repo’s first allowed account)'}`,
+    repo: repo?.name ?? null,
+    autoSelect: pace ? 'pace' : 'off',
+    accounts: out,
+  };
+}
+
 async function handlePing(req: CliRequest): Promise<CliAck> {
   const version = await getVersion().catch(() => 'unknown');
   const invoking = findSession(req.sessionId);
@@ -653,6 +891,8 @@ async function handle(req: CliRequest): Promise<CliAck> {
       return handleList();
     case 'ping':
       return handlePing(req);
+    case 'accounts':
+      return handleAccounts(req);
     case 'pile_add':
       return handlePileAdd(req);
     case 'quick_action':

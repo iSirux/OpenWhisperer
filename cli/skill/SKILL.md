@@ -1,6 +1,6 @@
 ---
 name: openwhisperer
-description: Schedule a prompt for later, make it recurring, or run it now as a new OpenWhisperer agent session in the current repo/worktree via the `ow` CLI. Use when the user says things like "schedule a follow-up", "do this tomorrow at 9", "tonight", "in 2 hours", "every morning / every weekday / every Monday", "check back later", "run this again next week", "remind me to…", or wants a recurring agent task. Also use to read recent OpenWhisperer sessions and their transcripts (workflow reviews, "what did the agents do this week"), to drop findings into the user's Pile for later, or to add/remove quick actions and prompt chips.
+description: Schedule a prompt for later, make it recurring, or run it now as a new OpenWhisperer agent session in the current repo/worktree via the `ow` CLI. Use when the user says things like "schedule a follow-up", "do this tomorrow at 9", "tonight", "in 2 hours", "every morning / every weekday / every Monday", "check back later", "run this again next week", "remind me to…", or wants a recurring agent task. Also use to start sessions on specific agent accounts / usage pools ("run these in parallel on different accounts"), choosing by each account's current usage. Also use to read recent OpenWhisperer sessions and their transcripts (workflow reviews, "what did the agents do this week"), to drop findings into the user's Pile for later, or to add/remove quick actions and prompt chips.
 ---
 
 # OpenWhisperer scheduling (`ow`)
@@ -26,6 +26,7 @@ ow list                                             # existing schedules (ids, n
 ow show <schedule-id>                               # one schedule in full, prompt included (id or unique prefix)
 ow update <schedule-id> "<new prompt>" [--label ...]  # edit in place: timing, run history and id are kept
 ow cancel <schedule-id>
+ow accounts                                         # accounts (usage pools) with live usage, for --account
 ow ping                                             # is the app reachable?
 ```
 
@@ -50,6 +51,7 @@ Prompt goes as the positional argument, via `--prompt-file <path>`, or `-` to re
 - `--repo <name>`: only when the user asks for a different repository, or you are not inside a git repo.
 - `--model <name>`: only when the user names a model. Short names work — `opus`, `sonnet`, `haiku`, `fable` (Claude) and `astra`, `sol`, `terra`, `luna` (Codex/GPT); a full id like `claude-opus-5-5` works too. **The provider follows from the model**, so `--model astra` runs the session on Codex — there is no separate provider flag. An unknown name is refused with the list of available models.
 - `--effort off|low|medium|high|xhigh|max`: only when the user asks. Defaults to the effort of the session you are in, clamped to what the model supports.
+- `--account <name>`: the agent account (usage pool) to run on — id, label, or a unique part of a label (`ow accounts` lists them). Default: the account of the session you are in, so everything you launch shares your pool. `--account auto` instead lets the app pick at launch (by usage pace when the user has Auto pace on). Without `--model`, the account's provider decides where the session runs. A disabled account, or one the repo does not allow, is refused.
 - `--wait-idle`: hold the run until nothing else is working in that worktree. Good for "after the current work is done".
 - `--label "<short title>"`: optional; defaults to the first line of the prompt.
 
@@ -76,6 +78,18 @@ User: "Start a separate session now to update the docs for what we just did."
 ow run "Update docs/ for the new export feature implemented on branch export-v2 (see the diff against main). Keep the existing doc style."
 ```
 
+## Spreading work across accounts
+
+When the user asks to run several sessions on different accounts / usage pools, or a launch should go where there is quota left:
+
+```
+ow accounts [--repo <name>] [--json]
+```
+
+It lists every account with its live usage: 5h and 7d window % used and reset times, per-model weekly caps (e.g. Fable), and a HEADROOM score (remaining quota ÷ remaining window time, tighter window wins; 1.00 = on pace, higher = more room). It also marks accounts the repo does not allow, logged-out accounts, and which account the app would pick next. Needs the app running.
+
+Pick from the allowed, logged-in accounts with the most headroom, check the model you need has room in its weekly cap, and pass `--account` on each `ow run` / `ow schedule`. Spread a batch across several accounts rather than putting everything on the top one. Each launch's confirmation names the account it got. `ow sessions` shows the account of every session.
+
 ## Reviewing sessions and leaving findings
 
 For workflow reviews ("how did the agents do this week?"), read the user's sessions and leave findings where the user will act on them:
@@ -88,7 +102,7 @@ ow quick-action list | add "<text>" | remove "<text>"
 ow chip list | add "<text>" | remove "<text>"
 ```
 
-- `ow sessions` lists live and archived sessions, most recently active first: id, repo, model, effort, user/total message counts, cost, status, the schedule that launched it, its PR. `--since` takes `7d`, `24h`, `today`, `yesterday` or a date. These read the app's files and work even while the app is closed.
+- `ow sessions` lists live and archived sessions, most recently active first: id, repo, model, account, effort, user/total message counts, cost, status, the schedule that launched it, its PR. `--since` takes `7d`, `24h`, `today`, `yesterday` or a date. These read the app's files and work even while the app is closed.
 - `ow transcript` prints a session: by default the user's prompts and the agent's replies (each cut to 2000 chars; `--max-chars 0` = everything). `--user-only` shows just what the user asked, which is the quickest way to spot repeated corrections. `--full` adds one line per tool call.
 - `ow pile add` puts a text item in the user's Pile, an inbox they launch sessions from later. Write it as a self-contained prompt a future agent can act on. Use it for anything the user should decide on; don't launch work yourself.
 - Quick actions are one-click prompts under the input box (max 60 chars). Prompt chips are toggles appended to a prompt (max 40 chars). Adding one that already exists does nothing. Only change these when the user asked you to, or when a review explicitly covers them. Run `list` first.
