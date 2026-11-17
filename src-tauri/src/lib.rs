@@ -13,6 +13,8 @@ mod notion;
 mod persist;
 mod proc;
 mod realtime;
+#[cfg(windows)]
+mod redirection_guard;
 mod sequences;
 mod session_persistence;
 mod sidecar;
@@ -281,6 +283,13 @@ fn shutdown_app(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // After an in-app update the MSI starts us from Windows Installer, and we
+    // inherit its RedirectionGuard: no agent we spawn could follow a junction
+    // (pnpm's node_modules, uv) until the next Explorer launch. Relaunch under
+    // Explorer and exit — first thing, before the single-instance lock exists.
+    #[cfg(windows)]
+    let guard_report = redirection_guard::shed_inherited_guard();
+
     // macOS launches GUI apps with launchd's minimal PATH (/usr/bin:/bin:...), not the
     // user's shell PATH, so lookups of CLI tools (docker, claude, codex) fail whenever
     // the app is started from Finder or the Dock. Adopt the login shell's PATH before
@@ -413,6 +422,8 @@ pub fn run() {
             // process exists — i.e. before logging is initialised.
             #[cfg(windows)]
             path_repair.log();
+            #[cfg(windows)]
+            guard_report.log();
 
             // Move stored API keys from the pre-rename keyring service name.
             migrate_legacy_keyring(app.handle());
