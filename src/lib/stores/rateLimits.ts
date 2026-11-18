@@ -24,12 +24,24 @@ export interface ScopedLimit {
 	is_active: boolean;
 }
 
+/** A banked limit reset (claude.ai Usage → "Limit resets"; Claude Code's /limit-reset) */
+export interface LimitResetGrant {
+	label: string;
+	resets_left: number;
+	ends_at: string; // ISO timestamp the grant expires; '' when open-ended
+	/** Model-specific reset (e.g. Fable): refills 5h + gives back that model's weekly use */
+	gives_back_weekly: boolean;
+	usable_now: boolean;
+	paused: boolean;
+}
+
 /** Unified rate limit data shape used by both Claude and Codex */
 export interface ProviderRateLimits {
 	five_hour: RateLimitWindow | null;
 	seven_day: RateLimitWindow | null;
 	extra_usage: ExtraUsage;
 	scoped_windows?: ScopedLimit[]; // per-model weekly caps; Claude only
+	limit_resets?: LimitResetGrant[]; // banked resets with uses left; Claude only
 }
 
 // Keep backward compat alias

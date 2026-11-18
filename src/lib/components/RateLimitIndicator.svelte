@@ -53,6 +53,63 @@
     return `${weekday} at ${time}`;
   }
 
+  function formatExpiry(isoTimestamp: string): string {
+    const d = new Date(isoTimestamp);
+    if (Number.isNaN(d.getTime())) return '';
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      ...(sameYear ? {} : { year: 'numeric' }),
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  }
+
+  /**
+   * Banked limit resets, grouped the way claude.ai shows them: one "Full reset"
+   * line plus one per model-specific kind ("Fable reset · 2"), each with its
+   * earliest expiry. Model-specific grants are named after the model in their
+   * label (known scoped-window models first, then common model names).
+   */
+  function limitResetLines(data: NonNullable<typeof claude>): string[] {
+    const grants = data.limit_resets ?? [];
+    if (grants.length === 0) return [];
+    const modelNames = [
+      ...(data.scoped_windows ?? []).map((w) => w.model),
+      'Fable', 'Opus', 'Sonnet', 'Haiku'
+    ];
+    const groups = new Map<string, { left: number; firstExpiry: string; blocked: boolean }>();
+    for (const g of grants) {
+      const model = g.gives_back_weekly
+        ? modelNames.find((m) => new RegExp(`\\b${m}\\b`, 'i').test(g.label))
+        : undefined;
+      const kind = g.gives_back_weekly ? `${model ?? 'Model'} reset` : 'Full reset';
+      const cur = groups.get(kind) ?? { left: 0, firstExpiry: '', blocked: true };
+      cur.left += g.resets_left;
+      // Offsets vary between grants, so compare instants rather than strings.
+      if (g.ends_at && (!cur.firstExpiry || Date.parse(g.ends_at) < Date.parse(cur.firstExpiry))) {
+        cur.firstExpiry = g.ends_at;
+      }
+      // A group counts as usable if any of its grants is.
+      if (g.usable_now && !g.paused) cur.blocked = false;
+      groups.set(kind, cur);
+    }
+    const total = [...groups.values()].reduce((n, g) => n + g.left, 0);
+    const lines = ['', `Limit resets: ${total} available`];
+    // Full reset first, then model-specific kinds.
+    const ordered = [...groups.entries()].sort(([a], [b]) =>
+      Number(b === 'Full reset') - Number(a === 'Full reset') || a.localeCompare(b)
+    );
+    for (const [kind, g] of ordered) {
+      const expiry = g.firstExpiry ? formatExpiry(g.firstExpiry) : '';
+      const expiryText = expiry ? `, ${g.left > 1 ? 'first expires' : 'expires'} ${expiry}` : '';
+      lines.push(`  ${kind}${g.left > 1 ? ` ×${g.left}` : ''}${expiryText}${g.blocked ? ' (not usable now)' : ''}`);
+    }
+    return lines;
+  }
+
   function buildTooltip(
     data: typeof claude,
     pace5hData: typeof claudePace5h,
@@ -97,6 +154,7 @@
         `${w.model} (7d): ${w.utilization.toFixed(1)}% used, resets ${formatResetAt(w.resets_at)}${w.is_active ? '' : ' (inactive)'}`
       );
     }
+    lines.push(...limitResetLines(data));
     lines.push('');
     lines.push('Colors: green = low, white = on target, red = high');
     return lines.join('\n');

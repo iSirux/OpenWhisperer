@@ -453,6 +453,22 @@ pub struct ScopedLimit {
     pub is_active: bool,
 }
 
+/// A banked "limit reset" grant (what claude.ai shows under Usage → Limit
+/// resets, and Claude Code's `/limit-reset` spends). Read from the usage
+/// endpoint's `cedar_ember.grants[]` when called with `?cedar_ember=1`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LimitResetGrant {
+    pub label: String,
+    pub resets_left: u64,
+    /// ISO timestamp the grant expires; empty when open-ended.
+    pub ends_at: String,
+    /// Model-specific reset (e.g. Fable): refills the 5h window and gives back
+    /// what that model used this week instead of clearing the whole week.
+    pub gives_back_weekly: bool,
+    pub usable_now: bool,
+    pub paused: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClaudeRateLimits {
     pub five_hour: Option<RateLimitWindow>,
@@ -461,6 +477,34 @@ pub struct ClaudeRateLimits {
     /// Per-model weekly windows (e.g. Fable). Empty for Codex.
     #[serde(default)]
     pub scoped_windows: Vec<ScopedLimit>,
+    /// Banked limit resets with uses left. Empty for Codex.
+    #[serde(default)]
+    pub limit_resets: Vec<LimitResetGrant>,
+}
+
+/// Parse `cedar_ember.grants[]`, keeping only grants with resets left.
+fn parse_limit_resets(data: &serde_json::Value) -> Vec<LimitResetGrant> {
+    data["cedar_ember"]["grants"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|g| {
+                    let resets_left = g["resets_left"].as_u64().unwrap_or(0);
+                    if resets_left == 0 {
+                        return None;
+                    }
+                    Some(LimitResetGrant {
+                        label: g["label"].as_str().unwrap_or("").to_string(),
+                        resets_left,
+                        ends_at: g["ends_at"].as_str().unwrap_or("").to_string(),
+                        gives_back_weekly: g["gives_back_weekly"].as_bool().unwrap_or(false),
+                        usable_now: g["usable_now"].as_bool().unwrap_or(false),
+                        paused: g["paused"].as_bool().unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Read an OAuth credentials file and extract a bearer token from it (I7).
@@ -746,10 +790,16 @@ pub async fn fetch_claude_rate_limits(
         }
     }
 
-    const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-    let headers: [(&str, &str); 2] = [
+    // `cedar_ember=1` adds the banked limit-reset grants (`cedar_ember` block)
+    // to the normal usage payload — the same read Claude Code's `/limit-reset`
+    // does. The server only reports grants to a current Claude Code client: with
+    // an old/unknown User-Agent it answers `ineligible_reason: "surface"` and an
+    // empty grant list, so identify as the CLI the bundled SDK ships.
+    const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1";
+    let headers: [(&str, &str); 3] = [
         ("anthropic-beta", "oauth-2025-04-20"),
-        ("User-Agent", "claude-code/2.0.32"),
+        ("User-Agent", "claude-cli/2.1.322 (external, cli)"),
+        ("x-app", "cli"),
     ];
 
     let data = match authed_get_json(USAGE_URL, &token, &headers).await {
@@ -809,6 +859,7 @@ pub async fn fetch_claude_rate_limits(
                     .collect()
             })
             .unwrap_or_default(),
+        limit_resets: parse_limit_resets(&data),
     })
 }
 
@@ -884,8 +935,9 @@ pub async fn fetch_codex_rate_limits(
             used_credits: credits["used_credits"].as_u64(),
             utilization: credits["utilization"].as_f64(),
         },
-        // Codex has no per-model scoped windows.
+        // Codex has no per-model scoped windows or banked resets.
         scoped_windows: Vec::new(),
+        limit_resets: Vec::new(),
     })
 }
 
@@ -923,6 +975,26 @@ fn codex_window_by_duration(
 mod codex_rate_limit_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn parses_limit_reset_grants_and_drops_spent_ones() {
+        let data = json!({ "cedar_ember": { "grants": [
+            { "label": "One full limit reset (November 2026)", "resets_left": 1,
+              "ends_at": "2026-12-10T23:00:00+01:00", "gives_back_weekly": false,
+              "usable_now": true, "paused": false },
+            { "label": "New model launch: one Fable reset", "resets_left": 1,
+              "ends_at": "2027-03-09T08:59:00+01:00", "gives_back_weekly": true,
+              "usable_now": true, "paused": false },
+            { "label": "Spent", "resets_left": 0, "ends_at": null }
+        ]}});
+        let grants = parse_limit_resets(&data);
+        assert_eq!(grants.len(), 2);
+        assert!(!grants[0].gives_back_weekly);
+        assert!(grants[1].gives_back_weekly);
+        assert_eq!(grants[1].ends_at, "2027-03-09T08:59:00+01:00");
+        // Ineligible / missing block → nothing.
+        assert!(parse_limit_resets(&json!({ "cedar_ember": null })).is_empty());
+    }
 
     #[test]
     fn does_not_mistake_a_weekly_primary_window_for_five_hours() {
