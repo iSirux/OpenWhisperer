@@ -17,6 +17,7 @@
   import { DEFAULT_OPENAI_MODEL_ID, isAutoModel } from '$lib/utils/models';
   import RateLimitIndicator from './RateLimitIndicator.svelte';
   import QueueIndicator from './QueueIndicator.svelte';
+  import ThroughputIndicator from './ThroughputIndicator.svelte';
   import { updater, updateAvailable } from '$lib/stores/updater';
 
   // Derived state from stores
@@ -285,6 +286,9 @@
 
     <!-- Rate Limit Indicator -->
     <RateLimitIndicator />
+
+    <!-- Output tokens/s across all sessions (hidden when idle) -->
+    <ThroughputIndicator />
 
     <!-- Smart Queue Indicator (queued count + next reset) -->
     <QueueIndicator />

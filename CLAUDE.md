@@ -59,6 +59,7 @@ Most routes live in the `(main)` route group, which shares `(main)/+layout.svelt
 - `transcriptProcessor.ts` - Global transcript processing service (routes finished transcriptions to sessions/pile/input regardless of active route); includes the durable pile failure sink (`handlePileTranscriptReady`)
 - `overlay.ts` - Floating overlay window visibility and positioning
 - `usageStats.ts` - Persistent usage statistics tracking (sessions, tokens, costs, tools, repos, daily stats, streaks)
+- `throughput.ts` - App-wide output tokens/s (rolling 60 s window over `sdk-output-tokens-${id}`, all sessions incl. subagents, Claude + Codex), shown by `ThroughputIndicator` in `AppHeader`; in-memory only. The sidecar sends output-token *growth* per model call (Claude: per API message id, since each content block repeats the message's usage; Codex: growth of `tokenUsage.total`), so the rate moves in steps
 - `rateLimits.ts` - Unified `ProviderRateLimits` (5h/7d windows + extra usage) for both Claude and Codex
 - `queueDetection.ts` - Smart Queue exhaustion detection: "is a provider's usage window exhausted, which window, when does it reset?" (imports neither `sdkSessions` nor `smartQueue` to avoid cycles)
 - `smartQueue.ts` - Smart Queue drain driver: dispatches deferred sessions (`status: 'queued'` → `launchPrepared`) and parked turns (`parkedTurns[]` → `continueRateLimited`) when usage windows reset or a custom `targetStartAt` passes; started once via `startSmartQueue()` in the main layout
@@ -314,6 +315,7 @@ Models are not hand-maintained: the sidecar's `list_models` asks each provider w
     - `sdk-text-${id}` - Text content from assistant
     - `sdk-tool-start-${id}` / `sdk-tool-result-${id}` - Tool call lifecycle
     - `sdk-progressive-usage-${id}` - Live token counts during streaming
+    - `sdk-output-tokens-${id}` - Output-token growth (throughput meter only, never accounting)
     - `sdk-usage-${id}` - Final usage stats (tokens, cost, duration)
     - `sdk-subagent-start-${id}` / `sdk-subagent-stop-${id}` - Subagent lifecycle
     - `sdk-done-${id}` / `sdk-error-${id}` - Query completion

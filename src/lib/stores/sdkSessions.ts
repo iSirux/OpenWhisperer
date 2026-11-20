@@ -6,6 +6,7 @@ import { repos, findRepoById } from './repos';
 import { touchRepoForCwd } from './repoRecency';
 import { playCompletionSound, playQuestionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
+import { recordOutputTokens } from './throughput';
 import { rateLimits, codexRateLimits } from './rateLimits';
 import { saveSessionsToDisk, saveSdkSessionsPartial } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, pickNickname, type QuickAction } from '$lib/utils/llm';
@@ -2233,6 +2234,19 @@ function createSdkSessionsStore() {
         queueUpdate(sessions =>
           sessions.map(s => s.id === id ? { ...s, usage: processProgressiveUsage(s.usage, e.payload, s.model) } : s)
         );
+      })
+    );
+
+    // Output-token growth for the header throughput meter. A no-op updater just to read the
+    // session's provider without flushing the queue on this hot path.
+    unlisteners.push(
+      await listen<number>(`sdk-output-tokens-${id}`, (e) => {
+        const tokens = e.payload;
+        queueUpdate(sessions => {
+          const provider = sessions.find(s => s.id === id)?.provider ?? 'claude';
+          recordOutputTokens(id, provider, tokens);
+          return sessions;
+        });
       })
     );
 

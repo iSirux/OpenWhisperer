@@ -587,6 +587,12 @@ const lastMainAgentUsage = new Map<string, {
   cacheCreationTokens: number;
 }>();
 
+// Highest output_tokens seen on the API message each agent is currently generating
+// (key: "session_id:parentToolUseId|main"). Claude Code emits one assistant message per
+// content block, all carrying the same message id and a growing usage, so the throughput
+// meter is fed the growth rather than the raw value.
+const generatedOutputByAgent = new Map<string, { messageId: string; outputTokens: number }>();
+
 function send(msg: object): void {
   const line = JSON.stringify(msg) + "\n";
   process.stdout.write(line);
@@ -693,6 +699,27 @@ function sendProgressiveUsage(
   }
 ): void {
   send({ type: "progressive_usage", id, ...usage });
+}
+
+// Output tokens generated since the last report — feeds the header throughput meter only.
+function sendOutputTokens(id: string, tokens: number): void {
+  if (tokens > 0) send({ type: "output_tokens", id, tokens: Math.round(tokens) });
+}
+
+// Report the growth of a Claude API message's output_tokens for one agent.
+function trackClaudeOutputTokens(
+  id: string,
+  parentToolUseId: string | null,
+  messageId: string | undefined,
+  outputTokens: number
+): void {
+  if (!messageId || !(outputTokens > 0)) return;
+  const key = `${id}:${parentToolUseId || "main"}`;
+  const prev = generatedOutputByAgent.get(key);
+  const base = prev?.messageId === messageId ? prev.outputTokens : 0;
+  if (outputTokens <= base) return;
+  generatedOutputByAgent.set(key, { messageId, outputTokens });
+  sendOutputTokens(id, outputTokens - base);
 }
 
 function sendError(id: string, message: string): void {
@@ -1903,6 +1930,7 @@ function handleAppServerNotification(id: string, notification: JsonRpcNotificati
           };
         }
 
+        sendOutputTokens(id, deltaOutput);
         if (deltaInput > 0 || deltaOutput > 0 || deltaCacheRead > 0 || deltaCacheCreation > 0) {
           sendUsage(id, {
             inputTokens: deltaInput,
@@ -5400,6 +5428,13 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           // and returns the proper updatedInput with the user's answers.
         }
       }
+      // Throughput counts every agent, subagents included.
+      trackClaudeOutputTokens(
+        id,
+        parentToolUseId,
+        (message.message as { id?: string }).id,
+        message.message.usage?.output_tokens ?? 0
+      );
       // Send progressive usage data from assistant message if available
       // Only emit for main agent messages (not subagents) to keep context bar accurate
       if (message.message.usage && !parentToolUseId) {
@@ -5966,6 +6001,9 @@ async function handleClose(msg: CloseMessage): Promise<void> {
     }
   }
   lastMainAgentUsage.delete(msg.id);
+  for (const key of generatedOutputByAgent.keys()) {
+    if (key.startsWith(`${msg.id}:`)) generatedOutputByAgent.delete(key);
+  }
   sessions.delete(msg.id);
   send({ type: "closed", id: msg.id });
 }

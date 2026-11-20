@@ -447,6 +447,12 @@ pub enum InboundMessage {
         #[serde(rename = "cacheCreationTokens")]
         cache_creation_tokens: u64,
     },
+    /// Output tokens generated since the previous report for this session (main agent and
+    /// subagents). Feeds the header throughput meter; never used for usage accounting.
+    OutputTokens {
+        id: String,
+        tokens: u64,
+    },
     ModelUpdated {
         id: String,
         model: String,
@@ -885,6 +891,7 @@ impl InboundMessage {
             InboundMessage::Done { .. } => "sdk-done",
             InboundMessage::Usage { .. } => "sdk-usage",
             InboundMessage::ProgressiveUsage { .. } => "sdk-progressive-usage",
+            InboundMessage::OutputTokens { .. } => "sdk-output-tokens",
             InboundMessage::ModelUpdated { .. } => "sdk-model-updated",
             InboundMessage::EffortUpdated { .. } => "sdk-effort-updated",
             InboundMessage::Closed { .. } => "sdk-closed",
@@ -926,6 +933,7 @@ impl InboundMessage {
             | M::Done { id }
             | M::Usage { id, .. }
             | M::ProgressiveUsage { id, .. }
+            | M::OutputTokens { id, .. }
             | M::ModelUpdated { id, .. }
             | M::EffortUpdated { id, .. }
             | M::Closed { id }
@@ -1484,6 +1492,9 @@ impl SidecarManager {
                         cache_creation_tokens,
                     },
                 );
+            }
+            InboundMessage::OutputTokens { id, tokens } => {
+                Self::emit(app, suffix, &id, tokens);
             }
             InboundMessage::ModelUpdated { id, model } => {
                 log::info!("[sidecar] Model updated for {}: {}", id, model);
