@@ -557,6 +557,14 @@ interface Session {
     cacheRead: number;
     cacheCreation: number;
   };
+  // Throughput meter reconciliation (Claude). Subagent turns are not streamed as
+  // partial messages, so their output only shows up in the result's modelUsage
+  // (a running total of the CLI process). `claudeOutputBaseline` is that total at
+  // the previous result — 0 for a fresh query, unknown on resume (the carried-over
+  // total can be stale); `claudeOutputStreamed` is what the meter already got
+  // from stream events since then.
+  claudeOutputBaseline?: number;
+  claudeOutputStreamed?: number;
 }
 
 interface QueuedPrompt {
@@ -588,9 +596,10 @@ const lastMainAgentUsage = new Map<string, {
 }>();
 
 // Highest output_tokens seen on the API message each agent is currently generating
-// (key: "session_id:parentToolUseId|main"). Claude Code emits one assistant message per
-// content block, all carrying the same message id and a growing usage, so the throughput
-// meter is fed the growth rather than the raw value.
+// (key: "session_id:parentToolUseId|main"). The real count only arrives in the partial
+// stream's message_delta: the assistant messages Claude Code emits per content block
+// carry the message_start placeholder (a handful of tokens), all with the same id. So
+// the meter is fed the growth per message id, from whichever source is higher.
 const generatedOutputByAgent = new Map<string, { messageId: string; outputTokens: number }>();
 
 function send(msg: object): void {
@@ -719,7 +728,24 @@ function trackClaudeOutputTokens(
   const base = prev?.messageId === messageId ? prev.outputTokens : 0;
   if (outputTokens <= base) return;
   generatedOutputByAgent.set(key, { messageId, outputTokens });
+  const session = sessions.get(id);
+  if (session) session.claudeOutputStreamed = (session.claudeOutputStreamed ?? 0) + (outputTokens - base);
   sendOutputTokens(id, outputTokens - base);
+}
+
+// At a Claude result: report output the stream never showed (subagents, Claude Code's
+// own side calls) as the growth of modelUsage's running output total minus what was
+// already streamed since the previous result.
+function reconcileClaudeOutputTokens(id: string, modelUsage: Record<string, { outputTokens?: number }> | undefined): void {
+  const session = sessions.get(id);
+  if (!session || !modelUsage) return;
+  const total = Object.values(modelUsage).reduce((sum, u) => sum + (u.outputTokens ?? 0), 0);
+  const baseline = session.claudeOutputBaseline;
+  if (baseline !== undefined && total >= baseline) {
+    sendOutputTokens(id, total - baseline - (session.claudeOutputStreamed ?? 0));
+  }
+  session.claudeOutputBaseline = total;
+  session.claudeOutputStreamed = 0;
 }
 
 function sendError(id: string, message: string): void {
@@ -4149,6 +4175,9 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     permissionMode,
     // Load CLAUDE.md, settings, and filesystem-backed Skills like Claude Code does
     settingSources: ["user", "project", "local"],
+    // Partial stream events carry the only accurate per-message output-token count
+    // (message_delta) — read by the header throughput meter, see stream_event below.
+    includePartialMessages: true,
     ...(msg.model && { model: msg.model }),
     ...msg.options,
     // Allow all MCP tools to execute without permission prompts
@@ -4950,6 +4979,11 @@ async function runClaudeQueryItem(
     });
 
     // Common options for both text and multimodal queries
+    // A fresh CLI process starts its modelUsage running total at 0; a resumed one
+    // carries over a saved (possibly stale) total, so the first result only sets the baseline.
+    session.claudeOutputBaseline = resumeSessionId ? undefined : 0;
+    session.claudeOutputStreamed = 0;
+
     const queryOptions: Options & { abortController: AbortController } = {
       ...session.options,
       abortController,
@@ -5095,7 +5129,8 @@ async function runClaudeQueryItem(
       // A result ends the turn; anything else means the CLI is working (including
       // a turn it starts on its own, e.g. woken by a background task).
       session.claudeTurnActive = message.type !== "result";
-      sendTrace(msg.id, `Received message #${messageCount}: type=${message.type}`);
+      // Partial stream events arrive every few tokens — far too many to trace.
+      if (message.type !== "stream_event") sendTrace(msg.id, `Received message #${messageCount}: type=${message.type}`);
       try {
         // Capture SDK session ID from system init message for resume
         if (message.type === "system" && message.subtype === "init") {
@@ -5452,11 +5487,21 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
     }
 
     case "stream_event": {
-      // Streaming partial message (renamed from partial_assistant in SDK 0.3.x)
-      const streamMsg = message as { event?: { type?: string; delta?: { type?: string; text?: string } }; parent_tool_use_id?: string | null };
+      // Partial stream events (includePartialMessages) are read ONLY for the throughput
+      // meter's output-token count. Text is still rendered from the complete assistant
+      // messages — forwarding text deltas here would duplicate it.
+      const streamMsg = message as {
+        event?: { type?: string; message?: { id?: string; usage?: { output_tokens?: number } }; usage?: { output_tokens?: number } };
+        parent_tool_use_id?: string | null;
+      };
       const partialParentToolUseId = streamMsg.parent_tool_use_id || null;
-      if (streamMsg.event?.type === "content_block_delta" && streamMsg.event.delta?.text) {
-        sendText(id, streamMsg.event.delta.text, partialParentToolUseId);
+      const ev = streamMsg.event;
+      if (ev?.type === "message_start") {
+        trackClaudeOutputTokens(id, partialParentToolUseId, ev.message?.id, ev.message?.usage?.output_tokens ?? 0);
+      } else if (ev?.type === "message_delta") {
+        // message_delta has no id; it belongs to the message this agent last started.
+        const current = generatedOutputByAgent.get(`${id}:${partialParentToolUseId || "main"}`);
+        trackClaudeOutputTokens(id, partialParentToolUseId, current?.messageId, ev.usage?.output_tokens ?? 0);
       }
       break;
     }
@@ -5483,13 +5528,14 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       const resultMsg = message as unknown as {
         subtype: string;
         usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
-        modelUsage: Record<string, { contextWindow?: number }>;
+        modelUsage: Record<string, { contextWindow?: number; outputTokens?: number }>;
         total_cost_usd: number;
         duration_ms: number;
         duration_api_ms: number;
         num_turns: number;
         errors?: string[];
       };
+      reconcileClaudeOutputTokens(id, resultMsg.modelUsage);
       const modelUsageValues = Object.values(resultMsg.modelUsage || {});
       // The SDK reports a stale 200k window for the 1M-context Claude models, so trust the
       // larger of the reported window and our known maximum. This keeps the displayed window
