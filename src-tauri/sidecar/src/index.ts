@@ -22,7 +22,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
-import { isUsageLimitError, appServerErrorMessage } from "./usageLimit";
+import { isUsageLimitError, appServerErrorMessage, usageLimitAtSuccess } from "./usageLimit";
 import { CodexSubagents } from "./codexSubagents";
 import { NestedSubagentTailer } from "./nestedSubagents";
 import { listClaudeModels, listCodexModels } from "./modelCatalog";
@@ -471,6 +471,8 @@ interface AppServerState {
 
 interface Session {
   pendingUsageLimit?: { status: string; resetsAt?: number; utilization?: number };
+  /** The last main-thread assistant message was the SDK's synthetic `error: "rate_limit"` one. */
+  lastMainAssistantWasRateLimit?: boolean;
   cwd: string;
   provider: "claude" | "openai"; // SDK provider
   openaiMode?: OpenAiExecutionMode; // OpenAI execution mode (SDK vs app-server)
@@ -5388,8 +5390,10 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           .filter(block => block.type === "text")
           .map(block => block.text).join(" ");
         if (isRateLimitError(errorText)) session.pendingUsageLimit ??= { status: "rejected" };
+        session.lastMainAssistantWasRateLimit = true;
         break;
       }
+      if (session && !parentToolUseId) session.lastMainAssistantWasRateLimit = false;
       if (session && turnUuid) {
         session.lastAssistantTurnUuid = turnUuid;
       }
@@ -5581,7 +5585,17 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         : 0;
 
       if (message.subtype === "success") {
-        if (resultSession) resultSession.pendingUsageLimit = undefined;
+        // A call rejected by the usage limit can still end as "success" (synthetic rate_limit
+        // message last). Park it for the reset first; the frontend then ignores the done below.
+        const cutOffBy = usageLimitAtSuccess(
+          resultSession?.pendingUsageLimit,
+          !!resultSession?.lastMainAssistantWasRateLimit
+        );
+        if (cutOffBy) sendRateLimit(id, cutOffBy);
+        if (resultSession) {
+          resultSession.pendingUsageLimit = undefined;
+          resultSession.lastMainAssistantWasRateLimit = false;
+        }
         if (remainingTurns > 0 && resultSession) {
           send({
             type: "debug",
