@@ -2,6 +2,7 @@ import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import type { AgentAccount } from './settings';
 import { DEFAULT_ACCOUNT_ID, isDefaultAccountId } from '$lib/utils/accounts';
+import { rateLimitFetchDue } from '$lib/utils/rateLimitPolling';
 
 export interface RateLimitWindow {
 	utilization: number; // 0-100
@@ -136,6 +137,7 @@ function createProviderRateLimitStore(
 	let autoRefreshEnabled = false;
 	let accountDisabled = false; // the account behind this store is disabled: never fetch
 	let currentRefreshIntervalMs = baseRefreshIntervalMs;
+	let lastAttemptAt = 0; // moves on every attempt, success or failure (lastFetched moves only on success)
 
 	function shouldShowStale(state: Pick<RateLimitState, 'lastFetched' | 'consecutiveFailures'>): boolean {
 		if (state.consecutiveFailures < STALE_AFTER_CONSECUTIVE_FAILURES) return false;
@@ -162,6 +164,7 @@ function createProviderRateLimitStore(
 				return;
 			}
 			fetchInFlight = true;
+			lastAttemptAt = Date.now();
 			console.log(`[RateLimits] Fetching ${commandName}...`);
 			update((s) => ({ ...s, loading: true, error: shouldShowStale(s) ? s.lastError : null }));
 			try {
@@ -212,7 +215,8 @@ function createProviderRateLimitStore(
 			}
 		},
 
-		/** Fetch only if data is stale (older than current refresh interval) */
+		/** Fetch only if the last success *and* the last attempt are older than the current
+		 *  (backed-off) refresh interval, so a failure streak doesn't bypass the backoff. */
 		async fetchIfStale() {
 			let currentState: RateLimitState | null = null;
 			const unsub = subscribe((s) => {
@@ -223,8 +227,7 @@ function createProviderRateLimitStore(
 			if (
 				snapshot &&
 				!snapshot.loading &&
-				(!snapshot.lastFetched ||
-					Date.now() - snapshot.lastFetched > currentRefreshIntervalMs)
+				rateLimitFetchDue(snapshot.lastFetched, lastAttemptAt, currentRefreshIntervalMs, Date.now())
 			) {
 				await store.fetch();
 			}
