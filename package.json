@@ -1,6 +1,6 @@
 {
     "name": "open-whisperer",
-    "version": "1.103.1",
+    "version": "1.104.0",
     "description": "Voice-controlled interface for Claude Code",
     "type": "module",
     "scripts": {
