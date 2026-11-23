@@ -1,7 +1,7 @@
 /**
  * Shared session launch helpers.
  *
- * Extracted from NotionKanban so that any feature that batch-launches SDK
+ * Extracted from the board view (BrainantBoard) so that any feature that batch-launches SDK
  * sessions (kanban cards, pile items, ...) shares the same machinery:
  *  - `launchSession` — create a setup session, optionally in a fresh git
  *    worktree, tag it with its source entity, and start it.
@@ -33,7 +33,7 @@ interface WorktreeCreationResult {
 
 /** Source-entity tags applied to launched sessions (shown as indicators in lists). */
 export interface SessionTag {
-  notionCard?: { id: string; title: string };
+  boardCard?: { board: string; id: string; title: string; link: string };
   pileItem?: { id: string; title: string };
   githubIssue?: { number: number; title: string; url: string };
   spareTokens?: { promptId: string; auto: boolean };

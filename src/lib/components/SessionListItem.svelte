@@ -506,12 +506,12 @@
     </div>
   {/if}
 
-  {#if session.notionCard}
-    <div class="notion-card-link" title="Notion card: {session.notionCard.title}">
+  {#if session.boardCard}
+    <div class="notion-card-link" title="Brainant card #{session.boardCard.id}: {session.boardCard.title}">
       <svg class="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor" opacity="0.7">
         <path d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z" />
       </svg>
-      <span class="truncate">{session.notionCard.title}</span>
+      <span class="truncate">#{session.boardCard.id} {session.boardCard.title}</span>
     </div>
   {/if}
 

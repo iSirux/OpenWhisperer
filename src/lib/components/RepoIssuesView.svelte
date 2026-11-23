@@ -174,7 +174,7 @@
   /**
    * Draft sessions from the selected issues without starting them: each issue
    * becomes a New Session draft with the prompt pre-written, for review before
-   * launch (mirrors NotionKanban's draftAction).
+   * launch (mirrors BrainantBoard's draftAction).
    */
   async function confirmDraft() {
     if (!pendingAction || !repo || selectedIssues.length === 0) return;

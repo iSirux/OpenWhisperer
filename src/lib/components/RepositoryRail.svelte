@@ -161,11 +161,11 @@
     navigation.showRepositoryAdd();
   }
 
-  function toggleNotion() {
-    if (currentView === 'notion') {
+  function toggleBoard() {
+    if (currentView === 'board') {
       navigation.showSessions();
     } else {
-      navigation.showNotion();
+      navigation.showBoard();
     }
   }
 
@@ -183,9 +183,9 @@
     {#if $settings.system.dev_mode}
       <button
         class="rail-btn"
-        class:is-active={currentView === 'notion'}
-        onclick={toggleNotion}
-        title="Notion Board"
+        class:is-active={currentView === 'board'}
+        onclick={toggleBoard}
+        title="Brainant Board"
       >
         <span class="icon-wrap">
           <svg class="notion-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

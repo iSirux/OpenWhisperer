@@ -410,7 +410,7 @@ function buildSdkDisplaySession(s: SdkSession, parentLabel: string | undefined):
           inheritedMessageCount: s.forkedMessageCount ?? 0,
         }
       : undefined,
-    notionCard: s.notionCard,
+    boardCard: s.boardCard,
     githubIssue: s.githubIssue,
     pr: s.pr ?? undefined,
     validation: s.validation ?? undefined,

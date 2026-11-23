@@ -9,7 +9,7 @@ mod launch_task;
 mod llm;
 mod local_llm;
 mod meeting;
-mod notion;
+mod brainant;
 mod persist;
 mod proc;
 mod realtime;
@@ -31,9 +31,9 @@ mod whisper;
 mod win_env;
 
 use commands::{
-    account_cmds, archive_cmds, audio_cmds, cli_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
+    account_cmds, archive_cmds, audio_cmds, brainant_cmds, cli_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
     launch_cmds, llm_cmds, local_llm_cmds, log_cmds, model_catalog_cmds,
-    mcp_cmds, notion_cmds, pile_cmds, realtime_cmds, schedule_cmds, screenshot_cmds, sdk_cmds,
+    mcp_cmds, pile_cmds, realtime_cmds, schedule_cmds, screenshot_cmds, sdk_cmds,
     sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds, validation_cmds,
 };
 use config::{AppConfig, UsageStats};
@@ -714,8 +714,13 @@ pub fn run() {
             validation_cmds::validation_fix_done,
             validation_cmds::validation_fix_failed,
             validation_cmds::validation_cancel,
-            // --- Notion ---
-            notion_cmds::fetch_notion_cards,
+            // --- Brainant boards ---
+            brainant_cmds::brainant_connection,
+            brainant_cmds::brainant_connect,
+            brainant_cmds::brainant_disconnect,
+            brainant_cmds::brainant_boards,
+            brainant_cmds::brainant_board_cards,
+            brainant_cmds::brainant_move_card,
             // --- MCP servers ---
             mcp_cmds::test_mcp_server,
             mcp_cmds::save_mcp_bearer_token,

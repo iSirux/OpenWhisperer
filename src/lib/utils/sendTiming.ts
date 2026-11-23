@@ -36,7 +36,7 @@ export function spaceSendTimingFromEvent(e: ModifierLike): SendTiming | null {
 }
 
 /**
- * Map a send-timing to a session-*launch* schedule. Launch surfaces (pile, Notion,
+ * Map a send-timing to a session-*launch* schedule. Launch surfaces (pile, the Brainant board,
  * GitHub issues, New Session) have no live session yet, so `session_idle` and
  * `repo_idle` both defer to `'after_sessions'` (worktree scope); `reset_5h` targets
  * the next 5h window; `now` returns undefined (launch immediately).

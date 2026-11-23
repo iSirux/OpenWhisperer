@@ -828,8 +828,8 @@ export interface SdkSession {
   forkedMessageCount?: number;
   /** Friendly label for the parent session, used in fork UI surfaces */
   forkedFromSessionLabel?: string;
-  /** Notion card linked to this session (set when created from kanban board) */
-  notionCard?: { id: string; title: string };
+  /** Brainant board card linked to this session (set when launched from the board view) */
+  boardCard?: { board: string; id: string; title: string; link: string };
   /** Pile item this session was launched from */
   pileItem?: { id: string; title: string };
   /** GitHub issue this session was launched from (repo Issues view) */

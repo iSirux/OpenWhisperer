@@ -7,7 +7,7 @@
   import Start from '$lib/components/Start.svelte';
   import SessionPendingView from '$lib/components/SessionPendingView.svelte';
   import ArchiveView from '$lib/components/ArchiveView.svelte';
-  import NotionKanban from '$lib/components/NotionKanban.svelte';
+  import BrainantBoard from '$lib/components/BrainantBoard.svelte';
   import PileList from '$lib/components/PileList.svelte';
   import PileDetailView from '$lib/components/PileDetailView.svelte';
   import ScheduleList from '$lib/components/schedule/ScheduleList.svelte';
@@ -439,7 +439,7 @@
 />
 
 <div class="main-content flex-1 flex overflow-hidden">
-  {#if currentView === 'notion'}
+  {#if currentView === 'board'}
     <div class="border-r border-border bg-surface flex shrink-0 overflow-hidden">
       <RepositoryRail
         currentRepoId={null}
@@ -447,7 +447,7 @@
       />
     </div>
     <main class="flex-1 flex flex-col overflow-hidden">
-      <NotionKanban />
+      <BrainantBoard />
     </main>
   {:else if currentView === 'sparetokens'}
     <div class="border-r border-border bg-surface flex shrink-0 overflow-hidden">

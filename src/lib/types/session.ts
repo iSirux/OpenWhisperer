@@ -69,8 +69,8 @@ export interface DisplaySession {
     inheritedMessageCount: number;
   };
 
-  // Notion card linked to this session
-  notionCard?: { id: string; title: string };
+  // Brainant board card linked to this session
+  boardCard?: { board: string; id: string; title: string; link: string };
 
   // GitHub issue linked to this session
   githubIssue?: { number: number; title: string; url: string };

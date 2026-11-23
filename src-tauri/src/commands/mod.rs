@@ -1,6 +1,7 @@
 pub mod account_cmds;
 pub mod archive_cmds;
 pub mod audio_cmds;
+pub mod brainant_cmds;
 pub mod cli_cmds;
 pub mod debug_recordings_cmds;
 pub mod docker_cmds;
@@ -15,7 +16,6 @@ pub mod local_llm_cmds;
 pub mod log_cmds;
 pub mod mcp_cmds;
 pub mod meeting_cmds;
-pub mod notion_cmds;
 pub mod pile_cmds;
 
 pub mod realtime_cmds;

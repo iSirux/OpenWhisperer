@@ -32,33 +32,50 @@
     pickAccountIdForRepo,
   } from "$lib/utils/accountAutoSelect";
 
-  interface NotionCard {
+  // A Kanban board in Brainant (an instance of its Kanban app), read and changed over Brainant's
+  // REST API with a personal access token (Settings → Access tokens in Brainant), kept in the OS
+  // keyring by the backend (`brainant_cmds.rs`). Calls act as the token's person.
+  interface BrainantBoardRef {
     id: string;
-    title: string;
-    status: string;
-    priority: string | null;
-    size: string | null;
-    category: string[];
-    feature_area: string[];
-    groomed: string | null;
-    url: string;
+    name: string;
+    label: string;
   }
 
-  const KANBAN_COLUMNS: { label: string; status: string; color: string }[] = [
-    { label: "New", status: "New", color: "bg-zinc-500" },
-    { label: "Backlog", status: "Backlog", color: "bg-zinc-400" },
-    { label: "Planned", status: "Planned", color: "bg-yellow-500" },
-    { label: "In Progress", status: "In progress", color: "bg-blue-500" },
-    { label: "Completed", status: "Completed", color: "bg-emerald-500" },
-    { label: "On Hold", status: "On Hold", color: "bg-orange-500" },
-    { label: "Cancelled", status: "Cancelled", color: "bg-red-500" },
-  ];
+  interface BoardColumn {
+    name: string;
+    /** `todo`, `in_progress` or `done`. */
+    kind: string;
+  }
 
-  const ACTIVE_STATUSES = ["New", "Backlog", "Planned", "In progress"];
-  const DONE_STATUSES = ["Completed", "On Hold", "Cancelled"];
+  interface BoardCard {
+    id: number;
+    title: string;
+    column: string;
+    /** The board's own fields by name (Size, Category, Feature Area, AI Groomed, …). */
+    fields: Record<string, unknown>;
+    link: string;
+    updated: string | null;
+  }
 
-  let cards = $state<NotionCard[]>([]);
-  let selectedIds = $state<Set<string>>(new Set());
+  interface BoardSnapshot {
+    board: string;
+    columns: BoardColumn[];
+    cards: BoardCard[];
+    link: string;
+  }
+
+  const BOARD_KEY = "ow.brainant.board";
+
+  let connected = $state<boolean | null>(null);
+  let baseUrl = $state("https://brainant.ai");
+  let tokenInput = $state("");
+  let connecting = $state(false);
+  let boards = $state<BrainantBoardRef[]>([]);
+  let boardId = $state<string>(localStorage.getItem(BOARD_KEY) ?? "");
+  let boardName = $state("");
+  let columns = $state<BoardColumn[]>([]);
+  let cards = $state<BoardCard[]>([]);
+  let selectedIds = $state<Set<number>>(new Set());
   let loading = $state(true);
   let error = $state<string | null>(null);
   let showDone = $state(false);
@@ -178,28 +195,54 @@
     "Ungroomed",
   ];
 
+  /** A field as text (a select), or null. */
+  function textField(card: BoardCard, name: string): string | null {
+    const value = card.fields[name];
+    if (typeof value === "string") return value;
+    if (typeof value === "number") return String(value);
+    return null;
+  }
+
+  /** A field as a list (a multi-select), or empty. */
+  function listField(card: BoardCard, name: string): string[] {
+    const value = card.fields[name];
+    if (Array.isArray(value)) return value.filter((v): v is string => typeof v === "string");
+    if (typeof value === "string") return [value];
+    return [];
+  }
+
+  const sizeOf = (card: BoardCard) => textField(card, "Size");
+  const categoriesOf = (card: BoardCard) => listField(card, "Category");
+  const areasOf = (card: BoardCard) => listField(card, "Feature Area");
+  const groomedOf = (card: BoardCard) => textField(card, "AI Groomed");
+  const rankOf = (card: BoardCard) => textField(card, "Wishlist rank");
+
+  /** A session's tag key for a card: the board and the card's id. */
+  const cardKey = (board: string, id: number | string) => `${board}:${id}`;
+
   const cardSessionMap = $derived.by(() => {
     const sessions = $sdkSessions;
     const map = new Map<string, { count: number; hasActive: boolean }>();
     for (const s of sessions) {
-      if (!s.notionCard) continue;
-      const entry = map.get(s.notionCard.id) || { count: 0, hasActive: false };
+      if (!s.boardCard) continue;
+      const key = cardKey(s.boardCard.board, s.boardCard.id);
+      const entry = map.get(key) || { count: 0, hasActive: false };
       entry.count++;
       if (s.status === "querying" || s.status === "initializing")
         entry.hasActive = true;
-      map.set(s.notionCard.id, entry);
+      map.set(key, entry);
     }
     return map;
   });
 
   const allCategories = $derived(
-    [...new Set(cards.flatMap((c) => c.category))].sort(),
+    [...new Set(cards.flatMap(categoriesOf))].sort(),
   );
   const allFeatureAreas = $derived(
-    [...new Set(cards.flatMap((c) => c.feature_area))].sort(),
+    [...new Set(cards.flatMap(areasOf))].sort(),
   );
   const allSizes = $derived(
-    [...new Set(cards.map((c) => c.size).filter((s): s is string => !!s))].sort(
+    [...new Set(cards.map(sizeOf).filter((s): s is string => !!s))].sort(
       (a, b) => {
         const order = ["XS", "S", "M", "L", "XL"];
         return order.indexOf(a) - order.indexOf(b);
@@ -215,26 +258,29 @@
       filterFeatureAreas.size > 0,
   );
 
-  function matchesFilters(card: NotionCard): boolean {
+  function matchesFilters(card: BoardCard): boolean {
+    const query = searchQuery.trim().toLowerCase();
     if (
-      searchQuery.length > 0 &&
-      !card.title.toLowerCase().includes(searchQuery.toLowerCase())
+      query.length > 0 &&
+      !card.title.toLowerCase().includes(query) &&
+      `#${card.id}` !== query
     )
       return false;
-    if (filterSizes.size > 0 && (!card.size || !filterSizes.has(card.size)))
+    const size = sizeOf(card);
+    if (filterSizes.size > 0 && (!size || !filterSizes.has(size)))
       return false;
     if (
       filterCategories.size > 0 &&
-      !card.category.some((c) => filterCategories.has(c))
+      !categoriesOf(card).some((c) => filterCategories.has(c))
     )
       return false;
     if (
       filterFeatureAreas.size > 0 &&
-      !card.feature_area.some((f) => filterFeatureAreas.has(f))
+      !areasOf(card).some((f) => filterFeatureAreas.has(f))
     )
       return false;
     if (filterGroomed.size > 0) {
-      const groomStatus = card.groomed || "Ungroomed";
+      const groomStatus = groomedOf(card) || "Ungroomed";
       if (!filterGroomed.has(groomStatus)) return false;
     }
     return true;
@@ -262,23 +308,106 @@
   );
   const selectedCount = $derived(selectedIds.size);
   const visibleColumns = $derived(
-    showDone
-      ? KANBAN_COLUMNS
-      : KANBAN_COLUMNS.filter((col) => ACTIVE_STATUSES.includes(col.status)),
+    showDone ? columns : columns.filter((col) => col.kind !== "done"),
   );
 
-  function columnCards(status: string): NotionCard[] {
-    return filteredCards.filter((c) => c.status === status);
+  function columnColor(column: BoardColumn): string {
+    switch (column.kind) {
+      case "in_progress":
+        return "bg-blue-500";
+      case "done":
+        return "bg-emerald-500";
+      default:
+        return "bg-zinc-400";
+    }
+  }
+
+  function columnCards(name: string): BoardCard[] {
+    return filteredCards.filter((c) => c.column === name);
+  }
+
+  /** The column a started card moves to: the board's first in-progress column. */
+  const workingColumn = $derived(columns.find((c) => c.kind === "in_progress")?.name ?? null);
+
+  async function loadConnection() {
+    try {
+      const info = await invoke<{ connected: boolean; baseUrl: string }>("brainant_connection");
+      connected = info.connected;
+      baseUrl = info.baseUrl;
+      if (connected) await loadBoards();
+      else loading = false;
+    } catch (e) {
+      error = String(e);
+      loading = false;
+    }
+  }
+
+  async function connect() {
+    connecting = true;
+    error = null;
+    try {
+      boards = await invoke<BrainantBoardRef[]>("brainant_connect", {
+        baseUrl,
+        token: tokenInput,
+      });
+      tokenInput = "";
+      connected = true;
+      pickBoard();
+      await fetchCards();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      connecting = false;
+    }
+  }
+
+  async function disconnect() {
+    await invoke("brainant_disconnect");
+    connected = false;
+    boards = [];
+    cards = [];
+    columns = [];
+  }
+
+  function pickBoard() {
+    if (boards.some((b) => b.id === boardId)) return;
+    boardId = boards[0]?.id ?? "";
+    localStorage.setItem(BOARD_KEY, boardId);
+  }
+
+  function selectBoard(id: string) {
+    boardId = id;
+    localStorage.setItem(BOARD_KEY, id);
+    clearSelection();
+    fetchCards();
+  }
+
+  async function loadBoards() {
+    try {
+      boards = await invoke<BrainantBoardRef[]>("brainant_boards");
+      pickBoard();
+      await fetchCards();
+    } catch (e) {
+      error = String(e);
+      loading = false;
+    }
   }
 
   async function fetchCards() {
+    if (!boardId) {
+      loading = false;
+      return;
+    }
     loading = true;
     error = null;
     try {
-      const filter = showDone ? null : ACTIVE_STATUSES;
-      cards = await invoke<NotionCard[]>("fetch_notion_cards", {
-        statusFilter: filter,
+      const snapshot = await invoke<BoardSnapshot>("brainant_board_cards", {
+        board: boardId,
+        includeDone: showDone,
       });
+      boardName = snapshot.board;
+      columns = snapshot.columns;
+      cards = snapshot.cards;
     } catch (e) {
       error = String(e);
     } finally {
@@ -286,7 +415,7 @@
     }
   }
 
-  function toggleCard(id: string) {
+  function toggleCard(id: number) {
     const next = new Set(selectedIds);
     if (next.has(id)) {
       next.delete(id);
@@ -300,42 +429,42 @@
     selectedIds = new Set();
   }
 
+  /** How a prompt names a card: the board, its id, title and link, and the tool to read it. */
+  function cardRef(card: BoardCard): string {
+    return `Brainant card #${card.id} "${card.title}" on the board "${boardName}" (${card.link}). Read it with Brainant's kanban__card_get tool (instance "${boardName}", card ${card.id}).`;
+  }
+
   function getPromptForAction(
     action: string,
-    card: NotionCard,
+    card: BoardCard,
   ): { prompt: string } {
+    const ref = cardRef(card);
     switch (action) {
       case "implement":
-        return {
-          prompt: `read card: ${card.title}.\nset the card status to "In progress", then implement`,
-        };
+        return { prompt: `${ref}\nimplement it` };
       case "talk":
         return {
-          prompt: `read card: ${card.title}.\nlets talk about this card - scan the codebase to get an understanding, then discuss`,
+          prompt: `${ref}\nlets talk about this card - scan the codebase to get an understanding, then discuss`,
         };
       case "investigate":
-        return {
-          prompt: `read card: ${card.title}.\ninvestigate`,
-        };
+        return { prompt: `${ref}\ninvestigate` };
       case "groom":
-        return {
-          prompt: `groom ${card.title}`,
-        };
+        return { prompt: `${ref}\ngroom it` };
       case "classify":
         return {
-          prompt: `read card: ${card.title}.\nclassify this card - read the card content, then set all missing properties: Size (XS/S/M/L/XL), Category, and Feature Area.`,
+          prompt: `${ref}\nclassify this card - read the card content, then set every missing field with kanban__card_update: Size (XS/S/M/L/XL), Category and Feature Area.`,
         };
       case "split":
         return {
-          prompt: `read card: ${card.title}.\nscan the codebase to get an understanding, then split this card into multiple smaller, logical cards. prefer individually deployable. update the original card to cover one part of the split, and create new cards for the rest. classify all cards (set Size, Category, Feature Area).`,
+          prompt: `${ref}\nscan the codebase to get an understanding, then split this card into multiple smaller, logical cards. prefer individually deployable. update the original card to cover one part of the split, and create new cards for the rest (kanban__card_update, kanban__card_create). classify all cards (set Size, Category, Feature Area).`,
         };
       case "flesh_out":
         return {
-          prompt: `read card: ${card.title}.\nflesh out this card - read the card content, scan the codebase for relevant context, then rewrite the card body into a proper spec with: overview, acceptance criteria, technical notes, and synergies with other features. Keep any existing valuable content.`,
+          prompt: `${ref}\nflesh out this card - read the card content, scan the codebase for relevant context, then rewrite the card's description into a proper spec with: overview, acceptance criteria, technical notes, and synergies with other features (kanban__card_update). Keep any existing valuable content.`,
         };
       case "plan":
         return {
-          prompt: `read card: ${card.title}.\ncreate an implementation plan - read the card, scan the codebase, research the web if applicable. produce a plan covering: approach, files to touch, risks, rough sequence. Use the notion skill to read the card and write the plan to it.`,
+          prompt: `${ref}\ncreate an implementation plan - read the card, scan the codebase, research the web if applicable. produce a plan covering: approach, files to touch, risks, rough sequence. Post the plan as a comment on the card with kanban__card_comment.`,
         };
       default:
         return { prompt: "" };
@@ -349,6 +478,7 @@
 
     const cardsSnapshot = [...selectedCards];
     const worktree = useWorktree;
+    const board = boardId;
     // Send-timing modifiers: plain = launch now, Ctrl+Shift = when the repo/worktree is
     // idle, Ctrl+Shift+Alt = next 5h reset. Deferred launches park as `queued`.
     const schedule = e ? launchScheduleFromTiming(sendTimingFromEvent(e)) : undefined;
@@ -357,7 +487,14 @@
     launchQueue.enqueue(
       cardsSnapshot.map((card) => () => {
         const { prompt } = getPromptForAction(action, card);
-        return launchSession({
+        // Implementing moves the card to the board's in-progress column first, as this person.
+        const moved =
+          action === "implement" && workingColumn && card.column !== workingColumn
+            ? invoke("brainant_move_card", { board, card: card.id, column: workingColumn }).catch(
+                (e) => console.warn("Could not move the card on Brainant", e),
+              )
+            : Promise.resolve();
+        return moved.then(() => launchSession({
           prompt,
           repo: config.repo,
           model: config.model,
@@ -366,9 +503,9 @@
           accountId: config.accountId,
           useWorktree: worktree,
           branchNameHint: card.title,
-          tag: { notionCard: { id: card.id, title: card.title } },
+          tag: { boardCard: { board, id: String(card.id), title: card.title, link: card.link } },
           schedule,
-        }).then(() => {});
+        })).then(() => {});
       }),
       { stagger: true },
     );
@@ -387,6 +524,7 @@
 
     const cardsSnapshot = [...selectedCards];
     const worktree = useWorktree;
+    const board = boardId;
     clearSelection();
 
     let firstId: string | null = null;
@@ -405,7 +543,7 @@
       sdkSessions.set(
         get(sdkSessions).map((s) =>
           s.id === sessionId
-            ? { ...s, notionCard: { id: card.id, title: card.title } }
+            ? { ...s, boardCard: { board, id: String(card.id), title: card.title, link: card.link } }
             : s,
         ),
       );
@@ -424,19 +562,6 @@
     if (!pendingAction) return;
     draftAction(pendingAction);
     pendingAction = null;
-  }
-
-  function priorityBadge(p: string | null): string {
-    switch (p) {
-      case "High":
-        return "bg-red-500/20 text-red-400";
-      case "Medium":
-        return "bg-amber-500/20 text-amber-400";
-      case "Low":
-        return "bg-emerald-500/20 text-emerald-400";
-      default:
-        return "bg-surface-elevated text-text-muted";
-    }
   }
 
   function sizeBadge(s: string | null): string {
@@ -508,26 +633,31 @@
     ]);
   }
 
+  /** How board-wide prompts name the board and its tools. */
+  function boardRef(): string {
+    return `Use Brainant's kanban__* tools on the board "${boardName}" (instance "${boardName}"); read kanban__board first for its columns and fields.`;
+  }
+
   function classifyAll() {
     boardAction(
-      `classify all unclassified cards in active statuses (New, Backlog, Planned, In progress) - read each card, find those missing Size, Category, or Feature Area, and set all missing properties. Use the notion skill.`,
+      `classify all unclassified open cards - find those missing Size, Category, or Feature Area (kanban__cards_search), read each card, and set every missing field with kanban__card_update. ${boardRef()}`,
     );
   }
 
   function triageNew() {
     boardAction(
-      `triage cards in "New" status created in the last two weeks. for each card: read it with the notion skill, then scan the codebase to find the relevant code and assess real complexity. if the card is genuinely simple (clear where to change, small blast radius, no design decisions needed), move it to Planned and classify it (set Size, Category, Feature Area). leave complex or ambiguous cards in New. skip cards older than two weeks. do NOT rewrite card content - only set properties and status. Use the notion skill.`,
+      `triage the cards in the board's first column created in the last two weeks. for each card: read it, then scan the codebase to find the relevant code and assess real complexity. if the card is genuinely simple (clear where to change, small blast radius, no design decisions needed), move it to Planned and classify it (set Size, Category, Feature Area). leave complex or ambiguous cards where they are. skip cards older than two weeks. do NOT rewrite card content - only set fields and the column. ${boardRef()}`,
     );
   }
 
   function findDupes() {
     boardAction(
-      `scan all cards in active statuses (New, Backlog, Planned, In progress) for duplicates or overlapping work. read each card title and content, identify groups of related or duplicate cards, and report your findings. suggest which cards to merge, link, or remove. Use the notion skill.`,
+      `scan all open cards for duplicates or overlapping work. read each card title and content, identify groups of related or duplicate cards, and report your findings. suggest which cards to merge, link, or archive; change nothing. ${boardRef()}`,
     );
   }
 
   onMount(() => {
-    fetchCards();
+    loadConnection();
   });
 </script>
 
@@ -537,7 +667,21 @@
     class="flex items-center justify-between px-4 py-3 border-b border-border shrink-0"
   >
     <div class="flex items-center gap-3">
-      <h2 class="text-sm font-semibold text-text-primary">Notion Board</h2>
+      <h2 class="text-sm font-semibold text-text-primary">Brainant Board</h2>
+      {#if boards.length > 1}
+        <select
+          class="h-7 px-2 rounded border border-border bg-surface text-[11px] text-text-primary focus:outline-none focus:border-accent"
+          value={boardId}
+          onchange={(e) => selectBoard((e.currentTarget as HTMLSelectElement).value)}
+          title="Which Brainant board"
+        >
+          {#each boards as b (b.id)}
+            <option value={b.id}>{b.label}</option>
+          {/each}
+        </select>
+      {:else if boardName}
+        <span class="text-[11px] text-text-secondary">{boardName}</span>
+      {/if}
       {#if !loading}
         <span class="text-[11px] text-text-muted"
           >{hasActiveFilters ? `${filteredCards.length}/` : ""}{cards.length} cards</span
@@ -611,12 +755,56 @@
       <button
         class="h-7 px-2.5 rounded text-[11px] font-medium border border-border bg-surface-elevated text-text-secondary hover:bg-border transition-colors"
         onclick={fetchCards}
-        disabled={loading}
+        disabled={loading || !connected}
       >
         {loading ? "Loading..." : "Refresh"}
       </button>
+      {#if connected}
+        <button
+          class="h-7 px-2.5 rounded text-[11px] text-text-muted hover:text-text-primary transition-colors"
+          onclick={disconnect}
+          title="Forget the Brainant access token on this computer"
+        >
+          Disconnect
+        </button>
+      {/if}
     </div>
   </div>
+
+  {#if connected === false}
+    <!-- Not connected: a personal access token from Brainant (Settings → Access tokens). -->
+    <div class="px-4 py-4 border-b border-border bg-surface-elevated/30 space-y-2 shrink-0">
+      <p class="text-[11px] text-text-secondary">
+        Connect a Brainant board: in Brainant, open Settings → Access tokens and make a token that may
+        read and change your apps, then paste it here. It is kept in this computer's keyring.
+      </p>
+      <div class="flex items-center gap-2">
+        <input
+          type="password"
+          placeholder="bra_…"
+          class="h-7 px-2.5 rounded text-[11px] border border-border bg-surface text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent w-80"
+          bind:value={tokenInput}
+        />
+        <input
+          type="text"
+          class="h-7 px-2.5 rounded text-[11px] border border-border bg-surface text-text-primary focus:outline-none focus:border-accent w-48"
+          bind:value={baseUrl}
+          title="Brainant's address"
+        />
+        <button
+          class="h-7 px-3 rounded text-[11px] font-semibold bg-accent text-white disabled:opacity-50"
+          onclick={connect}
+          disabled={connecting || !tokenInput.trim()}
+        >
+          {connecting ? "Connecting..." : "Connect"}
+        </button>
+      </div>
+    </div>
+  {:else if connected && !loading && boards.length === 0}
+    <div class="px-4 py-3 border-b border-border text-[11px] text-text-secondary shrink-0">
+      This token's person reaches no Kanban board in Brainant.
+    </div>
+  {/if}
 
   <!-- Launch configuration shared by card actions and board-wide actions. -->
   <div class="flex items-center gap-3 px-4 py-2 border-b border-border bg-surface-elevated/30 shrink-0">
@@ -777,12 +965,12 @@
   <div class="flex-1 overflow-x-auto overflow-y-hidden">
     <div class="flex gap-3 p-4 h-full min-w-0">
       {#each visibleColumns as column}
-        {@const colCards = columnCards(column.status)}
+        {@const colCards = columnCards(column.name)}
         <div class="flex flex-col min-w-[220px] w-[260px] shrink-0">
           <div class="flex items-center gap-2 px-2 pb-2">
-            <div class="w-2 h-2 rounded-full {column.color}"></div>
+            <div class="w-2 h-2 rounded-full {columnColor(column)}"></div>
             <span class="text-xs font-semibold text-text-secondary"
-              >{column.label}</span
+              >{column.name}</span
             >
             <span
               class="text-[10px] text-text-muted bg-surface-elevated rounded-full px-1.5 py-0.5"
@@ -792,7 +980,7 @@
           <div class="flex-1 overflow-y-auto space-y-1.5 pr-1">
             {#each colCards as card (card.id)}
               {@const isSelected = selectedIds.has(card.id)}
-              {@const cardSessions = cardSessionMap.get(card.id)}
+              {@const cardSessions = cardSessionMap.get(cardKey(boardId, card.id))}
               <button
                 class="w-full text-left p-2.5 rounded-lg border transition-all {isSelected
                   ? 'border-accent bg-accent/10 ring-1 ring-accent/30'
@@ -826,6 +1014,7 @@
                       <p
                         class="text-[11px] font-medium text-text-primary leading-snug"
                       >
+                        <span class="text-text-muted">#{card.id}</span>
                         {card.title}
                       </p>
                       {#if cardSessions}
@@ -853,30 +1042,29 @@
                       {/if}
                     </div>
                     <div class="flex items-center gap-1.5 mt-1 flex-wrap">
-                      {#if card.priority}
+                      {#if rankOf(card)}
                         <span
-                          class="text-[9px] font-medium rounded px-1 py-0.5 {priorityBadge(
-                            card.priority,
-                          )}">{card.priority}</span
+                          class="text-[9px] font-medium rounded px-1 py-0.5 bg-amber-500/20 text-amber-400"
+                          title="Oscar's wishlist">★{rankOf(card)}</span
                         >
                       {/if}
-                      {#if card.size}
+                      {#if sizeOf(card)}
                         <span
                           class="text-[9px] font-medium rounded px-1 py-0.5 {sizeBadge(
-                            card.size,
-                          )}">{card.size}</span
+                            sizeOf(card),
+                          )}">{sizeOf(card)}</span
                         >
                       {/if}
-                      {#if groomedBadge(card.groomed)}
-                        {@const badge = groomedBadge(card.groomed)!}
+                      {#if groomedBadge(groomedOf(card))}
+                        {@const badge = groomedBadge(groomedOf(card))!}
                         <span class="text-[9px] rounded px-1 py-0.5 {badge.cls}"
                           >{badge.text}</span
                         >
                       {/if}
                     </div>
-                    {#if card.category.length > 0}
+                    {#if categoriesOf(card).length > 0}
                       <div class="flex items-center gap-1 mt-1 flex-wrap">
-                        {#each card.category.slice(0, 2) as cat}
+                        {#each categoriesOf(card).slice(0, 2) as cat}
                           <span
                             class="text-[8px] rounded px-1 py-0.5 {categoryBadge(
                               cat,

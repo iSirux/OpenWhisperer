@@ -8,7 +8,7 @@ import { writable } from 'svelte/store';
  * (/settings, /sequences, /usage, /sessions-view) rather than internal navigation.
  */
 
-export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository' | 'issues' | 'notion' | 'sparetokens' | 'meeting';
+export type MainView = 'sessions' | 'start' | 'sequences' | 'archive' | 'repository' | 'issues' | 'board' | 'sparetokens' | 'meeting';
 
 interface NavigationState {
   mainView: MainView;
@@ -65,8 +65,8 @@ function createNavigationStore() {
       update((state) => ({ ...state, mainView: 'archive', repositoryAddMode: false }));
     },
 
-    showNotion() {
-      update((state) => ({ ...state, mainView: 'notion', repositoryAddMode: false }));
+    showBoard() {
+      update((state) => ({ ...state, mainView: 'board', repositoryAddMode: false }));
     },
 
     /** Show the Meeting Mode view (start panel / live meeting / past meetings) */
