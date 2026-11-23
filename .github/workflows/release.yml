@@ -17,6 +17,12 @@ on:
         required: false
         type: string
 
+# Two dispatches racing each other both computed the same version, and the losing run
+# overwrote latest.json with a signature for an MSI it never uploaded (v1.103.0).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   version:
     runs-on: ubuntu-latest
