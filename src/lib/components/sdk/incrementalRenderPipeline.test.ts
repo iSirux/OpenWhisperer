@@ -15,9 +15,11 @@ import {
   buildRenderItems,
   mergeTaskChildren,
   mergeToolResult,
+  routeContinuedTaskChildren,
   type RenderItem,
 } from './sdkViewMessageProcessing';
 import {
+  createContinuationRouter,
   createSdkMessageProcessor,
   createRenderItemsBuilder,
   createMessageIndexer,
@@ -416,6 +418,50 @@ test('scenario: a failed agent continued via SendMessage reads as running again'
   const [orig2, resumed2] = tasks(s2);
   assert.equal(orig2.taskCompleted?.taskStatus, 'failed');
   assert.equal(resumed2.taskCompleted?.taskStatus, 'completed');
+});
+
+test('scenario: a continued agent\'s new work lands in its continuation block', () => {
+  // Real shape (usage-limit resume): the subagent's messages after the continuation still
+  // carry the ORIGINAL Agent call's id as parentToolUseId.
+  const agent: SdkMessage = { type: 'tool_start', tool: 'Agent', toolUseId: 'ag', input: { description: 'Sweep' }, timestamp: 1 };
+  const start1: SdkMessage = { type: 'task_started', toolUseId: 'ag', taskId: 't', taskType: 'local_agent', timestamp: 2 };
+  const oldTool: SdkMessage = { type: 'tool_start', tool: 'Bash', toolUseId: 'b1', parentToolUseId: 'ag', input: {}, timestamp: 3 };
+  const failed: SdkMessage = { type: 'task_completed', toolUseId: 'ag', taskId: 't', taskStatus: 'failed', summary: 'limit', timestamp: 4 };
+  const send: SdkMessage = { type: 'tool_start', tool: 'SendMessage', toolUseId: 'sm', input: { to: 't' }, timestamp: 5 };
+  const start2: SdkMessage = { type: 'task_started', toolUseId: 'sm', taskId: 't', taskType: 'local_agent', timestamp: 6 };
+  // The old round's lost result, synthesized late: must stay with its tool_start.
+  const oldResult: SdkMessage = { type: 'tool_result', tool: 'Bash', toolUseId: 'b1', parentToolUseId: 'ag', output: '', timestamp: 7 };
+  const newTool: SdkMessage = { type: 'tool_start', tool: 'Bash', toolUseId: 'b2', parentToolUseId: 'ag', input: { c: 1 }, timestamp: 8 };
+  const newText: SdkMessage = { type: 'text', content: 'resumed', parentToolUseId: 'ag', timestamp: 9 };
+  const newResult: SdkMessage = { type: 'tool_result', tool: 'Bash', toolUseId: 'b2', parentToolUseId: 'ag', output: 'ok', timestamp: 10 };
+
+  const s1 = [agent, start1, oldTool, failed, send, start2];
+  const s2 = [...s1, oldResult, newTool];
+  const s3 = [...s2, newText, newResult];
+
+  const router = createContinuationRouter();
+  for (const s of [s1, s2, s3]) {
+    const incremental = router.update(s);
+    assert.deepStrictEqual(incremental, routeContinuedTaskChildren(s));
+  }
+  // Nothing to re-route → the input array itself.
+  assert.equal(createContinuationRouter().update(s1), s1);
+
+  const tasks = (msgs: SdkMessage[]) =>
+    buildRenderItems(processSdkMessages(routeContinuedTaskChildren(msgs)), false)
+      .filter((i) => i.type === 'task') as Extract<RenderItem, { type: 'task' }>[];
+  const [orig, resumed] = tasks(s3);
+  assert.equal(orig.taskStarted.toolUseId, 'ag');
+  assert.deepStrictEqual(orig.children.map((c) => c.toolUseId), ['b1']);
+  assert.equal(orig.taskCompleted?.taskStatus, 'failed');
+  assert.equal(resumed.taskStarted.toolUseId, 'sm');
+  assert.deepStrictEqual(resumed.children.map((c) => c.toolUseId ?? c.content), ['b2', 'resumed']);
+  assert.equal(resumed.taskCompleted, undefined);
+
+  // Identity is stable across passes (downstream diffs by reference).
+  const a = routeContinuedTaskChildren(s3);
+  const b = routeContinuedTaskChildren(s3);
+  a.forEach((m, i) => assert.ok(m === b[i]));
 });
 
 test('scenario: parallel same-millisecond tools finishing out of order in grid mode', () => {

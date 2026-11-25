@@ -8,6 +8,8 @@ import {
   collectOrphanTasks,
   insertOrphanTasks,
   indexTaskRound,
+  newContinuationRoutingState,
+  routeContinuedTaskMessage,
   type RenderItem,
   type TaskIndex,
 } from './sdkViewMessageProcessing';
@@ -50,6 +52,50 @@ function changedIndices(prev: SdkMessage[], next: SdkMessage[]): number[] | null
 }
 
 const isToolMsg = (m: SdkMessage) => m.type === 'tool_start' || m.type === 'tool_result';
+
+// ---------------------------------------------------------------------------
+// routeContinuedTaskChildren
+// ---------------------------------------------------------------------------
+
+export interface ContinuationRouter {
+  update(messages: SdkMessage[]): SdkMessage[];
+}
+
+/**
+ * Incremental `routeContinuedTaskChildren`. A message's routing depends only on the
+ * messages before it, so pure appends extend the previous state; anything else re-routes
+ * from scratch (cheap: one pass, and cached clones keep their identity). Hands back the
+ * input array itself while nothing needs re-parenting — the common case.
+ */
+export function createContinuationRouter(): ContinuationRouter {
+  let input: SdkMessage[] | null = null;
+  let output: SdkMessage[] = [];
+  let state = newContinuationRoutingState();
+
+  function update(msgs: SdkMessage[]): SdkMessage[] {
+    if (msgs === input) return output;
+    const prev = input;
+    input = msgs;
+    let from = 0;
+    if (prev && msgs.length >= prev.length) {
+      let i = 0;
+      while (i < prev.length && prev[i] === msgs[i]) i++;
+      if (i === prev.length) from = i;
+    }
+    if (from === 0) state = newContinuationRoutingState();
+    // `output === prev` means everything so far passed through unchanged.
+    let out: SdkMessage[] | null = from > 0 && output !== prev ? output.slice() : null;
+    for (let i = from; i < msgs.length; i++) {
+      const routed = routeContinuedTaskMessage(state, msgs[i]);
+      if (routed !== msgs[i] && !out) out = msgs.slice(0, i);
+      if (out) out.push(routed);
+    }
+    output = out ?? msgs;
+    return output;
+  }
+
+  return { update };
+}
 
 // ---------------------------------------------------------------------------
 // processSdkMessages

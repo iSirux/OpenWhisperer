@@ -66,6 +66,7 @@
     type RenderItem,
   } from "./sdk/sdkViewMessageProcessing";
   import {
+    createContinuationRouter,
     createSdkMessageProcessor,
     createRenderItemsBuilder,
     createMessageIndexer,
@@ -149,10 +150,13 @@
   // processes what changed (appends, in-place replacements), falling back to a
   // full rebuild otherwise. Output is identical to processSdkMessages /
   // buildRenderItems (see incrementalRenderPipeline.test.ts).
+  // Re-parent a SendMessage-continued subagent's new work onto its continuation block.
+  const continuationRouter = createContinuationRouter();
   const messageProcessor = createSdkMessageProcessor();
   const renderItemsBuilder = createRenderItemsBuilder();
   const messageIndexer = createMessageIndexer();
-  let processedMessages = $derived(messageProcessor.update(visibleMessages));
+  let routedMessages = $derived(continuationRouter.update(visibleMessages));
+  let processedMessages = $derived(messageProcessor.update(routedMessages));
   let renderItems = $derived(
     renderItemsBuilder.update(processedMessages, $settings.tool_display_mode === "grid"),
   );

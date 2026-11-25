@@ -70,6 +70,67 @@ export function mergeToolResult(
   return merged;
 }
 
+// A subagent continued via SendMessage (e.g. the main agent resuming its subagents after a
+// usage limit) re-emits task_started with the SAME taskId but the SendMessage call's
+// toolUseId — that is where its new block anchors. The subagent's new messages, however,
+// still carry the ORIGINAL Agent call's id as parentToolUseId, so without re-routing they
+// pile into the old block far up the transcript (which still reads "Failed") while the new
+// block stays empty. Everything a subagent emits after a continuation's task_started is
+// re-parented onto that round's block; a tool_result follows its tool_start.
+//
+// Clones are cached per source message so a re-run hands back the same object (the
+// downstream incremental builders diff by reference).
+const reroutedCache = new WeakMap<SdkMessage, SdkMessage>();
+
+export interface ContinuationRoutingState {
+  /** taskId → the toolUseId its first task_started carried (the Agent launch). */
+  launchByTaskId: Map<string, string>;
+  /** Launch toolUseId → the toolUseId of the latest continuation round. */
+  redirect: Map<string, string>;
+  /** Child tool_start toolUseId → the parent it was routed to. */
+  toolParent: Map<string, string>;
+}
+
+export function newContinuationRoutingState(): ContinuationRoutingState {
+  return { launchByTaskId: new Map(), redirect: new Map(), toolParent: new Map() };
+}
+
+/** Route one message (in transcript order); returns it unchanged unless re-parented. */
+export function routeContinuedTaskMessage(state: ContinuationRoutingState, msg: SdkMessage): SdkMessage {
+  if (msg.type === 'task_started' && msg.taskId && msg.toolUseId) {
+    const launch = state.launchByTaskId.get(msg.taskId);
+    if (!launch) state.launchByTaskId.set(msg.taskId, msg.toolUseId);
+    else if (launch !== msg.toolUseId) state.redirect.set(launch, msg.toolUseId);
+  }
+  const parent = msg.parentToolUseId;
+  if (!parent) return msg;
+  let target = parent;
+  if (msg.type === 'tool_result' && msg.toolUseId && state.toolParent.has(msg.toolUseId)) {
+    target = state.toolParent.get(msg.toolUseId)!;
+  } else {
+    target = state.redirect.get(parent) ?? parent;
+  }
+  if (msg.type === 'tool_start' && msg.toolUseId) state.toolParent.set(msg.toolUseId, target);
+  if (target === parent) return msg;
+  const cached = reroutedCache.get(msg);
+  if (cached && cached.parentToolUseId === target) return cached;
+  const rerouted: SdkMessage = { ...msg, parentToolUseId: target };
+  reroutedCache.set(msg, rerouted);
+  return rerouted;
+}
+
+/** From-scratch routing pass (see routeContinuedTaskMessage). Returns `messages` itself when nothing moved. */
+export function routeContinuedTaskChildren(messages: SdkMessage[]): SdkMessage[] {
+  const state = newContinuationRoutingState();
+  let out: SdkMessage[] | null = null;
+  for (let i = 0; i < messages.length; i++) {
+    const routed = routeContinuedTaskMessage(state, messages[i]);
+    if (routed !== messages[i] && !out) out = messages.slice(0, i);
+    if (out) out.push(routed);
+  }
+  return out ?? messages;
+}
+
 // Process messages to merge tool_start/tool_result pairs
 // - Skip tool_start if there's a matching tool_result
 // - Copy input from tool_start to tool_result for display
