@@ -41,6 +41,7 @@
   import ContextOverflowBanner from "./sdk/ContextOverflowBanner.svelte";
   import RateLimitBanner from "./sdk/RateLimitBanner.svelte";
   import QueuedTurnGhost from "./sdk/QueuedTurnGhost.svelte";
+  import { openImage } from "$lib/stores/imageViewer";
   import { type QueueWindow } from "$lib/stores/queueDetection";
   import { schedules, type RecurrenceRule } from "$lib/stores/schedules";
   import { type SendTiming } from "$lib/utils/sendTiming";
@@ -2294,6 +2295,16 @@
             {#if session?.preparedPrompt}
               <div class="queued-prompt">{session.preparedPrompt}</div>
             {/if}
+            {#if session?.preparedImages?.length}
+              <div class="queued-images">
+                {#each session.preparedImages as img}
+                  {@const src = `data:${img.mediaType};base64,${img.base64Data}`}
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                  <img {src} alt="Attached" class="queued-image" onclick={() => openImage(src, "Attached")} />
+                {/each}
+              </div>
+            {/if}
             <div class="queued-actions">
               <button class="queued-btn primary" onclick={handleRunQueuedNow} title="Launch this session immediately">
                 Run now
@@ -3126,6 +3137,21 @@
     font-size: 0.8125rem;
     color: var(--color-text-secondary);
     line-height: 1.4;
+  }
+
+  .queued-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+  }
+
+  .queued-image {
+    max-width: 96px;
+    max-height: 72px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--color-border);
+    cursor: zoom-in;
   }
 
   .queued-prompt {

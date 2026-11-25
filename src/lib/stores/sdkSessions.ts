@@ -791,6 +791,8 @@ export interface SdkSession {
   sdkSessionId?: string;
   /** Prompt stored for a prepared session (ready to launch) */
   preparedPrompt?: string;
+  /** Images attached to `preparedPrompt`, sent with it when the queued session launches */
+  preparedImages?: SdkImageContent[];
   /** Pre-toggled prompt chips carried into a prepared session (e.g. from a pile item) */
   preparedChips?: string[];
   /** System prompt stored for a prepared session */
@@ -3860,7 +3862,8 @@ function createSdkSessionsStore() {
 
       const gatedModel = config.model;
       const gatedProvider = normalizeSdkProvider(config.provider, gatedModel);
-      const hasPrompt = config.prompt.trim().length > 0;
+      const hasImages = !!config.images && config.images.length > 0;
+      const hasPrompt = config.prompt.trim().length > 0 || hasImages;
 
       // Pace auto-select: resolve the account BEFORE the queue gate, so an exhausted preferred
       // account routes the launch to one with room instead of queueing it.
@@ -3921,6 +3924,7 @@ function createSdkSessionsStore() {
                   accountAutoSelected: config.accountAutoSelected || undefined,
                   status: 'queued' as const,
                   preparedPrompt: config.prompt,
+                  preparedImages: hasImages ? config.images : undefined,
                   preparedSystemPrompt: finalSystemPrompt,
                   draftPrompt: undefined,
                   draftImages: undefined,
@@ -4183,8 +4187,9 @@ function createSdkSessionsStore() {
 
       if (!session.cwd) throw new Error('No repository selected for prepared session');
 
-      const prompt = editedPrompt || session.preparedPrompt;
-      if (!prompt) throw new Error('No prompt to send');
+      const prompt = editedPrompt || session.preparedPrompt || '';
+      const images = session.preparedImages?.length ? session.preparedImages : undefined;
+      if (!prompt && !images) throw new Error('No prompt to send');
 
       update(sessions =>
         sessions.map(s => s.id === id ? {
@@ -4192,13 +4197,14 @@ function createSdkSessionsStore() {
           status: 'initializing' as const,
           pendingPrompt: prompt,
           preparedPrompt: undefined,
+          preparedImages: undefined,
           preparedRepoRecommendation: undefined,
           queueInfo: null,
         } : s)
       );
 
       try {
-        await this.initializeSession(id, session.cwd, session.model, session.effortLevel, session.preparedSystemPrompt, prompt, session.provider);
+        await this.initializeSession(id, session.cwd, session.model, session.effortLevel, session.preparedSystemPrompt, prompt, session.provider, images);
       } catch (error) {
         update(sessions =>
           sessions.map(s =>
@@ -4322,7 +4328,8 @@ function createSdkSessionsStore() {
       }
     },
 
-    async initializeSession(id: string, cwd: string, model: string, effortLevel: EffortLevel, systemPrompt?: string, pendingPrompt?: string, provider?: SdkProvider): Promise<void> {
+    async initializeSession(id: string, cwd: string, model: string, effortLevel: EffortLevel, systemPrompt?: string, pendingPrompt?: string, provider?: SdkProvider, pendingImages?: SdkImageContent[]): Promise<void> {
+      const hasPendingImages = !!pendingImages && pendingImages.length > 0;
       const sessionForInit = get({ subscribe }).find(s => s.id === id);
       const sessionProvider = provider ?? sessionForInit?.provider ?? getProviderForModel(model);
       let sessionAccountId = sessionForInit?.accountId;
@@ -4340,7 +4347,7 @@ function createSdkSessionsStore() {
       // Smart Queue (first-launch gate): only a prompt-bearing launch consumes the rate limit, so
       // only defer when there is a pending prompt. Park as `queued` (prompt on prepared fields) so
       // launchPrepared can dispatch it later, then return before registering/sending.
-      if (pendingPrompt && pendingPrompt.trim().length > 0 && shouldQueue(sessionProvider, sessionAccountId)) {
+      if (((pendingPrompt && pendingPrompt.trim().length > 0) || hasPendingImages) && shouldQueue(sessionProvider, sessionAccountId)) {
         const { window: rlWindow, resetsAt } = providerExhaustion(sessionProvider, sessionAccountId);
         const queuedAt = Date.now();
         update(sessions =>
@@ -4355,6 +4362,7 @@ function createSdkSessionsStore() {
                   provider: sessionProvider,
                   status: 'queued' as const,
                   preparedPrompt: pendingPrompt,
+                  preparedImages: hasPendingImages ? pendingImages : undefined,
                   preparedSystemPrompt: systemPrompt,
                   pendingPrompt: undefined,
                   queueInfo: { reason: 'rate_limit' as const, provider: sessionProvider, window: rlWindow, queuedAt, targetStartAt: resetsAt },
@@ -4382,8 +4390,8 @@ function createSdkSessionsStore() {
       await syncSessionBranchMetadata(id, cwd);
       usageStats.trackSession('sdk', resolvedModel, cwd);
 
-      if (pendingPrompt) {
-        await this.sendPrompt(id, pendingPrompt);
+      if (pendingPrompt || hasPendingImages) {
+        await this.sendPrompt(id, pendingPrompt ?? '', pendingImages);
       } else {
         update(sessions => sessions.map(s => s.id === id ? { ...s, status: 'idle' as const, pendingPrompt: undefined } : s));
       }
@@ -4813,9 +4821,11 @@ function createSdkSessionsStore() {
             ...s,
             status: 'setup' as const,
             draftPrompt: s.preparedPrompt ?? s.draftPrompt,
+            draftImages: s.preparedImages ?? s.draftImages,
             setupRepoPath: s.cwd || s.setupRepoPath,
             setupWorktreeMode: s.setupWorktreeMode ?? 'main',
             preparedPrompt: undefined,
+            preparedImages: undefined,
             preparedSystemPrompt: undefined,
             preparedRepoRecommendation: undefined,
             queueInfo: null,

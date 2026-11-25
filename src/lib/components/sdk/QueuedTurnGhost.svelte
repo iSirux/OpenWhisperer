@@ -78,6 +78,9 @@
     return `${seconds}s`;
   });
 
+  // The turn carries what will actually be sent; the bubble is only its display copy.
+  let images = $derived(message.images?.length ? message.images : turn.images);
+
   let busy = $state(false);
 
   function createImagePreviewUrl(img: SdkImageContent): string {
@@ -108,9 +111,9 @@
   </div>
 
   <div class="ghost-body">
-    {#if message.images && message.images.length > 0}
+    {#if images && images.length > 0}
       <div class="ghost-images">
-        {#each message.images as img}
+        {#each images as img}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <img

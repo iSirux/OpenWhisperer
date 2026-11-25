@@ -261,6 +261,9 @@ pub struct PersistedSdkSession {
     /// Prompt stored for a prepared session (ready to launch)
     #[serde(default)]
     pub prepared_prompt: Option<String>,
+    /// Images attached to the prepared prompt (queued/scheduled launch)
+    #[serde(default)]
+    pub prepared_images: Option<Vec<PersistedSdkImageContent>>,
     /// System prompt stored for a prepared session
     #[serde(default)]
     pub prepared_system_prompt: Option<String>,
